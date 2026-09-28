@@ -24,6 +24,7 @@ const OFF: MfaStatus = {
   recovery_codes_remaining: 0,
   policy: "off",
   required: false,
+  enforce_after: null,
 };
 
 const ON: MfaStatus = {
@@ -32,6 +33,7 @@ const ON: MfaStatus = {
   recovery_codes_remaining: 7,
   policy: "optional",
   required: false,
+  enforce_after: null,
 };
 
 const SECRET = {
@@ -98,7 +100,8 @@ export const NotEnrolled: Story = {
 
 /**
  * The same state under `required_all`. The copy changes because the stakes do:
- * the *next* sign-in is refused, which is a deadline rather than advice.
+ * the *next* sign-in stops to set one up before it lets the user in (#1852),
+ * which is a deadline rather than advice.
  */
 export const NotEnrolledButRequired: Story = {
   render: () => (
@@ -108,7 +111,37 @@ export const NotEnrolledButRequired: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText(/your next sign-in is refused/i)).toBeInTheDocument();
+    await expect(
+      await canvas.findByText(/your next sign-in asks you to set one up/i),
+    ).toBeInTheDocument();
+  },
+};
+
+/**
+ * The org announced the requirement with a grace window (#1852). The deadline
+ * has a date on it, and the panel says the date rather than "next sign-in",
+ * which would be wrong for another week.
+ */
+export const NotEnrolledRequiredFromADate: Story = {
+  render: () => (
+    <Harness
+      fetchStub={mfa(() =>
+        json({
+          ...OFF,
+          policy: "required_all",
+          required: true,
+          enforce_after: "2026-10-03T12:00:00Z",
+        }),
+      )}
+    >
+      <TwoFactorPanel />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = await canvas.findByText(/requires a second factor from/i);
+    await expect(body).toHaveTextContent(/2026/);
+    await expect(canvas.queryByText(/your next sign-in asks/i)).not.toBeInTheDocument();
   },
 };
 

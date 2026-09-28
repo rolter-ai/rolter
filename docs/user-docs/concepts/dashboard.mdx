@@ -14,6 +14,10 @@ Open the control plane's address in a browser. You will see one of three things:
 - **"Continue with …" buttons** — the organization registered an identity provider ([Single sign-on](/security/single-sign-on)). Password sign-in may be turned off alongside them.
 - **An e-mail-only prompt** — the control plane is running in _open mode_ with no admin token and no accounts. Anything you enter opens the dashboard; there is no session to protect. This is meant for a first local run only.
 
+<Note>
+  A control plane started from `rolter.toml` alone, with `ROLTER_ADMIN_TOKEN` set but no `--database-url`, also shows the e-mail-only prompt, because it has no accounts to sign in to. The request log, usage and provider health still require the admin token there, and the dashboard has no field to enter it, so the Dashboard, Logs and Health screens report that you are not signed in. Read them with the token over the API (`curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" .../api/v1/analytics/invocations`), or give the control plane a database. Letting the dashboard take the token is tracked in [#1909](https://github.com/rolter-ai/rolter/issues/1909).
+</Note>
+
 Your session is re-checked every time the dashboard loads. If it has expired, you are returned to the sign-in screen with a note saying so rather than a page full of failed requests.
 
 The language switcher sits at the bottom of the rail, and on the sign-in card, so you can pick English or Russian before you have an account.

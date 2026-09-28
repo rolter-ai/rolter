@@ -112,6 +112,26 @@ struct SetPolicy {
     /// silently reset to `off`
     #[serde(default)]
     mfa_policy: Option<String>,
+    /// When a `required_*` policy starts making unenrolled members enrol
+    /// before they get a session (#1852). An explicit `null` means at once;
+    /// an absent key keeps the stored window, so a client written before the
+    /// window existed can re-send `mfa_policy` without silently cancelling a
+    /// date an admin announced. Only read alongside `mfa_policy`: a body that
+    /// omits the policy changes neither. Dropped under `off` and `optional`,
+    /// where there is nothing for it to postpone
+    #[serde(default, deserialize_with = "present")]
+    mfa_enforce_after: Option<Option<chrono::DateTime<chrono::Utc>>>,
+}
+
+/// Tell an explicit `null` apart from an absent key: the key's value, `null`
+/// included, arrives wrapped in `Some`, and an absent key never reaches here
+/// and stays at the field's `None` default.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 async fn set_policy(
@@ -145,19 +165,45 @@ async fn set_policy(
         }
     }
     let current = OrgAuthPolicyRepo(pool(&state)).get(org_id).await?;
-    let mfa_policy = body.mfa_policy.clone().unwrap_or(current.mfa_policy);
+    let (mfa_policy, mfa_enforce_after) = match body.mfa_policy.clone() {
+        Some(policy) => (
+            policy,
+            body.mfa_enforce_after.unwrap_or(current.mfa_enforce_after),
+        ),
+        None => (current.mfa_policy, current.mfa_enforce_after),
+    };
     if !MFA_POLICIES.contains(&mfa_policy.as_str()) {
         return Err(ApiError::Core(rolter_core::Error::Config(format!(
             "mfa_policy must be one of {}",
             MFA_POLICIES.join(", ")
         ))));
     }
+    if body.mfa_policy.is_some()
+        && mfa_policy.starts_with("required_")
+        && !crate::mfa::can_enrol(&state)
+    {
+        // without a KEK no secret can be sealed, so nobody can enrol from their
+        // account or at sign-in, and every account the policy binds -- the
+        // admin saving it included, once their session runs out -- is refused
+        // at the next sign-in. Refused here for the same reason passwords-off
+        // is refused before an IdP exists
+        return Err(ApiError::Conflict(
+            "a required second factor needs ROLTER_KEK set on the control plane: without it \
+             nobody can enrol, so every account this policy binds would be locked out. Set \
+             ROLTER_KEK and restart the control plane, or choose optional"
+                .into(),
+        ));
+    }
+    // a window only postpones a requirement; stored under `off` it would sit
+    // there to surprise whoever next turns the requirement on
+    let mfa_enforce_after = mfa_enforce_after.filter(|_| mfa_policy.starts_with("required_"));
     let policy = OrgAuthPolicyRepo(pool(&state))
         .set(
             org_id,
             body.allow_password_login,
             body.allow_sso,
             &mfa_policy,
+            mfa_enforce_after,
         )
         .await?;
     log_audit(
@@ -171,6 +217,7 @@ async fn set_policy(
             "allow_password_login": body.allow_password_login,
             "allow_sso": body.allow_sso,
             "mfa_policy": policy.mfa_policy,
+            "mfa_enforce_after": policy.mfa_enforce_after,
         }),
     )
     .await;

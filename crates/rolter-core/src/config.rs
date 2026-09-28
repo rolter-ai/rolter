@@ -591,6 +591,13 @@ pub struct RealtimeConfig {
     /// close an inactive session after this many seconds; 0 disables the limit
     #[serde(default = "default_realtime_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+    /// how often a live session's completed response turns are written to the
+    /// request log, added to budgets and `tpm` windows, and followed by a
+    /// budget re-check. 0 flushes after every completed turn instead of on a
+    /// timer, and re-checks the budgets every second while the session is
+    /// quiet; metering itself cannot be switched off (#1396)
+    #[serde(default = "default_realtime_usage_flush_secs")]
+    pub usage_flush_secs: u64,
 }
 
 impl Default for RealtimeConfig {
@@ -599,6 +606,7 @@ impl Default for RealtimeConfig {
             max_connections: default_realtime_max_connections(),
             max_session_secs: default_realtime_max_session_secs(),
             idle_timeout_secs: default_realtime_idle_timeout_secs(),
+            usage_flush_secs: default_realtime_usage_flush_secs(),
         }
     }
 }
@@ -613,6 +621,10 @@ fn default_realtime_max_session_secs() -> u64 {
 
 fn default_realtime_idle_timeout_secs() -> u64 {
     300
+}
+
+fn default_realtime_usage_flush_secs() -> u64 {
+    15
 }
 
 /// The wire protocol a provider speaks.
@@ -836,6 +848,10 @@ pub struct ProviderConfig {
     /// to exercise the dialect. See ADR-0029.
     #[serde(default)]
     pub allow_custom_api_base: bool,
+    /// the org the provider belongs to in the store; absent for a provider
+    /// from the gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1112,6 +1128,10 @@ pub struct ProviderGroupConfig {
     /// resolves (there is nothing to route to)
     #[serde(default)]
     pub members: Vec<GroupMember>,
+    /// the org the group belongs to in the store; absent for a group from the
+    /// gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 /// One member of a [`ProviderGroupConfig`]: a provider plus optional upstream
@@ -1217,6 +1237,33 @@ pub struct ModelLimits {
     pub output_tokens: Option<u32>,
 }
 
+/// The org, and for a route the project, a row belongs to in the store.
+///
+/// Absent on rows from a gateway-only config file: those belong to the
+/// deployment and every key may use them. A row that carries one is served
+/// only to keys of the same org (#1844), which is what keeps one tenant's
+/// provider credentials out of another tenant's requests.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Tenancy {
+    pub org_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+impl Tenancy {
+    /// Whether a key of `key_org` may use a row owned by `tenancy`.
+    ///
+    /// A row with no tenancy belongs to the deployment. A key with no org was
+    /// defined in the gateway's own config file, so it is the operator's and
+    /// may use any row. Otherwise the orgs must match.
+    pub fn admits(tenancy: Option<&Tenancy>, key_org: &str) -> bool {
+        match tenancy {
+            None => true,
+            Some(owner) => key_org.is_empty() || owner.org_id == key_org,
+        }
+    }
+}
+
 /// Catalog visibility restrictions attached to a route. Gateway key/team
 /// identity is sufficient for key and team checks; user restrictions are
 /// retained for control-plane authorization.
@@ -1230,6 +1277,11 @@ pub struct ModelVisibility {
     pub allowed_key_ids: Vec<String>,
     #[serde(default)]
     pub allowed_user_ids: Vec<String>,
+    /// Serve the route only to keys minted in its own project, rather than to
+    /// every key of its org (the default). Keys from the gateway's own config
+    /// carry no org and are not narrowed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub project_only: bool,
 }
 
 fn default_weight() -> u32 {
@@ -1268,6 +1320,10 @@ pub struct ModelRoute {
     /// when both the global `[cache]` switch and this route opt-in are enabled.
     #[serde(default)]
     pub cache: Option<RouteCache>,
+    /// the org and project the route belongs to in the store; absent for a
+    /// route from the gateway's own config file (see [`Tenancy`])
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<Tenancy>,
 }
 
 impl ModelRoute {
@@ -3588,9 +3644,10 @@ impl Default for EgressPolicy {
     }
 }
 
-/// Extract the host portion of a URL without pulling in a URL parser: strips
-/// the scheme, any userinfo, then the path/query, then a port (or brackets for
-/// an IPv6 literal).
+/// Extract the host portion of a URL by hand: strips the scheme, any
+/// userinfo, then the path/query, then a port (or brackets for an IPv6
+/// literal). Only the fallback for a URL the WHATWG parser rejects; see
+/// [`url_destination`].
 fn url_host(url: &str) -> Option<&str> {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest
@@ -3606,27 +3663,73 @@ fn url_host(url: &str) -> Option<&str> {
     authority.split(':').next().filter(|h| !h.is_empty())
 }
 
+/// Parse one host the way a special (`http`, `https`) URL's host is parsed:
+/// percent-decoded, IDNA-mapped, and read as an IPv4 address in any of the
+/// WHATWG spellings (`2852039166`, `0xa9fea9fe`, `169.254.43518`, octal parts,
+/// a trailing dot). Accepts an IPv6 literal with or without brackets.
+fn parse_host(host: &str) -> Option<url::Host> {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(v6) = bare.parse::<std::net::Ipv6Addr>() {
+        return Some(url::Host::Ipv6(v6));
+    }
+    url::Host::parse(host).ok()
+}
+
+/// The host a request to `url` is sent to, read the way the HTTP client reads
+/// it.
+///
+/// reqwest parses with the WHATWG `url` crate, which normalizes the host
+/// before anything connects: `http://2852039166/` and
+/// `http://169.254.169.254./` both dial `169.254.169.254`, and a backslash
+/// ends the authority, so the host of `http://169.254.169.254\@example.com/`
+/// is the address, not `example.com`. Classifying anything other than that
+/// parse checks a host the request never goes to.
+fn url_destination(url: &str) -> Option<url::Host> {
+    match url::Url::parse(url) {
+        Ok(parsed) => match parsed.host()? {
+            // a scheme outside the WHATWG special set (socks5, socks5h) keeps
+            // its host opaque, so an IPv4 literal in any spelling arrives as a
+            // domain; the client or the system resolver reads it as an address
+            url::Host::Domain(domain) => {
+                Some(parse_host(domain).unwrap_or_else(|| url::Host::Domain(domain.to_string())))
+            }
+            host => Some(host.to_owned()),
+        },
+        // nothing can send to a URL the parser rejects, but the hand-rolled
+        // read keeps every literal the check caught before it had a parser
+        Err(_) => url_host(url)
+            .map(|host| parse_host(host).unwrap_or_else(|| url::Host::Domain(host.to_string()))),
+    }
+}
+
+/// The address a host literal dials: an IPv4-mapped IPv6 address
+/// (`::ffff:a.b.c.d`) is dialled as the IPv4 address it carries.
+fn host_ip(host: &url::Host) -> Option<std::net::IpAddr> {
+    match host {
+        url::Host::Ipv4(v4) => Some(std::net::IpAddr::V4(*v4)),
+        url::Host::Ipv6(v6) => Some(std::net::IpAddr::V6(*v6).to_canonical()),
+        url::Host::Domain(_) => None,
+    }
+}
+
 impl EgressPolicy {
     /// Reject `url` when its host is an IP literal in a denied range.
     ///
-    /// Only literals are classified: resolving a hostname here would make
+    /// The URL is parsed with the WHATWG parser reqwest uses, so the host
+    /// classified is the one the client connects to and every spelling of a
+    /// denied address is denied: `http://2852039166/`, `http://0xa9fea9fe/`,
+    /// `http://169.254.169.254./` and `http://[::ffff:169.254.169.254]/` are
+    /// all `169.254.169.254`. Only literals are classified: resolving a hostname here would make
     /// config validation depend on live DNS, which would reintroduce exactly
     /// the "one bad row freezes every gateway" failure mode that
     /// [`GatewayConfig::sanitize_for_snapshot`] exists to avoid (and would be
     /// bypassable by rebinding anyway). Hostname resolution belongs at connect
     /// time; see the connect-time follow-up.
     pub fn check_url(&self, url: &str, what: &str) -> std::result::Result<(), String> {
-        let Some(host) = url_host(url) else {
-            return Ok(());
-        };
-        if self.host_is_allowed(host) {
-            return Ok(());
-        }
-        let Ok(ip) = host.parse::<std::net::IpAddr>() else {
-            // a hostname: nothing to classify without DNS
-            return Ok(());
-        };
-        match self.deny_reason(ip) {
+        match self.url_deny_reason(url) {
             Some(range) => Err(format!(
                 "{what} '{url}' resolves to a {range} address, which the egress policy denies \
                  (allow it explicitly via egress.allow_hosts if this is intentional)"
@@ -3635,23 +3738,53 @@ impl EgressPolicy {
         }
     }
 
-    /// Whether `host` is exempt from every check, matched verbatim against
-    /// `allow_hosts` (an IP literal or a hostname).
+    /// Why this policy denies `url`, or `None` when it is permitted: the
+    /// decision [`Self::check_url`] makes, without the URL in the message, for
+    /// a caller that must not log an endpoint that may carry a token.
+    pub fn url_deny_reason(&self, url: &str) -> Option<&'static str> {
+        let host = url_destination(url)?;
+        let ip = host_ip(&host)?;
+        if self.allows(&host, ip) {
+            return None;
+        }
+        self.deny_reason(ip)
+    }
+
+    /// Whether an `allow_hosts` entry names the address `url` reaches. An entry
+    /// is read the same way the URL is, so `169.254.169.254` also covers
+    /// `0xa9fea9fe`, the same destination.
+    fn allows(&self, host: &url::Host, ip: std::net::IpAddr) -> bool {
+        self.allow_hosts.iter().any(|entry| {
+            parse_host(entry).is_some_and(|allowed| {
+                allowed == *host || host_ip(&allowed).is_some_and(|allowed| allowed == ip)
+            })
+        })
+    }
+
+    /// Whether `host` is exempt from every check, matched against
+    /// `allow_hosts` verbatim or as the same normalized host (an IP literal or
+    /// a hostname).
     pub fn host_is_allowed(&self, host: &str) -> bool {
-        self.allow_hosts.iter().any(|h| h == host)
+        let normalized = parse_host(host);
+        self.allow_hosts
+            .iter()
+            .any(|entry| entry == host || (normalized.is_some() && parse_host(entry) == normalized))
     }
 
     /// Why this policy denies `ip`, or `None` when it is permitted.
     ///
     /// Split out from [`Self::check_url`] so a connect-time check can classify
     /// an address DNS produced, which is the only rebinding-safe point to do
-    /// it (see the connect-time resolver in `rolter-proxy`).
+    /// it (see the connect-time resolver in `rolter-proxy`). An IPv4-mapped
+    /// IPv6 address is classified as the IPv4 address it carries, and the
+    /// unspecified address counts as loopback, since connecting to it reaches
+    /// the local host.
     pub fn deny_reason(&self, ip: std::net::IpAddr) -> Option<&'static str> {
-        match ip {
+        match ip.to_canonical() {
             std::net::IpAddr::V4(v4) => {
                 if v4.is_link_local() && self.block_link_local {
                     Some("link-local (cloud instance metadata lives here)")
-                } else if v4.is_loopback() && self.block_loopback {
+                } else if (v4.is_loopback() || v4.is_unspecified()) && self.block_loopback {
                     Some("loopback")
                 } else if v4.is_private() && self.block_private {
                     Some("private")
@@ -3665,7 +3798,7 @@ impl EgressPolicy {
                 let unique_local = (v6.segments()[0] & 0xfe00) == 0xfc00;
                 if link_local && self.block_link_local {
                     Some("link-local (cloud instance metadata lives here)")
-                } else if v6.is_loopback() && self.block_loopback {
+                } else if (v6.is_loopback() || v6.is_unspecified()) && self.block_loopback {
                     Some("loopback")
                 } else if unique_local && self.block_private {
                     Some("private")
@@ -3882,6 +4015,7 @@ mod tests {
             advanced: Default::default(),
             cache: None,
             variants: vec![],
+            tenancy: None,
         }
     }
 
@@ -5627,6 +5761,124 @@ mod tests {
         assert!(policy
             .check_url("http://169.254.169.254/v1", "api_base")
             .is_ok());
+    }
+
+    // #1953: the http client reads a url with the WHATWG parser, which turns
+    // every one of these into 169.254.169.254, so the check has to classify
+    // the same address or it guards a host the request never goes to
+    #[test]
+    fn egress_policy_denies_every_spelling_of_the_metadata_address() {
+        let policy = EgressPolicy::default();
+        for url in [
+            // one decimal number, hex, a 16-bit last part, octal
+            "http://2852039166/latest/meta-data/",
+            "http://0xa9fea9fe/latest/meta-data/",
+            "http://0XA9FEA9FE/",
+            "http://169.254.43518/",
+            "http://0251.0376.0251.0376/",
+            // a trailing dot, and percent-encoded digits
+            "http://169.254.169.254./",
+            "http://%31%36%39.254.169.254/",
+            // ipv4-mapped ipv6, dialled as the ipv4 address it carries
+            "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:a9fe:a9fe]:80/",
+            // a backslash ends the authority, so the host is before the '@'
+            "http://169.254.169.254\\@example.com/",
+            "HTTP://169.254.169.254/",
+            // an egress proxy url: a socks scheme keeps its host opaque
+            "socks5://2852039166:1080",
+        ] {
+            let err = policy.check_url(url, "api_base").expect_err(url);
+            assert!(err.contains("link-local"), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn egress_policy_denies_every_spelling_of_loopback_when_asked() {
+        let policy = EgressPolicy {
+            block_loopback: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://2130706433/",
+            "http://0x7f000001:4001/",
+            "http://127.1/",
+            "http://[::ffff:127.0.0.1]/",
+            // connecting to the unspecified address reaches the local host
+            "http://0.0.0.0:4001/",
+            "http://0/",
+            "http://[::]:4001/",
+        ] {
+            let err = policy.check_url(url, "api_base").expect_err(url);
+            assert!(err.contains("loopback"), "{url}: {err}");
+        }
+        // the default policy keeps loopback reachable in every spelling
+        let default = EgressPolicy::default();
+        assert!(default
+            .check_url("http://0.0.0.0:4001/", "api_base")
+            .is_ok());
+        assert!(default.check_url("http://2130706433/", "api_base").is_ok());
+    }
+
+    #[test]
+    fn egress_policy_denies_every_spelling_of_a_private_address_when_asked() {
+        let policy = EgressPolicy {
+            block_private: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://167772165/",
+            "http://10.5/",
+            "http://[::ffff:10.0.0.5]/",
+        ] {
+            let err = policy.check_url(url, "api_base").expect_err(url);
+            assert!(err.contains("private"), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn deny_reason_classifies_mapped_and_unspecified_addresses() {
+        let policy = EgressPolicy {
+            block_loopback: true,
+            ..Default::default()
+        };
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(policy.deny_reason(ip("::ffff:169.254.169.254")).is_some());
+        assert_eq!(policy.deny_reason(ip("0.0.0.0")), Some("loopback"));
+        assert_eq!(policy.deny_reason(ip("::")), Some("loopback"));
+        assert_eq!(policy.deny_reason(ip("::ffff:127.0.0.1")), Some("loopback"));
+        assert_eq!(policy.deny_reason(ip("8.8.8.8")), None);
+    }
+
+    #[test]
+    fn egress_allow_hosts_matches_the_address_the_url_reaches() {
+        let policy = EgressPolicy {
+            allow_hosts: vec!["169.254.169.254".to_string(), "example.com".to_string()],
+            ..Default::default()
+        };
+        // another spelling of an allowed address is the same destination
+        assert!(policy.check_url("http://0xa9fea9fe/v1", "api_base").is_ok());
+        // but an allowed name written after a backslash is not the host
+        assert!(policy
+            .check_url("http://169.254.170.2\\@example.com/", "api_base")
+            .is_err());
+    }
+
+    #[test]
+    fn egress_policy_leaves_hostnames_to_the_connect_time_check() {
+        let policy = EgressPolicy {
+            block_loopback: true,
+            block_private: true,
+            ..Default::default()
+        };
+        for url in [
+            "http://localhost:8000/v1",
+            "http://sim-a:8000/v1",
+            "https://api.openai.com/v1",
+            "socks5h://proxy.internal:1080",
+        ] {
+            assert!(policy.check_url(url, "api_base").is_ok(), "{url}");
+        }
     }
 
     #[test]

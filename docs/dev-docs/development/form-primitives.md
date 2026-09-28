@@ -64,7 +64,8 @@ easy to lose when the shape is retyped in the next sheet:
   will do, because the padlock icon says neither.
 - `ChipGroup` is one named `group` of `aria-pressed` toggles, and says _none
   available_ rather than rendering an empty row.
-- `SwitchRow` names its switch after the row title.
+- `SwitchRow` names its switch after the row title. Handed a `gate`, it is
+  refused the way `GatedSwitch` is and must name itself with `control` (#1820).
 - `SettingsPanel` groups its controls in a `<fieldset disabled>` rather than a
   faded `<div>`. Fading a live div drags its labels and hints below 4.5:1 while
   telling assistive tech nothing (#1181), and a reader who tabs into a group

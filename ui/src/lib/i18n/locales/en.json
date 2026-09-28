@@ -34,8 +34,26 @@
       "errors": {
         "spent": "Too many wrong codes. Sign in with your password again to get a new prompt.",
         "expired": "That prompt expired. Sign in with your password again.",
-        "enrolmentRequired": "Your organization requires a second factor, and this account has none set up. An administrator has to relax the policy or clear the account before you can sign in."
+        "enrolmentRequired": "Your organization requires a second factor, and this control plane cannot set one up because it has no encryption key configured. An operator has to set ROLTER_KEK, or an administrator has to relax the policy, before you can sign in."
       }
+    },
+    "enrol": {
+      "title": "Set up two-factor authentication",
+      "subtitle": "Your password was accepted. Your organization requires a second factor, so set one up to finish signing in.",
+      "confirm": "Turn on and sign in",
+      "confirming": "Turning on…",
+      "continue": "Continue to the dashboard",
+      "errors": {
+        "attemptsLeft_one": "That code was not accepted — check the clock on your device and try the next one. {{count}} attempt left before this setup starts over.",
+        "attemptsLeft_other": "That code was not accepted — check the clock on your device and try the next one. {{count}} attempts left before this setup starts over.",
+        "spent": "That was the last code this setup accepts. Sign in with your password again to start over, and delete the entry your authenticator app saved from this attempt.",
+        "expired": "That setup prompt expired. Sign in with your password again to get a new one.",
+        "restart": "That setup prompt can no longer be used. Sign in with your password again."
+      }
+    },
+    "enrolBy": {
+      "title": "Two-factor authentication is required from {{date}}",
+      "detail": "Your organization requires it. Set it up under Account before then — after that date, signing in asks you to set it up first."
     }
   },
   "common": {
@@ -193,7 +211,8 @@
       "complexityPolicies": "complexity policies",
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
-      "playgroundKey": "the playground key"
+      "playgroundKey": "the playground key",
+      "projectSettings": "project settings"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -328,8 +347,9 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Public = available to anyone meeting the minimum role. Restricted = only the teams, virtual keys, and users you list below.",
-      "public": "Public",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "public": "Whole organization",
+      "project": "This project",
       "restricted": "Restricted",
       "teams": "Allowed teams / business units",
       "vkeys": "Allowed virtual keys",
@@ -1051,7 +1071,7 @@
     "alerting": {
       "channels": {
         "emptyTitle": "No channels yet",
-        "emptyBody": "Add a webhook destination — Slack, PagerDuty, email or a custom endpoint — so rules have somewhere to deliver.",
+        "emptyBody": "Add a webhook endpoint so rules have somewhere to deliver. Each time a rule fires or resolves, Rolter POSTs it there as JSON.",
         "add": "Add channel",
         "toggleAria": "Enable {{name}}",
         "deleteAria": "Delete channel {{name}}",
@@ -1065,12 +1085,15 @@
       },
       "rules": {
         "emptyTitle": "No alert rules",
-        "emptyBody": "Add a threshold or anomaly rule and Rolter evaluates it against gateway analytics every minute.",
+        "emptyBody": "Add a threshold rule and Rolter evaluates it against gateway analytics every minute, firing when the signal reaches the threshold.",
         "emptyBodyNoChannel": "Add a channel first, then a rule that delivers to it. Rules without a channel evaluate but never notify.",
         "add": "Add rule",
         "toggleAria": "Enable {{name}}",
         "evaluated": "Rule {{name}} evaluated",
         "evaluateFailed": "Could not evaluate {{name}}",
+        "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
+        "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
+        "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
         "deleteAria": "Delete rule {{name}}",
         "evaluateAria": "Evaluate rule {{name}} now",
         "statSignal": "Signal",
@@ -1082,20 +1105,21 @@
         "statNever": "never",
         "evaluateNow": "Evaluate now",
         "sheetTitle": "Add rule",
-        "sheetSubtitle": "Fires when the signal crosses the threshold within the window.",
+        "sheetSubtitle": "Fires when the signal reaches the threshold over the window.",
         "fieldName": "Name",
         "fieldSignal": "Signal",
         "fieldThreshold": "Threshold",
         "fieldWindow": "Window (seconds)",
+        "windowRange": "From {{min}} to {{max}} seconds.",
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
         "namePlaceholder": "high error rate"
       },
       "history": {
-        "emptyTitle": "No alerts delivered yet",
-        "emptyBody": "Every notification a rule sends to a channel is recorded here, newest first.",
+        "emptyTitle": "No alert transitions yet",
+        "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. A failed delivery is retried, and each attempt gets a row. Newest first.",
         "emptyAction": "Open alert rules",
-        "colSent": "Sent",
+        "colSent": "Recorded",
         "colRule": "Rule",
         "colState": "State",
         "colDelivery": "Delivery",
@@ -1106,15 +1130,15 @@
         "channelBody": "Alerts routed to this webhook stop being delivered, and every rule pointing at it loses its destination.",
         "channelConfirm": "Delete channel",
         "ruleTitle": "Delete rule {{name}}?",
-        "ruleBody": "The gateway stops evaluating this rule, so the condition it watches goes unwatched.",
+        "ruleBody": "The control plane stops evaluating this rule, and its alert history is deleted with it.",
         "ruleConfirm": "Delete rule"
       },
       "channelSummary_one": "{{count}} channel · webhook destinations for alert delivery",
       "channelSummary_other": "{{count}} channels · webhook destinations for alert delivery",
       "ruleSummary_one": "{{count}} rule · evaluated every 60s against gateway analytics",
       "ruleSummary_other": "{{count}} rules · evaluated every 60s against gateway analytics",
-      "historySummary_one": "{{count}} notification · newest first",
-      "historySummary_other": "{{count}} notifications · newest first"
+      "historySummary_one": "{{count}} transition · newest first",
+      "historySummary_other": "{{count}} transitions · newest first"
     },
     "connectors": {
       "collectorConfig": {
@@ -1781,16 +1805,25 @@
         "mfaHints": {
           "off": "Nobody is asked for an authenticator code, and the dashboard does not offer to set one up.",
           "optional": "Members may set up an authenticator app from their account. Nobody is required to.",
-          "requiredSuperadmin": "Superadmins are refused a session until they have an authenticator app set up. Everyone else may still choose.",
-          "requiredAll": "Every member is refused a session until they have an authenticator app set up. Superadmins included."
+          "requiredSuperadmin": "Superadmins without an authenticator app are asked to set one up at their next password sign-in, before they get a session. Everyone else may still choose.",
+          "requiredAll": "Every member without an authenticator app is asked to set one up at their next password sign-in, before they get a session. Superadmins included."
+        },
+        "graceLabel": "Start requiring it",
+        "graceHint": "Notice for members who have not set one up yet. Until then they sign in with their password as before, and are told by when.",
+        "graceOptions": {
+          "now": "At their next sign-in",
+          "days_one": "In {{count}} day",
+          "days_other": "In {{count}} days",
+          "keep": "On {{date}}, as announced"
         },
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
-          "body": "Members who have not set up an authenticator app are refused a session from their next sign-in — they cannot set one up without signing in first, so turn this on once the accounts it binds have enrolled.",
-          "bodyWithCount_one": "This organization has {{count}} member. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
-          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is refused a session from their next sign-in, and cannot set one up without signing in first.",
+          "body": "Members who have not set up an authenticator app are asked to set one up at their next password sign-in, before they get a session.",
+          "bodyWithCount_one": "This organization has {{count}} member. Without an authenticator app set up, they are asked to set one up at their next password sign-in, before they get a session.",
+          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is asked to set one up at their next password sign-in, before they get a session.",
           "confirm": "Require it",
-          "breakGlass": "Someone locked out is cleared on the host with `rolter mfa reset`, which is audited.",
+          "grace": "It starts on {{date}}. Until then, members without one sign in as before and are told by when to set one up.",
+          "breakGlass": "Someone who loses their device is cleared on the host with `rolter mfa reset`, which is audited.",
           "breakGlassLink": "Break-glass procedure"
         }
       },
@@ -2091,7 +2124,8 @@
       "requests_one": "{{count}} request",
       "requests_other": "{{count}} requests",
       "pageShort": "p{{page}}",
-      "requestFallback": "request"
+      "requestFallback": "request",
+      "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings."
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2230,6 +2264,7 @@
       "colStatus": "Status",
       "colCreated": "Created",
       "noRoles": "no roles",
+      "statusFilterAria": "Filter users by status",
       "statusAll": "all",
       "statusActive": "active",
       "statusDeactivated": "deactivated",
@@ -2574,6 +2609,7 @@
       }
     },
     "featureFlags": {
+      "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
           "title": "Response Cache",
@@ -2751,6 +2787,13 @@
       "org": "Acme Inc",
       "team": "Platform",
       "project": "prod"
+    },
+    "projectSettings": "Project settings",
+    "settings": {
+      "title": "{{name}} settings",
+      "hint": "These apply to this project only.",
+      "viewersSeePayloads": "Viewers can read captured payloads",
+      "viewersSeePayloadsHint": "Off: request and response bodies in the request log are shown to this project's members and admins. On: its viewers see them too."
     }
   },
   "screens": {
@@ -2852,15 +2895,15 @@
     },
     "alerting-channels": {
       "title": "Channels",
-      "subtitle": "Slack, PagerDuty, email, and webhook destinations."
+      "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
       "title": "Rules",
-      "subtitle": "Threshold and anomaly rules that fire alerts."
+      "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {
       "title": "Alert History",
-      "subtitle": "Every alert Rolter has delivered."
+      "subtitle": "Every alert state change, and whether it reached its channel."
     },
     "governance": {
       "title": "Governance",
@@ -3105,7 +3148,8 @@
       "off": {
         "title": "No second factor on this account",
         "body": "A dashboard session reaches every provider credential in this deployment. An authenticator app adds a code only your device can produce.",
-        "requiredBody": "Your organization requires a second factor. Set one up now — without it, your next sign-in is refused.",
+        "requiredBody": "Your organization requires a second factor. Set one up now — otherwise your next sign-in asks you to set one up before it lets you in.",
+        "requiredByBody": "Your organization requires a second factor from {{date}}. Set one up before then — after that, signing in asks you to set one up before it lets you in.",
         "cta": "Set up two-factor authentication"
       },
       "on": {
@@ -3316,7 +3360,7 @@
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
-      "realtime": "The /v1/realtime websocket relay is outside the request-path subsystems: a session is admitted against process-local caps only, and is not metered by budgets, rate limits, guardrails, usage recording or cost attribution",
+      "realtime": "Guardrails, the PII sanitizer and plugins do not run on /v1/realtime session events: a session meets budgets and rate limits and its usage is recorded, but what it carries reaches the provider without a content check",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },

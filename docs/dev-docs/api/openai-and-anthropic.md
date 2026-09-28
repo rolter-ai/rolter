@@ -28,7 +28,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST              | `/v1/audio/speech`               | OpenAI text-to-speech; binary audio response                                                         |
 | POST              | `/v1/audio/transcriptions`       | OpenAI speech-to-text; `multipart/form-data` upload                                                  |
 | POST              | `/v1/audio/translations`         | OpenAI audio translation; `multipart/form-data` upload                                               |
-| GET               | `/v1/realtime?model=…`           | OpenAI-compatible Realtime API; WebSocket relay. **Experimental** — see below                        |
+| GET               | `/v1/realtime?model=…`           | OpenAI-compatible Realtime API; WebSocket relay, metered per response turn — see below               |
 | GET, POST, DELETE | `/mcp/{server}/{path…}`          | authenticated Streamable HTTP/SSE MCP proxy                                                          |
 | GET               | `/v1/models`                     | lists route names, provider-pinned and group addresses (see [Model listing](#model-listing))         |
 | GET               | `/openapi.json`                  | OpenAPI 3.1 description of this request surface (self-contained, no external assets)                 |
@@ -77,8 +77,6 @@ for. Exactly one value is sent either way.
 
 ## Realtime WebSocket
 
-> **Experimental.** This surface carries the `realtime` [stability marker](../development/stability-markers.md): it may change shape or be withdrawn in a minor release. A session is admitted against the process-local caps in `[realtime]` and nothing else — budgets, rate limits, guardrails, usage recording and cost attribution all sit on the HTTP request path and do not see it, so spend through a realtime session is neither capped nor recorded. Treat it as a preview rather than something to meter a deployment on.
-
 Connect with the usual gateway bearer key and the public route model as a query parameter:
 
 ```text
@@ -88,6 +86,10 @@ wss://gateway.example.com/v1/realtime?model=gpt-realtime
 rolter authenticates and selects an upstream before accepting the client upgrade, then pins that upstream and its selected provider key for the session. Text, binary audio and WebSocket control frames are relayed in both directions without application-level buffering. If the upstream drops, the client must reconnect; rolter does not fail a live session over to another target because replaying audio or tool events is unsafe.
 
 The WebSocket-first implementation supports the OpenAI Realtime event stream, including `session.update`, `input_audio_buffer.*`, `response.*`, and function-call events. WebRTC/browser ephemeral-token handoff is not exposed by the gateway yet.
+
+A session is admitted through the same budget, `unpriced_policy` and rate-limit checks as an HTTP request, on the same key, project, team and org scope, and a refusal is the HTTP status and error body a chat request would get (`402 insufficient_quota`, `402 model_unpriced`, `429 rate_limit_exceeded`). Opening a session takes one `rpm` slot.
+
+Once open, the session is metered per response turn: each `response.done` event's `usage` becomes one `request_logs` row, priced and attributed like an HTTP row, and its cost and tokens are added to the scope's budgets and `tpm` windows every `[realtime] usage_flush_secs`. When a budget runs out mid-session the client receives an `error` event with code `insufficient_quota`, then a `1008` close. A gateway shutting down closes each live session with `1001` (going away) after metering it, and refuses new upgrades with `503`. [Realtime metering](../architecture/realtime-metering.md) has the full model, including how a response cut short is recorded. Guardrails and plugins do not run on realtime events yet (#1880).
 
 ## MCP gateway
 
@@ -143,11 +145,14 @@ other modalities to a provider whose dialect carries them.
 ## Model listing
 
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's
-virtual key may reach:
+virtual key may reach. A key minted in the store sees only its own org's
+routes, providers and groups, the same boundary the route authorization
+contract enforces on a call (#1844); a key from the gateway's config file sees
+them all:
 
 | Id                    | `owned_by`          | Where it comes from                                                                                              |
 | --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route shadows it                                   |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                   |
 | `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
 | `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
 

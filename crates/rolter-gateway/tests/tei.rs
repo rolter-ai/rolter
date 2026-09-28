@@ -39,6 +39,7 @@ fn config(addr: SocketAddr, api_key: Option<&str>) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }

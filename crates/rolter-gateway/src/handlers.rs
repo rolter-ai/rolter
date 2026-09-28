@@ -155,8 +155,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
+    // the builtin is shadowed only by a route the caller could resolve: another
+    // org's route of that name must not take it away from this one
     let builtin = std::iter::once(fake_llm::MODEL_NAME)
-        .filter(|m| !snap.routes.contains_key(*m))
+        .filter(|m| snap.named_route_for(m, vk.as_ref()).is_none())
         .map(str::to_string);
     // bare route ids (and the builtin) are owned_by "rolter"
     let mut data: Vec<Value> = snap
@@ -182,9 +184,18 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // route happens to mention (#1647). owned_by names the provider so a client
     // can group by it. sorted + deduped for a stable listing, and filtered by
     // the same key allow-list
+    let key_org = vk.as_ref().map_or("", |vk| vk.org_id.as_str());
+    let admitted =
+        |tenancy: Option<&rolter_core::Tenancy>| rolter_core::Tenancy::admits(tenancy, key_org);
+    // another org's providers are neither addressable nor listed (#1844)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
         .iter()
+        .filter(|(_, name)| {
+            snap.providers
+                .get(name.as_str())
+                .is_none_or(|provider| admitted(provider.tenancy.as_ref()))
+        })
         .map(|(slug, name)| (name.as_str(), slug.as_str()))
         .collect();
     // provider name -> upstream models it serves, reused to expand group ids
@@ -192,6 +203,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         std::collections::HashMap::new();
     for entry in snap.routes.values() {
         let route = &entry.route;
+        if !admitted(route.tenancy.as_ref()) {
+            continue;
+        }
         let targets = route
             .targets
             .iter()
@@ -242,6 +256,9 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut grouped: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
     for (slug, group) in &snap.groups_by_slug {
+        if !admitted(group.tenancy.as_ref()) {
+            continue;
+        }
         for member in &group.members {
             let models: Vec<String> = match &member.model {
                 Some(m) => vec![m.clone()],
@@ -390,6 +407,13 @@ pub(crate) fn authorize_route(
 /// request path. User restrictions remain a control-plane authorization
 /// concern because a virtual key intentionally carries no user identity.
 pub(crate) fn model_visible_to(key: Option<&KeyMeta>, entry: &crate::state::RouteEntry) -> bool {
+    // another org's route is never served, whatever its lists say: its targets
+    // spend that org's provider credentials (#1844). nor is a route its admin
+    // narrowed to another project. resolution already skips both, so this only
+    // guards a caller that holds an entry it did not resolve for this key
+    if !entry.in_tenancy_of(key) {
+        return false;
+    }
     let visibility = &entry.route.advanced.visibility;
     if visibility.allowed_team_ids.is_empty()
         && visibility.allowed_key_ids.is_empty()
@@ -600,17 +624,10 @@ fn authorize_lifecycle(
     route: &crate::response_registry::ResponseRoute,
 ) -> Result<(), AccessDenial> {
     authorize_model(key, &route.model)?;
-    let pinned = if snap.routes.contains_key(&route.route) {
-        None
-    } else {
-        snap.resolve_pinned(&route.route)
-    };
     let entry = snap
-        .routes
-        .get(&route.route)
-        .or(pinned.as_ref())
+        .resolve_for(&route.route, key)
         .ok_or(AccessDenial::RouteRemoved)?;
-    authorize_route(key, entry)?;
+    authorize_route(key, &entry)?;
     if key.is_some_and(|key| !key.provider_allowed(&route.provider)) {
         return Err(AccessDenial::ProviderNotAllowed);
     }
@@ -1049,7 +1066,7 @@ pub(crate) fn authenticate(
 /// Drives budget enforcement and log attribution both, which is why it is
 /// resolved once and shared rather than derived at each use. An unauthenticated
 /// request has no scope, and [`ScopeIds::default`] is the unattributed one.
-fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
+pub(crate) fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
     vk.map(|v| ScopeIds {
         org: v.org_id.clone(),
         team: v.team_id.clone(),
@@ -1064,23 +1081,63 @@ fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
 /// Stage 3 of the proxy pipeline: refuse before spending upstream tokens when
 /// any applicable budget is already spent (#1041).
 ///
-/// Returns the refusal to hand back, or `None` to continue. Shared by `proxy`
-/// and `proxy_multipart`, which enforced this identically and had to be kept
-/// in step by hand.
-async fn budget_refusal(state: &AppState, snap: &Snapshot, scope: &ScopeIds) -> Option<Response> {
+/// Returns the refusal to hand back, or `None` to continue. Shared by `proxy`,
+/// `proxy_multipart` and the realtime upgrade, which enforce this identically
+/// and used to be kept in step by hand.
+pub(crate) async fn budget_refusal(
+    state: &AppState,
+    snap: &Snapshot,
+    scope: &ScopeIds,
+) -> Option<Response> {
     let exceeded = state.budgets.exceeded(&snap.budgets, scope).await?;
     state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
     Some(
         crate::error::ApiError::new(
             StatusCode::PAYMENT_REQUIRED,
-            format!(
-                "budget exceeded for {:?} '{}' (limit ${:.2})",
-                exceeded.scope, exceeded.id, exceeded.limit_usd
-            ),
+            budget_exceeded_message(&exceeded),
         )
         .with_code("insufficient_quota")
         .into_response(),
     )
+}
+
+/// The wording of a budget refusal, shared with the realtime session that a
+/// spent budget closes mid-session (#1396), so a client reads the same
+/// sentence whichever way it met the cap.
+pub(crate) fn budget_exceeded_message(exceeded: &rolter_core::BudgetConfig) -> String {
+    format!(
+        "budget exceeded for {:?} '{}' (limit ${:.2})",
+        exceeded.scope, exceeded.id, exceeded.limit_usd
+    )
+}
+
+/// The throughput stage of the proxy pipeline: refuse with 429 and
+/// `Retry-After` when a matching request or token window is already at
+/// capacity. Admission also charges the request to every applicable `rpm`
+/// window.
+///
+/// Shared by `proxy`, `proxy_multipart` and the realtime upgrade (#1396), so
+/// a realtime session is limited per key, team, project and org exactly like
+/// an HTTP request rather than by the process-local session cap alone.
+pub(crate) async fn rate_limit_refusal(
+    state: &AppState,
+    snap: &Snapshot,
+    scope: &ScopeIds,
+) -> Option<Response> {
+    let hit = state.rate_limiter.check(&snap.rate_limits, scope).await?;
+    state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
+    let mut resp = crate::error::ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
+            hit.kind, hit.scope, hit.id, hit.limit
+        ),
+    )
+    .with_code("rate_limit_exceeded")
+    .into_response();
+    resp.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
+    Some(resp)
 }
 
 async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
@@ -1173,24 +1230,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
-    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
-        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
-        let mut resp = crate::error::ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
-                hit.kind, hit.scope, hit.id, hit.limit
-            ),
-        )
-        .with_code("rate_limit_exceeded")
-        .into_response();
-        resp.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
-        return resp;
+    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
-    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+    // for this caller; another org's route of that name does not
+    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
         return match path {
             "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
             "/v1/responses" => fake_llm::responses(&parsed),
@@ -1206,10 +1252,12 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         };
     }
 
-    // route-name-first: a named route always wins, even one whose name
-    // contains '/'. only on a miss do we try `provider-slug/model` addressing
-    // (ADR-0017), which pins a provider and forwards `model` as the upstream
-    // model through the same classic-pool machinery (owned entry held here).
+    // route-name-first: a named route wins, even one whose name contains '/'.
+    // only on a miss do we try `provider-slug/model` addressing (ADR-0017),
+    // which pins a provider and forwards `model` as the upstream model through
+    // the same classic-pool machinery (owned entry held here). a route outside
+    // the caller's tenancy is a miss, so it shadows nothing and the caller
+    // gets the unknown-model answer rather than learning it exists
     //
     // route resolution through the key's access checks is one attributable
     // stage; `strategy` and `candidates` are recorded once the route is known
@@ -1219,12 +1267,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         strategy = tracing::field::Empty,
         candidates = tracing::field::Empty
     );
-    let pinned = if snap.routes.contains_key(&model) {
-        None
-    } else {
-        snap.resolve_pinned(&model)
-    };
-    let mut entry = match snap.routes.get(&model).or(pinned.as_ref()) {
+    let resolved = snap.resolve_for(&model, vk.as_ref());
+    let mut entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -1709,20 +1753,27 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-    let prompt = std::str::from_utf8(&body).ok();
+    // prefix affinity reads the conversation, not the JSON envelope every
+    // request to the model shares (#1851); a shape it cannot read keeps the
+    // raw body, as before
+    let affinity = crate::prompt_affinity::affinity(path, &parsed);
     let token_ids = parse_vllm_token_ids(&headers);
-    let ctx = RouteContext {
+    // the affinity text is only the prompt's leading bytes; route_context also
+    // hands over the whole prompt's length and digest, which the predictor's
+    // token estimate and consistent_hash need
+    let ctx = crate::prompt_affinity::route_context(
+        affinity.as_ref(),
+        &body,
         session_key,
-        prompt,
-        token_ids: token_ids.as_deref(),
+        token_ids.as_deref(),
         // adapter identity only exists when the request addresses something
         // other than the route's own model — i.e. a passthrough provider-group
         // route, which is how vLLM addresses LoRA adapters over shared base
         // weights. On a single-model route the two are equal and this stays
         // None, which keeps adapter scoring inert: treating one model as an
         // adapter would pin the whole route to whichever target served first
-        adapter: (model != effective_model).then_some(model.as_str()),
-    };
+        (model != effective_model).then_some(model.as_str()),
+    );
     // trace context plus any client headers the operator allowlisted (#564).
     //
     // this is the *fallback* set, used when no OTLP pipeline is installed: it
@@ -1941,6 +1992,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             started,
             &trace_headers,
             vk.as_ref(),
+            &mut cancel,
         )
         .await;
         (
@@ -2014,6 +2066,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             };
             last_provider = target.provider.clone();
             last_target = target.model.clone().unwrap_or_else(|| model.clone());
+            // a caller who leaves from here on left this target, and the row
+            // says so (#1816)
+            cancel.attribute(&last_provider, &last_target, "");
             // weighted pick across the provider's key pool, skipping keys
             // parked on a cooldown (single-key providers yield their one key)
             let multi_key = provider.api_keys.len() > 1;
@@ -2136,16 +2191,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         tried.pop();
                         if attempt < retry.max_retries {
                             // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646)
-                            state
-                                .log
-                                .record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
+                            // target that produced it before superseding the attempt (#1646).
+                            // through the guard, so a caller leaving during the backoff below
+                            // is not charged to the target a second time
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
@@ -2170,16 +2225,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         }
                         if attempt < retry.max_retries {
                             // the caller will never see this failure, so record it against the
-                            // target that produced it before superseding the attempt (#1646)
-                            state
-                                .log
-                                .record_failed_attempt(&crate::logging::FailedAttempt {
-                                    provider: &last_provider,
-                                    target: &last_target,
-                                    status,
-                                    latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                    error: "",
-                                });
+                            // target that produced it before superseding the attempt (#1646).
+                            // through the guard, so a caller leaving during the backoff below
+                            // is not charged to the target a second time
+                            cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                                provider: &last_provider,
+                                target: &last_target,
+                                status,
+                                latency_ms: attempt_started.elapsed().as_millis() as u32,
+                                error: "",
+                            });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
                             sleep(Duration::from_millis(retry_delay_ms(
@@ -2230,16 +2285,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status: 0,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: last_error.as_deref().unwrap_or_default(),
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status: 0,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: last_error.as_deref().unwrap_or_default(),
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(
@@ -2454,10 +2509,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                 genai_span.clone(),
                             );
                         }
-                        Err(err) => {
-                            state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
-                            return error_json(StatusCode::BAD_GATEWAY, &err.to_string());
-                        }
+                        Err(err) => return body_read_failed(&state.log, log, started, &err),
                     }
                 }
             }
@@ -2578,37 +2630,20 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         return refusal;
     }
 
-    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
-        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
-        let mut resp = crate::error::ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
-                hit.kind, hit.scope, hit.id, hit.limit
-            ),
-        )
-        .with_code("rate_limit_exceeded")
-        .into_response();
-        resp.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
-        return resp;
+    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
-    if model == fake_llm::MODEL_NAME && !snap.routes.contains_key(&model) {
+    // for this caller; another org's route of that name does not
+    if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
         return fake_llm::transcription(response_format.as_deref());
     }
 
-    // route-name-first: a named route always wins, even one whose name
-    // contains '/'. only on a miss do we try `provider-slug/model` addressing
-    // (ADR-0017), which pins a provider and forwards `model` as the upstream
-    // model through the same classic-pool machinery (owned entry held here).
-    let pinned = if snap.routes.contains_key(&model) {
-        None
-    } else {
-        snap.resolve_pinned(&model)
-    };
-    let entry = match snap.routes.get(&model).or(pinned.as_ref()) {
+    // the same resolution as the JSON pipeline: a named route in the caller's
+    // tenancy first, then `provider-slug/model` addressing (ADR-0017)
+    let resolved = snap.resolve_for(&model, vk.as_ref());
+    let entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
             return crate::error::ApiError::new(
@@ -2662,6 +2697,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let ctx = RouteContext {
         session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
         prompt: None,
+        prompt_len: None,
+        prompt_digest: None,
         token_ids: token_ids.as_deref(),
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
@@ -2749,6 +2786,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         };
         last_provider = target.provider.clone();
         last_target = target.model.clone().unwrap_or_else(|| model.clone());
+        // see the chat path: an abandoned upload names the target it left
+        cancel.attribute(&last_provider, &last_target, "");
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
         let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
@@ -2788,16 +2827,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     tried.pop();
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -2820,16 +2859,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &last_provider,
-                                target: &last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &last_provider,
+                            target: &last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -2870,16 +2909,16 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 }
                 if attempt < retry.max_retries {
                     // the caller will never see this failure, so record it against the
-                    // target that produced it before superseding the attempt (#1646)
-                    state
-                        .log
-                        .record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &last_provider,
-                            target: &last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: last_error.as_deref().unwrap_or_default(),
-                        });
+                    // target that produced it before superseding the attempt (#1646).
+                    // through the guard, so a caller leaving during the backoff below
+                    // is not charged to the target a second time
+                    cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                        provider: &last_provider,
+                        target: &last_target,
+                        status: 0,
+                        latency_ms: attempt_started.elapsed().as_millis() as u32,
+                        error: last_error.as_deref().unwrap_or_default(),
+                    });
                     last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
@@ -3016,7 +3055,8 @@ pub(crate) fn key_pool_key(provider: &str) -> String {
 
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
-/// pool), then the remaining targets follow in declared order so the fallback
+/// pool, and told which targets are `eligible` as the classic pool's balancer
+/// is), then the remaining targets follow in declared order so the fallback
 /// tail stays deterministic. A route without variant balancers (or a pick out
 /// of range) degrades to plain declared order.
 fn variant_target_order(
@@ -3025,11 +3065,12 @@ fn variant_target_order(
     vi: usize,
     n: usize,
     loads: &[u64],
+    eligible: &dyn Fn(usize) -> bool,
 ) -> Vec<usize> {
     let lead = entry
         .variant_balancers
         .get(vi)
-        .and_then(|b| b.pick(ctx, loads))
+        .and_then(|b| b.pick_eligible(ctx, loads, eligible))
         .filter(|&i| i < n);
     let mut order = Vec::with_capacity(n);
     if let Some(i) = lead {
@@ -3037,6 +3078,61 @@ fn variant_target_order(
     }
     order.extend((0..n).filter(|&i| Some(i) != lead));
     order
+}
+
+/// Whether target `ti` of variant `v` (balanced under `key`) can lead an
+/// attempt: the same skip rules the attempt loop applies, so the variant's
+/// balancer weighs only targets it can lead with (#1851).
+fn variant_target_eligible(
+    state: &AppState,
+    key_meta: Option<&KeyMeta>,
+    key: &str,
+    v: &rolter_core::Variant,
+    cd_enabled: bool,
+    ti: usize,
+) -> bool {
+    v.targets.get(ti).is_some_and(|target| {
+        key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+            && !(cd_enabled && state.cooldowns.is_parked(key, ti))
+            && state.health.is_healthy(&target.provider)
+            && state.breaker.allows(key, ti)
+    })
+}
+
+/// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
+/// then the rest in declared order, each variant's targets flattened with the
+/// one its balancer picks from the eligible targets in the lead.
+fn variant_candidates(
+    state: &AppState,
+    entry: &crate::state::RouteEntry,
+    model: &str,
+    ctx: &RouteContext<'_>,
+    primary: usize,
+    key_meta: Option<&KeyMeta>,
+    cd_enabled: bool,
+) -> Vec<(usize, usize)> {
+    let route = &entry.route;
+    let mut candidates: Vec<(usize, usize)> =
+        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
+    for vi in route.fallback_order(primary) {
+        if let Some(v) = route.variants.get(vi) {
+            let key = variant_key(model, &v.name);
+            let mut loads = state.loads.snapshot(&key, v.targets.len());
+            for (i, target) in v.targets.iter().enumerate() {
+                if let Some(l) = loads.get_mut(i) {
+                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
+                }
+            }
+            let eligible =
+                |ti: usize| variant_target_eligible(state, key_meta, &key, v, cd_enabled, ti);
+            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
+                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
+                    candidates.push((vi, ti));
+                }
+            }
+        }
+    }
+    candidates
 }
 
 /// Forward through the weighted-variant fallback chain. Samples a primary
@@ -3060,34 +3156,15 @@ async fn forward_variants(
     started: Instant,
     trace_headers: &[(&str, &str)],
     key_meta: Option<&KeyMeta>,
+    cancel: &mut crate::cancel::CancelGuard,
 ) -> ForwardOutcome {
     let route = &entry.route;
     let retry = &snap.retry;
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
 
-    // primary by weight, then the rest in declared order; flatten each variant's
-    // targets into one ordered candidate list, letting the variant's balancer
-    // choose which of its targets leads
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let mut candidates: Vec<(usize, usize)> =
-        Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
-    for vi in route.fallback_order(primary) {
-        if let Some(v) = route.variants.get(vi) {
-            let key = variant_key(model, &v.name);
-            let mut loads = state.loads.snapshot(&key, v.targets.len());
-            for (i, target) in v.targets.iter().enumerate() {
-                if let Some(l) = loads.get_mut(i) {
-                    *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
-                }
-            }
-            for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads) {
-                if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
-                    candidates.push((vi, ti));
-                }
-            }
-        }
-    }
+    let candidates = variant_candidates(state, entry, model, ctx, primary, key_meta, cd_enabled);
 
     let mut out = ForwardOutcome {
         outcome: None,
@@ -3138,6 +3215,8 @@ async fn forward_variants(
         out.variant = v.name.clone();
         out.last_provider = target.provider.clone();
         out.last_target = target.model.clone().unwrap_or_else(|| model.to_string());
+        // see the classic path: an abandoned request names the target it left
+        cancel.attribute(&out.last_provider, &out.last_target, &out.variant);
 
         // merge variant params over route params for this candidate's body
         let mut injected = parsed.clone();
@@ -3197,16 +3276,16 @@ async fn forward_variants(
                     tried.pop();
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &out.last_provider,
-                                target: &out.last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &out.last_provider,
+                            target: &out.last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -3229,16 +3308,16 @@ async fn forward_variants(
                     }
                     if attempt < retry.max_retries {
                         // the caller will never see this failure, so record it against the
-                        // target that produced it before superseding the attempt (#1646)
-                        state
-                            .log
-                            .record_failed_attempt(&crate::logging::FailedAttempt {
-                                provider: &out.last_provider,
-                                target: &out.last_target,
-                                status,
-                                latency_ms: attempt_started.elapsed().as_millis() as u32,
-                                error: "",
-                            });
+                        // target that produced it before superseding the attempt (#1646).
+                        // through the guard, so a caller leaving during the backoff below
+                        // is not charged to the target a second time
+                        cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                            provider: &out.last_provider,
+                            target: &out.last_target,
+                            status,
+                            latency_ms: attempt_started.elapsed().as_millis() as u32,
+                            error: "",
+                        });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
                         sleep(Duration::from_millis(retry_delay_ms(
@@ -3282,16 +3361,16 @@ async fn forward_variants(
                 }
                 if attempt < retry.max_retries {
                     // the caller will never see this failure, so record it against the
-                    // target that produced it before superseding the attempt (#1646)
-                    state
-                        .log
-                        .record_failed_attempt(&crate::logging::FailedAttempt {
-                            provider: &out.last_provider,
-                            target: &out.last_target,
-                            status: 0,
-                            latency_ms: attempt_started.elapsed().as_millis() as u32,
-                            error: out.last_error.as_deref().unwrap_or_default(),
-                        });
+                    // target that produced it before superseding the attempt (#1646).
+                    // through the guard, so a caller leaving during the backoff below
+                    // is not charged to the target a second time
+                    cancel.record_failed_attempt(&crate::logging::FailedAttempt {
+                        provider: &out.last_provider,
+                        target: &out.last_target,
+                        status: 0,
+                        latency_ms: attempt_started.elapsed().as_millis() as u32,
+                        error: out.last_error.as_deref().unwrap_or_default(),
+                    });
                     out.last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
                     sleep(Duration::from_millis(
@@ -3335,11 +3414,18 @@ pub(crate) fn pick_untried(
             || !breaker.allows(model, i)
     };
     let n = entry.route.targets.len();
+    // the balancer weighs only the targets this attempt can use, so a dead
+    // replica's empty queue never reads as the least-loaded target (#1851)
+    let usable = |i: usize| i < n && !tried.contains(&i) && !skip(i);
     // a pick past the target list is treated as no pick rather than indexed:
     // a balancer shared across per-request pools (#1655) can be sized from a
     // different list than the one it is picking over, and `skip` indexes
     // `targets` directly (#1714)
-    if let Some(i) = entry.balancer.pick(ctx, loads).filter(|&i| i < n) {
+    if let Some(i) = entry
+        .balancer
+        .pick_eligible(ctx, loads, &usable)
+        .filter(|&i| i < n)
+    {
         if !tried.contains(&i) && !skip(i) {
             return Some(i);
         }
@@ -3392,6 +3478,30 @@ fn retry_delay_ms(
         }
     }
     cfg.backoff_ms(attempt, jitter(started))
+}
+
+/// The upstream sent its status line and then failed to deliver the body this
+/// gateway was buffering: a reset, a truncated body, a read timeout (#1775).
+///
+/// The request still happened, and the provider may have generated, and
+/// billed, some or all of an answer nobody received. So it is logged like any
+/// other upstream failure — one row, counted against its target by the passive
+/// health funnel — with its usage marked unknown rather than zero, because
+/// what the provider charged is what the lost body would have said.
+fn body_read_failed(
+    sink: &crate::logging::LogSink,
+    mut log: RequestLog,
+    started: Instant,
+    err: &reqwest::Error,
+) -> Response {
+    let message = format!("upstream response body could not be read: {err}");
+    log.status = StatusCode::BAD_GATEWAY.as_u16();
+    log.latency_ms = started.elapsed().as_millis() as u32;
+    log.error = message.clone();
+    log.usage_unknown = 1;
+    sink.metrics().upstream_errors_total.fetch_add(1, Relaxed);
+    sink.log(log);
+    error_json(StatusCode::BAD_GATEWAY, &message)
 }
 
 /// Convert an upstream response into a streaming axum response, teeing the body
@@ -3486,7 +3596,7 @@ async fn stream_response(
                     genai_span,
                 )
             }
-            Err(err) => error_json(StatusCode::BAD_GATEWAY, &err.to_string()),
+            Err(err) => body_read_failed(&sink, log, started, &err),
         };
     }
     let upstream: std::pin::Pin<
@@ -3741,7 +3851,7 @@ struct CacheHitLog {
 /// having to.
 ///
 /// Returns the refusal response when the request must not be served.
-fn unpriced_admission(
+pub(crate) fn unpriced_admission(
     state: &AppState,
     snap: &Snapshot,
     scope: &ScopeIds,
@@ -4171,6 +4281,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         config.routes.push(ModelRoute {
             model: "claude".to_string(),
@@ -4185,6 +4296,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         });
         config.virtual_keys.push(VirtualKeyConfig {
             key: "sk-gpt-only".to_string(),
@@ -4406,6 +4518,7 @@ mod tests {
                 model: Some("gpt-4o".to_string()),
                 weight: 1,
             }],
+            tenancy: None,
         });
         config
     }
@@ -4493,6 +4606,7 @@ mod tests {
                     model: None,
                     weight: 1,
                 }],
+                tenancy: None,
             });
         let state = AppState::new(&config);
         state
@@ -4779,6 +4893,7 @@ mod tests {
                     },
                 ],
             }],
+            tenancy: None,
         };
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
@@ -4788,7 +4903,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(1))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![1, 0]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![1, 0]
+        );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4796,7 +4914,10 @@ mod tests {
             variant_balancers: vec![Box::new(Fixed(9))],
             route: route.clone(),
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4804,7 +4925,74 @@ mod tests {
             variant_balancers: Vec::new(),
             route,
         };
-        assert_eq!(variant_target_order(&entry, &ctx, 0, 2, &[]), vec![0, 1]);
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 2, &[], &|_| true),
+            vec![0, 1]
+        );
+    }
+
+    /// A dead variant target drains to an empty queue. The variant's
+    /// balancer must not read that zero as the least-loaded target, or the
+    /// warm target looks overloaded and the spill leads with the dead one.
+    #[test]
+    fn a_dead_variant_target_does_not_shape_the_variants_pick() {
+        let variant = rolter_core::Variant {
+            name: "v".to_string(),
+            weight: 1,
+            params: Default::default(),
+            targets: ["a", "b", "c"]
+                .into_iter()
+                .map(|provider| Target {
+                    provider: provider.to_string(),
+                    model: None,
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            targets: Vec::new(),
+            variants: vec![variant.clone()],
+            tenancy: None,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
+        rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[]).into(),
+            variant_balancers: vec![Box::new(cache_aware)],
+            route,
+        };
+        let state = AppState::new(&config_with_keys());
+        state.health.set("c", false);
+        // ten in flight on the first target, three on the warm one, and none on
+        // the dead one, which drained when it stopped taking traffic
+        let key = variant_key("m", "v");
+        let _in_flight: Vec<_> = std::iter::repeat_n(0, 10)
+            .chain(std::iter::repeat_n(1, 3))
+            .map(|ti| state.loads.begin(&key, ti))
+            .collect();
+        assert_eq!(state.loads.snapshot(&key, 3), vec![10, 3, 0]);
+        let candidates = variant_candidates(&state, &entry, "m", &ctx, 0, None, false);
+        assert_eq!(
+            candidates.first(),
+            Some(&(0, 1)),
+            "the warm live target should lead: {candidates:?}"
+        );
+        // the same pick blind to eligibility leads with the dead target
+        assert_eq!(
+            variant_target_order(&entry, &ctx, 0, 3, &[10, 3, 0], &|_| true)[0],
+            2
+        );
     }
 
     #[test]
@@ -4840,6 +5028,7 @@ mod tests {
                     }],
                 },
             ],
+            tenancy: None,
         });
         let snap = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
         assert_eq!(snap.routes["ab"].variant_balancers.len(), 2);
@@ -4867,6 +5056,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4919,6 +5109,7 @@ mod tests {
                 model: None,
                 weight: 1,
             }],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -4960,6 +5151,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5004,6 +5196,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5024,6 +5217,61 @@ mod tests {
         // both providers unhealthy: fail open rather than returning None
         hh.set("b", false);
         assert!(pick_untried(&entry, &ctx, &[], &[], &cd, &hh, &bb, "m", false, None).is_some());
+    }
+
+    /// #1851's load guard against a pool with a dead replica: its load stays
+    /// at 0, and counting it made every warm replica with three requests in
+    /// flight look overloaded, so the spill went to the dead replica and then
+    /// on to target 0 by index, cache or no cache.
+    #[test]
+    fn cache_aware_balances_against_live_targets_only() {
+        let target = |provider: &str| Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::CacheAware,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![target("a"), target("b"), target("c")],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let ctx = RouteContext {
+            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
+            ..Default::default()
+        };
+        entry.balancer.observe(1, &ctx);
+        let cd = crate::cooldowns::Cooldowns::default();
+        let hh = crate::health::Health::new();
+        let bb = crate::breaker::Breaker::default();
+        hh.set("c", false);
+        let loads = [10, 3, 0];
+        // the warm replica is the least loaded of the live ones: it keeps the
+        // request rather than losing it to busy target 0
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(1)
+        );
+        // once it was tried, the spill goes to the other live replica
+        assert_eq!(
+            pick_untried(&entry, &ctx, &[1], &loads, &cd, &hh, &bb, "m", false, None),
+            Some(0)
+        );
+        // with every replica down the pick fails open, as before
+        hh.set("a", false);
+        hh.set("b", false);
+        assert!(pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", false, None).is_some());
     }
 
     #[test]
@@ -5048,6 +5296,7 @@ mod tests {
                     weight: 1,
                 },
             ],
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5147,6 +5396,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5199,6 +5449,7 @@ mod tests {
             advanced: Default::default(),
             variants: Vec::new(),
             cache: None,
+            tenancy: None,
         };
         let entry = crate::state::RouteEntry {
             guardrails: Default::default(),
@@ -5272,6 +5523,214 @@ mod tests {
                 ..Default::default()
             }),
             entry
+        ));
+    }
+
+    fn key_in(org: &str, project: &str) -> KeyMeta {
+        KeyMeta {
+            org_id: org.to_string(),
+            project_id: project.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn owned_by(org: &str, project: Option<&str>) -> Option<rolter_core::Tenancy> {
+        Some(rolter_core::Tenancy {
+            org_id: org.to_string(),
+            project_id: project.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn a_route_is_served_to_its_whole_org_and_to_no_other() {
+        let mut config = config_with_keys();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+
+        // org-wide by default: every project of the owning org
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a2")), entry));
+        // another org never, and it is refused before any policy is consulted
+        assert_eq!(
+            authorize_route(Some(&key_in("org-b", "proj-b1")), entry),
+            Err(AccessDenial::NotVisible)
+        );
+        // a key from the gateway's own config file has no org: the operator's
+        assert!(model_visible_to(Some(&key_in("", "")), entry));
+        // a route with no tenancy (config file) belongs to the deployment
+        let global = snapshot.routes.get("claude").unwrap();
+        assert!(model_visible_to(Some(&key_in("org-b", "proj-b1")), global));
+    }
+
+    #[test]
+    fn a_project_only_route_is_served_to_its_own_project() {
+        let mut config = config_with_keys();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        config.routes[0].advanced.visibility.project_only = true;
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let entry = snapshot.routes.get("gpt-4o").unwrap();
+
+        assert!(model_visible_to(Some(&key_in("org-a", "proj-a1")), entry));
+        assert!(!model_visible_to(Some(&key_in("org-a", "proj-a2")), entry));
+        assert!(!model_visible_to(Some(&key_in("org-b", "proj-a1")), entry));
+        assert!(model_visible_to(Some(&key_in("", "")), entry));
+    }
+
+    #[test]
+    fn provider_and_group_addresses_carry_their_owners_org() {
+        let mut config = config_with_keys();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "edge".to_string(),
+            slug: Some("edge".to_string()),
+            api_base: "http://127.0.0.1:9".to_string(),
+            tenancy: owned_by("org-a", None),
+            ..Default::default()
+        });
+        config
+            .provider_groups
+            .push(rolter_core::ProviderGroupConfig {
+                name: "pool".to_string(),
+                slug: Some("pool".to_string()),
+                strategy: BalancingStrategy::RoundRobin,
+                members: vec![rolter_core::GroupMember {
+                    provider: "edge".to_string(),
+                    model: None,
+                    weight: 1,
+                }],
+                tenancy: owned_by("org-a", None),
+            });
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        for address in ["edge/gpt-4o", "pool/gpt-4o"] {
+            let entry = snapshot.resolve_pinned(address).unwrap();
+            assert!(
+                authorize_route(Some(&key_in("org-a", "proj-a1")), &entry).is_ok(),
+                "{address}"
+            );
+            // another org's key reaches neither the provider nor the group (#1844)
+            assert_eq!(
+                authorize_route(Some(&key_in("org-b", "proj-b1")), &entry),
+                Err(AccessDenial::NotVisible),
+                "{address}"
+            );
+        }
+    }
+
+    /// A route another org owns is, for this caller, a route that does not
+    /// exist: it must not shadow this org's own provider or group address, nor
+    /// the builtin, and the answer must be the unknown-model one.
+    #[test]
+    fn another_orgs_route_shadows_nothing_for_this_org() {
+        let mut config = config_with_keys();
+        let pinned_to = |provider: &str| {
+            vec![Target {
+                provider: provider.to_string(),
+                model: None,
+                weight: 1,
+            }]
+        };
+        for (name, org) in [("edge", "org-b"), ("squatter", "org-a")] {
+            config.providers.push(rolter_core::ProviderConfig {
+                name: name.to_string(),
+                slug: Some(name.to_string()),
+                api_base: "http://127.0.0.1:9".to_string(),
+                tenancy: owned_by(org, None),
+                ..Default::default()
+            });
+        }
+        config
+            .provider_groups
+            .push(rolter_core::ProviderGroupConfig {
+                name: "pool".to_string(),
+                slug: Some("pool".to_string()),
+                strategy: BalancingStrategy::RoundRobin,
+                members: vec![rolter_core::GroupMember {
+                    provider: "edge".to_string(),
+                    model: None,
+                    weight: 1,
+                }],
+                tenancy: owned_by("org-b", None),
+            });
+        // org-a squats org-b's addresses and the builtin with named routes
+        for model in ["edge/gpt-4o", "pool/gpt-4o", fake_llm::MODEL_NAME] {
+            config.routes.push(ModelRoute {
+                model: model.to_string(),
+                strategy: BalancingStrategy::RoundRobin,
+                params: Default::default(),
+                param_policy: Default::default(),
+                advanced: Default::default(),
+                cache: None,
+                variants: Default::default(),
+                targets: pinned_to("squatter"),
+                tenancy: owned_by("org-a", Some("proj-a1")),
+            });
+        }
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let org_a = key_in("org-a", "proj-a1");
+        let org_b = key_in("org-b", "proj-b1");
+        let org_c = key_in("org-c", "proj-c1");
+
+        for address in ["edge/gpt-4o", "pool/gpt-4o"] {
+            // org-b reaches its own provider and group, not org-a's route
+            let entry = snapshot.resolve_for(address, Some(&org_b)).unwrap();
+            assert!(
+                matches!(entry, crate::state::ResolvedRoute::Pinned(_)),
+                "{address}"
+            );
+            assert!(
+                entry.route.targets.iter().all(|t| t.provider == "edge"),
+                "{address}"
+            );
+            assert!(authorize_route(Some(&org_b), &entry).is_ok(), "{address}");
+            // org-a keeps the route it named
+            let entry = snapshot.resolve_for(address, Some(&org_a)).unwrap();
+            assert!(
+                matches!(entry, crate::state::ResolvedRoute::Named(_)),
+                "{address}"
+            );
+            // a third org gets the unknown-model answer for both, never a
+            // refusal that would confirm either exists
+            assert!(
+                snapshot.resolve_for(address, Some(&org_c)).is_none(),
+                "{address}"
+            );
+        }
+        // org-a's `fake-llm` route shadows the builtin for org-a alone
+        assert!(snapshot
+            .named_route_for(fake_llm::MODEL_NAME, Some(&org_a))
+            .is_some());
+        assert!(snapshot
+            .named_route_for(fake_llm::MODEL_NAME, Some(&org_b))
+            .is_none());
+        // the operator's own key (no org) sees every row, as it always did
+        assert!(snapshot
+            .named_route_for("edge/gpt-4o", Some(&key_in("", "")))
+            .is_some());
+    }
+
+    /// A project-only route of another project is a miss too, so the org's own
+    /// pinned address behind it still answers.
+    #[test]
+    fn a_project_only_route_shadows_nothing_for_another_project() {
+        let mut config = config_with_keys();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "edge".to_string(),
+            slug: Some("edge".to_string()),
+            api_base: "http://127.0.0.1:9".to_string(),
+            tenancy: owned_by("org-a", None),
+            ..Default::default()
+        });
+        config.routes[0].model = "edge/gpt-4o".to_string();
+        config.routes[0].tenancy = owned_by("org-a", Some("proj-a1"));
+        config.routes[0].advanced.visibility.project_only = true;
+        let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
+        assert!(matches!(
+            snapshot.resolve_for("edge/gpt-4o", Some(&key_in("org-a", "proj-a1"))),
+            Some(crate::state::ResolvedRoute::Named(_))
+        ));
+        assert!(matches!(
+            snapshot.resolve_for("edge/gpt-4o", Some(&key_in("org-a", "proj-a2"))),
+            Some(crate::state::ResolvedRoute::Pinned(_))
         ));
     }
 

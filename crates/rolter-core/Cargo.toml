@@ -18,6 +18,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 rustls-pki-types.workspace = true
+# the egress check classifies the host the http client will dial, which is
+# only the host a WHATWG parser reads (#1953)
+url.workspace = true
 # `gethostname`, the only portable way to ask the host its own name; there is
 # no std wrapper and a shell-launched process has no `HOSTNAME` to read (#1644)
 libc.workspace = true

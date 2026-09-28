@@ -2946,6 +2946,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -2978,10 +2979,12 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "tokio-util",
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "xxhash-rust",
  "zeromq",
 ]
 
@@ -4009,6 +4012,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

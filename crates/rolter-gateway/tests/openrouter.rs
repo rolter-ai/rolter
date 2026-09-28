@@ -50,6 +50,7 @@ fn config(providers: Vec<ProviderConfig>) -> GatewayConfig {
         advanced: Default::default(),
         cache: None,
         variants: Default::default(),
+        tenancy: None,
     });
     config
 }

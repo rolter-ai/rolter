@@ -203,6 +203,70 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     );
 }
 
+#[test]
+fn all_server_config_fields_are_in_example_toml() {
+    let fields = server_config_fields();
+    assert!(!fields.is_empty(), "no ServerConfig fields were found");
+
+    let example_path = workspace_root().join("rolter.example.toml");
+    let text = std::fs::read_to_string(&example_path).expect("rolter.example.toml is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&field) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these ServerConfig fields are defined in crates/rolter-core/src/config.rs but missing from rolter.example.toml:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
+/// Find every field name declared in `VirtualKeyConfig` struct in `crates/rolter-core/src/config.rs`.
+fn virtual_key_config_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct VirtualKeyConfig {")
+        .expect("config.rs declares `pub struct VirtualKeyConfig {`");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n}")
+        .expect("VirtualKeyConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_virtual_key_config_fields_are_documented_in_config_file_reference() {
+    let fields = virtual_key_config_fields();
+    assert!(!fields.is_empty(), "no VirtualKeyConfig fields were found");
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these VirtualKeyConfig fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Recursively collect all string page targets in `docs.json`.
 fn extract_pages_from_json(val: &serde_json::Value, pages: &mut BTreeSet<String>) {
     match val {

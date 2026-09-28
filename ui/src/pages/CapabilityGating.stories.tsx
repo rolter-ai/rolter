@@ -113,7 +113,7 @@ const CHANNEL: AlertChannelRow = {
   id: "chan-1",
   name: "ops-slack",
   kind: "webhook",
-  endpoint: "https://hooks.slack.com/services/T000/B000/xxx",
+  endpoint: "https://alerts.example.com/rolter/slack",
   enabled: true,
   secret_configured: true,
   created_at: "2026-05-01T00:00:00Z",

@@ -6,6 +6,7 @@
 - The exporter is hand-rolled (atomic counters + non-cumulative histogram buckets cumulated at render) rather than the `metrics` facade + global recorder, which does not fit the lock-free `arc-swap` design where an explicit `Arc<Metrics>` is threaded through the request path.
 - Passive per-target SLA signal: `rolter_target_requests_total{provider,target,outcome}` (a counter, `outcome` = `ok` for 2xx else `error`) is tallied once per completed request from the log sink — free, derived from real traffic, no extra upstream calls. A per-target error rate / uptime is `sum(rate(rolter_target_requests_total{outcome="error"}[5m])) / sum(rate(rolter_target_requests_total[5m]))`. This is the first slice of provider stability tracking (ROL-123); the ClickHouse `provider_health_events` table and the dashboard land in later slices. The active prober is guarded: bounded probe concurrency with per-provider jitter, consecutive-failure/-recovery thresholds gating the unhealthy flip (no single-probe flapping), and exponential probe backoff when a probe itself gets a 429.
 - Client disconnects (#1083): `rolter_client_disconnects_total` counts requests whose caller left before the response completed, and `rolter_inflight_requests` is the live in-flight gauge those requests must return to zero. Abandoned requests are logged with status `499` and are never retried — see [Client disconnects](client-disconnects.md).
+- Provider queues (#1855): `rolter_provider_queue_depth{provider}` and `rolter_provider_inflight{provider}` gauges and the `rolter_provider_queue_wait_ms{provider}` histogram, kept by RAII guards in `metrics.rs`. A job carries a `QueuedGuard` from the moment it is built until a worker takes it (`picked()` observes the wait and hands over an `InflightGuard`) or it is dropped unrun, so a shed or stranded job can never leave the depth raised; the in-flight guard lives until the upstream's response headers arrive, which is also when a worker is released, and covers the direct path when queueing is off. The steady-state lookup borrows the provider name, so the path allocates nothing. Over OTLP (#1862) the two gauges are a _labelled gauge family_ (`LABELLED_GAUGE_FAMILIES`, registered as observable gauges beside the labelled counter families by `register_labelled` in `rolter_core::telemetry`), and each wait is also recorded into an OTLP `rolter_provider_queue_wait_ms` histogram on the Prometheus boundaries, through a per-provider `QueueWaitRecorder` whose `provider` attribute is built once when the provider's counters are. The Redis consumers' connection state (#1772) rides the same two families; see [Redis connections](redis-connections.md). The `rolter · gateway capacity` board in `integration/dogfood/signoz/dashboards/` charts all of it.
 - Billed but withheld (#1478): a response an output guardrail or post-response plugin refuses to deliver is still billed. Its row carries the caller's `403`, `withheld = 1`, the policy in `error`, and the provider's tokens and cost, and `rolter_withheld_responses_total` counts it. `usage_unknown = 1` marks any successful row whose upstream reported no usage. See [Billed but withheld](billed-but-withheld.md).
 - Multi-key providers: `rolter_key_cooldowns_tripped_total` counts api keys parked after a key-level failure (429/401 on a provider with several keys); the request retries in-flight on a sibling key.
 - A/B attribution: `rolter_variant_requests_total{model,variant}` (a counter) tallies requests per chosen variant, so traffic splits are visible in Prometheus/Grafana without querying ClickHouse. Classic single-pool routes (no variant) emit nothing. Observed from the same log-sink funnel (ROL-195, part of ROL-188).
@@ -276,9 +277,9 @@ reconstructed from a counter after the fact.
 
 And one counter, for the endpoint an unauthenticated attacker can reach (#1079):
 
-| Metric                          | Meaning                                 | Attributes                                                           |
-| ------------------------------- | --------------------------------------- | -------------------------------------------------------------------- |
-| `rolter_control_login_attempts` | resolved control-plane sign-in attempts | `outcome` (`success` / `invalid` / `throttled` / `locked` / `error`) |
+| Metric                          | Meaning                                 | Attributes                                                                                                                                |
+| ------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `rolter_control_login_attempts` | resolved control-plane sign-in attempts | `outcome` (`success` / `invalid` / `throttled` / `locked` / `error` / `mfa_challenge` / `mfa_invalid` / `mfa_enrolment` / `mfa_required`) |
 
 A counter rather than a histogram: the question it answers — "is somebody
 running a credential-stuffing run against this deployment" — is a rate, not a
@@ -602,6 +603,111 @@ delivery adapter — widening `KINDS` in `connectors.rs` and the `kind` check
 constraint in migration `0062` is the only rolter-side change; everything else
 is collector configuration.
 
+## Alert evaluation and delivery (#1871)
+
+`crates/rolter-control/src/alerting.rs` owns alerting end to end: channels,
+rules, a 60-second evaluator started by every control-plane process that has a
+database, and the `alert_notification_history` table (migration `0025`). The
+user-facing behaviour is in `docs/user-docs/observability/alerting.mdx`; this
+section is the reasoning behind it.
+
+**One evaluation is one transaction around the rule's row lock.** The
+ClickHouse read runs first, unlocked and bounded to 30 seconds, because it is
+the slow part. Then the evaluation takes `select … for key share` on the rule's
+channel, `select … for update` on the rule, decides whether the reading is a
+transition, POSTs it, writes the rule and the history row, and commits. The
+scheduled pass takes the rule lock with `skip locked` and `and enabled`, so a
+rule another replica is evaluating is left to that replica and a rule disabled
+mid-pass is skipped; **Evaluate now** waits for the lock instead. That is what
+keeps `control.replicaCount > 1` from reporting each transition once per
+replica. An edit that lands between the read and the lock and changes the
+signal, window or channel discards the reading, since it measures a query the
+rule no longer asks for or would go to a channel that was not locked.
+
+The channel is locked before the rule because deleting a channel takes the
+locks in that order: the `delete` locks the channel row, then its
+`on delete set null` locks every rule naming it. With the evaluator taking the
+rule first and meeting the channel only at the history insert's foreign-key
+check, a delete issued during a POST deadlocked with it (`40P01`), and either
+the delete returned a `500` or the evaluation rolled back after the receiver
+already had the alert. In the same order, the delete simply waits for the
+delivery to commit. `key share` rather than `share` keeps the channel editable
+meanwhile, and `update_channel` locks with `for no key update` so an edit does
+not queue behind a delivery either.
+
+**An older reading never overwrites a newer one.** The unlocked read also takes
+`clock_timestamp()`, the database clock rather than the replica's, as the
+reading's time, and that is what `last_evaluated_at` stores. Once the rule is
+locked, a reading older than the rule's `last_evaluated_at` is dropped: another
+evaluation started later and has already recorded its result, so applying the
+older one would report a transition pair that never happened. This matters
+most for a query that runs into the 30-second bound while a later pass
+succeeds.
+
+**A transition is decided against the history, not the `state` column.**
+`state` also holds `unknown` and `error`, and neither says what an operator was
+last told. The newest history row does: `firing` is reported when the reading
+is high and the last row is not `firing`, `resolved` when the reading is low
+and the last row is `firing`. That makes three cases fall out without special
+handling: a rule enabled while its condition holds fires on its first pass; an
+evaluation error between two high readings does not fire twice; and a
+condition that cleared while evaluation was failing still resolves. It also
+makes a crash between the rule update and the history insert self-healing,
+since the next pass sees no row and reports again. The history insert uses
+`clock_timestamp()` rather than the column's `now()` default, because `now()`
+is the transaction's start and a transaction that waited on the lock started
+before the one it waited for.
+
+**Delivery never fails an evaluation.** Every way a POST can go wrong becomes a
+`failed` row with a short detail (the HTTP status, or `timed out`, `could not
+connect`, `endpoint denied by the egress policy`, `channel secret could not be
+unsealed`, `channel secret is not a valid header value`), and the rule's state
+still moves. The response body is never read, since a receiver's error body can
+echo the bearer secret it just rejected.
+
+**A state that was never delivered is retried.** One dropped POST at the moment
+a rule fires would otherwise mean no page for the whole incident, since every
+later pass reads `firing` against a newest row of `firing`. So `transition()`
+treats a holding state as unreported while every row for it since the last
+change is `failed` or `skipped`, and sends it again once the rule has an
+enabled channel. Each attempt is a new history row with a new `id`. The
+scheduled pass spaces attempts out by the number that failed: the next pass,
+then 2, 4, 8, 16 and 32 passes on, then hourly (`retry_delay`), so a dead
+endpoint writes a handful of rows an hour rather than one a minute, and the
+retries stop at the first `delivered` row or at the next change of state. A
+`skipped` row costs no delay, so a transition recorded while the channel was
+off goes out on the first pass after it is switched on or attached, and a rule
+with no enabled channel writes nothing more. **Evaluate now** retries without
+waiting, as an explicit operator request.
+
+The delivery client is a dedicated `reqwest::Client` with redirects off, a
+5-second connect and a 10-second total timeout. Redirects are off for the same
+reason as MCP OAuth discovery: a `3xx` is how a host that passed the egress
+check hands the request to one that would not have. The endpoint is checked
+with `EgressPolicy::check_url` at save time and again before each POST, which
+matches connectors, and is stored as `reqwest::Url` serializes it, so the check
+and the request read one spelling of the host. A denial is logged with the
+channel id and the reason, never the endpoint, whose query string can carry a
+token. A save that only switches a channel off, with the endpoint unchanged,
+skips the check, so a channel a since-tightened policy denies can still be
+disabled. Nothing classifies what a hostname resolves to at connect time; that
+gap is shared by every control-plane outbound client and tracked in #1949.
+
+A channel secret is bound to the endpoint's origin. `update_channel` clears
+the sealed columns when the new endpoint's scheme, host or port differs from
+the stored one and the request carries no new `managed_secret`; otherwise
+anyone with `alert_channel:update` could repoint a channel and receive its
+bearer secret. The audit entry records `endpoint_changed`, `secret_replaced`
+and `secret_cleared`, never the endpoint. A secret must also pass
+`HeaderValue::from_str` as `Bearer <secret>` at save time, since a trailing
+newline from a file would otherwise fail every delivery with no hint.
+
+A failed evaluation writes `state = 'error'` and a `last_error` that is safe to
+show: a transport error is reduced to its class (`reqwest`'s message carries
+the URL, and `CLICKHOUSE_URL` can hold a password), while a ClickHouse error
+response keeps its status and exception text, cut at 512 bytes. The raw error
+goes to the log as `alert signal query failed`.
+
 ## Request & cost logs
 
 - Every proxied request is logged to **ClickHouse** (`request_logs`): identifiers, model, provider/target, status, token counts, `cost_usd`, latency, TTFT, cache flag, error.
@@ -613,6 +719,7 @@ is collector configuration.
 - **Outbound propagation**: when the caller sent trace context, it is forwarded verbatim to the chosen upstream (`traceparent`, `tracestate`, and the `b3` / `x-b3-*` family) so vLLM/SGLang/TGI continue the same trace. An untraced request adds nothing to the upstream wire — this is the caller's own context, not a rolter fingerprint, so it preserves wire transparency.
 - Writes are **async and batched off the hot path** so logging never adds request latency.
 - The dashboard queries ClickHouse for usage, spend, latency percentiles and error rates, sliced by org/team/project/key/model.
+- **Who reads it** is decided per row: every analytics and health query binds the caller's tenancy, and captured bodies are masked below the `request_payload` floor (member, or viewer on a project that allows it). See [Who reads the request log](security.md#who-reads-the-request-log-1820).
 
 ### Time bounds on the read API
 

@@ -302,6 +302,16 @@ Budgets defined in `rolter.toml` are edited in the file, and a gateway running
 from that file needs a restart to apply them; see
 [Hot Reload](/configuration/hot-reload).
 
+## Realtime sessions
+
+A [`/v1/realtime`](/api/realtime) WebSocket session is held to the same budgets and rate limits, on the same scope chain as the key that opens it:
+
+- **Opening a session** is refused with `402` when a budget is spent (or `model_unpriced` applies), and with `429` when an `rpm` or `tpm` window is full. It counts as one request against `rpm`.
+- **While it runs**, each finished model response is priced from the usage the provider reports and charged to every applicable budget and `tpm` limit. Charges land every `[realtime] usage_flush_secs` (15 seconds by default), so a session that stays open for hours is accounted as it goes.
+- **When a budget runs out mid-session**, the session is closed at the next flush with an `error` event (code `insufficient_quota`) and a `1008` close frame, whether this session or other traffic spent the budget. A session can overspend by at most one flush window plus the response in flight.
+
+A full `tpm` window refuses the key's next session or request but does not close one already open. The process-local `[realtime]` caps (`max_connections`, `max_session_secs`, `idle_timeout_secs`) still apply on top: they protect the gateway, while budgets and rate limits are the per-tenant policy.
+
 ## How counters work
 
 Rolter keeps sliding-window counters in Redis — one counter per (scope, id, one-minute bucket). To estimate the trailing 60 seconds, a check adds the current bucket to a weighted share of the previous one. That share is weighted by how much of the previous minute still lies inside the window. This is an approximation: it treats the previous minute's requests as evenly spread, so a burst at the very end or start of a minute is weighted slightly low or high until the next bucket.

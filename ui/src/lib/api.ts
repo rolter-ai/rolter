@@ -109,8 +109,13 @@ export function setSessionExpiredHandler(handler: SessionExpiredHandler | null):
 // endpoints whose 401 is about the credentials in the request, not about the
 // session token that happens to be in localStorage: a wrong password and an
 // invite token that expired are both answered 401, and neither means the
-// current session died
-const SESSION_EXEMPT_PATHS = ["/api/v1/auth/login", "/api/v1/invitations/accept/"];
+// current session died. `/auth/mfa/` covers the step-up and enrolment at
+// sign-in (#1852): their 401 is about the challenge token in the body
+const SESSION_EXEMPT_PATHS = [
+  "/api/v1/auth/login",
+  "/api/v1/auth/mfa/",
+  "/api/v1/invitations/accept/",
+];
 
 /// signal a dead session, but only for the failures that actually are one
 function noteUnauthorized(url: string, authed: boolean, err: ApiError) {
@@ -412,6 +417,11 @@ export interface InvocationRow {
   error: string;
   request_payload?: string;
   response_payload?: string;
+  /// 1 when bodies were captured for this request but the caller's role on its
+  /// project is below the payload floor, so the server blanked both. lets the
+  /// screen say "hidden for your role" instead of "payload logging is off",
+  /// which is what an empty body means otherwise (#1820)
+  payload_withheld?: number | string;
 }
 
 export interface InvocationsQuery extends AnalyticsWindow {
@@ -1110,6 +1120,26 @@ export function createProject(teamId: string, input: { name: string }): Promise<
 
 export function deleteProject(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/projects/${id}`);
+}
+
+/// who may read the request and response bodies payload capture stored for a
+/// project's traffic: members (the default) or viewers too. an admin always may
+export type PayloadMinRole = "member" | "viewer";
+
+/// a project's own settings (#1820)
+export interface ProjectSettings {
+  payload_min_role: PayloadMinRole;
+}
+
+export function fetchProjectSettings(id: string): Promise<ProjectSettings> {
+  return getJson<ProjectSettings>(`/api/v1/projects/${id}/settings`);
+}
+
+export function updateProjectSettings(
+  id: string,
+  input: ProjectSettings,
+): Promise<ProjectSettings> {
+  return sendJson<ProjectSettings>("PUT", `/api/v1/projects/${id}/settings`, input);
 }
 
 export interface ProviderRow {
@@ -2011,6 +2041,13 @@ export interface LoginResponse {
     deactivated_at: string | null;
     created_at: string;
   };
+  /**
+   * Present when an org requires a second factor this account has not set up
+   * yet, and the org's grace window has not run out (#1852): from this moment
+   * the next sign-in walks the account through enrolment before it gets a
+   * session. Absent otherwise.
+   */
+  mfa_enrol_by?: string;
 }
 
 /**
@@ -2026,19 +2063,59 @@ export interface MfaChallenge {
   /** present this to `verifyMfaChallenge`; authenticates nothing on its own */
   mfa_token: string;
   expires_at: string;
+  /** seconds from the response until `expires_at`; time the prompt from this */
+  expires_in: number;
 }
 
-/** what `POST /auth/login` answers: a session, or the challenge that mints one */
-export type LoginOutcome = LoginResponse | MfaChallenge;
+/**
+ * The third branch of `LoginOutcome` (#1852): the password was right, the org
+ * requires a second factor, and this account has none armed.
+ *
+ * The token is not a session and opens nothing a session does. It is good for
+ * exactly two calls — `beginSignInEnrolment` for a secret and
+ * `confirmSignInEnrolment` to prove it — and the second is what mints the
+ * session.
+ */
+export interface MfaEnrolmentChallenge {
+  mfa_enrolment_required: true;
+  enrolment_token: string;
+  expires_at: string;
+  /** seconds from the response until `expires_at`; time the prompt from this */
+  expires_in: number;
+}
+
+/**
+ * When a challenge dies, on this browser's clock: the moment it arrived plus
+ * the control plane's `expires_in`.
+ *
+ * Never `expires_at` compared with `Date.now()`. That compares the server's
+ * clock with the laptop's, and a laptop running more than the challenge's
+ * lifetime fast would expire every prompt the moment it appeared — under a
+ * `required_*` policy, a member who could never get in (#1852).
+ */
+export function challengeDeadline(
+  challenge: { expires_in: number },
+  receivedAt: number = Date.now(),
+): number {
+  return receivedAt + challenge.expires_in * 1000;
+}
+
+/** what `POST /auth/login` answers: a session, or a challenge that mints one */
+export type LoginOutcome = LoginResponse | MfaChallenge | MfaEnrolmentChallenge;
 
 export function isMfaChallenge(outcome: LoginOutcome): outcome is MfaChallenge {
   return (outcome as MfaChallenge).mfa_required === true;
 }
 
-// authenticate a local account. Answers a session token, or a challenge when
-// the account has an armed factor. Rejects (throws) on bad credentials, when
+export function isMfaEnrolmentChallenge(outcome: LoginOutcome): outcome is MfaEnrolmentChallenge {
+  return (outcome as MfaEnrolmentChallenge).mfa_enrolment_required === true;
+}
+
+// authenticate a local account. Answers a session token, a challenge when the
+// account has an armed factor, or an enrolment challenge when an org requires a
+// factor the account has not armed. Rejects (throws) on bad credentials, when
 // local accounts aren't configured, and — as `mfa_enrolment_required` — when
-// an org policy demands a factor this account has not armed.
+// an org requires a factor and this control plane cannot enrol one.
 export function login(email: string, password: string): Promise<LoginOutcome> {
   return sendJson<LoginOutcome>("POST", "/api/v1/auth/login", {
     email,
@@ -2058,6 +2135,41 @@ export function login(email: string, password: string): Promise<LoginOutcome> {
 export function verifyMfaChallenge(mfaToken: string, code: string): Promise<LoginResponse> {
   return sendJson<LoginResponse>("POST", "/api/v1/auth/mfa/verify", {
     mfa_token: mfaToken,
+    code,
+  });
+}
+
+/**
+ * Mint the secret a sign-in bound by a `required_*` policy enrols with (#1852).
+ *
+ * Unauthenticated like the step-up: the enrolment token in the body is the
+ * only credential. Every call mints a fresh secret and replaces the pending
+ * one, so it is asked for once per challenge. A dead token — expired, spent,
+ * or the account enrolled meanwhile — answers 401 `invalid_credentials`, and
+ * the way on is the password step again.
+ */
+export function beginSignInEnrolment(enrolmentToken: string): Promise<MfaEnrolment> {
+  return sendJson<MfaEnrolment>("POST", "/api/v1/auth/mfa/enroll", {
+    enrolment_token: enrolmentToken,
+  });
+}
+
+/** a session minted by enrolling, and the recovery codes that enrolment issued */
+export type EnrolledSignIn = LoginResponse & RecoveryCodes;
+
+/**
+ * Arm the factor with a code from the minted secret and sign in.
+ *
+ * A wrong code is a 400 and keeps the challenge; a dead one is a 401. The
+ * code spent here cannot be spent again, the same replay rule as enrolling
+ * from the account screen.
+ */
+export function confirmSignInEnrolment(
+  enrolmentToken: string,
+  code: string,
+): Promise<EnrolledSignIn> {
+  return sendJson<EnrolledSignIn>("POST", "/api/v1/auth/mfa/confirm", {
+    enrolment_token: enrolmentToken,
     code,
   });
 }
@@ -2089,6 +2201,14 @@ export function logout(): Promise<void> {
  */
 export interface MeMembership extends MembershipRow {
   source: string;
+  /**
+   * The org and team the membership sits under. A project membership names
+   * neither on its own row; the scope switcher needs both to land a project
+   * member on their own project (#1846). Absent from a control plane older
+   * than that.
+   */
+  scope_org_id?: string | null;
+  scope_team_id?: string | null;
 }
 
 /** `{user, memberships}` — crates/rolter-control/src/auth.rs `MeResponse` */
@@ -2128,6 +2248,11 @@ export interface MfaStatus {
   policy: MfaPolicy;
   /** whether that policy makes the factor mandatory for this account */
   required: boolean;
+  /**
+   * While the requirement is announced but not in force: when it starts
+   * (#1852). `null` when nothing is required, or it already applies.
+   */
+  enforce_after: string | null;
 }
 
 /**
@@ -3128,11 +3253,17 @@ export function deleteAlertRule(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/alert-rules/${id}`);
 }
 
-export function evaluateAlertRule(id: string): Promise<{ rule: AlertRuleRow; notified: boolean }> {
-  return sendJson<{ rule: AlertRuleRow; notified: boolean }>(
-    "POST",
-    `/api/v1/alert-rules/${id}/evaluate`,
-  );
+/** One evaluation's result: the updated rule, and the history row it wrote
+ * when the reading was a transition (`notified` is true only when that row
+ * was delivered). */
+export interface AlertEvaluation {
+  rule: AlertRuleRow;
+  notified: boolean;
+  notification: AlertNotificationRow | null;
+}
+
+export function evaluateAlertRule(id: string): Promise<AlertEvaluation> {
+  return sendJson<AlertEvaluation>("POST", `/api/v1/alert-rules/${id}/evaluate`);
 }
 
 export function fetchAlertHistory(limit = 100, ruleId?: string): Promise<AlertNotificationRow[]> {
@@ -4025,6 +4156,12 @@ export interface OrgAuthPolicy {
    * relaxed membership never softens a hardened one.
    */
   mfa_policy: MfaPolicy;
+  /**
+   * When a `required_*` policy starts making unenrolled members enrol before
+   * they get a session (#1852). `null` means it already does; always `null`
+   * under `off` and `optional`.
+   */
+  mfa_enforce_after: string | null;
   updated_at: string;
 }
 
@@ -4049,6 +4186,11 @@ export function updateAuthPolicy(
      * written before second factors existed cannot silently disarm one.
      */
     mfa_policy?: MfaPolicy;
+    /**
+     * Read whenever `mfa_policy` is sent — `null` means "at once" — and kept
+     * as it is whenever `mfa_policy` is not, so the two travel together.
+     */
+    mfa_enforce_after?: string | null;
   },
 ): Promise<OrgAuthPolicy> {
   return sendJson<OrgAuthPolicy>("PUT", `/api/v1/orgs/${orgId}/auth-policy`, input);

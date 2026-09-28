@@ -85,7 +85,7 @@ describe("experimentalNavKeysFrom", () => {
   // cross-cutting concept like labels — is documented, not navigated
   test("a subsystem with no nav keys contributes nothing", () => {
     const marked = experimentalNavKeysFrom([
-      { id: "realtime", stability: "experimental", note: "unmetered", nav_keys: [] },
+      { id: "labels", stability: "experimental", note: "display only", nav_keys: [] },
     ]);
     expect(marked.size).toBe(0);
   });

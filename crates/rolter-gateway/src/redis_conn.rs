@@ -38,6 +38,12 @@
 //! rolter connects with the protocol the url asks for (RESP2 by default) so
 //! that it keeps working behind proxies and servers that never learned `HELLO
 //! 3`. Replaying reads covers the same ground without that requirement.
+//!
+//! Each instance keeps [`RedisConnStats`] for `/metrics` (#1772): whether it
+//! holds a live connection, how often it reconnected and how often it failed
+//! to, and — counted by the consumer — how many requests an admission check
+//! let through unchecked. All of it is updated on the slow path only; a
+//! command over a live connection touches none of it.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
@@ -49,6 +55,8 @@ use redis::{
     AsyncConnectionConfig, Cmd, ErrorKind, Pipeline, RedisError, RedisFuture, RedisResult,
     ServerErrorKind, Value,
 };
+
+use crate::metrics::RedisConnStats;
 
 /// How a [`ReconnectingRedis`] connects and how it backs off between failed
 /// attempts.
@@ -113,6 +121,8 @@ struct Shared {
     generation: AtomicU64,
     ever_connected: AtomicBool,
     attempts: AtomicU64,
+    /// what `/metrics` reports for this consumer's connection
+    stats: Arc<RedisConnStats>,
 }
 
 struct Live {
@@ -150,8 +160,30 @@ impl ReconnectingRedis {
                 generation: AtomicU64::new(0),
                 ever_connected: AtomicBool::new(false),
                 attempts: AtomicU64::new(0),
+                stats: Arc::default(),
             }),
         })
+    }
+
+    /// The connection state this instance reports, for registering with
+    /// [`Metrics::watch_redis`](crate::metrics::Metrics::watch_redis) and for
+    /// counting the requests its consumer admits without it.
+    pub(crate) fn stats(&self) -> &Arc<RedisConnStats> {
+        &self.shared.stats
+    }
+
+    /// Connect in the background now instead of on first use, so the state
+    /// reported for this consumer is known from startup rather than from its
+    /// first request (#1772). A failed attempt opens a backoff window like any
+    /// other, and the next use tries again. Does nothing outside a runtime.
+    pub(crate) fn warm_up(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let redis = self.clone();
+        runtime.spawn(async move {
+            let _ = redis.get().await;
+        });
     }
 
     /// A handle on the live connection, connecting first when there is none.
@@ -221,7 +253,9 @@ impl Shared {
                     conn: conn.clone(),
                     generation,
                 })));
-                if self.ever_connected.swap(true, Relaxed) {
+                let reconnect = self.ever_connected.swap(true, Relaxed);
+                self.stats.on_connect(reconnect);
+                if reconnect {
                     tracing::info!(
                         consumer = self.consumer,
                         "redis connection re-established; enforcement resumed"
@@ -230,6 +264,7 @@ impl Shared {
                 Some((conn, generation))
             }
             Err(error) => {
+                self.stats.on_connect_failure();
                 let retry_in = self.record_failure();
                 tracing::warn!(
                     %error,
@@ -273,6 +308,7 @@ impl Shared {
             .as_ref()
             .is_some_and(|previous| Arc::ptr_eq(previous, live));
         if evicted {
+            self.stats.on_lost();
             tracing::warn!(
                 cause = %cause,
                 consumer = self.consumer,
@@ -605,6 +641,27 @@ mod tests {
         }
     }
 
+    /// `(connected, reconnects, connect failures)` as `/metrics` renders them.
+    fn reported(redis: &ReconnectingRedis) -> (bool, u64, u64) {
+        let metrics = crate::metrics::Metrics::default();
+        metrics.watch_redis(
+            crate::metrics::RedisConsumer::Budgets,
+            redis.stats().clone(),
+        );
+        let out = metrics.render();
+        let sample = |name: &str| -> u64 {
+            let prefix = format!("{name}{{consumer=\"budgets\"}} ");
+            out.lines()
+                .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+                .unwrap_or_else(|| panic!("no {name} in:\n{out}"))
+        };
+        (
+            sample("rolter_redis_connected") == 1,
+            sample("rolter_redis_reconnects_total"),
+            sample("rolter_redis_connect_failures_total"),
+        )
+    }
+
     /// An address nothing listens on: bound once to learn a free port, then
     /// released, so a connection attempt is refused at once.
     async fn closed_url() -> String {
@@ -675,6 +732,10 @@ mod tests {
             "failing open must not wait: {:?}",
             started.elapsed()
         );
+        // and `/metrics` counts the attempt, not the burst (#1772)
+        let (connected, _, failures) = reported(&redis);
+        assert!(!connected);
+        assert_eq!(failures, 1);
     }
 
     /// Once the window closes the next caller tries again, and each further
@@ -784,6 +845,7 @@ mod tests {
             let mut conn = redis.get().await.expect("connected through the forwarder");
             let _: () = conn.set_ex(&key, "before", 60).await.unwrap();
         }
+        assert_eq!(reported(&redis), (true, 0, 0));
 
         outage.down().await;
         {
@@ -806,6 +868,11 @@ mod tests {
             started.elapsed()
         );
         let attempts_during_outage = redis.attempts();
+        // the outage shows on `/metrics` while it lasts (#1772)
+        let (connected, reconnects, failures) = reported(&redis);
+        assert!(!connected, "the lost connection is reported");
+        assert_eq!(reconnects, 0);
+        assert!(failures >= 1, "the failed attempts are counted");
 
         outage.up().await;
         // at most one backoff window (200ms here) until the next attempt
@@ -825,6 +892,9 @@ mod tests {
             redis.attempts() - attempts_during_outage <= 10,
             "reconnects are paced by the backoff, not by the retry loop"
         );
+        let (connected, reconnects, _) = reported(&redis);
+        assert!(connected, "and so is the recovery");
+        assert_eq!(reconnects, 1);
         let _: () = conn.del(&key).await.unwrap();
     }
 }

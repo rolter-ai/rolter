@@ -223,24 +223,25 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 
 ### `[realtime]`
 
-Guardrails for persistent `/v1/realtime` WebSocket sessions. All limits are per gateway process; set a value to `0` to disable that limit.
+Resource limits and metering cadence for persistent `/v1/realtime` WebSocket sessions. The three limits are per gateway process; set one to `0` to disable it.
 
-The `/v1/realtime` relay carries the `realtime` [stability marker](../development/stability-markers.md), so these keys may change shape in a minor release. They are also the _only_ limits a realtime session meets: budgets, rate limits and usage recording sit on the HTTP request path and do not see it.
+These are the gateway's own resource guards, not tenant policy. A session also meets the deployment's budgets, `unpriced_policy` and rate limits at admission, and is metered per response turn while it runs; see [Realtime metering](../architecture/realtime-metering.md).
 
 - `max_connections` (u64, default `1000`) — concurrent sessions admitted by this gateway instance
 - `max_session_secs` (u64, default `3600`) — hard session-duration limit
 - `idle_timeout_secs` (u64, default `300`) — closes a session when neither side sends a frame
+- `usage_flush_secs` (u64, default `15`) — how often a live session's finished response turns are written to the request log, added to budgets and `tpm` windows, and followed by a budget re-check. It bounds how long a session can overspend a budget before it is closed. `0` flushes after every turn instead of on a timer, and re-checks the budgets every second while the session is quiet; metering cannot be switched off
 
 ### `[egress]`
 
 Where the gateway may send upstream traffic. A provider's `api_base` (and any `egress_proxy`) is operator-supplied, so without a destination policy a crafted or compromised provider row turns the gateway into an SSRF primitive pointed at whatever sits inside its network position — cloud instance metadata being the classic target.
 
 - `block_link_local` (bool, default `true`) — deny `169.254.0.0/16` and `fe80::/10`. This is the cloud instance-metadata range; leave it on unless you have a concrete reason
-- `block_loopback` (bool, default `false`) — deny `127.0.0.0/8` and `::1`. Off by default because sidecar and single-host deployments legitimately serve models on localhost
+- `block_loopback` (bool, default `false`) — deny `127.0.0.0/8` and `::1`, plus the unspecified addresses `0.0.0.0` and `::`, which reach the local host when connected to. Off by default because sidecar and single-host deployments legitimately serve models on localhost
 - `block_private` (bool, default `false`) — deny `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `fc00::/7`. Off by default because on-prem clusters are the common case
-- `allow_hosts` (string[], default `[]`) — hosts exempt from every check above, matched verbatim against the URL host (an IP literal or a hostname). The escape hatch for a deployment that must reach one otherwise-denied address
+- `allow_hosts` (string[], default `[]`) — hosts exempt from every check above (an IP literal or a hostname). An entry matches the address the URL reaches, whatever the spelling, so `169.254.169.254` also covers `http://0xa9fea9fe/`. The escape hatch for a deployment that must reach one otherwise-denied address
 
-Enforcement happens twice. IP literals are classified during config validation, so a bad `api_base` is rejected at startup or when the control plane writes it. Hostnames are classified **at connect time**, against the address DNS actually returned — validation never resolves DNS itself (that would make config validation depend on a live resolver and break air-gapped deployments), and a connect-time check is what makes the policy DNS-rebinding-safe. A denied address fails the request; it is not silently retried elsewhere.
+Enforcement happens twice. IP literals are classified during config validation, so a bad `api_base` is rejected at startup or when the control plane writes it. A URL is read the way the HTTP client reads it, so every spelling of an address is classified as that address: `http://2852039166/`, `http://169.254.169.254./` and `http://[::ffff:169.254.169.254]/` are all `169.254.169.254`. Hostnames are classified **at connect time**, against the address DNS actually returned — validation never resolves DNS itself (that would make config validation depend on a live resolver and break air-gapped deployments), and a connect-time check is what makes the policy DNS-rebinding-safe. A denied address fails the request; it is not silently retried elsewhere.
 
 ```toml
 [egress]

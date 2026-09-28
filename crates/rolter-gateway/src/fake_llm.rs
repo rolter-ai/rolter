@@ -14,7 +14,7 @@ use bytes::Bytes;
 use futures_util::stream;
 use serde_json::{json, Value};
 
-pub const MODEL_NAME: &str = "fake-llm";
+pub const MODEL_NAME: &str = rolter_core::FAKE_LLM_MODEL;
 
 const LOREM: &[&str] = &[
     "Lorem",

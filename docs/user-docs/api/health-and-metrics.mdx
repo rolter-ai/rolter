@@ -120,14 +120,14 @@ The following metrics are included in the Prometheus output. All are counters or
 
 ### Additional counters
 
-| Metric                           | Description                                                       |
-| -------------------------------- | ----------------------------------------------------------------- |
-| `rolter_retries_total`           | Total retry attempts triggered by transient upstream failures     |
-| `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure   |
-| `rolter_breaker_opened_total`    | Number of times a circuit breaker tripped open                    |
-| `rolter_breaker_closed_total`    | Number of times a circuit breaker closed after a successful probe |
-| `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits                   |
-| `rolter_budget_blocks_total`     | Requests blocked due to an exceeded spend budget                  |
+| Metric                           | Description                                                        |
+| -------------------------------- | ------------------------------------------------------------------ |
+| `rolter_retries_total`           | Total retry attempts triggered by transient upstream failures      |
+| `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure    |
+| `rolter_breaker_opened_total`    | Number of times a circuit breaker tripped open                     |
+| `rolter_breaker_closed_total`    | Number of times a circuit breaker closed after a successful probe  |
+| `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits                    |
+| `rolter_budget_blocks_total`     | Requests and realtime sessions refused or closed by a spent budget |
 
 ## Prometheus scrape config
 
