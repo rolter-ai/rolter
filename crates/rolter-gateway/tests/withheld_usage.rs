@@ -454,6 +454,116 @@ async fn an_answer_without_usage_is_logged_as_unknown_not_free() {
     assert_eq!(row["total_tokens"], 0);
 }
 
+/// An upstream that answers `200` and promises a body it never finishes: the
+/// connection closes a few bytes in, the way a crashed replica or a reset
+/// proxy leaves a response (#1775).
+async fn truncating_upstream() -> SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Read one whole request, so the answer below never races the gateway
+    /// still writing its body — that would fail the send rather than the
+    /// body read this upstream exists to fail.
+    async fn read_request(socket: &mut tokio::net::TcpStream) {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let Ok(n) = socket.read(&mut chunk).await else {
+                return;
+            };
+            if n == 0 {
+                return;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buf.len() >= end + 4 + length {
+                return;
+            }
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                read_request(&mut socket).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                          content-length: 4096\r\n\r\n{\"id\":\"chatcmpl-cut\",\"choices\":[",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    addr
+}
+
+/// What a body read that failed after a `200` must leave behind (#1775): one
+/// row naming the target, a `502` with the error, and usage marked unknown —
+/// the provider may have billed an answer nobody received — plus the failure
+/// counted against the target.
+async fn assert_body_read_failure_is_logged(gw: SocketAddr, rows: &Rows) {
+    let response = ask(gw, "ping").await;
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("body could not be read")),
+        "{body}"
+    );
+
+    let row = &rows.wait_for(1).await[0];
+    assert_eq!(row["status"], 502, "{row}");
+    assert_eq!(row["provider"], "up", "{row}");
+    assert_eq!(row["target"], "test-model", "{row}");
+    assert_eq!(row["usage_unknown"], 1, "{row}");
+    assert_eq!(row["total_tokens"], 0, "{row}");
+    assert!(
+        row["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("body could not be read")),
+        "{row}"
+    );
+    assert_eq!(metric(gw, "rolter_upstream_errors_total").await, 1.0);
+    assert_eq!(
+        metric(
+            gw,
+            "rolter_target_requests_total{provider=\"up\",target=\"test-model\",outcome=\"error\"}"
+        )
+        .await,
+        1.0
+    );
+}
+
+/// A guarded route buffers the answer to inspect it, and a body that never
+/// finishes arriving used to leave no row at all.
+#[tokio::test]
+async fn a_body_that_fails_to_arrive_is_logged_as_a_502_with_unknown_usage() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let upstream = truncating_upstream().await;
+    let gw = gateway(
+        &with_output_rule(
+            config(upstream, clickhouse, "org-truncated"),
+            GuardAction::Redact,
+        ),
+        None,
+    )
+    .await;
+    assert_body_read_failure_is_logged(gw, &rows).await;
+}
+
 /// A retried request is billed for the attempt that answered, once — the
 /// failed attempt produced nothing to bill and writes no row of its own.
 #[tokio::test]
@@ -649,4 +759,28 @@ async fn a_withheld_cache_miss_is_billed_once_and_its_hit_is_free() {
         Some(2.0),
         "the cache hit must not be billed"
     );
+}
+
+/// The cache-miss path buffers the answer to store it, and failed the same
+/// way: a bare `502` and no row (#1775).
+#[tokio::test]
+async fn a_cache_miss_whose_body_fails_to_arrive_is_logged() {
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let upstream = truncating_upstream().await;
+    let mut config = config(upstream, clickhouse, &unique("org-truncated-cache"));
+    config.cache.enabled = true;
+    config.cache.namespace = unique("truncated-cache");
+    config.routes[0].cache = Some(rolter_core::RouteCache {
+        enabled: true,
+        ttl_secs: Some(60),
+        per_key: false,
+        semantic: None,
+    });
+    let gw = gateway(&config, Some(&redis)).await;
+    assert_body_read_failure_is_logged(gw, &rows).await;
 }

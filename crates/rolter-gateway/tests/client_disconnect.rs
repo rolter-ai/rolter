@@ -31,25 +31,30 @@ async fn serve(app: Router) -> SocketAddr {
 }
 
 /// A stand-in for the ClickHouse HTTP interface that keeps every JSONEachRow
-/// line the log writer posts.
+/// line the log writer posts, and separately every passive health event.
 #[derive(Clone, Default)]
-struct Rows(Arc<Mutex<Vec<Value>>>);
+struct Rows(Arc<Mutex<Vec<Value>>>, Arc<Mutex<Vec<Value>>>);
 
 impl Rows {
     async fn serve(&self) -> SocketAddr {
-        // the same endpoint receives health events and payload captures; only
-        // the request_logs table is this test's business
+        // the same endpoint receives payload captures too, which are not this
+        // test's business
         async fn ingest(
             State(rows): State<Rows>,
             axum::extract::RawQuery(query): axum::extract::RawQuery,
             body: String,
         ) -> impl IntoResponse {
-            if !query.unwrap_or_default().contains("request_logs") {
+            let query = query.unwrap_or_default();
+            let table = if query.contains("request_logs") {
+                &rows.0
+            } else if query.contains("provider_health_events") {
+                &rows.1
+            } else {
                 return "ok";
-            }
+            };
             for line in body.lines().filter(|line| !line.trim().is_empty()) {
                 if let Ok(row) = serde_json::from_str::<Value>(line) {
-                    rows.0.lock().push(row);
+                    table.lock().push(row);
                 }
             }
             "ok"
@@ -76,6 +81,17 @@ impl Rows {
 
     fn len(&self) -> usize {
         self.0.lock().len()
+    }
+
+    /// The passive health events received so far, leaving out any the prober
+    /// wrote, since only real traffic is under test here.
+    fn health_events(&self) -> Vec<Value> {
+        self.1
+            .lock()
+            .iter()
+            .filter(|event| event["source"] == "passive")
+            .cloned()
+            .collect()
     }
 }
 
@@ -164,6 +180,10 @@ async fn a_caller_that_hangs_up_before_the_answer_is_logged_499_and_never_retrie
         .await;
     assert_eq!(row["model"], "slow-chat");
     assert_eq!(row["error"], "client disconnected");
+    // the row names the target the caller gave up waiting on, which is the
+    // one an operator is looking for when callers time out (#1816)
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
     // a disconnect is the caller's decision, not an upstream failure: burning a
     // second provider on it would double the cost of every abandoned request
     assert_eq!(attempts.load(Ordering::Relaxed), 1);
@@ -176,6 +196,131 @@ async fn a_caller_that_hangs_up_before_the_answer_is_logged_499_and_never_retrie
         0.0,
         "the abandoned request must give its slot back"
     );
+}
+
+/// A failed attempt is charged to its target before the loop backs off
+/// (#1646). A caller who then leaves during the backoff gets a row naming that
+/// target, but the one upstream failure must still count once, both in the
+/// per-target error counter and in the health rollup that drives flap alerts.
+#[tokio::test]
+async fn a_caller_that_leaves_during_a_retry_backoff_is_not_charged_to_the_target_twice() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = attempts.clone();
+            move || async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                // honoured as the backoff, and far longer than the client waits,
+                // so the hang-up always lands while the loop sleeps
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "20")],
+                    axum::Json(json!({"error": {"message": "slow down"}})),
+                )
+            }
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gateway = serve(rolter_gateway::build_router_from_config(&config(
+        upstream, clickhouse,
+    )))
+    .await;
+
+    let hung_up = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .unwrap()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await;
+    assert!(hung_up.is_err(), "the client was supposed to give up");
+
+    let row = rows
+        .wait_for("client-disconnect", |row| row["status"] == 499)
+        .await;
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
+    assert_eq!(
+        attempts.load(Ordering::Relaxed),
+        1,
+        "the backoff never ended"
+    );
+
+    // the row is written after the guard has done its counting, so the
+    // counters are final by the time it arrives
+    let body = metrics(gateway).await;
+    assert_eq!(sample(&body, "rolter_client_disconnects_total"), 1.0);
+    assert_eq!(
+        sample(
+            &body,
+            r#"rolter_target_requests_total{provider="slow",target="slow-chat",outcome="error"}"#
+        ),
+        1.0,
+        "the 429 counts once; the caller leaving afterwards is not a second failure"
+    );
+
+    // health events flush on their own timer: wait for the 429's, then give a
+    // second one the same chance to arrive before asserting it never did
+    for _ in 0..200 {
+        if !rows.health_events().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events = rows.health_events();
+    assert_eq!(
+        events.len(),
+        1,
+        "one upstream failure, one event: {events:?}"
+    );
+    assert_eq!(events[0]["status_code"], 429);
+}
+
+/// A route split into variants picks its target in its own loop, and the row
+/// names the variant as well as the target (#1816).
+#[tokio::test]
+async fn a_request_abandoned_on_a_variant_route_names_its_variant_and_target() {
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            axum::Json(json!({"choices": []}))
+        }),
+    ))
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(upstream, clickhouse);
+    let route = &mut config.routes[0];
+    route.variants = vec![rolter_core::Variant {
+        name: "canary".into(),
+        weight: 1,
+        targets: std::mem::take(&mut route.targets),
+        params: Default::default(),
+    }];
+    let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
+
+    let hung_up = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap()
+        .post(format!("http://{gateway}/v1/chat/completions"))
+        .json(&json!({"model": "slow-chat", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await;
+    assert!(hung_up.is_err(), "the client was supposed to give up");
+
+    let row = rows
+        .wait_for("client-disconnect", |row| row["status"] == 499)
+        .await;
+    assert_eq!(row["provider"], "slow");
+    assert_eq!(row["target"], "slow-chat");
+    assert_eq!(row["variant"], "canary");
 }
 
 #[tokio::test]
