@@ -1189,3 +1189,24 @@ provider secret. The script waits for both `/healthz` endpoints, checks
 postgres-backed `/internal/snapshot` on the control plane, then always dumps
 compose logs and runs `down -v`. It is **informational** (`continue-on-error`)
 until the image-build cost and flake profile are trusted (ROL-245).
+
+### Published-port image smoke
+
+The `image-smoke` job builds the single image from `docker/Dockerfile` and runs
+it the way the quickstart does: default command (`rolter easy-up`), ports
+published with `-p`, curled from the host. It checks three states: with no
+`ROLTER_ADMIN_TOKEN` and no `ROLTER_ALLOW_OPEN_MODE` the container exits with the
+refusal; acknowledged open, the gateway answers `fake-llm` and the control plane
+serves the dashboard; closed by a throwaway token, `/internal/snapshot` is 401
+without it and 200 with it. A bind on the container's loopback passes every
+check made from inside the container and answers nothing through a published
+port, which is how #1891 shipped. Run it locally against any tag:
+
+```bash
+docker build -f docker/Dockerfile --target runtime -t rolter:dev .
+bash docker/smoke/image-smoke.sh rolter:dev
+```
+
+It needs no secrets and no compose stack, so unlike `compose-smoke` it is
+blocking. The release workflow's `smoke image` job runs the same script against
+each architecture's pushed digest before anything is published.

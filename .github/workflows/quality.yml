@@ -645,28 +645,37 @@ jobs:
   # single-binary smoke above cannot see (e.g. a misnamed ROLTER_DATABASE_URL).
   # informational until the ~image-build cost and flake profile are trusted;
   # promote by dropping continue-on-error. see ROL-245.
-  #
-  # the second step runs the single image the quickstart documents — default
-  # command, ports published with `-p` — and curls both planes from the host.
-  # it shares this job so the image is built once: the compose build above has
-  # already warmed the layer and cargo caches the second build reads (#1891)
   compose-smoke:
     name: compose smoke (informational)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: full-stack compose smoke
         run: bash docker/smoke/smoke.sh
-      - name: published-port image smoke
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          docker build -f docker/Dockerfile --target runtime -t rolter:image-smoke .
-          bash docker/smoke/image-smoke.sh rolter:image-smoke
+
+  # ── image smoke: the single image through published ports ───────────────────
+  # runs the image the quickstart documents (default command, ports published
+  # with `-p`) and curls both planes from the host, plus the refusal with no
+  # admin token and no acknowledgement. `rolter --version` and every in-process
+  # test pass on an image whose planes bind the container's loopback, which a
+  # published port never reaches (#1891); only this sees it. blocking, unlike
+  # compose-smoke: it needs no secrets and no compose stack
+  image-smoke:
+    name: image smoke (published ports)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: build the image
+        run: docker build -f docker/Dockerfile --target runtime -t rolter:image-smoke .
+      - name: run it with published ports and curl both planes
+        run: bash docker/smoke/image-smoke.sh rolter:image-smoke
 
   # ── packaging: catch crate-publish breakage before a release ────────────────
   # `cargo publish` builds each crate from its packaged tarball in isolation, so a
