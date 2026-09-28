@@ -19,7 +19,13 @@ import {
   type FetchStub,
   expectEmptyState,
   expectInStatusRegion,
+  expectNoUxEvent,
+  expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
+  recordUxEvents,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import type {
   MfaStatus,
@@ -29,6 +35,7 @@ import type {
   ProviderRow,
   RouteRow,
 } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 /**
  * No second factor and no policy asking for one — the default account.
@@ -389,6 +396,93 @@ export const CancellingARotationLeavesTheKeyAlone: Story = {
     await userEvent.click(rotate);
     await confirmDestructive(/my laptop/, /rotate key/i);
     await rotations.expectSent("POST", "/me/virtual-keys/vk-1/rotate");
+  },
+};
+
+/**
+ * Deleting a key confirms through the shared `ConfirmDialog` (#1760): the
+ * title names the key, a cancel sends nothing and is an abandon, and a confirm
+ * sends the DELETE and lands as `save_confirmed`.
+ */
+let keyDeletes: Recorder;
+export const DeletingAKeyIsConfirmedAndReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    keyDeletes = recording(
+      account((init) => (init?.method === "DELETE" ? json(null, 204) : json(KEYS))),
+    );
+    return (
+      <Harness fetchStub={keyDeletes.stub}>
+        <UxScreenProvider screen="api-keys">
+          <Account />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [remove] = await canvas.findAllByRole("button", { name: "Delete this virtual key" });
+    await userEvent.click(remove!);
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Delete key my laptop?" }),
+    ).toBeVisible();
+    await cancelConfirmation();
+    keyDeletes.expectNotSent("DELETE", "/me/virtual-keys/");
+    const abandon = await expectUxEvent("form_abandon", "account-key-delete");
+    await expect(abandon.screen).toBe("api-keys");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "account-key-delete");
+
+    await userEvent.click(remove!);
+    // the body carries the prefix, which is what a client config shows
+    await confirmDestructive(/sk-rolter-laptop/, "Delete key");
+    await keyDeletes.expectSent("DELETE", "/me/virtual-keys/vk-1");
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "account-key-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "account-key-delete");
+  },
+};
+
+/**
+ * An unnamed key is named by its prefix in the title, and a refused delete
+ * keeps the dialog open over the control plane's reason, reported beside the
+ * press even though the stub answers in the same tick (#1761).
+ */
+export const DeletingAKeyRefused: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={account((init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "the key belongs to a project you left" } }, 403)
+          : json(KEYS),
+      )}
+    >
+      <UxScreenProvider screen="api-keys">
+        <Account />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const buttons = await canvas.findAllByRole("button", { name: "Delete this virtual key" });
+    await userEvent.click(buttons[1]!);
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Delete key sk-rolter-retired?" }),
+    ).toBeVisible();
+    // anchored: the title carries the prefix too, the body's mono span alone
+    await confirmDestructive(/^sk-rolter-retired…$/, "Delete key");
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "account-key-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
+    expectNoUxEvent("save_confirmed", "account-key-delete");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent("a project you left");
   },
 };
 

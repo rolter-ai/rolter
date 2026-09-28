@@ -225,6 +225,14 @@ export function useFormTelemetry(
   // an abandon the cleanup below has deferred, still cancellable. a token
   // rather than a boolean so a stale timer can never silence a later one
   const deferred = React.useRef<{ cancelled: boolean } | null>(null);
+  // when the save now in flight was pressed. `saved` measures from here rather
+  // than from the opening, since the save-latency query reads its duration as
+  // the wait between pressing save and being told it worked, and a dwell that
+  // counted the form fill made a healthy screen look slow (#1894). it also
+  // outlives the closing edge: a caller that closes from its mutation's own
+  // `onSuccess` does so while the request is still pending, so the landing is
+  // reported a commit after the form went away (#1761)
+  const submittedAt = React.useRef<number>(0);
 
   React.useEffect(() => {
     // this effect running at all means the form is still mounted, so whatever
@@ -243,6 +251,7 @@ export function useFormTelemetry(
         openedAt.current = Date.now();
         submitted.current = false;
         failed.current = false;
+        submittedAt.current = 0;
       }
       return () => {
         // the form went away while open. whether this is a real unmount or
@@ -283,6 +292,7 @@ export function useFormTelemetry(
     () => ({
       submitted: () => {
         submitted.current = true;
+        submittedAt.current = Date.now();
         // a submit after a failed one is a retry, not a second first attempt:
         // it is the moment somebody did not understand why the first failed,
         // and two identical form_submit rows hid that behind their timestamps
@@ -293,11 +303,15 @@ export function useFormTelemetry(
         else trackFormSubmit(key, target, "ok", dwell());
       },
       saved: () => {
-        if (key) trackSaveConfirmed(key, target, dwell());
+        const since = submittedAt.current;
+        submittedAt.current = 0;
+        if (key) trackSaveConfirmed(key, target, since ? Date.now() - since : undefined);
       },
       failed: () => {
         submitted.current = true;
         failed.current = true;
+        // a `form_submit` row either way, so it keeps that row's clock: the
+        // dwell since the form opened, the same as the press beside it
         if (key) trackFormSubmit(key, target, "error", dwell());
       },
       invalid: (rule: string) => {

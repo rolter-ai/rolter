@@ -4,7 +4,7 @@
 //! This module deliberately owns no MCP transport: it stays useful for stdio,
 //! SSE, streamable HTTP and WebSocket implementations alike.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,6 +21,7 @@ use crate::crud::{ApiError, ApiResult};
 use crate::ingest_failure::{self, Stream};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
+use crate::time_bounds::{InvalidParam, Query, TimeBounds};
 use crate::ControlState;
 
 use rolter_core::MCP_TRANSPORTS;
@@ -224,6 +225,12 @@ struct McpLogsQuery {
     cursor: Option<String>,
 }
 
+impl TimeBounds for McpLogsQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        (self.since.as_deref(), self.until.as_deref())
+    }
+}
+
 fn validate_filter(value: Option<&str>, label: &str) -> Result<(), String> {
     if value.is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control)) {
         return Err(format!("{label} filter is invalid"));
@@ -279,13 +286,7 @@ async fn list_events(
     }
     let (cursor_ts, cursor_event_id) = match parse_keyset_cursor(q.cursor.as_deref(), "event_id") {
         Ok(cursor) => cursor,
-        Err(message) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": {"message": message}})),
-            )
-                .into_response()
-        }
+        Err(message) => return InvalidParam::cursor(message).into_response(),
     };
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,

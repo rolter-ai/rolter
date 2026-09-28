@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DocsLink } from "@/components/DocsLink";
@@ -219,48 +219,47 @@ export default function Account() {
         />
       )}
 
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <DialogHeader>
-          <DialogTitle>{t("account.keys.delete.title")}</DialogTitle>
-          <DialogDescription>
-            <span className="font-mono">{deleteTarget?.key_prefix}…</span>{" "}
-            {t("account.keys.delete.body")}
-          </DialogDescription>
-        </DialogHeader>
-        {removeKey.isError && (
-          <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(removeKey.error as Error).message}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-            {t("account.keys.delete.cancel")}
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={removeKey.isPending}
-            onClick={() => {
-              if (!deleteTarget) return;
-              const what = deleteTarget.name ?? deleteTarget.key_prefix;
-              removeKey.mutate(deleteTarget.id, {
-                onSuccess: () => {
-                  setDeleteTarget(null);
-                  toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-                },
-                onError: (error) => {
-                  toast.push({
-                    tone: "error",
-                    title: t("toast.deleteFailed", { what }),
-                    detail: errorDetail(error),
-                  });
-                },
-              });
-            }}
-          >
-            {t("account.keys.delete.confirm")}
-          </Button>
-        </DialogFooter>
-      </Dialog>
+      <ConfirmDialog
+        name="account-key-delete"
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDeleteTarget(null);
+          // a refusal for this key must not greet the next one opened
+          removeKey.reset();
+        }}
+        // an unnamed key is still named by its prefix, the same fallback the
+        // toast uses
+        title={t("account.keys.deleteConfirm.title", {
+          name: deleteTarget?.name ?? deleteTarget?.key_prefix ?? "",
+        })}
+        description={
+          <Trans
+            i18nKey="account.keys.deleteConfirm.body"
+            values={{ prefix: `${deleteTarget?.key_prefix ?? ""}…` }}
+            components={[<span key="prefix" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("account.keys.deleteConfirm.confirm")}
+        pending={removeKey.isPending}
+        error={removeKey.error}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const what = deleteTarget.name ?? deleteTarget.key_prefix;
+          removeKey.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              setDeleteTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) =>
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorDetail(error),
+              }),
+          });
+        }}
+      />
 
       <RevealedKeyDialog minted={minted} onOpenChange={(open) => !open && setMinted(null)} />
     </PageBody>

@@ -189,14 +189,14 @@ export const DeleteRejectedByTheServer: Story = {
   beforeEach: recordUxEvents,
   render: () => (
     <Harness
-      fetchStub={scoped(async (input, init) => {
-        if (init?.method !== "DELETE") return loaded(input, init);
-        // a real round trip: an answer in the same tick lands pending and the
-        // refusal in one render, and ConfirmDialog reads the failure from the
-        // pending -> settled edge
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return json({ error: { message: "openai-prod is the target of 4 live routes" } }, 409);
-      })}
+      // answered in the same tick, so the pending render and the refusal land
+      // in one notify batch. the dialog reads the failure off the press rather
+      // than off a pending edge that never renders (#1761)
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "openai-prod is the target of 4 live routes" } }, 409)
+          : loaded(input, init),
+      )}
     >
       <UxScreenProvider screen="providers">
         <Toasted>

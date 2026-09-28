@@ -178,44 +178,19 @@ fn the_scan_finds_the_names_the_binaries_read() {
     assert!(files.iter().any(|p| p.ends_with("_helpers.tpl")));
 }
 
-/// Find every environment variable name declared via clap's `env = "..."` in the binary CLI definitions.
-fn binary_cli_env_vars() -> BTreeSet<String> {
-    let root = workspace_root();
-    let mut sources = Vec::new();
-    for crate_name in ["rolter-control", "rolter-gateway"] {
-        files_under(
-            &root.join("crates").join(crate_name).join("src"),
-            &["rs"],
-            &mut sources,
-        );
-    }
-    let mut vars = BTreeSet::new();
-    for path in sources {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        for (at, _) in text.match_indices("env = \"") {
-            let start = at + "env = \"".len();
-            let var: String = text[start..]
-                .chars()
-                .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
-                .collect();
-            if text[start + var.len()..].starts_with('"')
-                && (var.starts_with("ROLTER_") || var == "CLICKHOUSE_URL")
-            {
-                vars.insert(var);
-            }
-        }
-    }
-    vars
-}
-
 #[test]
 fn all_binary_cli_env_vars_are_documented_in_reference() {
-    let cli_vars = binary_cli_env_vars();
+    let mut vars = prefixed_names();
+    vars.insert("CLICKHOUSE_URL".to_string());
+    vars.retain(|v| {
+        !v.starts_with("ROLTER_TEST_") && !v.contains("_TEST_") && v != "ROLTER_MASTER_KEY"
+    });
+
     let ref_path = workspace_root().join("docs/user-docs/configuration/environment-variables.mdx");
     let text = std::fs::read_to_string(&ref_path).expect("environment-variables.mdx is readable");
 
     let mut missing = Vec::new();
-    for var in cli_vars {
+    for var in vars {
         if !text.contains(&var) {
             missing.push(var);
         }
@@ -223,7 +198,7 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
 
     assert!(
         missing.is_empty(),
-        "these CLI environment variables are read by the binaries but missing from docs/user-docs/configuration/environment-variables.mdx:\n  {}",
+        "these environment variables are read by the binaries but missing from docs/user-docs/configuration/environment-variables.mdx:\n  {}",
         missing.join("\n  ")
     );
 }

@@ -4,18 +4,28 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import ProviderGroups from "./ProviderGroups";
 import {
   Harness,
+  cancelConfirmation,
+  confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectNoUxEvent,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
+  recording,
   routes,
   scoped,
   Toasted,
   expectToast,
+  uxEvents,
+  type Recorder,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const GROUPS: ProviderGroupRow[] = [
   {
@@ -166,9 +176,12 @@ export const RefusedToAMember: Story = {
  *
  * A group is what routes fan out through, so one that is still referenced
  * cannot go — and the dialog has to stay open saying why rather than closing
- * over a group that is still live.
+ * over a group that is still live. The stub refuses in the same tick, which is
+ * the case `ConfirmDialog` used to miss (#1761): the refusal is a row of its
+ * own beside the press.
  */
 export const DeleteRejectedByTheServer: Story = {
+  beforeEach: recordUxEvents,
   render: () => (
     <Harness
       fetchStub={scoped(async (input, init) =>
@@ -177,9 +190,11 @@ export const DeleteRejectedByTheServer: Story = {
           : loaded(input, init),
       )}
     >
-      <Toasted>
-        <ProviderGroups />
-      </Toasted>
+      <UxScreenProvider screen="provider-groups">
+        <Toasted>
+          <ProviderGroups />
+        </Toasted>
+      </UxScreenProvider>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -188,11 +203,69 @@ export const DeleteRejectedByTheServer: Story = {
       await canvas.findByRole("button", { name: "Delete provider group frontier" }),
     );
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await userEvent.click(dialog.getByRole("button", { name: "Delete" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Delete group" }));
+    // read before the toast waits, so the queue's flush timer cannot drain them
+    await waitFor(() =>
+      expect(
+        uxEvents()
+          .filter((e) => e.action === "form_submit" && e.target === "provider-group-delete")
+          .map((e) => e.outcome),
+      ).toEqual(["ok", "error"]),
+    );
+    expectNoUxEvent("save_confirmed", "provider-group-delete");
 
     await expectToast(canvasElement, /still the target of 3 routes/, "error");
     await waitFor(() => expect(dialog.getByText(/still the target of 3 routes/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The delete confirms through the shared `ConfirmDialog` (#1760): the title
+ * names the group, a cancel sends nothing and is an abandon, and a confirm
+ * sends the DELETE and is a submit that lands as `save_confirmed`.
+ */
+let groupDeletes: Recorder;
+export const DeleteIsConfirmedAndReported: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    groupDeletes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE" ? json(null, 204) : loaded(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={groupDeletes.stub}>
+        <UxScreenProvider screen="provider-groups">
+          <ProviderGroups />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const remove = await canvas.findByRole("button", { name: "Delete provider group frontier" });
+    await userEvent.click(remove);
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Delete provider group frontier?",
+      }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    groupDeletes.expectNotSent("DELETE", "/provider-groups/");
+    const abandon = await expectUxEvent("form_abandon", "provider-group-delete");
+    await expect(abandon.screen).toBe("provider-groups");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "provider-group-delete");
+
+    await userEvent.click(remove);
+    // the body carries the address the group stops answering on
+    await confirmDestructive(/frontier\/model/, "Delete group");
+    await groupDeletes.expectSent("DELETE", "/provider-groups/g-1");
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "provider-group-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "provider-group-delete");
   },
 };
 

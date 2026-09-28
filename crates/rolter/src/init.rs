@@ -149,6 +149,18 @@ fn render_env(args: &InitArgs, secrets: &Secrets) -> String {
     );
     out.push_str(&format!("ROLTER_KEY_PEPPER={}\n\n", secrets.key_pepper));
 
+    out.push_str(
+        "# deployment-wide pepper mixed into the stored digests of sign-in sessions,\n\
+         # invitation links, scim tokens and mfa recovery codes, and into the failed-login\n\
+         # throttle's redis keys. it must be identical on every control-plane replica.\n\
+         # changing it ends every live session and voids open invitations, scim tokens\n\
+         # and recovery codes.\n",
+    );
+    out.push_str(&format!(
+        "ROLTER_SESSION_PEPPER={}\n\n",
+        secrets.session_pepper
+    ));
+
     out.push_str("# datastores\n");
     out.push_str(&format!(
         "ROLTER_DATABASE_URL={}\n",
@@ -195,6 +207,7 @@ struct Secrets {
     admin_token: String,
     internal_token: String,
     key_pepper: String,
+    session_pepper: String,
 }
 
 impl Secrets {
@@ -204,6 +217,7 @@ impl Secrets {
             admin_token: secret(),
             internal_token: secret(),
             key_pepper: secret(),
+            session_pepper: secret(),
         }
     }
 }
@@ -343,13 +357,20 @@ mod tests {
             admin_token: "admin".to_string(),
             internal_token: "internal".to_string(),
             key_pepper: "pepper".to_string(),
+            session_pepper: "session-pepper".to_string(),
         }
     }
 
     #[test]
     fn generated_secrets_are_distinct_and_full_length() {
         let s = Secrets::generate();
-        let all = [&s.kek, &s.admin_token, &s.internal_token, &s.key_pepper];
+        let all = [
+            &s.kek,
+            &s.admin_token,
+            &s.internal_token,
+            &s.key_pepper,
+            &s.session_pepper,
+        ];
         for value in all {
             assert_eq!(
                 value.len(),
@@ -397,6 +418,7 @@ mod tests {
             "ROLTER_ADMIN_TOKEN",
             "ROLTER_INTERNAL_TOKEN",
             "ROLTER_KEY_PEPPER",
+            "ROLTER_SESSION_PEPPER",
             "ROLTER_DATABASE_URL",
             "ROLTER_REDIS_URL",
         ] {
@@ -406,6 +428,26 @@ mod tests {
                 .find(|l| l.starts_with(&line))
                 .unwrap_or_else(|| panic!("{var} missing from:\n{env}"));
             assert_ne!(value, line, "{var} was written empty");
+        }
+    }
+
+    #[test]
+    fn each_secret_is_written_under_its_own_name() {
+        // `Secrets` keeps the values apart; this pins that the renderer does not
+        // put one of them under a second name, the two peppers above all
+        let env = render_env(&args(Profile::Production), &fixed_secrets());
+        for (var, value) in [
+            ("ROLTER_KEK", "kek"),
+            ("ROLTER_ADMIN_TOKEN", "admin"),
+            ("ROLTER_INTERNAL_TOKEN", "internal"),
+            ("ROLTER_KEY_PEPPER", "pepper"),
+            ("ROLTER_SESSION_PEPPER", "session-pepper"),
+        ] {
+            let line = format!("{var}={value}");
+            assert!(
+                env.lines().any(|l| l == line),
+                "{line} missing from:\n{env}"
+            );
         }
     }
 

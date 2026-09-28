@@ -37,3 +37,8 @@
 
 **Learning:** Users lack visibility during async playground actions if only the disabled state is used without a loading spinner.
 **Action:** When creating async buttons in complex forms like the playground, always pair the `disabled={busy}` property with a `<Loader2 className="animate-spin" />` state to provide clear visual feedback.
+
+## 2026-09-10 - SCIM Token Revocation ConfirmDialog
+
+**Learning:** Hand-rolled `<Dialog>` implementations for destructive actions often miss inline error displays, UX telemetry (`useFormTelemetry`), and pending spinner states on the confirm button.
+**Action:** Always replace hand-rolled destructive dialogs with the shared `ConfirmDialog` component (`name="<action-slug>"`), passing `pending` and `error` from the mutation so failures are reported directly inside the open dialog.

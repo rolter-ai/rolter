@@ -20,3 +20,8 @@
 
 **Learning:** `expect()` or `unwrap()` calls on network message frames (like ZeroMQ telemetry messages) create potential panic points if network frames are malformed or truncated. Replacing them with `.try_into().ok()` and `message.get(...)` prevents gateway crashes.
 **Prevention:** Always convert slice conversions and index accesses on network messages to safe `Option`/`Result` matching instead of using `.expect()` or `.unwrap()`.
+
+## 2026-09-25 - [Redact Internal Store Errors in SCIM 500 Responses]
+
+**Learning:** HTTP 500 error responses generated during SCIM error conversions (`From<rolter_core::Error>` and `From<ApiError>`) in `rolter-control` previously echoed internal error strings (`other.to_string()`) directly into the SCIM JSON error response detail, potentially leaking internal store errors or database connection details.
+**Prevention:** Always log internal error details using `tracing::warn!` or `tracing::error!` and return a generic, sanitized error detail (such as `"internal server error"`) in API HTTP error response bodies.

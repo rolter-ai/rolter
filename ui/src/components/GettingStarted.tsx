@@ -13,8 +13,9 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
-import { useGate, type Capability } from "@/lib/can";
+import { splitCapability, useCan, useCapabilities, useGate, type Capability } from "@/lib/can";
 import { gatewayBaseUrl } from "@/lib/gateway";
+import { classifyLoadError } from "@/lib/load-error";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +30,19 @@ import { cn } from "@/lib/utils";
 // surface is that it goes away.
 
 const DISMISSED_KEY = "rolter.getting-started.dismissed";
+
+/**
+ * The capability each setup step's destination asks for.
+ *
+ * The Playground call is left out on purpose: it needs no role, so every
+ * signed-in caller could act on it, and a card that is one open link above
+ * three refusals is not a checklist for that caller.
+ */
+const SETUP_GATES = {
+  provider: "provider:create",
+  route: "route:create",
+  key: "virtual_key:create",
+} as const satisfies Record<string, Capability>;
 
 function readDismissed(): boolean {
   try {
@@ -135,28 +149,48 @@ export interface GettingStartedProps {
  * reloading, or another admin doing the work, updates it. The card retires
  * itself once the deployment has both traffic and a provider — traffic alone
  * can be one `fake-llm` call in the Playground, which is step one of five.
+ *
+ * It is written for whoever sets the deployment up, so a caller the control
+ * plane refuses every setup step never sees it (#1848). Before that, a member
+ * or a viewer opened the Dashboard on "You do not have access to the setup
+ * checklist" — an error about a card whose every step was an admin task.
  */
 export function GettingStarted({ requests }: GettingStartedProps) {
   const { t } = useTranslation();
   const scope = useScope();
+  const can = useCan();
+  const capabilities = useCapabilities();
   const [dismissed, setDismissed] = React.useState(readDismissed);
+
+  // an explicit "no" on every setup step. `undefined` is "not known yet" and
+  // counts as allowed, so a control plane that cannot answer the question
+  // still shows the card and leaves the 403 to say the rest
+  const refused = Object.values(SETUP_GATES).every(
+    (gate) => can(...splitCapability(gate)) === false,
+  );
+  // under a provider whose answer is still in flight the card waits for it:
+  // shown and then retracted reads as broken, and the three lists below would
+  // be sent only to be refused. outside a provider (a story, a test) there is
+  // no answer coming, so there is nothing to wait for
+  const awaitingGate = capabilities !== null && !capabilities.resolved;
+  const audience = !awaitingGate && !refused;
 
   const providers = useQuery({
     queryKey: ["providers", scope.orgId],
     queryFn: () => fetchProviders(scope.orgId as string),
-    enabled: !!scope.orgId,
+    enabled: audience && !!scope.orgId,
     retry: false,
   });
   const routes = useQuery({
     queryKey: ["routes", scope.projectId],
     queryFn: () => fetchRoutes(scope.projectId as string),
-    enabled: !!scope.projectId,
+    enabled: audience && !!scope.projectId,
     retry: false,
   });
   const keys = useQuery({
     queryKey: ["virtual-keys", scope.projectId],
     queryFn: () => fetchVirtualKeys(scope.projectId as string),
-    enabled: !!scope.projectId,
+    enabled: audience && !!scope.projectId,
     retry: false,
   });
 
@@ -171,6 +205,18 @@ export function GettingStarted({ requests }: GettingStartedProps) {
     writeDismissed(false);
     setDismissed(false);
   };
+
+  if (!audience) return null;
+
+  // a list this caller may not read says the checklist is not theirs to work
+  // through — the gate could not say so (a control plane without the
+  // effective-permissions route, or a role held below the org the provider
+  // list is read at) and the list did. that is an answer, not an outage, so
+  // it never becomes a load error on the first screen they open
+  const unreadable = [providers.error, routes.error, keys.error].some(
+    (error) => error != null && classifyLoadError(error) === "forbidden",
+  );
+  if (unreadable) return null;
 
   // configured and serving: the card has said everything it has to say
   if (hasTraffic && hasProvider) return null;
@@ -191,18 +237,18 @@ export function GettingStarted({ requests }: GettingStartedProps) {
 
   const steps: Step[] = [
     { key: "call", done: hasTraffic, to: "/playground" },
-    { key: "provider", done: hasProvider, to: "/providers", gate: "provider:create" },
+    { key: "provider", done: hasProvider, to: "/providers", gate: SETUP_GATES.provider },
     {
       key: "route",
       done: (routes.data?.length ?? 0) > 0,
       to: "/routing-rules",
-      gate: "route:create",
+      gate: SETUP_GATES.route,
     },
     {
       key: "key",
       done: (keys.data?.length ?? 0) > 0,
       to: "/virtual-keys",
-      gate: "virtual_key:create",
+      gate: SETUP_GATES.key,
     },
   ];
 

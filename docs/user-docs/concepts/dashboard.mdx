@@ -33,6 +33,8 @@ A fresh deployment opens the Dashboard on a **Getting started** card: the four s
 
 Each step is ticked from the deployment itself, not from a checklist kept in your browser: a step reads as done when the row exists, so work another administrator did shows up on reload. A step whose form your role may not open is shown as a disabled button naming the role it needs, rather than a link into a screen that would refuse you.
 
+The card is for whoever sets the deployment up. If your role can add none of a provider, a route or a virtual key (a member or a viewer, typically), the Dashboard opens straight on its traffic panels and the card is not shown at all. The same happens when your role may not read the providers, routes or keys it would tick off. Neither case is reported as an error.
+
 **Dismiss** hides the card and leaves a **Getting started** button in its place, so it is never gone for good. It retires itself once the deployment has both a provider and traffic — traffic on its own can be a single Playground call, which is step one.
 
 ## The left rail
@@ -46,7 +48,7 @@ Everything lives under one of these groups. Screens you cannot read with your ro
 | **Models**                                   | Model Catalog, Providers, Provider Groups, Budgets & Limits, Routing Rules, Complexity Router, Circuit Breaker, Pricing Overrides, Model Settings.                                                                                                                  |
 | **MCP Gateway**                              | MCP Catalog, Library, Tool Groups, Auth Sessions, OAuth Grants, MCP Settings.                                                                                                                                                                                       |
 | **Plugins**                                  | Webhook plugins in the request/response pipeline.                                                                                                                                                                                                                   |
-| **Alerting**                                 | Channels, Rules, History.                                                                                                                                                                                                                                           |
+| **Alerting**                                 | Channels, Rules, History. See [Alerting](/observability/alerting).                                                                                                                                                                                                  |
 | **Governance**                               | Virtual Keys, Users, Teams, Business Units, Customers, User Provisioning (SCIM), Single sign-on, Roles & Permissions, Access Profiles, Audit Logs.                                                                                                                  |
 | **Guardrails**                               | Rules and providers for content, PII and safety checks.                                                                                                                                                                                                             |
 | **Cluster Config**                           | The gateways that poll this control plane. A gateway names itself from `ROLTER_NODE_ID`, else `HOSTNAME`, else the host's own name, and logs which one it used at boot. Set `ROLTER_NODE_ID` when several gateways share a host, or they all heartbeat as one node. |
@@ -130,6 +132,10 @@ The Playground authenticates to the gateway like any other client, with a virtua
 - It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it.
 - It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
 - It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
+
+A new key takes a few seconds to reach the gateway, which learns about keys on its next config poll (every 5 seconds by default, `ROLTER_SNAPSHOT_POLL_SECS`). Until then the model picker says it is waiting and keeps the built-in `fake-llm` selected, asking again with a growing pause for about ten seconds. Once the gateway accepts the key, the picker lists what the gateway serves and selects the first route in it.
+
+If the gateway never accepts the key, the picker falls back to the configured routes and says so. That list leaves out routes the control plane is not sending to the gateway (the **Providers** screen lists them as config entries not being served to gateways), says how many it left out, and opens on a route that is served. When rolter cannot tell which routes those are, it keeps `fake-llm` selected rather than guess.
 
 A project with no routes cannot mint one: there would be nothing for the key to address, so the screen says so instead. Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
 

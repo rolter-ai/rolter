@@ -84,13 +84,13 @@ templates that end in `.yaml` and no YAML parser can read), `crates/*/CHANGELOG.
 (release-plz regenerates them), `CLAUDE.md` (a symlink to `AGENTS.md`),
 `docs/dev-docs/book/` and the other build outputs.
 
-`.github/workflows/` is excluded for a less obvious reason.
-`scripts/check-release-handoff.sh` asserts the release pipeline is still wired by
-grepping the workflow files as text, and several of its patterns require a
-`needs: [a, b, c]` list to be on one line. Prettier reflows a long one into a
-block flow sequence, which changes nothing the runner sees and fails the check
-immediately. Until that script parses YAML instead of grepping it (#1723), the
-workflows stay unformatted; `actionlint` and `zizmor` already own them.
+`.github/workflows/` is formatted like any other YAML. It was excluded at first
+because the release-handoff check grepped the workflow files as text, and a
+`needs: [a, b, c]` list that prettier reflowed onto several lines failed it
+without changing anything the runner sees. `scripts/check-release-handoff.py`
+now reads the workflows as parsed YAML ([#1723]), so a workflow can be laid out
+however prettier likes. `actionlint` and `zizmor` still audit what the
+workflows do; prettier only owns how they are laid out.
 
 ## The one-time reformat
 
@@ -103,11 +103,16 @@ after one config:
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
-The reformat's own SHA is not in it yet, and deliberately so: this repository
-squash-merges, so the SHA a branch carries is not the SHA that lands on master,
-and an entry naming a commit master has never seen is ignored in silence — which
-reads as done while blaming exactly as badly as before. Filling it in after the
-merge is #1741.
+The SHA it lists is the one master got, recorded after the merge ([#1741]):
+this repository squash-merges, so the SHA a branch carries is not the SHA that
+lands on master, and an entry naming a commit master has never seen is ignored
+in silence, which reads as done while blaming exactly as badly as before.
+
+`.github/workflows/` joined the formatted set later, in [#1723]. That reformat
+is two hunks in `release.yml` (a comment's spacing and the `verify-parity`
+`needs` list), and it landed in the same squash as the rewritten
+release-handoff check, so that commit is not formatter output alone and is not
+listed.
 
 Gating only _changed_ files was the alternative and was rejected: a
 per-file-changed gate leaves the tree permanently half-formatted, so the
@@ -125,3 +130,5 @@ link target would break the book build or the docs site silently. The
 for the same reason.
 
 [#1695]: https://github.com/rolter-ai/rolter/issues/1695
+[#1723]: https://github.com/rolter-ai/rolter/issues/1723
+[#1741]: https://github.com/rolter-ai/rolter/issues/1741

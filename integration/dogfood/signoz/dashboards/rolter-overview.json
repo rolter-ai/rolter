@@ -1,5 +1,6 @@
 {
   "title": "rolter · overview",
+  "version": "v5",
   "description": "Traffic, latency and errors across the gateway, the control plane and the dashboard. Imported by `just dogfood` (#956). Panels query signoz_traces directly rather than using the query builder, so they keep working when the builder's shape changes between SigNoz releases.",
   "tags": ["rolter", "provisioned"],
   "variables": {},

@@ -7,8 +7,12 @@
 //! (`{since:DateTime64}` / `param_since=…`), never interpolated into SQL. The
 //! only value spliced into SQL text is the time bucket, which is validated
 //! against a fixed whitelist first.
+//!
+//! Every handler here reads its query string through [`crate::time_bounds`]'s
+//! `Query`, not axum's, so a `since`/`until` ClickHouse would misread as the
+//! epoch is a `400` before any SQL is built (#1192).
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -17,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::analytics_access::{AnalyticsAccess, PAYLOAD_VISIBLE, ROW_VISIBLE};
+use crate::time_bounds::{is_time_bound, InvalidParam, Query, TimeBounds};
 
 /// Minimal ClickHouse HTTP read client.
 #[derive(Clone)]
@@ -179,6 +184,12 @@ pub struct WindowQuery {
     pub(crate) bucket: Option<String>,
 }
 
+impl TimeBounds for WindowQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        (self.since.as_deref(), self.until.as_deref())
+    }
+}
+
 /// Build the `param_*` bindings for the time window, applying defaults.
 pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
     vec![
@@ -258,6 +269,10 @@ pub(crate) fn clamp_limit(limit: Option<u32>) -> u32 {
 ///
 /// `id_label` only names the id half in the rejection message, so each list
 /// tells the caller which column its cursor is over.
+///
+/// The timestamp half has to be one [`is_time_bound`] accepts. It reaches the
+/// same `OrZero` parse as a window bound, so a cursor edited by hand used to
+/// resume from the epoch and read as the end of the list (#1192).
 pub(crate) fn parse_keyset_cursor(
     cursor: Option<&str>,
     id_label: &str,
@@ -271,6 +286,12 @@ pub(crate) fn parse_keyset_cursor(
     };
     if timestamp.is_empty() || id.is_empty() || timestamp.len() > 64 || id.len() > 256 {
         return Err(malformed());
+    }
+    if !is_time_bound(timestamp) {
+        return Err(format!(
+            "cursor must be timestamp|{id_label}, and its timestamp does not parse; \
+             send the previous page's next_cursor back unchanged"
+        ));
     }
     Ok((timestamp.to_string(), id.to_string()))
 }
@@ -448,6 +469,12 @@ pub struct AttributionQuery {
     pub(crate) include_unattributed: bool,
 }
 
+impl TimeBounds for AttributionQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        (self.since.as_deref(), self.until.as_deref())
+    }
+}
+
 /// Spend and usage grouped by a governance dimension. Rows the key left
 /// unattributed are excluded unless `include_unattributed=true`, so a
 /// business-unit chargeback report is not skewed by an empty bucket.
@@ -522,6 +549,12 @@ pub struct InvocationsQuery {
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
     /// `next_cursor`; omitted for the first page
     pub(crate) cursor: Option<String>,
+}
+
+impl TimeBounds for InvocationsQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        (self.since.as_deref(), self.until.as_deref())
+    }
 }
 
 /// Build the per-invocation list query for a whitelisted `status_expr`.
@@ -643,13 +676,7 @@ async fn invocations(
     };
     let (cursor_ts, cursor_id) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
         Ok(cursor) => cursor,
-        Err(message) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": {"message": message}})),
-            )
-                .into_response()
-        }
+        Err(message) => return InvalidParam::cursor(message).into_response(),
     };
     let limit = clamp_limit(q.limit);
     let sql = invocations_sql(status_expr);
@@ -917,6 +944,29 @@ mod tests {
         );
         assert!(parse_keyset_cursor(Some("|req-7"), "request_id").is_err());
         assert!(parse_keyset_cursor(Some("2026-07-19 12:00:00.000|"), "request_id").is_err());
+    }
+
+    #[test]
+    fn an_invocations_cursor_timestamp_must_parse() {
+        // the timestamp reaches the same `OrZero` parse as a window bound, so a
+        // bad one used to resume from the epoch instead of failing (#1192)
+        for timestamp in [
+            "not-a-date",
+            "2026-02-30 12:00:00.000",
+            "2026-07-19t12:00:00z",
+        ] {
+            let error = parse_keyset_cursor(Some(&format!("{timestamp}|req-7")), "request_id")
+                .expect_err(timestamp);
+            assert!(error.contains("timestamp|request_id"), "{error}");
+            assert!(error.contains("does not parse"), "{error}");
+        }
+        // every form a page hands out, and the rfc 3339 a caller may write
+        for timestamp in ["2026-07-19 12:00:00.000", "2026-07-19T12:00:00.000Z"] {
+            assert!(
+                parse_keyset_cursor(Some(&format!("{timestamp}|req-7")), "request_id").is_ok(),
+                "{timestamp}"
+            );
+        }
     }
 
     #[test]

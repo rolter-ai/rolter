@@ -13,10 +13,18 @@ import {
   expectSkeleton,
   expectToast,
   withCapabilities,
+  cancelConfirmation,
+  confirmDestructive,
+  expectNoUxEvent,
+  expectUxEvent,
+  recordUxEvents,
+  recording,
+  type Recorder,
   type StoryRole,
 } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
 const TEAM = "00000000-0000-4000-8000-000000000012";
@@ -123,7 +131,16 @@ function loadedStub(): FetchStub {
   };
 }
 
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  screen: uxScreen,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  /** the key the app shell's UxScreenProvider supplies, for a story asserting the UX stream */
+  screen?: string;
+}) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
@@ -139,11 +156,12 @@ function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }
     },
     [],
   );
-  const screen = (
+  const page = (
     <div className="h-screen bg-[color:var(--surface-app)]">
       <SkillsRepository />
     </div>
   );
+  const screen = uxScreen ? <UxScreenProvider screen={uxScreen}>{page}</UxScreenProvider> : page;
   return (
     <QueryClientProvider client={client}>
       <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
@@ -329,25 +347,45 @@ export const ConfirmsRollback: Story = {
   },
 };
 
+/**
+ * Deleting confirms through the shared `ConfirmDialog` (#1760), with the slug
+ * typed back as its `children`: the title names the row, a cancel sends
+ * nothing and is an abandon, and the confirm stays locked until the slug
+ * matches, then sends the DELETE and lands as `save_confirmed`.
+ */
+let deletes: Recorder;
 export const RequiresSlugToDeleteSkill: Story = {
-  render: () => <Harness fetchStub={loadedStub()} />,
+  beforeEach: recordUxEvents,
+  render: () => {
+    deletes = recording(loadedStub());
+    return <Harness fetchStub={deletes.stub} screen="skills-repo" />;
+  },
   play: async ({ canvas, canvasElement }) => {
-    await userEvent.click(
-      await canvas.findByRole("button", { name: "Delete Incident coordinator" }),
-    );
+    const remove = await canvas.findByRole("button", { name: "Delete Incident coordinator" });
+    await userEvent.click(remove);
     const page = within(canvasElement.ownerDocument.body);
-    const dialog = within(await page.findByRole("dialog"));
     await expect(
-      dialog.getByRole("heading", { name: "Delete Incident coordinator?" }),
+      await page.findByRole("heading", { name: "Delete skill Incident coordinator?" }),
     ).toBeVisible();
-    // retiring is offered as the reversible alternative
-    await expect(dialog.getByText(/Retire it instead/)).toBeVisible();
+    await cancelConfirmation();
+    deletes.expectNotSent("DELETE", "/skills/");
+    const abandon = await expectUxEvent("form_abandon", "skill-delete");
+    await expect(abandon.screen).toBe("skills-repo");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "skill-delete");
+
+    await userEvent.click(remove);
+    const dialog = within(await page.findByRole("dialog"));
     const confirm = dialog.getByRole("button", { name: "Delete skill" });
+    // the destructive action stays locked until the slug is typed back
     await expect(confirm).toBeDisabled();
     await userEvent.type(dialog.getByRole("textbox"), "incident-coordinator");
-    await waitFor(() => expect(confirm).toBeEnabled());
-    await userEvent.click(confirm);
+    await confirmDestructive(/Retire it instead/, "Delete skill");
+    await deletes.expectSent("DELETE", `/skills/${SKILL}`);
     await waitFor(() => expect(canvas.getByText("Share your first skill")).toBeVisible());
+    const submit = await expectUxEvent("form_submit", "skill-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "skill-delete");
   },
 };
 

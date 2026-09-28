@@ -482,6 +482,29 @@ export function fetchConfigProblems(): Promise<string[]> {
   return getJson<{ problems: string[] }>("/api/v1/config/problems").then((r) => r.problems);
 }
 
+// the one line `RolterConfig::sanitize_for_snapshot` (crates/rolter-core/src/
+// config.rs) writes for a route it prunes. greedy, so a model name that itself
+// contains a quote still comes out whole
+const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot:/;
+
+/**
+ * The routes `/api/v1/config/problems` reports as left out of the gateway's
+ * snapshot, and so not served (#1853).
+ *
+ * The endpoint reports sentences rather than records, so this reads the one
+ * shape written for a pruned route and ignores every other line. A provider
+ * dropped for its own defect needs no line of its own here: a route left with
+ * no target on a known provider is pruned after it, and reported as such.
+ */
+export function unservedRoutes(problems: readonly string[] | undefined): Set<string> {
+  const routes = new Set<string>();
+  for (const problem of problems ?? []) {
+    const match = OMITTED_ROUTE.exec(problem);
+    if (match) routes.add(match[1]);
+  }
+  return routes;
+}
+
 /**
  * The whole deployment's configuration as an importable `rolter.toml` (#1082).
  *
@@ -1819,6 +1842,21 @@ export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
   return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
 }
 
+/**
+ * A partial edit of a budget (#1285). An omitted field is left as it is;
+ * `unpriced_policy: null` drops the override so the budget inherits the
+ * deployment-wide setting again. The scope is not editable.
+ */
+export interface UpdateBudgetInput {
+  limit_usd?: string;
+  period?: string;
+  unpriced_policy?: UnpricedPolicy | null;
+}
+
+export function updateBudget(id: string, input: UpdateBudgetInput): Promise<BudgetRow> {
+  return sendJson<BudgetRow>("PATCH", `/api/v1/budgets/${id}`, input);
+}
+
 export function deleteBudget(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/budgets/${id}`);
 }
@@ -1847,6 +1885,20 @@ export function fetchRateLimits(scopeType: string, scopeId: string): Promise<Rat
 
 export function createRateLimit(input: CreateRateLimitInput): Promise<RateLimitRow> {
   return sendJson<RateLimitRow>("POST", "/api/v1/rate-limits", input);
+}
+
+/**
+ * A partial edit of a rate limit (#1285): an omitted cap is left alone and
+ * `null` lifts it. The control plane refuses an edit that would leave neither
+ * cap, since such a limit admits everything.
+ */
+export interface UpdateRateLimitInput {
+  rpm?: number | null;
+  tpm?: number | null;
+}
+
+export function updateRateLimit(id: string, input: UpdateRateLimitInput): Promise<RateLimitRow> {
+  return sendJson<RateLimitRow>("PATCH", `/api/v1/rate-limits/${id}`, input);
 }
 
 export function deleteRateLimit(id: string): Promise<void> {

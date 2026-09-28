@@ -207,8 +207,9 @@ unpriced_policy = "block"   # this team refuses what it cannot account for
 ```
 
 In the dashboard the same field is on **Limits → Add budget**, as _Unpriced
-traffic_. Leaving it at _Inherit deployment setting_ is what every budget does
-by default, and is how every budget created before this field existed behaves.
+traffic_, and on the edit form of an existing budget. Leaving it at _Inherit
+deployment setting_ is what every budget does by default, and is how every
+budget created before this field existed behaves.
 
 Resolution is **most-restrictive-wins** (`ignore` < `warn` < `block`) across
 everything that applies to the request — the deployment setting and every
@@ -272,6 +273,44 @@ rpm = 2000
 </Note>
 
 Like budgets, rate limits follow **most-restrictive-wins** across the scope chain. A per-key limit can throttle a client well below the project-level ceiling, and an org-level limit acts as a global backstop.
+
+## Changing a budget or rate limit
+
+Budgets and rate limits stored in the database are edited in place. On the
+dashboard's **Budgets & Limits** screen, the pencil on a budget or rate-limit
+card opens the same form used to create one, filled in with the current values.
+Only the fields you change are sent. On a rate limit, clearing a field lifts
+that cap, and at least one of the two has to stay.
+
+Over the API the same edit is `PATCH /api/v1/budgets/{id}` or
+`PATCH /api/v1/rate-limits/{id}`. See
+[Budgets & rate limits API](/api/budgets-and-rate-limits) for the body and its
+rules. Editing takes the `admin` role on the scope the cap lives on, the same
+as creating or deleting one.
+
+An edit is a single write, so a gateway sees the old cap or the new one and
+never a moment with no cap on the scope. That is the reason to prefer it over
+deleting a budget and creating a new one. What happens to spend already counted:
+
+- **Changing the limit** keeps it. Spend is counted per scope and period
+  window, not per budget row, so raising a $500 monthly cap to $750 halfway
+  through the month leaves the $300 already spent in place.
+- **Changing the period** moves the budget onto the new window's counter, for
+  example today's for a switch to `daily`.
+
+Budgets defined in `rolter.toml` are edited in the file, and a gateway running
+from that file needs a restart to apply them; see
+[Hot Reload](/configuration/hot-reload).
+
+## Realtime sessions
+
+A [`/v1/realtime`](/api/realtime) WebSocket session is held to the same budgets and rate limits, on the same scope chain as the key that opens it:
+
+- **Opening a session** is refused with `402` when a budget is spent (or `model_unpriced` applies), and with `429` when an `rpm` or `tpm` window is full. It counts as one request against `rpm`.
+- **While it runs**, each finished model response is priced from the usage the provider reports and charged to every applicable budget and `tpm` limit. Charges land every `[realtime] usage_flush_secs` (15 seconds by default), so a session that stays open for hours is accounted as it goes.
+- **When a budget runs out mid-session**, the session is closed at the next flush with an `error` event (code `insufficient_quota`) and a `1008` close frame, whether this session or other traffic spent the budget. A session can overspend by at most one flush window plus the response in flight.
+
+A full `tpm` window refuses the key's next session or request but does not close one already open. The process-local `[realtime]` caps (`max_connections`, `max_session_secs`, `idle_timeout_secs`) still apply on top: they protect the gateway, while budgets and rate limits are the per-tenant policy.
 
 ## How counters work
 

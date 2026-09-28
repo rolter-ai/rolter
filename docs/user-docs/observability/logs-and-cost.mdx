@@ -45,6 +45,8 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | `error`             | String        | Error message if the request failed; empty on success                                                                                 |
 | `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
 
+A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
+
 <Note>
   `ts` is the moment the request began, so `ts + latency_ms` is when it finished. Rows written by a Rolter older than 1.0 have no `ts` of their own and fall back to the ClickHouse column default, which records the moment their **batch was flushed** — in that data a burst of requests shares one millisecond and ordering inside a batch is arbitrary. Only rows written by a current gateway carry the true request time.
 
@@ -205,6 +207,33 @@ where withheld = 1 and ts > now() - interval 30 day;
 
 `usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. It is also set on a `502` whose upstream answered and then failed to deliver the body the gateway was reading (a reset, a truncated response): the provider may have billed an answer nobody received. Rows written before these columns existed default to `0`.
 
+## Time windows
+
+Every usage, spend, provider-health and MCP-log read takes an optional `since` (inclusive) and `until` (exclusive). Left out, or sent empty, they cover the last 7 days up to now. Each accepts:
+
+- RFC 3339, which is what `Date.prototype.toISOString()` and most SDKs write: `2026-07-01T00:00:00Z`, `2026-07-01T00:00:00.123+02:00`
+- a date and time with no offset, read in the ClickHouse server's time zone: `2026-07-01 00:00:00`, `2026-07-01T00:00:00.000`
+- a bare date: `2026-07-01`
+
+Anything else is refused with `400` and an error naming the parameter:
+
+```json
+{
+  "error": {
+    "message": "since must be an RFC 3339 timestamp such as 2026-07-01T00:00:00Z",
+    "type": "invalid_request_error",
+    "param": "since",
+    "code": "invalid_time_bound"
+  }
+}
+```
+
+That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or `z`, and a Unix timestamp; send those as RFC 3339 instead. The check exists because ClickHouse reads a bound it cannot parse as 1970-01-01, so without it a typo would scan the whole log rather than fail.
+
+<Warning>
+  Percent-encode the `+` of a positive offset as `%2B`. A query string decodes a bare `+` to a space, so `since=2026-07-01T00:00:00+02:00` arrives as `2026-07-01T00:00:00 02:00` and is refused, with a message that says so.
+</Warning>
+
 ## Paging the invocation log
 
 `GET /api/v1/analytics/invocations` returns one page of requests plus the cursor that resumes it:
@@ -222,7 +251,7 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 The cursor is a position in the list's sort key — `(ts, request_id)`, newest first — not a row number, and this is what makes paging a live log correct. `request_logs` is written continuously by the gateway, so requests land above the window while you read: a row offset would count them in and either serve you a row you already saw or skip one entirely. A keyset bound cannot be moved by rows above it, so every request that existed when you started paging is returned exactly once. `request_id` breaks ties, so two requests logged in the same millisecond still have one order.
 
-Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50.
+Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
   Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.

@@ -138,10 +138,10 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
     SubsystemStability {
         id: "realtime",
         stability: Stability::Experimental,
-        note: "the /v1/realtime websocket relay is outside the request-path \
-               subsystems: a session is admitted against process-local caps \
-               only, and is not metered by budgets, rate limits, guardrails, \
-               usage recording or cost attribution",
+        note: "guardrails, the PII sanitizer and plugins do not run on \
+               /v1/realtime session events: a session meets budgets and rate \
+               limits and its usage is recorded, but what it carries reaches \
+               the provider without a content check (#1880)",
         nav_keys: &[],
     },
     SubsystemStability {

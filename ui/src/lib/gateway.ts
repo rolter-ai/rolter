@@ -75,16 +75,96 @@ function authHeaders(json = true): Record<string, string> {
   return headers;
 }
 
+/**
+ * A gateway answer that was not a success, carrying the status it came with.
+ *
+ * The message is what the operator reads; the status is what the caller
+ * branches on, since "the key is not live yet" and "the gateway is down" call
+ * for different next steps (#1853).
+ */
+export class GatewayError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "GatewayError";
+    this.status = status;
+  }
+}
+
 // surface the gateway's OpenAI-style `{"error":{"message":...}}` body, else status
-async function gwError(res: Response): Promise<Error> {
+async function gwError(res: Response): Promise<GatewayError> {
   try {
     const body = (await res.json()) as { error?: { message?: string } };
-    if (body?.error?.message) return new Error(body.error.message);
+    if (body?.error?.message) return new GatewayError(body.error.message, res.status);
   } catch {
     // not json
   }
-  if (res.status === 401) return new Error(i18n.t("errors.gateway.unauthorized"));
-  return new Error(i18n.t("errors.gateway.requestFailed", { status: res.status }));
+  if (res.status === 401) {
+    return new GatewayError(i18n.t("errors.gateway.unauthorized"), res.status);
+  }
+  return new GatewayError(
+    i18n.t("errors.gateway.requestFailed", { status: res.status }),
+    res.status,
+  );
+}
+
+/** The backoff a freshly minted key is given to reach the gateway. */
+export interface KeyPropagationTiming {
+  /** total time spent waiting between attempts before giving up */
+  budgetMs: number;
+  /** the wait before the first retry; each later one doubles it */
+  firstDelayMs: number;
+  /** the longest single wait, so the last attempts still land close together */
+  maxDelayMs: number;
+}
+
+// the gateway learns about a new key from its snapshot poll, every 5 s by
+// default (`ROLTER_SNAPSHOT_POLL_SECS`). one interval is the worst case when
+// the key lands just after a poll; the second is room for a poll that was slow
+// to answer
+const KEY_PROPAGATION: KeyPropagationTiming = {
+  budgetMs: 10_000,
+  firstDelayMs: 250,
+  maxDelayMs: 2_000,
+};
+
+let keyPropagation: KeyPropagationTiming = KEY_PROPAGATION;
+
+/**
+ * How long to wait before asking the gateway again, after `failures + 1`
+ * failed attempts. `failures` counts from zero, the way TanStack Query's
+ * `retryDelay` receives it.
+ */
+export function keyPropagationDelay(failures: number): number {
+  return Math.min(keyPropagation.firstDelayMs * 2 ** failures, keyPropagation.maxDelayMs);
+}
+
+/**
+ * Whether a gateway call made with a key rolter has just minted is worth
+ * making again (#1853).
+ *
+ * The mint answers as soon as the row is written, but the gateway only learns
+ * about the key on its next snapshot poll, so the first call made with it
+ * answers `401` for a few seconds. Only a `401` is waited out: any other
+ * failure says something about the gateway rather than about the key, and
+ * retrying it would only delay the fallback the screen shows for it. The
+ * total wait is bounded by the budget, so a key the gateway never accepts
+ * still ends in the fallback rather than in a spinner.
+ */
+export function awaitingMintedKey(failures: number, error: unknown): boolean {
+  if (!(error instanceof GatewayError) || error.status !== 401) return false;
+  let waited = 0;
+  for (let n = 0; n <= failures; n += 1) waited += keyPropagationDelay(n);
+  return waited <= keyPropagation.budgetMs;
+}
+
+/**
+ * Shorten (or restore, with `null`) the propagation backoff, so a story can
+ * reach the "never accepted" fallback without waiting out ten real seconds.
+ */
+export function setKeyPropagationForTests(timing: Partial<KeyPropagationTiming> | null): void {
+  keyPropagation = timing ? { ...KEY_PROPAGATION, ...timing } : KEY_PROPAGATION;
 }
 
 /** One addressable id from the gateway's own catalogue. */
@@ -105,7 +185,9 @@ export interface GatewayModel {
  * Playground — the one screen whose job is to send it a request.
  *
  * Needs a virtual key, because it is a gateway call like any other; callers
- * fall back to the control-plane list when there is no key to use.
+ * fall back to the control-plane list when there is no key to use. A refusal
+ * throws a {@link GatewayError}, so the caller can tell a key the gateway has
+ * not picked up yet from one it never will.
  */
 export async function fetchGatewayModels(signal?: AbortSignal): Promise<GatewayModel[]> {
   const res = await fetch(`${GW_BASE}/v1/models`, {

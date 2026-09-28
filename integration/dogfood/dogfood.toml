@@ -2,8 +2,18 @@
 #
 #   bun integration/dogfood/fleet.ts        # the 15 fake upstreams
 #   source integration/dogfood/keys.env     # the keys they expect
-#   cargo run -p rolter-store --features postgres --bin rolter-seed -- \
-#       --import integration/dogfood/dogfood.toml
+#   cargo run -p rolter-control --features postgres --bin rolter-seed -- \
+#       --import integration/dogfood/dogfood.toml   # or: just dogfood-seed
+#
+# This is desired state for `rolter-seed --import`, not a gateway config: no
+# running process reads it, and the gateway runs on `gateway.toml` (#1288). The
+# importer writes the providers, groups and routes, and `[logging.payload_capture]`
+# into the `logging_settings` row. Every other section here (`[server]`,
+# `[logging].clickhouse_url`) is accepted and never written, and so would an
+# `[adaptive_routing]` be (#1818): `just dogfood` turns that switch on through
+# the API instead (#1817). `[logging.payload_capture]` is also in
+# `gateway.toml`; keep the two copies equal. See "Which config file does what"
+# in README.md.
 #
 # The point of this file is that every routing strategy has a route an operator
 # can actually exercise, against targets whose latencies differ enough that the
@@ -34,9 +44,9 @@ clickhouse_url = "http://127.0.0.1:8123"
 # detail drawer shows real request and response bodies out of the box instead
 # of an empty panel the operator has to go and switch on.
 #
-# `ln --import` applies this section to the `logging_settings` row, which is
-# what the gateway actually reads once a control plane is in the picture. The
-# guardrails are worth exercising too: `max_bytes` truncates, and
+# `rolter-seed --import` applies this section to the `logging_settings` row,
+# which is what the gateway actually reads once a control plane is in the
+# picture. The guardrails are worth exercising too: `max_bytes` truncates, and
 # `redact_fields` strips the named JSON keys *before* the write, so a redacted
 # value never reaches storage.
 [logging.payload_capture]

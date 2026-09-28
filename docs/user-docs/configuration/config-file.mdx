@@ -680,6 +680,36 @@ path = "/metrics"
 
 ---
 
+### \[realtime\]
+
+Resource limits and metering cadence for [`/v1/realtime`](/api/realtime) WebSocket sessions. The three limits are per gateway process and guard the gateway's own resources; tenant policy comes from `[[budgets]]` and `[[rate_limits]]`, which a session meets at admission and while it runs. Set a limit to `0` to disable it.
+
+<ParamField path="max_connections" default="1000" type="u64">
+  Concurrent realtime sessions this gateway process admits.
+</ParamField>
+
+<ParamField path="max_session_secs" default="3600" type="u64">
+  Hard limit on a session's duration, in seconds.
+</ParamField>
+
+<ParamField path="idle_timeout_secs" default="300" type="u64">
+  Closes a session when neither side has sent a frame for this many seconds.
+</ParamField>
+
+<ParamField path="usage_flush_secs" default="15" type="u64">
+  How often a live session's finished responses are written to the request log, charged to budgets and `tpm` windows, and followed by a budget check that closes the session once a budget is spent. It bounds how far a session can overspend. `0` flushes after every response instead of on a timer, and re-checks the budgets every second while the session is quiet; metering cannot be switched off.
+</ParamField>
+
+```toml
+[realtime]
+max_connections = 1000
+max_session_secs = 3600
+idle_timeout_secs = 300
+usage_flush_secs = 15
+```
+
+---
+
 ### \[usage_recording\]
 
 After a response completes, Rolter adds the request's cost to its applicable budget counters and its tokens to its applicable rate-limit windows. Both write to Redis, so both run off the response path — through a **bounded** queue rather than one detached task per request, so a slow counter store sheds records instead of accumulating work without limit.

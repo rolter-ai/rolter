@@ -18,10 +18,13 @@ updates:
   # package.json without ever writing bun.lock, so every merged bump left
   # master's lockfile stale and reded every other open PR (#1137).
   #
-  # the trade: the bun ecosystem does version updates but not security updates.
-  # dependabot *alerts* still fire on ui dependencies; what is lost is the
-  # automatic security PR, which has to be raised by hand until bun security
-  # updates ship. tracked in #1148.
+  # the trade: the bun ecosystem does version updates but not security updates,
+  # and the dependency graph reads ui/package.json but not bun.lock. dependabot
+  # *alerts* still fire for the dependencies package.json declares, and
+  # .github/workflows/ui-security-updates.yml raises the security PR dependabot
+  # would have opened (#1148); drop that workflow once bun security updates
+  # ship. a package that only arrives transitively through bun.lock raises no
+  # alert at all and goes unmonitored until #1930 audits the lockfile.
   - package-ecosystem: bun
     directory: /ui
     schedule:

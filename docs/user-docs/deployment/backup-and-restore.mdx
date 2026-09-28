@@ -14,12 +14,13 @@ Backing up PostgreSQL is a solved problem. The part that catches people out is t
 
 ## What has to be in the backup set
 
-| Item                                       | Where it lives                             | What its loss costs                                            |
-| ------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------- |
-| The control-plane database                 | PostgreSQL                                 | Everything below, plus routes, budgets, RBAC and the audit log |
-| `ROLTER_KEK`                               | Your secret manager — **not** the database | Every sealed secret in that database, permanently              |
-| `ROLTER_KEY_PEPPER`                        | Your secret manager                        | Every virtual key hash stops matching; keys must be reissued   |
-| The gateway's `rolter.toml`, if it has one | Config management                          | Reconstructible, but not from the dump                         |
+| Item                                       | Where it lives                             | What its loss costs                                                                                             |
+| ------------------------------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| The control-plane database                 | PostgreSQL                                 | Everything below, plus routes, budgets, RBAC and the audit log                                                  |
+| `ROLTER_KEK`                               | Your secret manager — **not** the database | Every sealed secret in that database, permanently                                                               |
+| `ROLTER_KEY_PEPPER`                        | Your secret manager                        | Every virtual key hash stops matching; keys must be reissued                                                    |
+| `ROLTER_SESSION_PEPPER`                    | Your secret manager                        | Everyone is signed out; open invitations, SCIM tokens and MFA recovery codes stop matching and must be reissued |
+| The gateway's `rolter.toml`, if it has one | Config management                          | Reconstructible, but not from the dump                                                                          |
 
 A backup of the database alone is not a backup. The KEK is stored separately by design — that is what encryption at rest means — so the one thing `pg_dump` cannot carry is the one thing a restore needs most.
 
@@ -136,7 +137,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
 </Steps>
 
 <Note>
-  Rotation does not touch `ROLTER_KEY_PEPPER`. Virtual-key hashes are not reversible, so changing the pepper is a reissue, not a rotation.
+  Rotation does not touch `ROLTER_KEY_PEPPER` or `ROLTER_SESSION_PEPPER`. The digests under them are not reversible, so changing a pepper is a reissue, not a rotation: every virtual key for the first, and for the second every session, open invitation, SCIM token and MFA recovery code.
 </Note>
 
 ## What gets audited

@@ -35,10 +35,15 @@ services:
     volumes:
       - chdata:/var/lib/clickhouse
       - ../clickhouse:/docker-entrypoint-initdb.d
+    # 262144 is ClickHouse's production recommendation. a runtime cannot raise
+    # a container above its own hard limit, and rootless docker/podman or a
+    # sandboxed runner often sits lower, where creating the container fails with
+    # "error setting rlimit type 7: operation not permitted". a dev stack runs
+    # fine far lower: set CLICKHOUSE_NOFILE (20000 is known good) there (#1819)
     ulimits:
       nofile:
-        soft: 262144
-        hard: 262144
+        soft: ${CLICKHOUSE_NOFILE:-262144}
+        hard: ${CLICKHOUSE_NOFILE:-262144}
 
   gateway:
     build:

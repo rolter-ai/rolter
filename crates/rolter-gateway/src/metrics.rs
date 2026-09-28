@@ -297,7 +297,9 @@ pub struct Metrics {
     pub logs_dropped_total: AtomicU64,
     /// budget/rate-limit usage records dropped because the recording queue was
     /// full — the counter store is not keeping up, and this request's spend is
-    /// missing from its counters (#1051)
+    /// missing from its counters (#1051). also counts realtime turns dropped
+    /// from a session's own meter queue, which lose their request-log row too
+    /// (#1396)
     pub usage_records_dropped_total: AtomicU64,
     /// usage records waiting to be written, sampled at scrape time
     pub usage_records_queued: AtomicU64,
@@ -594,7 +596,7 @@ impl Metrics {
             Scalar {
                 kind: "counter",
                 name: "rolter_usage_records_dropped_total",
-                help: "budget/rate-limit usage records dropped because the recording queue was full",
+                help: "budget/rate-limit usage records and realtime turns dropped because a recording queue was full",
                 value: self.usage_records_dropped_total.load(Relaxed),
             },
             Scalar {
