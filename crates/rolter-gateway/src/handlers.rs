@@ -1066,7 +1066,7 @@ pub(crate) fn authenticate(
 /// Drives budget enforcement and log attribution both, which is why it is
 /// resolved once and shared rather than derived at each use. An unauthenticated
 /// request has no scope, and [`ScopeIds::default`] is the unattributed one.
-fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
+pub(crate) fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
     vk.map(|v| ScopeIds {
         org: v.org_id.clone(),
         team: v.team_id.clone(),
@@ -1081,23 +1081,63 @@ fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
 /// Stage 3 of the proxy pipeline: refuse before spending upstream tokens when
 /// any applicable budget is already spent (#1041).
 ///
-/// Returns the refusal to hand back, or `None` to continue. Shared by `proxy`
-/// and `proxy_multipart`, which enforced this identically and had to be kept
-/// in step by hand.
-async fn budget_refusal(state: &AppState, snap: &Snapshot, scope: &ScopeIds) -> Option<Response> {
+/// Returns the refusal to hand back, or `None` to continue. Shared by `proxy`,
+/// `proxy_multipart` and the realtime upgrade, which enforce this identically
+/// and used to be kept in step by hand.
+pub(crate) async fn budget_refusal(
+    state: &AppState,
+    snap: &Snapshot,
+    scope: &ScopeIds,
+) -> Option<Response> {
     let exceeded = state.budgets.exceeded(&snap.budgets, scope).await?;
     state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
     Some(
         crate::error::ApiError::new(
             StatusCode::PAYMENT_REQUIRED,
-            format!(
-                "budget exceeded for {:?} '{}' (limit ${:.2})",
-                exceeded.scope, exceeded.id, exceeded.limit_usd
-            ),
+            budget_exceeded_message(&exceeded),
         )
         .with_code("insufficient_quota")
         .into_response(),
     )
+}
+
+/// The wording of a budget refusal, shared with the realtime session that a
+/// spent budget closes mid-session (#1396), so a client reads the same
+/// sentence whichever way it met the cap.
+pub(crate) fn budget_exceeded_message(exceeded: &rolter_core::BudgetConfig) -> String {
+    format!(
+        "budget exceeded for {:?} '{}' (limit ${:.2})",
+        exceeded.scope, exceeded.id, exceeded.limit_usd
+    )
+}
+
+/// The throughput stage of the proxy pipeline: refuse with 429 and
+/// `Retry-After` when a matching request or token window is already at
+/// capacity. Admission also charges the request to every applicable `rpm`
+/// window.
+///
+/// Shared by `proxy`, `proxy_multipart` and the realtime upgrade (#1396), so
+/// a realtime session is limited per key, team, project and org exactly like
+/// an HTTP request rather than by the process-local session cap alone.
+pub(crate) async fn rate_limit_refusal(
+    state: &AppState,
+    snap: &Snapshot,
+    scope: &ScopeIds,
+) -> Option<Response> {
+    let hit = state.rate_limiter.check(&snap.rate_limits, scope).await?;
+    state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
+    let mut resp = crate::error::ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
+            hit.kind, hit.scope, hit.id, hit.limit
+        ),
+    )
+    .with_code("rate_limit_exceeded")
+    .into_response();
+    resp.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
+    Some(resp)
 }
 
 async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
@@ -1190,20 +1230,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
-    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
-        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
-        let mut resp = crate::error::ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
-                hit.kind, hit.scope, hit.id, hit.limit
-            ),
-        )
-        .with_code("rate_limit_exceeded")
-        .into_response();
-        resp.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
-        return resp;
+    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
@@ -2594,20 +2622,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         return refusal;
     }
 
-    if let Some(hit) = state.rate_limiter.check(&snap.rate_limits, &scope).await {
-        state.metrics.rate_limit_blocks_total.fetch_add(1, Relaxed);
-        let mut resp = crate::error::ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "{} rate limit exceeded for {:?} '{}' (limit {}/min)",
-                hit.kind, hit.scope, hit.id, hit.limit
-            ),
-        )
-        .with_code("rate_limit_exceeded")
-        .into_response();
-        resp.headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from(hit.retry_after));
-        return resp;
+    if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
+        return refusal;
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
@@ -3752,7 +3768,7 @@ struct CacheHitLog {
 /// having to.
 ///
 /// Returns the refusal response when the request must not be served.
-fn unpriced_admission(
+pub(crate) fn unpriced_admission(
     state: &AppState,
     snap: &Snapshot,
     scope: &ScopeIds,

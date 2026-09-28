@@ -95,6 +95,20 @@ usage. This is the documented reactive behaviour of `tpm`, not a race: the
 tokens do not exist yet at admission time, so no atomic step can charge them.
 Reserving an estimate up front is a separate feature (#1464).
 
+## Realtime sessions
+
+A `/v1/realtime` upgrade goes through the same admission step, keyed on the
+opening key's scope chain, so a session costs one request against `rpm` and is
+refused while `tpm` is full. The process-local `[realtime] max_connections` cap
+is checked just before it, so a session the gateway would have refused anyway
+never takes a slot.
+
+A session's tokens are charged the way a stream's are, only later: each
+finished response turn is added to `tpm` on the session meter's next flush.
+A full window does not close a live session, for the same reason it does not
+cut off an HTTP response in flight. See
+[Realtime metering](realtime-metering.md).
+
 ## When the Redis connection drops
 
 Admission is the one write that opts out of the no-replay rule in
