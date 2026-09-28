@@ -203,6 +203,28 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     );
 }
 
+#[test]
+fn all_server_config_fields_are_in_example_toml() {
+    let fields = server_config_fields();
+    assert!(!fields.is_empty(), "no ServerConfig fields were found");
+
+    let example_path = workspace_root().join("rolter.example.toml");
+    let text = std::fs::read_to_string(&example_path).expect("rolter.example.toml is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&field) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these ServerConfig fields are defined in crates/rolter-core/src/config.rs but missing from rolter.example.toml:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Find every field name declared in `VirtualKeyConfig` struct in `crates/rolter-core/src/config.rs`.
 fn virtual_key_config_fields() -> BTreeSet<String> {
     let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");

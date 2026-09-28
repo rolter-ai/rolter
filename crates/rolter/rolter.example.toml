@@ -17,6 +17,11 @@ port = 4000
 # default so large prompts / base64 images / audio uploads aren't rejected; an
 # oversized body gets an openai-style 413. defaults to 33554432 (32 MiB).
 # max_body_bytes = 33554432
+# enforce virtual-key auth even when no keys are configured. true always
+# denies a request without a valid key (fail closed), false always allows the
+# keyless path. unset defers to the deployment: a gateway polling a control
+# plane snapshot fails closed, a static local config stays keyless.
+# require_auth = true
 
 # --- update check ---
 # not a config key: the control plane and the `rolter` cli read the

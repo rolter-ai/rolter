@@ -462,8 +462,15 @@ mod tests {
     #[test]
     fn the_production_config_closes_auth_and_the_local_one_does_not() {
         let production = render_config(Profile::Production);
-        assert!(production.contains("require_auth = true"), "{production}");
-        assert!(!render_config(Profile::Local).contains("require_auth = true"));
+        assert!(
+            production
+                .lines()
+                .any(|l| l.trim() == "require_auth = true"),
+            "{production}"
+        );
+        assert!(!render_config(Profile::Local)
+            .lines()
+            .any(|l| l.trim() == "require_auth = true"));
     }
 
     #[test]

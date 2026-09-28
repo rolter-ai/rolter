@@ -23,3 +23,8 @@
 
 **Learning:** Configuration fields on `VirtualKeyConfig` in `crates/rolter-core/src/config.rs` (`providers`, `cache`) can quietly drift from `docs/user-docs/configuration/config-file.mdx`.
 **Action:** Guard `VirtualKeyConfig` documentation completeness using `all_virtual_key_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-09-28 - ServerConfig fields drifting from example TOML configuration files
+
+**Learning:** Configuration fields on `ServerConfig` in `crates/rolter-core/src/config.rs` (such as `require_auth`) can quietly drift from `rolter.example.toml` if drift guards only check reference documentation (`config-file.mdx`).
+**Action:** Guard `ServerConfig` fields completeness in example config using `all_server_config_fields_are_in_example_toml` in `crates/rolter/tests/env_var_names.rs`.
