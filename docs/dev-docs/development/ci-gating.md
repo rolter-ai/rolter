@@ -150,9 +150,9 @@ It is deliberately trivial, and two things about it are load-bearing:
   the guard reads it correctly either way.
 - **It never re-derives `quality`'s verdict.** `needs.quality.result` is
   computed by Actions, which already accounts for the `continue-on-error` jobs
-  inside `quality.yml` (`coverage`, `msrv`, `compose-smoke`, `cross-platform`,
-  `semver-checks`). Any hand-rolled scan of job conclusions would get those
-  wrong.
+  inside `quality.yml` (`coverage`, `semver-checks`) and for `coverage` being
+  skipped on every event but `pull_request`. Any hand-rolled scan of job
+  conclusions would get those wrong.
 
 The guard then walks the completed `ci.yml` runs on the sha and asks each one
 whether it has a `gate-ok` job that concluded `success`. A cancelled run has no
@@ -279,6 +279,7 @@ reuses an action name.
 | `ci-ok` step _no agent session urls (commits, dispatch/queue)_ | runs, and must succeed          | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
 | `ci-ok` step `pr-title`                                        | skipped                         | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
 | `static checks` step _gitleaks (branch history)_               | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
+| `quality` job `coverage (informational)`                       | skipped                         | informational and `pull_request` only; `extended.yml` runs the same job on `master` nightly                        |
 
 The two session-url steps resolve their subject differently here, because a queue
 ref belongs to no pull request head and `--pr-for-ref` cannot match it:

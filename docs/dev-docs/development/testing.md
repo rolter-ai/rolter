@@ -445,7 +445,10 @@ follow, and both have bitten:
 A comment saying "runs in its own process (nextest)" is true of every job except
 this one, which is what makes the trap easy to walk into.
 
-CI runs coverage in the `coverage` job of `quality.yml` and enforces a
+CI runs coverage in the `coverage` job of `quality.yml` on every pull request
+(and on no other event), and again nightly on `master` in
+[`extended.yml`](#nightly-extended-checks), whose run also saves the Rust cache
+the PR job restores under the shared key `coverage`. Both enforce a
 **ratcheting baseline**: the committed baseline lives in
 [`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
 [`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
@@ -460,8 +463,10 @@ Policy (ROL-246):
   PR and explain why.
 - When coverage climbs well above the baseline, raise the baseline to lock in
   the gain (the ratchet only goes up).
-- The job is **informational** (`continue-on-error: true`) until the baseline is
-  trusted; promote it to blocking by removing that flag on the `coverage` job.
+- The PR job is **informational** (`continue-on-error: true`) until the
+  baseline is trusted; promote it to blocking by removing that flag on the
+  `coverage` job in `quality.yml`. The nightly copy carries no such flag, so a
+  ratchet failure on `master` opens the tracking issue described below.
 
 ## CI
 
@@ -1271,11 +1276,47 @@ Two more habits keep such a story from passing for the wrong reason:
 changes the lifecycle of every story in the tree, which is a larger decision
 than one assertion needs.
 
+### Nightly extended checks
+
+[`.github/workflows/extended.yml`](../../.github/workflows/extended.yml) holds
+the informational checks that need a full build and gate nothing. It runs nightly
+at 01:41 UTC and on `workflow_dispatch`, rather than on every push, so none of
+them takes a slot from the 20-job runner pool while PRs wait
+([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)):
+
+| Job             | What it checks                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `macos check`   | `cargo check --workspace --all-features` on `macos-latest`                                                                          |
+| `compose smoke` | the full Docker Compose topology, described below                                                                                   |
+| `msrv build`    | `cargo +<rust-version> check --workspace --all-features`, with the version read from the root `Cargo.toml`                          |
+| `coverage`      | the PR coverage job on `master`, same services, toolchain and cache key, so it gives a daily number and seeds the cache PRs restore |
+
+The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
+and outranks the default a toolchain action sets, so a plain `cargo check` would
+test stable and never the declared version. It is red until #2026 settles
+`rust-version` against a lockfile that already needs 1.88.
+
+None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
+failure has to reach the `report failure` job as `failure`. On `master` that
+job opens an issue titled `extended.yml: nightly checks failing`, labelled `ci`,
+the first time a run fails, and comments on it with the run link and each job's
+result while it stays open. Close it once the fix lands; the next failure opens
+a new one. It is the only job in the workflow with a write scope, `issues: write`
+at job level with no checkout, and an issue it opens does not trigger
+`project-automation`, so add it to the board by hand. Breakage in these checks
+therefore shows up up to a day late, on that issue, rather than on the PR that
+caused it. To check a branch before merging, dispatch the workflow on it; a
+failure there shows in that run and leaves the issue alone:
+
+```bash
+gh workflow run extended.yml --ref <branch>
+```
+
 ### Full-stack compose smoke
 
-The `compose-smoke` job boots the production-shaped Docker Compose topology
-(Postgres, Redis, ClickHouse, gateway, control) and exercises it end-to-end. Run
-it locally with the same script CI uses:
+The `compose smoke` job in `extended.yml` boots the production-shaped Docker
+Compose topology (Postgres, Redis, ClickHouse, gateway, control) and exercises
+it end-to-end. Run it locally with the same script CI uses:
 
 ```bash
 bash docker/smoke/smoke.sh
@@ -1288,8 +1329,9 @@ keyless open gateway config) so the built-in `fake-llm` model answers without an
 provider secret. The script waits for both `/healthz` endpoints, checks
 `/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
 postgres-backed `/internal/snapshot` on the control plane, then always dumps
-compose logs and runs `down -v`. It is **informational** (`continue-on-error`)
-until the image-build cost and flake profile are trusted (ROL-245).
+compose logs and runs `down -v`. It runs nightly rather than on every push,
+because its cold Docker release build costs about five minutes of a runner
+(ROL-245, ADR-0034).
 
 ### Published-port image smoke
 
@@ -1308,6 +1350,7 @@ docker build -f docker/Dockerfile --target runtime -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
-It needs no secrets and no compose stack, so unlike `compose-smoke` it is
-blocking. The release workflow's `smoke image` job runs the same script against
-each architecture's pushed digest before anything is published.
+It needs no secrets and no compose stack, so unlike the compose smoke it runs
+on every push and is blocking. The release workflow's `smoke image` job runs the
+same script against each architecture's pushed digest before anything is
+published.
