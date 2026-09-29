@@ -138,6 +138,17 @@ renders an empty state. Routing it here would tell an operator something is
 broken when nothing is. The placeholder for that, and the one for a request
 still in flight, are in [loading and empty states](loading-and-empty-states.md).
 
+**A failure is not an empty result either.** The reverse mistake is the
+common one. A failed read holds no rows, so a screen that derives its empty
+state or its count from the rows renders "No providers yet" and "0 providers"
+directly under the `LoadError` that says the list could not be read, which
+turns an outage into "nothing configured" (#2211). The empty state waits for a
+read that succeeded and a count waits for the data it counts; the
+`ListEmptyRow`, `Table` and `ListSummary` primitives that enforce this are in
+[loading and empty states](loading-and-empty-states.md#a-read-that-has-not-answered-holds-no-rows-either).
+A screen's error stories assert it with `expectNoFalseEmpty` after
+`expectLoadError`.
+
 **The control plane's own message is never swallowed.** `LoadError` prints it
 beneath the summary. The dashboard's classification is a helpful gloss, not a
 replacement — #962 happened because the gloss was the only thing on screen and

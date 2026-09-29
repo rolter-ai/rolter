@@ -10,10 +10,11 @@ import { EditorSheet } from "@/components/EditorSheet";
 import {
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
   ListTable,
   PageBody,
   RowIconButton,
@@ -139,10 +140,12 @@ export default function Users() {
     return !q || u.email.toLowerCase().includes(q);
   });
 
-  const counts = {
-    all: users.data?.length ?? 0,
-    active: (users.data ?? []).filter((u) => !u.deactivated_at).length,
-    deactivated: (users.data ?? []).filter((u) => !!u.deactivated_at).length,
+  // no counts until the list is held: a tab reading "All 0" while the read is
+  // in flight or has failed states an outage as an org with no users (#2211)
+  const counts = users.data && {
+    all: users.data.length,
+    active: users.data.filter((u) => !u.deactivated_at).length,
+    deactivated: users.data.filter((u) => !!u.deactivated_at).length,
   };
 
   const filtersActive = !!q || statusTab !== "all";
@@ -184,7 +187,7 @@ export default function Users() {
           value={statusTab}
           options={(["all", "active", "deactivated"] as const).map((tab) => ({
             value: tab,
-            label: `${statusLabels[tab]} ${counts[tab]}`,
+            label: counts ? `${statusLabels[tab]} ${counts[tab]}` : statusLabels[tab],
           }))}
           onChange={setStatusTab}
         />
@@ -227,11 +230,9 @@ export default function Users() {
           <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
-        {orgId && users.isLoading && (
-          <ListStateRow>
-            <ListSkeleton rows={4} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={users}>
+          <ListSkeleton rows={4} className="p-3" />
+        </ListLoadingRow>
         {rows.map((user, i) => {
           const active = !user.deactivated_at;
           const grants = byUser.get(user.id) ?? [];
@@ -329,34 +330,30 @@ export default function Users() {
             </ListRow>
           );
         })}
-        {orgId && !users.isLoading && rows.length === 0 && (
-          <ListStateRow>
-            <EmptyState
-              uxTarget="users"
-              icon={<UsersRound />}
-              title={filtersActive ? t("pages.users.noMatchTitle") : t("pages.users.emptyTitle")}
-              description={
-                filtersActive ? t("pages.users.noMatchBody") : t("pages.users.emptyBody")
-              }
-              actions={
-                filtersActive ? (
-                  <Button variant="outline" onClick={clearFilters}>
-                    {t("common.clearSearch")}
-                  </Button>
-                ) : (
-                  <GatedButton
-                    gate="invitation:create"
-                    control="user-invite-empty"
-                    disabled={!orgId}
-                    onClick={() => setInviteOpen(true)}
-                  >
-                    {t("pages.users.emptyAction")}
-                  </GatedButton>
-                )
-              }
-            />
-          </ListStateRow>
-        )}
+        <ListEmptyRow read={users} rows={rows.length}>
+          <EmptyState
+            uxTarget="users"
+            icon={<UsersRound />}
+            title={filtersActive ? t("pages.users.noMatchTitle") : t("pages.users.emptyTitle")}
+            description={filtersActive ? t("pages.users.noMatchBody") : t("pages.users.emptyBody")}
+            actions={
+              filtersActive ? (
+                <Button variant="outline" onClick={clearFilters}>
+                  {t("common.clearSearch")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="invitation:create"
+                  control="user-invite-empty"
+                  disabled={!orgId}
+                  onClick={() => setInviteOpen(true)}
+                >
+                  {t("pages.users.emptyAction")}
+                </GatedButton>
+              )
+            }
+          />
+        </ListEmptyRow>
       </ListTable>
 
       {orgId && (

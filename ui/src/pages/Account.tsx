@@ -23,7 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
-import { PageBody } from "@/components/screen";
+import { ListSummary, PageBody } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
@@ -131,9 +131,9 @@ export default function Account() {
         <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
       <div className="flex items-center gap-3">
-        <span className="text-sm text-muted-foreground">
-          {t("account.keys.summary", { count: keys.data?.length ?? 0 })}
-        </span>
+        <ListSummary data={keys.data}>
+          {(rows) => t("account.keys.summary", { count: rows.length })}
+        </ListSummary>
         <Button
           className="ml-auto"
           onClick={() => setMintOpen(true)}

@@ -25,6 +25,7 @@ import {
   type Recorder,
   answerDiscardPrompt,
   expectEmptyState,
+  expectNoFalseEmpty,
   uxEvents,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
@@ -270,6 +271,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
   },
 };
 
@@ -299,6 +301,10 @@ export const Forbidden: Story = {
     ).toBeInTheDocument();
     // and must not offer a retry that cannot possibly succeed
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
+    // an export of a list that never loaded is a header line with no rows,
+    // which reads as a project with no keys (#2056)
+    await expect(canvas.getByRole("button", { name: "Export CSV" })).toBeDisabled();
   },
 };
 

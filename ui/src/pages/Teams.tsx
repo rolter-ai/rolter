@@ -7,7 +7,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
-import { PageBody, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -80,9 +80,9 @@ export default function Teams() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.teams.summary", { count: teams.data?.length ?? 0 })}
-        </span>
+        <ListSummary data={teams.data}>
+          {(rows) => t("pages.teams.summary", { count: rows.length })}
+        </ListSummary>
         <GatedButton
           gate="team:create"
           control="team-new"
@@ -102,7 +102,7 @@ export default function Teams() {
           onRetry={() => void teams.refetch()}
         />
       )}
-      {!teams.isLoading && !teams.error && (teams.data?.length ?? 0) === 0 && (
+      {teams.isSuccess && teams.data.length === 0 && (
         <EmptyState
           uxTarget="teams"
           icon={<Building />}

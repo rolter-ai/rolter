@@ -7,6 +7,7 @@ import {
   clickWhenEnabled,
   confirmation,
   confirmDestructive,
+  expectNoFalseEmpty,
   expectRefused,
   openOptions,
   PROJECT,
@@ -279,6 +280,7 @@ export const Forbidden: Story = {
     // a 403 gets no retry button, and nothing to press that would 403 again
     await expect(canvas.queryByRole("button", { name: /Try again/ })).toBeNull();
     await expect(canvas.getByRole("button", { name: /Add provider/ })).toBeDisabled();
+    await expectNoFalseEmpty(canvasElement, /No identity provider yet/);
   },
 };
 

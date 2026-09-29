@@ -10,6 +10,7 @@ import {
   expectForbidden,
   expectSheetClosed,
   expectListTable,
+  expectNoFalseEmpty,
   expectSkeleton,
   expectToast,
   Harness,
@@ -173,6 +174,7 @@ export const ChannelsLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No channels yet/);
   },
 };
 
@@ -201,6 +203,7 @@ export const ChannelsForbidden: Story = {
     await expect(
       await canvas.findByText(/You do not have access to alert channels/i),
     ).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No channels yet/);
   },
 };
 
@@ -327,6 +330,7 @@ export const RulesLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No alert rules/);
   },
 };
 
@@ -354,6 +358,7 @@ export const RulesForbidden: Story = {
     await expect(
       await canvas.findByText(/You do not have access to alert rules/i),
     ).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No alert rules/);
   },
 };
 
@@ -645,6 +650,7 @@ export const HistoryLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No alert transitions yet/);
   },
 };
 
@@ -671,6 +677,7 @@ export const HistoryForbidden: Story = {
     await expect(
       await canvas.findByText(/You do not have access to alert history/i),
     ).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No alert transitions yet/);
   },
 };
 

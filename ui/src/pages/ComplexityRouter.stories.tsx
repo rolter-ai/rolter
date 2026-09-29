@@ -7,6 +7,7 @@ import {
   expectEmptyState,
   expectInStatusRegion,
   expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
   json,
@@ -77,6 +78,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No routes to give a policy/);
   },
 };
 
@@ -106,6 +108,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return routes/i);
+    await expectNoFalseEmpty(canvasElement, /No routes to give a policy/);
   },
 };
 
@@ -117,6 +120,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to routes/);
+    await expectNoFalseEmpty(canvasElement, /No routes to give a policy/);
   },
 };
 

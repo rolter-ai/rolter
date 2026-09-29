@@ -13,6 +13,7 @@ import {
   expectRefused,
   expectSheetClosed,
   expectListTable,
+  expectNoFalseEmpty,
   expectSkeleton,
   json,
   NEEDS_SUPERADMIN,
@@ -131,6 +132,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No models yet/);
   },
 };
 
@@ -171,6 +173,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return models/i);
+    await expectNoFalseEmpty(canvasElement, /No models yet/);
   },
 };
 
@@ -182,6 +185,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to models/);
+    await expectNoFalseEmpty(canvasElement, /No models yet/);
   },
 };
 

@@ -13,6 +13,7 @@ import {
   expectUxEvent,
   expectLoadError,
   expectListTable,
+  expectNoFalseEmpty,
   expectSkeleton,
   json,
   pending,
@@ -92,6 +93,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No providers yet/);
   },
 };
 
@@ -133,6 +135,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return providers/i);
+    await expectNoFalseEmpty(canvasElement, /No providers yet/);
   },
 };
 
@@ -144,6 +147,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to providers/);
+    await expectNoFalseEmpty(canvasElement, /No providers yet/);
   },
 };
 

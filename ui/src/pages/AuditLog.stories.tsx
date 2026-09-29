@@ -7,6 +7,7 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectNoFalseEmpty,
   expectSkeleton,
   json,
   pending,
@@ -77,6 +78,7 @@ export const Loading: Story = {
   render: () => <Screen fetchStub={pending} />,
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };
 
@@ -98,6 +100,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return the audit log/i);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };
 
@@ -107,5 +110,6 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to the audit log/);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };

@@ -7,7 +7,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
-import { PageBody, Pill, RowIconButton } from "@/components/screen";
+import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -96,12 +96,14 @@ export default function ComplexityRouter() {
 
   return (
     <PageBody>
-      <span className="text-sm text-muted-foreground">
-        {t("pages.complexityRouter.summary", {
-          configured: configured.length,
-          count: resolved,
-        })}
-      </span>
+      {/* "0 of 0" is what an unread route list and a route list whose every
+          policy is still out or failed both used to print; the summary waits
+          for a route list, and for one policy answer when there are routes */}
+      <ListSummary data={resolved > 0 || states.length === 0 ? routes.data : undefined}>
+        {() =>
+          t("pages.complexityRouter.summary", { configured: configured.length, count: resolved })
+        }
+      </ListSummary>
       {checking.length > 0 && (
         <span className="text-sm text-[color:var(--text-subtle)]">
           {t("pages.complexityRouter.checkingPolicies", { count: checking.length })}
@@ -121,7 +123,7 @@ export default function ComplexityRouter() {
           onRetry={() => void routes.refetch()}
         />
       )}
-      {!routes.isLoading && !routes.error && states.length === 0 && (
+      {routes.isSuccess && states.length === 0 && (
         // a complexity policy hangs off a route, so with no routes there is
         // nothing on this screen to create — the CTA points where it is made
         <EmptyState

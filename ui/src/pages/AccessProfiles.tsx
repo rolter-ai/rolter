@@ -18,7 +18,7 @@ import {
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
-import { PageBody, Pill, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody, Pill, Toolbar } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -369,9 +369,9 @@ export default function AccessProfiles() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.accessProfiles.summary", { count: profiles.data?.length ?? 0 })}
-        </span>
+        <ListSummary data={profiles.data}>
+          {(rows) => t("pages.accessProfiles.summary", { count: rows.length })}
+        </ListSummary>
         <GatedButton
           gate="access_profile:create"
           control="access-profile-new"

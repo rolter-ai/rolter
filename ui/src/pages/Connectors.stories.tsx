@@ -7,6 +7,7 @@ import {
   confirmDestructive,
   expectForbidden,
   expectLoadError,
+  expectNoFalseEmpty,
   expectSheetClosed,
   expectSkeleton,
   expectToast,
@@ -155,6 +156,7 @@ export const Loading: Story = {
   render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No connectors yet/);
   },
 };
 
@@ -177,6 +179,7 @@ export const Error_: Story = {
     await waitFor(() =>
       expect(canvas.getByText(/You do not have access to connectors/)).toBeVisible(),
     );
+    await expectNoFalseEmpty(canvasElement, /No connectors yet/);
   },
 };
 

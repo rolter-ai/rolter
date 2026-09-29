@@ -16,6 +16,7 @@ import {
   ListHeader,
   ListHeaderCell,
   ListRow,
+  ListSummary,
   ListTable,
   PageBody,
   Pill,
@@ -121,11 +122,9 @@ function AlertChannelsScreen() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.alerting.channelSummary", {
-            count: channels.data?.length ?? 0,
-          })}
-        </span>
+        <ListSummary data={channels.data}>
+          {(rows) => t("pages.alerting.channelSummary", { count: rows.length })}
+        </ListSummary>
         <GatedButton
           gate="alert_channel:create"
           control="alert-channel-new"
@@ -418,9 +417,9 @@ function AlertRulesScreen() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.alerting.ruleSummary", { count: rules.data?.length ?? 0 })}
-        </span>
+        <ListSummary data={rules.data}>
+          {(rows) => t("pages.alerting.ruleSummary", { count: rows.length })}
+        </ListSummary>
         <GatedButton
           gate="alert_rule:create"
           control="alert-rule-new"
@@ -763,11 +762,9 @@ function AlertHistoryScreen() {
 
   return (
     <PageBody>
-      <span className="text-sm text-muted-foreground">
-        {t("pages.alerting.historySummary", {
-          count: history.data?.length ?? 0,
-        })}
-      </span>
+      <ListSummary data={history.data}>
+        {(rows) => t("pages.alerting.historySummary", { count: rows.length })}
+      </ListSummary>
       {history.isLoading && <TableSkeleton rows={5} />}
       {history.isError && (
         <LoadError

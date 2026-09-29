@@ -12,6 +12,7 @@ import {
   expectRefused,
   expectSheetClosed,
   expectListTable,
+  expectNoFalseEmpty,
   expectSkeleton,
   expectToast,
   json,
@@ -111,6 +112,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No users yet/);
   },
 };
 
@@ -134,6 +136,7 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/do not have access to users/i)).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No users yet/);
   },
 };
 

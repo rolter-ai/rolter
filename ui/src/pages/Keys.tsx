@@ -40,10 +40,12 @@ import { EmptyState } from "@/components/ui/empty-state";
 import {
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
+  ListSummary,
   ListTable,
   PageBody,
   RowIconButton,
@@ -221,7 +223,9 @@ export default function Keys() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" onClick={exportCsv}>
+          {/* a list that has not loaded exports a header line and no rows,
+              which reads as a project with no keys (#2056) */}
+          <Button variant="outline" disabled={!keys.isSuccess} onClick={exportCsv}>
             {t("pages.virtualKeys.exportCsv")}
           </Button>
           <GatedButton
@@ -261,11 +265,9 @@ export default function Keys() {
           <ListHeaderCell>{t("pages.virtualKeys.colStatus")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
-        {keys.isLoading && (
-          <ListStateRow>
-            <ListSkeleton rows={4} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={keys}>
+          <ListSkeleton rows={4} className="p-3" />
+        </ListLoadingRow>
         {rows.map((key) => (
           <ListRow
             key={key.id}
@@ -382,44 +384,37 @@ export default function Keys() {
             </ListCell>
           </ListRow>
         ))}
-        {!keys.isLoading && rows.length === 0 && (
-          <ListStateRow>
-            <EmptyState
-              uxTarget="virtual-keys"
-              icon={<Key />}
-              title={
-                search ? t("pages.virtualKeys.noMatchTitle") : t("pages.virtualKeys.emptyTitle")
-              }
-              description={
-                search ? t("pages.virtualKeys.noMatchBody") : t("pages.virtualKeys.emptyBody")
-              }
-              actions={
-                search ? (
-                  <Button variant="outline" onClick={() => setSearch("")}>
-                    {t("common.clearSearch")}
-                  </Button>
-                ) : (
-                  <GatedButton
-                    gate="virtual_key:create"
-                    control="key-new-empty"
-                    disabled={scopeBlocked || !scope.projectId}
-                    onClick={() => setAddOpen(true)}
-                  >
-                    {t("pages.virtualKeys.emptyAction")}
-                  </GatedButton>
-                )
-              }
-            />
-          </ListStateRow>
-        )}
+        <ListEmptyRow read={keys} rows={rows.length}>
+          <EmptyState
+            uxTarget="virtual-keys"
+            icon={<Key />}
+            title={search ? t("pages.virtualKeys.noMatchTitle") : t("pages.virtualKeys.emptyTitle")}
+            description={
+              search ? t("pages.virtualKeys.noMatchBody") : t("pages.virtualKeys.emptyBody")
+            }
+            actions={
+              search ? (
+                <Button variant="outline" onClick={() => setSearch("")}>
+                  {t("common.clearSearch")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="virtual_key:create"
+                  control="key-new-empty"
+                  disabled={scopeBlocked || !scope.projectId}
+                  onClick={() => setAddOpen(true)}
+                >
+                  {t("pages.virtualKeys.emptyAction")}
+                </GatedButton>
+              )
+            }
+          />
+        </ListEmptyRow>
       </ListTable>
       <div className="flex items-center justify-between px-0.5 text-xs text-muted-foreground">
-        <span>
-          {t("pages.virtualKeys.shownOf", {
-            shown: rows.length,
-            count: keys.data?.length ?? 0,
-          })}
-        </span>
+        <ListSummary data={keys.data} className="text-xs">
+          {(all) => t("pages.virtualKeys.shownOf", { shown: rows.length, count: all.length })}
+        </ListSummary>
       </div>
 
       {scope.projectId && (

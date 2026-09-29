@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import UserProvisioning from "./UserProvisioning";
 import {
   expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
   Harness as ScreenHarness,
@@ -149,6 +150,7 @@ export const Loading: Story = {
   render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
   },
 };
 
@@ -157,6 +159,23 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("No provisioning tokens yet")).toBeVisible());
+  },
+};
+
+// a failed read is not an empty one (#2211): the table under the load error
+// used to say "No provisioning tokens yet" beside a button to issue the first,
+// and the lead to count "0 tokens". the lead keeps what it explains and drops
+// the count it does not have
+export const Error_: Story = {
+  name: "Error",
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "boom" } }, 500))} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return provisioning tokens/i);
+    await expect(canvas.getByText("/scim/v2/Users")).toBeVisible();
+    await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
   },
 };
 

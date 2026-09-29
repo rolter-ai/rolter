@@ -13,10 +13,12 @@ import { StrategyHint } from "@/components/StrategyHint";
 import {
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
+  ListSummary,
   ListTable,
   PageBody,
   Pill,
@@ -300,10 +302,17 @@ export default function Models() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
-        <span className="text-sm text-muted-foreground">
-          {t("pages.models.modelTally", { count: rows.length })} ·{" "}
-          {t("pages.models.providerTally", { count: providerCount })}
-        </span>
+        {/* the tally waits for the catalog, and the provider half for the
+            config that names each target's provider: either one unread would
+            print a zero it has no evidence for (#1980) */}
+        <ListSummary data={models.data}>
+          {() => (
+            <>
+              {t("pages.models.modelTally", { count: rows.length })}
+              {config.data && <> · {t("pages.models.providerTally", { count: providerCount })}</>}
+            </>
+          )}
+        </ListSummary>
         {/* adding a model creates a route, not a `model` row: the catalog is
             read-only apart from a superadmin's delete, so the create this
             button takes is the route's (#1258) */}
@@ -340,9 +349,11 @@ export default function Models() {
             )}
           >
             {label}
-            <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
-              {counts[key]}
-            </span>
+            {models.data && (
+              <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
+                {counts[key]}
+              </span>
+            )}
           </button>
         ))}
         {unpricedCount > 0 && (
@@ -426,11 +437,9 @@ export default function Models() {
           <ListHeaderCell className="text-right">{t("pages.models.columns.price")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
-        {models.isLoading && (
-          <ListStateRow>
-            <ListSkeleton rows={5} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={models}>
+          <ListSkeleton rows={5} className="p-3" />
+        </ListLoadingRow>
         {sorted.map((r) => {
           const open = expanded.has(r.name) && !!r.targets?.length;
           const detailId = `${detailPrefix}-${r.name}`;
@@ -635,36 +644,34 @@ export default function Models() {
             </React.Fragment>
           );
         })}
-        {!models.isLoading && sorted.length === 0 && (
-          // "no rows" and "nothing matched the filters" are different answers:
-          // one wants a model created, the other wants the filter cleared
-          <ListStateRow>
-            <EmptyState
-              uxTarget="models"
-              icon={<Boxes />}
-              title={filtersActive ? t("pages.models.noMatchTitle") : t("pages.models.emptyTitle")}
-              description={
-                filtersActive ? t("pages.models.noMatchBody") : t("pages.models.emptyBody")
-              }
-              actions={
-                filtersActive ? (
-                  <Button variant="outline" onClick={clearFilters}>
-                    {t("common.clearSearch")}
-                  </Button>
-                ) : (
-                  <GatedButton
-                    gate="route:create"
-                    control="model-new-empty"
-                    disabled={scopeBlocked || !scope.projectId}
-                    onClick={() => setSheet({ mode: "add" })}
-                  >
-                    {t("pages.models.emptyAction")}
-                  </GatedButton>
-                )
-              }
-            />
-          </ListStateRow>
-        )}
+        {/* "no rows" and "nothing matched the filters" are different answers:
+            one wants a model created, the other wants the filter cleared */}
+        <ListEmptyRow read={models} rows={sorted.length}>
+          <EmptyState
+            uxTarget="models"
+            icon={<Boxes />}
+            title={filtersActive ? t("pages.models.noMatchTitle") : t("pages.models.emptyTitle")}
+            description={
+              filtersActive ? t("pages.models.noMatchBody") : t("pages.models.emptyBody")
+            }
+            actions={
+              filtersActive ? (
+                <Button variant="outline" onClick={clearFilters}>
+                  {t("common.clearSearch")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="route:create"
+                  control="model-new-empty"
+                  disabled={scopeBlocked || !scope.projectId}
+                  onClick={() => setSheet({ mode: "add" })}
+                >
+                  {t("pages.models.emptyAction")}
+                </GatedButton>
+              )
+            }
+          />
+        </ListEmptyRow>
       </ListTable>
 
       {labelling && (

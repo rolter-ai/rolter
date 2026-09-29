@@ -13,9 +13,10 @@ import { CopyButton } from "@/components/CopyButton";
 import {
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
   ListTable,
   PageBody,
   SearchInput,
@@ -174,11 +175,9 @@ export default function ProviderGroups() {
           />
           <ListActionsHeader />
         </ListHeader>
-        {groups.isLoading && (
-          <ListStateRow>
-            <ListSkeleton rows={4} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={groups}>
+          <ListSkeleton rows={4} className="p-3" />
+        </ListLoadingRow>
         {rows.map((group) => (
           <ListRow key={group.id} grid={GRID}>
             <ListCell className="flex min-w-0 flex-col gap-1">
@@ -242,48 +241,46 @@ export default function ProviderGroups() {
             </ListCell>
           </ListRow>
         ))}
-        {!groups.isLoading && rows.length === 0 && (
-          // the old copy said "No provider groups match." with no search
-          // running, which blames a filter the operator never set (#1180)
-          <ListStateRow>
-            <EmptyState
-              uxTarget="provider-groups"
-              icon={<Layers />}
-              title={
-                filtering
-                  ? t("pages.providerGroups.noMatchTitle")
-                  : t("pages.providerGroups.emptyTitle")
-              }
-              description={
-                filtering
-                  ? t("pages.providerGroups.noMatchBody")
-                  : t("pages.providerGroups.emptyBody")
-              }
-              actions={
-                filtering ? (
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setSearch("");
-                      setLabelFilter("");
-                    }}
-                  >
-                    {t("common.clearSearch")}
-                  </Button>
-                ) : (
-                  <GatedButton
-                    gate="provider_group:create"
-                    control="provider-group-new-empty"
-                    disabled={scopeBlocked || !scope.orgId}
-                    onClick={() => setSheet({ mode: "add" })}
-                  >
-                    {t("pages.providerGroups.emptyAction")}
-                  </GatedButton>
-                )
-              }
-            />
-          </ListStateRow>
-        )}
+        {/* the old copy said "No provider groups match." with no search
+            running, which blames a filter the operator never set (#1180) */}
+        <ListEmptyRow read={groups} rows={rows.length}>
+          <EmptyState
+            uxTarget="provider-groups"
+            icon={<Layers />}
+            title={
+              filtering
+                ? t("pages.providerGroups.noMatchTitle")
+                : t("pages.providerGroups.emptyTitle")
+            }
+            description={
+              filtering
+                ? t("pages.providerGroups.noMatchBody")
+                : t("pages.providerGroups.emptyBody")
+            }
+            actions={
+              filtering ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    setLabelFilter("");
+                  }}
+                >
+                  {t("common.clearSearch")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="provider_group:create"
+                  control="provider-group-new-empty"
+                  disabled={scopeBlocked || !scope.orgId}
+                  onClick={() => setSheet({ mode: "add" })}
+                >
+                  {t("pages.providerGroups.emptyAction")}
+                </GatedButton>
+              )
+            }
+          />
+        </ListEmptyRow>
       </ListTable>
 
       {scope.orgId && labelling && (

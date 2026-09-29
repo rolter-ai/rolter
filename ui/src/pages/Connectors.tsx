@@ -11,7 +11,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
-import { PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -199,17 +199,17 @@ function ConnectorsScreen() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.connectors.summary", {
-            count: connectors.data?.length ?? 0,
-          })}
-        </span>
+        <ListSummary data={connectors.data}>
+          {(rows) => t("pages.connectors.summary", { count: rows.length })}
+        </ListSummary>
         {/* the config sits beside "add", because it is the other half of the
             job: a connector row does nothing until a collector runs this */}
         <Button
           className="ml-auto"
           variant="outline"
-          disabled={connectors.isError}
+          // the dialog says "no connectors" when handed none, so it waits for
+          // a list that answered rather than one still loading or failed
+          disabled={!connectors.isSuccess}
           onClick={() => setConfigOpen(true)}
         >
           <FileCode2 className="h-4 w-4" aria-hidden />
