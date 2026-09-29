@@ -45,8 +45,17 @@ const DISABLED_RULES: Record<string, { enabled: boolean }> = {
   "page-has-heading-one": { enabled: false },
 };
 
+// the preview builds its story store only after the `beforeAll` in preview.ts
+// has loaded every font face, and `getStoryContext` reads that store, so on a
+// slow font load it threw SB_PREVIEW_API_0011 and failed a whole suite (#2275).
+// `ready()` resolves once the store is up; the preview global itself exists as
+// soon as the iframe's script has run
+type PreviewGlobal = { __STORYBOOK_PREVIEW__?: { ready(): Promise<unknown> } };
+
 const config: TestRunnerConfig = {
   async preVisit(page, context) {
+    await page.waitForFunction(() => !!(globalThis as PreviewGlobal).__STORYBOOK_PREVIEW__);
+    await page.evaluate(() => (globalThis as PreviewGlobal).__STORYBOOK_PREVIEW__?.ready());
     const story = await getStoryContext(page, context);
     const size = story.parameters?.viewportSize as { width: number; height: number } | undefined;
     await page.setViewportSize(size ?? DESKTOP);
