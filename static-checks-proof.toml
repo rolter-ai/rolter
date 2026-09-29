@@ -1,3 +1,0 @@
-# static checks proof for #2132, removed in the next commit
-[proof]
-note="teh static job must name both failures"
