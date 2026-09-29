@@ -7,7 +7,7 @@ Rolter can inspect request or response content with built-in detectors, custom r
 
 ## Inspection rules
 
-Rules run by ascending position. Each rule uses exactly one source:
+Rules run by ascending position, after any rules defined in the config file. Each rule uses exactly one source:
 
 - **Built-in detector** — email address, phone number, API token, or payment card.
 - **Custom regex** — compiled by Rolter's bounded, linear-time regex engine before the rule is published.
@@ -23,7 +23,21 @@ A response rule (stage **Before response**) needs the whole answer, so it cannot
 
 The rule dialog shows which of the two applies as soon as **Before response** is picked, and each response rule's card repeats it in one line. Both read the value from the effective configuration (`GET /api/v1/config`). When that cannot be read, they say so and describe both outcomes rather than assuming the default. The dashboard shows the setting but does not change it.
 
-The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule without deleting the registry.
+The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule, and every config-file rule, without deleting the registry. While it is off, **Guardrails → Rules** shows a banner saying no rule inspects traffic, with a link to **Feature Flags**, and every rule's card says **not enforced** instead of **enforced**.
+
+### What the Rules screen reports
+
+A card's status comes from the policy the control plane hands to gateways, read from the effective configuration (`GET /api/v1/config`), not only from the rule's own switch:
+
+- **enforced** — the rule is in the effective policy and the `guardrails` flag is on.
+- **not enforced** — the rule is in the policy, but the flag is off.
+- **paused** — the rule is switched off on its card.
+- **overridden by config file** — the config file defines a rule with the same name. The file's rule wins a name clash, so this card's rule does not run. The card names the file rule, which is listed below under **Config-file rules**. A paused rule under a file rule's name says it would not run if resumed, and the rule dialog warns when you type a name the config file already uses.
+- **status unknown** — the effective configuration could not be read. A banner says so and offers a retry; the screen does not assume the rules are enforced.
+
+Rules defined in the config file are listed under **Config-file rules**, read-only, in the order they run. They run before the rules added on the screen and change only when the file does.
+
+The effective configuration does not say where each rule came from, so the screen infers it from names. A rule the configuration carries is a config-file rule when no card has its name, when the card with its name is paused, or when it differs from that card in any field. A config-file rule identical in every field to an enabled card cannot be told apart from it and is shown as that card. Enforcement is the same either way, but deleting or pausing the card would leave the file's copy running. [#2249](https://github.com/rolter-ai/rolter/issues/2249) tracks reporting the source directly.
 
 ## External providers
 
@@ -48,7 +62,7 @@ The banner at the top of **Guardrails → Providers** reports the webhook the co
 
 ## Hot reload and config files
 
-Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden.
+Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. The Rules screen lists the config-file rules and marks a dashboard rule whose name the file takes as overridden. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden.
 
 ## API endpoints
 

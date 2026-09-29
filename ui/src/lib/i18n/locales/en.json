@@ -1579,7 +1579,7 @@
       "intro": "Rules run from the lowest position upward. Paused rules stay visible but never inspect traffic.",
       "addRule": "Add rule",
       "emptyTitle": "No inspection rules",
-      "emptyBody": "Add a built-in detector or a bounded custom regex before enabling the deployment guardrails flag.",
+      "emptyBody": "Add a built-in detector or a bounded custom regex. Each rule is published to the gateway when you save it.",
       "addFirst": "Add first rule",
       "customRegex": "Custom regular expression",
       "builtinCardEmail": "Built-in email address detector",
@@ -1627,6 +1627,30 @@
         "noteReject": "While this rule is enforced, streamed requests on the routes it covers are refused with a 400, because this deployment sets <0>streaming_post_call = \"reject\"</0>. Chat clients and coding agents usually stream.",
         "notePassthrough": "Streamed responses skip this rule, because this deployment sets <0>streaming_post_call = \"passthrough\"</0>. Only non-streamed responses are checked.",
         "noteUnknown": "<0>streaming_post_call</0> could not be read, so what this rule does to streamed requests is unknown. Under <0>reject</0>, they are refused on the routes it covers; under <0>passthrough</0>, they skip the rule."
+      },
+      "emptyFileTitle": "No rules added here",
+      "emptyFileBody": "The config-file rules below are the whole policy. A rule added here runs after them.",
+      "status": {
+        "notEnforced": "not enforced",
+        "overridden": "overridden by config file",
+        "unknown": "status unknown"
+      },
+      "overriddenDetail": "Not running. The config file also defines <0>{{name}}</0>, and a config-file rule wins a name clash, so that rule runs instead.",
+      "pausedClashDetail": "The config file also defines <0>{{name}}</0>, so this rule would not run if resumed.",
+      "nameClash": "The config file already defines a rule with this name, so this one would not run.",
+      "flagOff": {
+        "title": "Guardrails are switched off",
+        "body": "The Guardrails feature flag is off, so no rule inspects traffic, whether it is listed here or in the config file. The rules stay stored and run again once the flag is on.",
+        "link": "Open Feature Flags"
+      },
+      "unknownPolicy": {
+        "title": "Could not confirm which rules the gateway runs",
+        "body": "The effective configuration could not be read, so this screen cannot say whether the Guardrails feature flag is on or which config-file rules apply. The cards show the rules added here as stored."
+      },
+      "file": {
+        "heading": "Config-file rules",
+        "intro": "Defined as <0>[[guardrails.rules]]</0> in the control plane's config file. They run before the rules above, in file order, and change only when the file does.",
+        "readOnly": "Read-only · config file"
       }
     },
     "guardrailProviders": {
