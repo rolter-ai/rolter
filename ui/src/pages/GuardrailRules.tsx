@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Loader2, Plus } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
@@ -27,8 +27,10 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createGuardrailRule,
   deleteGuardrailRule,
+  fetchConfig,
   fetchGuardrailRules,
   updateGuardrailRule,
+  type GatewayConfigDto,
   type GuardrailRuleInput,
   type GuardrailRuleRow,
 } from "@/lib/api";
@@ -48,6 +50,38 @@ const EMPTY: GuardrailRuleInput = {
   position: 0,
 };
 
+/**
+ * What a post-call rule does to a streamed request on this deployment (#2156).
+ *
+ * A post-call rule masks the buffered response, which a stream never is, so
+ * the gateway settles it with the deployment-wide
+ * `[guardrails] streaming_post_call`: `reject` refuses the request with a 400,
+ * `passthrough` serves the stream with the rule skipped. That is a property
+ * of the deployment rather than of the rule, so it is read from the effective
+ * config, and `unknown` stands for a config that could not be read or did not
+ * say.
+ */
+type StreamingMode = "reject" | "passthrough" | "unknown";
+
+function streamingMode(config: GatewayConfigDto | undefined): StreamingMode {
+  const guardrails = config?.guardrails as { streaming_post_call?: unknown } | null | undefined;
+  const mode = guardrails?.streaming_post_call;
+  return mode === "reject" || mode === "passthrough" ? mode : "unknown";
+}
+
+const STREAMING_COPY = {
+  card: {
+    reject: "pages.guardrailRules.streaming.cardReject",
+    passthrough: "pages.guardrailRules.streaming.cardPassthrough",
+    unknown: "pages.guardrailRules.streaming.cardUnknown",
+  },
+  note: {
+    reject: "pages.guardrailRules.streaming.noteReject",
+    passthrough: "pages.guardrailRules.streaming.notePassthrough",
+    unknown: "pages.guardrailRules.streaming.noteUnknown",
+  },
+} as const;
+
 function GuardrailRulesScreen() {
   const { t } = useTranslation();
   const client = useQueryClient();
@@ -62,6 +96,11 @@ function GuardrailRulesScreen() {
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
   useErrorState(!!query.error, "guardrail-rules");
+  // the same cache entry the Effective config and Models screens read.
+  // undefined until it answers, so a note never says "could not be read"
+  // about a request still in flight
+  const config = useQuery({ queryKey: ["config"], queryFn: fetchConfig, retry: false });
+  const streaming = config.isPending ? undefined : streamingMode(config.data);
   const [editing, setEditing] = React.useState<GuardrailRuleRow | null | undefined>();
 
   const save = useMutation({
@@ -200,11 +239,18 @@ function GuardrailRulesScreen() {
                 </>
               }
               details={
-                rule.replacement
-                  ? t("pages.guardrailRules.replacementDetail", {
-                      token: rule.replacement,
-                    })
-                  : t("pages.guardrailRules.noRewrite")
+                <>
+                  <p>
+                    {rule.replacement
+                      ? t("pages.guardrailRules.replacementDetail", {
+                          token: rule.replacement,
+                        })
+                      : t("pages.guardrailRules.noRewrite")}
+                  </p>
+                  {rule.stage === "post_call" && streaming && (
+                    <StreamingEffect mode={streaming} variant="card" />
+                  )}
+                </>
               }
               actions={
                 <>
@@ -269,6 +315,7 @@ function GuardrailRulesScreen() {
         key={editing?.id ?? (editing === null ? "new" : "closed")}
         open={open}
         initial={editing ?? null}
+        streaming={streaming}
         pending={save.isPending}
         error={save.isError ? (save.error as Error).message : null}
         onClose={() => setEditing(undefined)}
@@ -281,6 +328,7 @@ function GuardrailRulesScreen() {
 function RuleDialog({
   open,
   initial,
+  streaming,
   pending,
   error,
   onClose,
@@ -288,6 +336,7 @@ function RuleDialog({
 }: {
   open: boolean;
   initial: GuardrailRuleRow | null;
+  streaming: StreamingMode | undefined;
   pending: boolean;
   error: string | null;
   onClose: () => void;
@@ -298,6 +347,9 @@ function RuleDialog({
   const set = (patch: Partial<GuardrailRuleInput>) => setForm((value) => ({ ...value, ...patch }));
   const valid =
     form.name.trim() !== "" && (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
+  // shown before saving, and read out with the stage it depends on
+  const noteId = React.useId();
+  const streamingNote = form.stage === "post_call" ? streaming : undefined;
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
@@ -384,6 +436,7 @@ function RuleDialog({
           <Field label={t("pages.guardrailRules.fieldStage")} htmlFor="rule-stage">
             <Combobox
               id="rule-stage"
+              aria-describedby={streamingNote ? noteId : undefined}
               value={form.stage}
               onChange={(picked) =>
                 set({
@@ -413,6 +466,7 @@ function RuleDialog({
             />
           </Field>
         </div>
+        {streamingNote && <StreamingEffect id={noteId} mode={streamingNote} variant="note" />}
         {form.action === "redact" && (
           <Field label={t("pages.guardrailRules.fieldReplacement")} htmlFor="rule-replacement">
             <Input
@@ -449,6 +503,40 @@ function RuleDialog({
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+function StreamingEffect({
+  id,
+  mode,
+  variant,
+}: {
+  id?: string;
+  mode: StreamingMode;
+  /** one line on the rule's card, or the full note under the dialog's stage */
+  variant: "card" | "note";
+}) {
+  const text = (
+    <Trans
+      i18nKey={STREAMING_COPY[variant][mode]}
+      components={[<code key="setting" className="inline-block font-mono" />]}
+    />
+  );
+  const icon = <AlertTriangle className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />;
+  return variant === "card" ? (
+    <p className="mt-1 flex items-start gap-1.5 text-[color:var(--status-warning-text)]">
+      {icon}
+      <span>{text}</span>
+    </p>
+  ) : (
+    <p
+      id={id}
+      role="note"
+      className="flex items-start gap-2 rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
+    >
+      {icon}
+      <span>{text}</span>
+    </p>
   );
 }
 
