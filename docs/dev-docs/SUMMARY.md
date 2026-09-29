@@ -84,6 +84,7 @@
 - [Dashboard code highlighting](development/highlighting.md)
 - [Dashboard dropdowns and the Combobox](development/combobox.md)
 - [Dashboard form primitives](development/form-primitives.md)
+- [Dashboard list tables](development/list-tables.md)
 - [Dashboard UX telemetry](development/ux-telemetry.md)
 - [Formatting markdown, MDX, JSON and YAML](development/formatting.md)
 - [Commit conventions](development/commit-conventions.md)

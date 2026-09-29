@@ -6,7 +6,15 @@ import { useTranslation } from "react-i18next";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
-import { ListHeader, ListRow, ListTable, PageBody, Pill } from "@/components/screen";
+import {
+  ListCell,
+  ListHeader,
+  ListHeaderCell,
+  ListRow,
+  ListTable,
+  PageBody,
+  Pill,
+} from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -223,14 +231,14 @@ function McpLogsScreen() {
             />
           )}
           {rows.length > 0 && (
-            <ListTable className="max-h-full overflow-y-auto">
+            <ListTable label={t("screens.mcp-logs.title")} className="max-h-full overflow-y-auto">
               <ListHeader grid={GRID} className="sticky top-0 z-10">
-                <span>{t("pages.mcpLogs.time")}</span>
-                <span>{t("pages.mcpLogs.server")}</span>
-                <span>{t("pages.mcpLogs.tool")}</span>
-                <span>{t("pages.mcpLogs.status")}</span>
-                <span>{t("pages.mcpLogs.transport")}</span>
-                <span className="text-right">{t("pages.mcpLogs.latency")}</span>
+                <ListHeaderCell>{t("pages.mcpLogs.time")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpLogs.server")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpLogs.tool")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpLogs.status")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpLogs.transport")}</ListHeaderCell>
+                <ListHeaderCell className="text-right">{t("pages.mcpLogs.latency")}</ListHeaderCell>
               </ListHeader>
               {rows.map((r) => (
                 <McpRow key={r.event_id} row={r} onSelect={() => setSelected(r.event_id)} />
@@ -254,22 +262,24 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
       className="cursor-pointer transition-colors hover:bg-[color:var(--surface-subtle)]"
       onClick={onSelect}
     >
-      <span className="font-mono text-xs text-[color:var(--text-secondary)]">
+      <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
         {fmt.dateTime(row.ts)}
-      </span>
-      <span className="truncate font-mono text-xs">{row.server}</span>
-      <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+      </ListCell>
+      <ListCell className="truncate font-mono text-xs">{row.server}</ListCell>
+      <ListCell className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
         {row.tool}
-      </span>
-      <Pill color={tone[0]} tint={tone[1]}>
-        {row.status}
-      </Pill>
-      <span className="truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+      </ListCell>
+      <ListCell className="grid">
+        <Pill color={tone[0]} tint={tone[1]}>
+          {row.status}
+        </Pill>
+      </ListCell>
+      <ListCell className="truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
         {row.transport}
-      </span>
-      <span className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
+      </ListCell>
+      <ListCell className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
         {t("analytics.ms", { value: fmt.number(Math.round(row.latency_ms)) })}
-      </span>
+      </ListCell>
     </ListRow>
   );
 }

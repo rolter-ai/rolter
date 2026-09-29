@@ -6,6 +6,7 @@ import {
   cancelConfirmation,
   confirmDestructive,
   expectRefused,
+  expectListTable,
   expectSkeleton,
   Harness as ScreenHarness,
   json,
@@ -228,6 +229,7 @@ export const GrantsLoaded: Story = {
     await expect(canvas.getByText("2 live")).toBeVisible();
     // expired sessions are historical rows, not live revoke impact
     await expect(canvas.getByText("0 live")).toBeVisible();
+    await expectListTable(canvasElement, "OAuth Grants");
   },
 };
 
@@ -306,6 +308,7 @@ export const SessionsLoaded: Story = {
     // renewability is a flag on the row; the refresh token is never in the payload
     await expect(canvas.getAllByText("RENEWABLE")).toHaveLength(2);
     await expect(canvas.getByText("never")).toBeVisible();
+    await expectListTable(canvasElement, "Auth Sessions");
   },
 };
 

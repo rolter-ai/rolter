@@ -12,6 +12,7 @@ import {
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
+  expectListTable,
   expectSkeleton,
   json,
   NEEDS_SUPERADMIN,
@@ -85,6 +86,7 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await expect(canvas.getByText("claude-sonnet")).toBeVisible();
+    await expectListTable(canvasElement, "Model Catalog");
   },
 };
 

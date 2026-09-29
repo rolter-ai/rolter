@@ -9,6 +9,7 @@ import {
   expectClosesWithoutPrompting,
   expectForbidden,
   expectSheetClosed,
+  expectListTable,
   expectSkeleton,
   expectToast,
   Harness,
@@ -630,6 +631,7 @@ export const HistoryLoaded: Story = {
     await expect(await canvas.findByText("could not connect to the endpoint")).toBeInTheDocument();
     // a transition with no channel is still recorded, as skipped
     await expect(canvas.getByText("no channel configured")).toBeInTheDocument();
+    await expectListTable(canvasElement, "Alert History");
   },
 };
 

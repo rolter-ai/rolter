@@ -12,6 +12,7 @@ import {
   expectSheetClosed,
   expectUxEvent,
   expectLoadError,
+  expectListTable,
   expectSkeleton,
   json,
   pending,
@@ -77,6 +78,7 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await expect(canvas.getAllByText("anthropic-eu").length).toBeGreaterThan(0);
+    await expectListTable(canvasElement, "Model Providers");
   },
 };
 

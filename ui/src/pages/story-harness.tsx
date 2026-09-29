@@ -495,6 +495,31 @@ export async function expectEmptyState(
   if (cta) await expect(canvas.getAllByRole("button", { name: cta }).length).toBeGreaterThan(0);
 }
 
+/**
+ * Assert the `ListTable` named `name` is a whole table to a screen reader
+ * (#2000): a header rowgroup and a body rowgroup, a header row of column
+ * headers, and body rows whose every child is a cell — one per column, or one
+ * across the table for a loading or empty row.
+ *
+ * The axe gate does not cover this on its own: it walks straight through a
+ * generic `span` inside a row, so a column that lost its `ListCell` and holds
+ * only text passes axe while a screen reader reads it with no column header.
+ */
+export async function expectListTable(canvasElement: HTMLElement, name: string): Promise<void> {
+  const table = await within(canvasElement).findByRole("table", { name });
+  const roles = (parent: Element) => [...parent.children].map((c) => c.getAttribute("role"));
+  await expect(roles(table)).toEqual(["rowgroup", "rowgroup"]);
+  const [header, ...body] = [...table.querySelectorAll('[role="row"]')];
+  const columns = roles(header);
+  await expect(columns.length).toBeGreaterThan(0);
+  await expect(columns).toEqual(columns.map(() => "columnheader"));
+  for (const row of body) {
+    const cells = roles(row);
+    await expect(cells).toEqual(cells.map(() => "cell"));
+    if (cells.length !== 1) await expect(cells.length).toBe(columns.length);
+  }
+}
+
 /** The open editor sheet. Sheets portal to the body, not into the canvas. */
 export function sheet(): HTMLElement {
   return within(document.body).getByRole("dialog");
