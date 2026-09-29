@@ -85,7 +85,7 @@ the release PR carries `release:ready`.
 | `static checks`                 | `quality.yml` | every call                  | yes                | gitleaks (working tree first, then branch history), agent session urls in commits, the pr-body step against a fake gh, migrations append-only, typos, taplo fmt, cargo-deny, unused deps, actionlint, zizmor, release handoff wired, board automation retry policy, helm chart (the checker runs under `uv run --script`), and a report step. 65-90 s |
 | `rust lint`                     | `quality.yml` | every call                  | yes                | fmt, clippy (default and `postgres`), cargo doc, `cargo hack check --each-feature` and the cross-crate feature combination. About 220 s warm                                                                                                                                                                                                          |
 | `rust build`                    | `quality.yml` | every call                  | yes, except semver | package (publish verify, plus a `maturin sdist` check of the PyPI packaging) and the gateway smoke build and probe, then three `semver-checks` steps (install, baseline, check), placed last and each `continue-on-error`                                                                                                                             |
-| `nextest / doctests`            | `quality.yml` | every call                  | yes                | unchanged, about 388 s                                                                                                                                                                                                                                                                                                                                |
+| `nextest / doctests`            | `quality.yml` | every call                  | yes                | unchanged, about 388 s, 30 min job timeout                                                                                                                                                                                                                                                                                                            |
 | `image smoke (published ports)` | `quality.yml` | every call                  | yes                | unchanged from #1950, still its own job                                                                                                                                                                                                                                                                                                               |
 | `ui, storybook, docs`           | `quality.yml` | every call                  | yes                | one pinned bun and one `bun install`, then every former ui, storybook, docs-formatting and `llms.txt` check as its own step. About 320 s, 25 min job timeout                                                                                                                                                                                          |
 | `coverage (informational)`      | `quality.yml` | `pull_request` only         | no                 | unchanged llvm-cov, ratchet and lcov artifact                                                                                                                                                                                                                                                                                                         |
@@ -150,9 +150,10 @@ above, 11 were cancelled mid-flight.
 
 ### Smaller changes
 
-- Every `rust-cache` step in `quality.yml` and `ci.yml` saves only on
-  `refs/heads/master`. PR runs restore master's caches and write none, which
-  keeps the cache under its 10 GB limit. `engine-integration.yml` is exempt: it
+- Every `rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml` saves
+  only on `refs/heads/master`. PR runs restore master's caches and write none,
+  which keeps the cache under its 10 GB limit. `extended.yml`'s nightly schedule
+  runs on `master`, so it still saves. `engine-integration.yml` is exempt: it
   never runs on a master push, so a master-only save would leave it cold
   forever.
 - pr-title and both agent-session-url checks move into `ci-ok` as steps. The
@@ -272,9 +273,9 @@ Re-running one failed check re-runs every check in its job.
 One failing tool no longer has a runner to itself. `!cancelled()` keeps the
 other steps running after a failure, but a hung step or a lost runner takes its
 siblings' verdicts down with it until the job is re-run. The layout gives only
-`ui, storybook, docs` a job timeout (25 min) and the semver check a step
-timeout, so `static checks`, `rust lint` and `rust build` fall back to GitHub's
-360-minute default unless their PRs set one.
+`ui, storybook, docs` (25 min) and `nextest / doctests` (30 min) a job timeout
+and the semver check a step timeout, so `static checks`, `rust lint` and
+`rust build` fall back to GitHub's 360-minute default unless their PRs set one.
 
 The critical path can move. `rust lint` takes about 450-560 s cold against 488 s
 for `codeql (rust)`, so on a `Cargo.lock` bump it can become the longest job.
