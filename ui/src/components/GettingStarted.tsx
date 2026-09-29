@@ -14,9 +14,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
 import { splitCapability, useCan, useCapabilities, useGate, type Capability } from "@/lib/can";
-import { gatewayBaseUrl } from "@/lib/gateway";
 import { classifyLoadError } from "@/lib/load-error";
 import { useScope } from "@/lib/scope";
+import { useGatewayBase } from "@/lib/use-gateway-base";
 import { cn } from "@/lib/utils";
 
 // The thread between the screens a first-run admin has to visit in order
@@ -130,6 +130,33 @@ function StepRow({ step, index }: { step: Step; index: number }) {
         </div>
       </div>
     </li>
+  );
+}
+
+/**
+ * The request a client would send, addressed to the gateway base every other
+ * snippet uses (#2218).
+ *
+ * Its own component so the client-settings read behind the address happens
+ * only while the request is on screen, not for a card that is dismissed,
+ * retired or still loading.
+ */
+function ClientRequest() {
+  const { t } = useTranslation();
+  const gateway = useGatewayBase();
+  const snippet = [
+    `curl ${gateway.url}/v1/chat/completions \\`,
+    `  -H "Authorization: Bearer $ROLTER_VIRTUAL_KEY" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d '{"model": "fake-llm", "messages": [{"role": "user", "content": "hi"}]}'`,
+  ].join("\n");
+  return (
+    <CodeBlock
+      value={snippet}
+      language="bash"
+      label={t("pages.gettingStarted.snippetLabel")}
+      wrap
+    />
   );
 }
 
@@ -252,13 +279,6 @@ export function GettingStarted({ requests }: GettingStartedProps) {
     },
   ];
 
-  const snippet = [
-    `curl ${gatewayBaseUrl()}/v1/chat/completions \\`,
-    `  -H "Authorization: Bearer $ROLTER_VIRTUAL_KEY" \\`,
-    `  -H "Content-Type: application/json" \\`,
-    `  -d '{"model": "fake-llm", "messages": [{"role": "user", "content": "hi"}]}'`,
-  ].join("\n");
-
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
@@ -325,12 +345,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
               <p className="mt-0.5 mb-2 text-xs leading-snug text-muted-foreground">
                 {t("pages.gettingStarted.steps.client.body")}
               </p>
-              <CodeBlock
-                value={snippet}
-                language="bash"
-                label={t("pages.gettingStarted.snippetLabel")}
-                wrap
-              />
+              <ClientRequest />
             </div>
           </div>
         )}

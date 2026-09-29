@@ -12,7 +12,9 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Input } from "@/components/ui/input";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
+import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
+import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // injected headers are edited as an ordered list rather than an object so a
@@ -113,7 +115,7 @@ function ClientSettingsScreen() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const settings = useQuery({
-    queryKey: ["client-settings"],
+    queryKey: CLIENT_SETTINGS_QUERY_KEY,
     queryFn: fetchClientSettings,
     retry: false,
   });
@@ -143,10 +145,10 @@ function ClientSettingsScreen() {
         request_id_header: f.requestIdHeader.trim().toLowerCase(),
       }),
     onSuccess: (dto) => {
-      queryClient.setQueryData(["client-settings"], dto);
+      queryClient.setQueryData(CLIENT_SETTINGS_QUERY_KEY, dto);
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
-      void queryClient.invalidateQueries({ queryKey: ["client-settings"] });
+      void queryClient.invalidateQueries({ queryKey: CLIENT_SETTINGS_QUERY_KEY });
       setForm(fromDto(dto));
       toast.push({
         tone: "success",
@@ -188,10 +190,11 @@ function ClientSettingsScreen() {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
   const localError = validate(form, dto.reserved);
-  // what a client would actually type; falls back to this dashboard's origin
-  const effectiveBase =
-    form.publicBaseUrl.trim() ||
-    (typeof window === "undefined" ? "https://your-gateway.example.com" : window.location.origin);
+  // what a client would actually type, following the field as it is edited:
+  // the typed address, or the dashboard's /gw proxy while the field is empty.
+  // the placeholder is that proxy, the address an empty field stands for
+  const exampleBase = gatewayBase(form.publicBaseUrl).url;
+  const proxyBase = gatewayBase(null).url;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
@@ -213,12 +216,12 @@ function ClientSettingsScreen() {
             id="client-public-base-url"
             className="min-w-[320px] font-mono text-xs"
             aria-label={t("pages.clientSettings.publicBaseUrl")}
-            placeholder={effectiveBase}
+            placeholder={proxyBase}
             value={form.publicBaseUrl}
             onChange={(e) => set({ publicBaseUrl: e.target.value })}
           />
         </div>
-        <Snippet base={effectiveBase} />
+        <Snippet base={exampleBase} />
       </section>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">

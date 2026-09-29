@@ -4,6 +4,7 @@ import {
   GatewayError,
   awaitingMintedKey,
   fetchGatewayModels,
+  gatewayBase,
   getPlaygroundKey,
   getPlaygroundKeyState,
   keyPropagationDelay,
@@ -188,5 +189,52 @@ describe("waiting for a minted key to reach the gateway", () => {
     expect(awaitingMintedKey(2, unauthorized)).toBe(false);
     setKeyPropagationForTests(null);
     expect(keyPropagationDelay(0)).toBe(250);
+  });
+});
+
+describe("gatewayBase", () => {
+  const ORIGIN = "https://rolter.example:4001";
+
+  // the control plane serves the gateway only under /gw/*, so the bare origin
+  // would hand out a /v1/… that answers 404 (#2075)
+  it("falls back to the /gw proxy on the dashboard's origin", () => {
+    expect(gatewayBase(null, ORIGIN)).toEqual({
+      url: "https://rolter.example:4001/gw",
+      configured: false,
+    });
+    expect(gatewayBase(undefined, `${ORIGIN}/`).url).toBe("https://rolter.example:4001/gw");
+  });
+
+  it("treats an empty or blank saved value as not saved", () => {
+    expect(gatewayBase("", ORIGIN).configured).toBe(false);
+    expect(gatewayBase("   ", ORIGIN).configured).toBe(false);
+  });
+
+  it("reads the origin from location when none is passed", () => {
+    globalThis.location = { origin: ORIGIN } as unknown as Location;
+    expect(gatewayBase(null).url).toBe("https://rolter.example:4001/gw");
+  });
+
+  // the operator's statement of where clients reach the gateway (#2218)
+  it("prefers the saved public base url", () => {
+    expect(gatewayBase("https://gateway.example.com", ORIGIN)).toEqual({
+      url: "https://gateway.example.com",
+      configured: true,
+    });
+  });
+
+  it("strips the trailing slash and one trailing /v1 from a saved value", () => {
+    expect(gatewayBase(" https://gateway.example.com/ ", ORIGIN).url).toBe(
+      "https://gateway.example.com",
+    );
+    // the SDKs document their base url with the version on it; kept, every
+    // snippet would say /v1/v1/chat/completions
+    expect(gatewayBase("https://gateway.example.com/v1/", ORIGIN).url).toBe(
+      "https://gateway.example.com",
+    );
+    // a path prefix in front of the gateway is the operator's to keep
+    expect(gatewayBase("https://edge.example.com/llm", ORIGIN).url).toBe(
+      "https://edge.example.com/llm",
+    );
   });
 });

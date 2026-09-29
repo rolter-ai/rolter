@@ -13,6 +13,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { ClientSettingsDto } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 
 const RESERVED = ["authorization", "x-api-key", "host", "cookie"];
 
@@ -60,15 +61,36 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-// the shipped default: no base URL override, no header policy
+/**
+ * The example request's text. The highlighter splits it across token spans,
+ * so it is the region's text that carries the command, not any one node.
+ */
+const example = (canvasElement: HTMLElement) =>
+  within(canvasElement).getByRole("region", {
+    name: new RegExp(`^${en.pages.clientSettings.exampleRequest} `),
+  }).textContent ?? "";
+
+/**
+ * The shipped default: no base URL override, no header policy.
+ *
+ * The example request goes through the dashboard's `/gw` proxy, the one
+ * address the control plane serves the gateway on. It used to fall back to the
+ * bare origin, and `/v1/chat/completions` there is a 404 (#2075).
+ */
 export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No headers injected/)).toBeVisible());
+    const proxy = `${window.location.origin}/gw`;
+    await expect(example(canvasElement)).toContain(`curl ${proxy}/v1/chat/completions`);
+    // the placeholder is the address an empty field stands for
+    await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute("placeholder", proxy);
+    await expect(canvas.getByText(en.pages.clientSettings.baseUrlHint)).toBeVisible();
   },
 };
 
+/** A saved public base URL: the example calls the gateway there, not through `/gw`. */
 export const Configured: Story = {
   render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
   play: async ({ canvasElement }) => {
@@ -77,6 +99,30 @@ export const Configured: Story = {
       "https://gateway.example.com",
     );
     await expect(canvas.getByLabelText("Injected header name 1")).toHaveValue("x-partner-id");
+    await expect(example(canvasElement)).toContain(
+      "curl https://gateway.example.com/v1/chat/completions",
+    );
+    await expect(example(canvasElement)).not.toContain("/gw/");
+  },
+};
+
+/**
+ * The example follows the field as it is typed, before anything is saved, and
+ * an address pasted the way the OpenAI SDKs document theirs — with `/v1` on
+ * the end — does not come out as `/v1/v1/chat/completions` (#2218).
+ */
+export const ExampleFollowsTheTypedAddress: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(
+      await canvas.findByLabelText("Public base URL"),
+      "https://edge.example.com/v1/",
+    );
+    await waitFor(() =>
+      expect(example(canvasElement)).toContain("curl https://edge.example.com/v1/chat/completions"),
+    );
+    await expect(example(canvasElement)).not.toContain("/v1/v1/");
   },
 };
 

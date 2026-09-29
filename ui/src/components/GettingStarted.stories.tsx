@@ -131,7 +131,40 @@ export const Loaded: Story = {
     await expect(
       canvas.getByRole("link", { name: new RegExp(en.pages.gettingStarted.steps.provider.action) }),
     ).toHaveAttribute("href", "/providers");
-    await expect(canvasElement.textContent ?? "").toContain("/v1/chat/completions");
+    // no public base URL to read, so the request goes through the dashboard's
+    // own /gw proxy — the bare origin would be a 404 (#2075)
+    await expect(canvasElement.textContent ?? "").toContain(
+      `${window.location.origin}/gw/v1/chat/completions`,
+    );
+  },
+};
+
+/**
+ * A superadmin reads the public base URL saved on Client Settings, and the
+ * request is addressed to it rather than to the `/gw` proxy (#2218).
+ */
+export const UsesTheSavedBaseUrl: Story = {
+  render: () =>
+    render(
+      routes([
+        ["/client-settings", () => ({ public_base_url: "https://gateway.example.com" })],
+        ["/providers", () => []],
+        ["/routes", () => []],
+        ["/virtual-keys", () => []],
+      ]),
+      {},
+      "superadmin",
+    ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("region", {
+      name: new RegExp(`^${en.pages.gettingStarted.snippetLabel} `),
+    });
+    await waitFor(() =>
+      expect(canvasElement.textContent ?? "").toContain(
+        "curl https://gateway.example.com/v1/chat/completions",
+      ),
+    );
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/v1");
   },
 };
 
