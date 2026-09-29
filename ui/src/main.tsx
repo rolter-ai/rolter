@@ -2,8 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router";
-import "@fontsource-variable/geist";
-import "@fontsource-variable/geist-mono";
+// the vendored geist faces, shared with the storybook preview (#2051)
+import "@/lib/fonts";
 
 import App from "@/App";
 import { AuthProvider } from "@/lib/auth";
