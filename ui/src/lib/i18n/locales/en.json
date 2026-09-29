@@ -97,7 +97,15 @@
       "locked": "Locked — clients can't override. Click to unlock.",
       "unlocked": "Unlocked — clients can override. Click to lock."
     },
-    "noneAvailable": "none available"
+    "noneAvailable": "none available",
+    "timeWindow": {
+      "label": "Time window",
+      "last24h": "Last 24 hours",
+      "last7d": "Last 7 days",
+      "last30d": "Last 30 days",
+      "monthToDate": "Month to date",
+      "lastMonth": "Last month"
+    }
   },
   "docs": {
     "link": {
@@ -1608,7 +1616,14 @@
       "unitEmptyBody": "Business units roll teams up so spend can be attributed to the part of the organisation that incurred it.",
       "customerEmptyTitle": "No customers yet",
       "customerEmptyBody": "Customers attribute usage and spend to the people you serve, so it can be billed on or reported per account.",
-      "spendWindow": "Spend, last 24 hours",
+      "spendWindows": {
+        "last24h": "Spend, last 24 hours",
+        "last7d": "Spend, last 7 days",
+        "last30d": "Spend, last 30 days",
+        "monthToDate": "Spend, month to date",
+        "lastMonth": "Spend, last month"
+      },
+      "spendRange": "{{from}} – {{to}}",
       "spendAttributed": "Attributed",
       "spendUnattributed": "Unattributed",
       "spendUnattributedShare": "{{share}} of the window",

@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { BusinessUnits, Customers } from "./CostAttribution";
@@ -15,13 +16,16 @@ import {
   expectToast,
   Harness as ScreenHarness,
   json,
+  pickOption,
   recording,
   sheet,
   Toasted,
+  type Recorder,
   type StoryRole,
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
+import { TIME_WINDOW_STORAGE_KEY } from "@/lib/time-window";
 
 // the formatter the screen itself uses, so a story asserts the house format
 // rather than a second copy of it
@@ -154,6 +158,21 @@ const meta = {
   title: "Screens/CostAttribution",
   component: BusinessUnits,
   parameters: { layout: "fullscreen" },
+  // the spend window lives in the address (#2107), so every story supplies a
+  // router the way main.tsx does; `parameters.address` is where it starts
+  decorators: [
+    (Story, { parameters }) => (
+      <MemoryRouter initialEntries={parameters.address ? [parameters.address] : undefined}>
+        <Story />
+      </MemoryRouter>
+    ),
+  ],
+  // the window picked last is carried in session storage, which outlives a
+  // story: one that picked "last month" would hand it to the next one
+  beforeEach: () => {
+    sessionStorage.removeItem(TIME_WINDOW_STORAGE_KEY);
+    return () => sessionStorage.removeItem(TIME_WINDOW_STORAGE_KEY);
+  },
 } satisfies Meta<typeof BusinessUnits>;
 
 export default meta;
@@ -622,5 +641,273 @@ export const CustomersRefusedToAMember: Story = {
     await expectRefused(canvasElement, /new customer/i);
     await expectRefused(canvasElement, "Edit Acme Corp");
     await expectRefused(canvasElement, "Delete Acme Corp");
+  },
+};
+
+// --- the spend window (#2107) ----------------------------------------------
+
+/**
+ * The router's search string, published so a play can read what the screen
+ * wrote to the address. It rides on a data attribute with no text, so no
+ * `getByText` can match it.
+ */
+function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
+
+/** the query string of every spend rollup the screen asked for, oldest first */
+const spendQueries = (recorder: Recorder) =>
+  recorder.calls
+    .filter((c) => c.url.includes("/analytics/by-attribution"))
+    .map((c) => new URL(c.url, "http://localhost").searchParams);
+
+/** the spend rollup the screen asked for last */
+const lastSpendQuery = (recorder: Recorder) => {
+  const all = spendQueries(recorder);
+  return all[all.length - 1];
+};
+
+/** how far back a rolling window's `since` reached, in hours */
+const hoursBack = (query: URLSearchParams | undefined) =>
+  (Date.now() - Date.parse(query?.get("since") ?? "")) / 3_600_000;
+
+/**
+ * Local midnight on the first of the month `offset` months from this one:
+ * the viewer's calendar, which is where a chargeback month starts. Written out
+ * here rather than borrowed from the screen, so a wrong boundary there cannot
+ * agree with itself.
+ */
+const monthStart = (offset: number) => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth() + offset, 1);
+};
+
+const windowPicker = (canvasElement: HTMLElement) =>
+  within(canvasElement).getByRole("combobox", { name: "Time window" });
+
+// last month's rollup is unlike the default one on purpose, so the figure on
+// screen says which window was read. every amount is distinct, so no
+// assertion can pass by matching another figure
+const LAST_MONTH_UNIT_SPEND: AttributionSpendRow[] = [
+  spendRow(UNITS[0].id, 2480, 81_000),
+  spendRow(UNITS[1].id, 40, 1_200),
+  spendRow("", 320, 9_000),
+];
+
+/** answers a closed window with last month's rollup and an open one as usual */
+const byWindow = () =>
+  recording(async (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/analytics/by-attribution") && url.searchParams.has("until")) {
+      return json({ data: LAST_MONTH_UNIT_SPEND });
+    }
+    return router({})(input, init);
+  });
+
+const pickedWindow = byWindow();
+
+/**
+ * #2107: the screens reported one fixed day and nothing else, so "what did
+ * this unit spend last month" had no answer here. Picking the window refetches
+ * the rollup over it: last month is the whole previous calendar month, sent
+ * with both bounds, and the strip names the window and the dates it covered.
+ */
+export const PicksTheSpendWindow: Story = {
+  render: () => {
+    pickedWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={pickedWindow.stub}>
+        <BusinessUnits />
+        <AddressProbe />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible());
+    // the default is the last 24 hours, reaching back from the request and
+    // left open at the end for the control plane's clock to close
+    await expect(canvas.getByText("Spend, last 24 hours")).toBeVisible();
+    await expect(windowPicker(canvasElement)).toHaveValue("Last 24 hours");
+    await expect(hoursBack(spendQueries(pickedWindow)[0])).toBeCloseTo(24, 1);
+    await expect(spendQueries(pickedWindow)[0].has("until")).toBe(false);
+    // and the default is not written into the address
+    await expect(addressOf(canvasElement).has("window")).toBe(false);
+
+    await pickOption(windowPicker(canvasElement), "Last month");
+
+    await waitFor(() => expect(canvas.getByText(fmt.currency(2840, "USD"))).toBeVisible());
+    const sent = lastSpendQuery(pickedWindow);
+    await expect(sent?.get("since")).toBe(monthStart(-1).toISOString());
+    await expect(sent?.get("until")).toBe(monthStart(0).toISOString());
+    await expect(sent?.get("dimension")).toBe("business_unit");
+    await expect(canvas.getByText("Spend, last month")).toBeVisible();
+    // the caption closes the month on its last day, not on the exclusive
+    // bound the request carries
+    const lastDay = new Date(monthStart(0).getTime() - 1);
+    await expect(
+      canvas.getByText(`${fmt.date(monthStart(-1))} – ${fmt.date(lastDay)}`),
+    ).toBeVisible();
+    // the cards read the same window as the strip
+    await expect(canvas.getByText(fmt.currency(2480, "USD"))).toBeVisible();
+    await expect(canvas.queryByText(fmt.currency(190, "USD"))).not.toBeInTheDocument();
+    await expect(addressOf(canvasElement).get("window")).toBe("last-month");
+  },
+};
+
+const keyedWindow = byWindow();
+
+/**
+ * The picker is the shared `Combobox`, so it is a listbox of the five windows
+ * and it is driven from the keyboard like every other dropdown. Going back to
+ * the default takes the parameter out of the address rather than writing it.
+ */
+export const PicksTheWindowFromTheKeyboard: Story = {
+  render: () => {
+    keyedWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={keyedWindow.stub}>
+        <BusinessUnits />
+        <AddressProbe />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible());
+    const picker = windowPicker(canvasElement);
+    picker.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    const listbox = within(document.getElementById(picker.getAttribute("aria-controls") ?? "")!);
+    await expect(listbox.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Last 24 hours",
+      "Last 7 days",
+      "Last 30 days",
+      "Month to date",
+      "Last month",
+    ]);
+    // the list opens on the window in force, so one step down is the next one
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+
+    await waitFor(() => expect(canvas.getByText("Spend, last 7 days")).toBeVisible());
+    await waitFor(() => expect(hoursBack(lastSpendQuery(keyedWindow))).toBeCloseTo(24 * 7, 1));
+    await expect(lastSpendQuery(keyedWindow)?.has("until")).toBe(false);
+    await expect(addressOf(canvasElement).get("window")).toBe("7d");
+
+    await userEvent.keyboard("{ArrowDown}{Home}{Enter}");
+    await waitFor(() => expect(canvas.getByText("Spend, last 24 hours")).toBeVisible());
+    await expect(addressOf(canvasElement).has("window")).toBe(false);
+  },
+};
+
+const addressedWindow = byWindow();
+
+/**
+ * A link or a reload comes back to the window it was opened on: the address is
+ * read before the first request, so month to date is the only rollup asked for.
+ */
+export const OpensOnTheWindowInTheAddress: Story = {
+  parameters: { address: "/customers?window=mtd" },
+  render: () => {
+    addressedWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={addressedWindow.stub}>
+        <Customers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Spend, month to date")).toBeVisible());
+    await expect(windowPicker(canvasElement)).toHaveValue("Month to date");
+    const sent = spendQueries(addressedWindow);
+    await expect(sent).toHaveLength(1);
+    await expect(sent[0].get("since")).toBe(monthStart(0).toISOString());
+    await expect(sent[0].has("until")).toBe(false);
+    await expect(sent[0].get("dimension")).toBe("customer");
+  },
+};
+
+const unknownWindow = byWindow();
+
+/** an address naming a window the screen does not know reads as the default */
+export const AnUnknownWindowIsTheDefault: Story = {
+  parameters: { address: "/business-units?window=fortnight" },
+  render: () => {
+    unknownWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={unknownWindow.stub}>
+        <BusinessUnits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible());
+    await expect(canvas.getByText("Spend, last 24 hours")).toBeVisible();
+    await expect(windowPicker(canvasElement)).toHaveValue("Last 24 hours");
+    await expect(hoursBack(spendQueries(unknownWindow)[0])).toBeCloseTo(24, 1);
+  },
+};
+
+/**
+ * A way to the other screen that drops the query string, the way the nav
+ * rail's links do.
+ */
+function OpenScreen({ path }: { path: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(path)}>
+      Open {path}
+    </button>
+  );
+}
+
+const carriedWindow = byWindow();
+
+/**
+ * The business units and the customers of one chargeback are read over the
+ * same month: the window picked on one screen is the one the other opens on,
+ * even through a link that carries no query string, and it is written back
+ * into the address there.
+ */
+export const TheWindowCarriesToTheOtherScreen: Story = {
+  parameters: { address: "/business-units" },
+  render: () => {
+    carriedWindow.calls.length = 0;
+    return (
+      <Harness fetchStub={carriedWindow.stub}>
+        <Routes>
+          <Route path="/business-units" element={<BusinessUnits />} />
+          <Route path="/customers" element={<Customers />} />
+        </Routes>
+        <OpenScreen path="/customers" />
+        <AddressProbe />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
+    await pickOption(windowPicker(canvasElement), "Month to date");
+    await waitFor(() => expect(canvas.getByText("Spend, month to date")).toBeVisible());
+
+    await userEvent.click(canvas.getByRole("button", { name: "Open /customers" }));
+
+    await waitFor(() => expect(canvas.getByText("Acme Corp")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Spend, month to date")).toBeVisible());
+    await expect(windowPicker(canvasElement)).toHaveValue("Month to date");
+    // the customers' first rollup is already month to date: the window is
+    // known before the request, not corrected after a day's figures landed
+    const customerReads = spendQueries(carriedWindow).filter(
+      (q) => q.get("dimension") === "customer",
+    );
+    await expect(customerReads).toHaveLength(1);
+    await expect(customerReads[0].get("since")).toBe(monthStart(0).toISOString());
+    await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("mtd"));
   },
 };
