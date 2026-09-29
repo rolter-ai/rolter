@@ -1,9 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChartNoAxesColumn, ChevronLeft, ChevronRight, Filter, ScrollText, X } from "lucide-react";
+import {
+  ChartNoAxesColumn,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  Filter,
+  ScrollText,
+  X,
+} from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
+import { CopyButton } from "@/components/CopyButton";
 import {
   FilterCheckList,
   FilterPanel,
@@ -12,6 +21,7 @@ import {
 } from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -23,6 +33,7 @@ import {
   fetchInvocationsPage,
   fetchLoggingSettings,
   fetchModels,
+  fetchVirtualKeys,
   type InvocationRow,
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
@@ -52,6 +63,17 @@ function statusTone(status: number): [string, string] {
   if (status >= 400) return ["var(--status-warning-text)", "rgba(245,158,11,.14)"];
   return ["var(--status-success-text)", "rgba(22,163,74,.14)"];
 }
+
+// the same verdict as `statusTone`, in the badge's own tones for the drawer
+function verdictTone(status: number): "success" | "warning" | "danger" {
+  if (status === 0 || status >= 500) return "danger";
+  if (status >= 400) return "warning";
+  return "success";
+}
+
+// a row is one request at one instant; polling hands back fresh objects for
+// the same rows, so the open row is matched on this rather than on identity
+const rowKey = (row: InvocationRow) => `${row.request_id}-${row.ts}`;
 
 function isUnavailable(error: unknown): boolean {
   return error instanceof AnalyticsUnavailableError;
@@ -94,6 +116,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     onEscape: () => setFiltersOpen(false),
   });
   const [streaming, setStreaming] = React.useState(true);
+  const errorHeading = React.useId();
 
   const window = React.useMemo(
     () => ({ since: new Date(Date.now() - 24 * 3600_000).toISOString() }),
@@ -233,54 +256,93 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
 
   const statusSelected = status === "all" ? [] : [status];
 
+  const ms = (value: number | string) =>
+    t("analytics.ms", { value: fmt.number(Math.round(num(value))) });
+
   // the same panel content in both shapes: an inline drawer beside the
-  // table at `lg`, a sheet over it below that
+  // table at `lg`, a sheet over it below that. it reads in the order a
+  // failed row is investigated (#1983): the verdict and the ids to quote,
+  // then why it failed, then how it was routed, what it cost and who pays
   const detail = selected && (
-    <>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <DrawerStat label={t("pages.logs.model")} value={selected.model} />
-        <DrawerStat label={t("common.provider")} value={selected.provider || "—"} />
-        <DrawerStat
-          label={t("pages.logs.latency")}
-          value={t("analytics.ms", {
-            value: fmt.number(Math.round(num(selected.latency_ms))),
+    <div className="flex flex-col gap-5">
+      <Verdict row={selected} />
+      {selected.error && (
+        <section aria-labelledby={errorHeading} className="flex flex-col gap-2">
+          <h3
+            id={errorHeading}
+            className="flex items-center gap-1.5 text-xs font-medium text-[color:var(--status-danger-text)]"
+          >
+            <CircleAlert aria-hidden className="h-3.5 w-3.5 flex-none" />
+            {t("pages.logs.error")}
+          </h3>
+          <CodeBlock value={selected.error} language="log" label={t("pages.logs.error")} wrap />
+        </section>
+      )}
+      <DetailSection title={t("pages.logs.detail.routing")}>
+        <DetailRow label={t("pages.logs.detail.providerTarget")} mono>
+          {selected.provider || selected.target ? (
+            t("pages.logs.detail.providerToTarget", {
+              provider: selected.provider || "—",
+              target: selected.target || "—",
+            })
+          ) : (
+            <Absent />
+          )}
+        </DetailRow>
+        <DetailRow label={t("pages.logs.detail.variant")} mono>
+          {selected.variant || <Absent />}
+        </DetailRow>
+        {/* rolter's own response cache: a hit never reached the upstream. the
+            provider's prompt cache is a token count, under usage */}
+        <DetailRow label={t("pages.logs.detail.responseCache")}>
+          {num(selected.cache_hit) === 1
+            ? t("pages.logs.detail.cacheHit")
+            : t("pages.logs.detail.cacheMiss")}
+        </DetailRow>
+        <DetailRow label={t("pages.logs.detail.stream")}>
+          {num(selected.stream) === 1
+            ? t("pages.logs.detail.streamed")
+            : t("pages.logs.detail.notStreamed")}
+        </DetailRow>
+        <DetailRow label={t("pages.logs.detail.ttft")} mono>
+          {num(selected.ttft_ms) > 0 ? ms(selected.ttft_ms) : <Absent />}
+        </DetailRow>
+        <DetailRow label={t("pages.logs.latency")} mono>
+          {ms(selected.latency_ms)}
+        </DetailRow>
+      </DetailSection>
+      <DetailSection title={t("pages.logs.detail.usage")}>
+        <DetailRow label={t("pages.logs.tokens")} mono>
+          {t("pages.logs.tokensInOut", {
+            in: fmt.number(num(selected.prompt_tokens)),
+            out: fmt.number(num(selected.completion_tokens)),
           })}
-        />
-        <DrawerStat
-          label={t("pages.logs.cost")}
-          value={cost(selected) ?? t("analytics.unpriced")}
-          title={isUnpriced(selected) ? t("analytics.unpricedHint") : undefined}
-        />
-        <DrawerStat
-          label={t("pages.logs.tokens")}
-          value={t("pages.logs.tokensInOut", {
-            in: num(selected.prompt_tokens),
-            out: num(selected.completion_tokens),
+        </DetailRow>
+        <DetailRow label={t("pages.logs.detail.promptCache")} mono>
+          {t("pages.logs.detail.promptCacheTokens", {
+            read: fmt.number(num(selected.cache_read_tokens)),
+            write: fmt.number(num(selected.cache_write_tokens)),
           })}
-        />
-        <DrawerStat label={t("pages.logs.virtualKey")} value={selected.virtual_key_id || "—"} />
+        </DetailRow>
+        <DetailRow label={t("pages.logs.cost")} mono>
+          <span title={isUnpriced(selected) ? t("analytics.unpricedHint") : undefined}>
+            {cost(selected) ?? t("analytics.unpriced")}
+          </span>
+        </DetailRow>
+      </DetailSection>
+      <DetailSection title={t("pages.logs.detail.attribution")}>
+        <DetailRow label={t("pages.logs.virtualKey")}>
+          <KeyIdentity row={selected} />
+        </DetailRow>
         {/* where this request's spend was charged; a uuid with no row behind
             it still beats hiding the attribution entirely */}
-        <DrawerStat
-          label={t("pages.logs.businessUnit")}
-          value={
-            selected.business_unit_id
-              ? (unitName(selected.business_unit_id) ?? selected.business_unit_id)
-              : "—"
-          }
-        />
-        <DrawerStat
-          label={t("pages.logs.customer")}
-          value={
-            selected.customer_id
-              ? (customerName(selected.customer_id) ?? selected.customer_id)
-              : "—"
-          }
-        />
-      </div>
-      {selected.error && (
-        <DrawerBlock label={t("pages.logs.error")} content={selected.error} language="log" />
-      )}
+        <DetailRow label={t("pages.logs.businessUnit")}>
+          <NamedId id={selected.business_unit_id} name={unitName(selected.business_unit_id)} />
+        </DetailRow>
+        <DetailRow label={t("pages.logs.customer")}>
+          <NamedId id={selected.customer_id} name={customerName(selected.customer_id)} />
+        </DetailRow>
+      </DetailSection>
       <PayloadBlock
         label={t("pages.logs.request")}
         raw={selected.request_payload}
@@ -291,7 +353,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         raw={selected.response_payload}
         withheld={Number(selected.payload_withheld ?? 0) === 1}
       />
-    </>
+    </div>
   );
 
   return (
@@ -463,11 +525,21 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               {rows.map((r) => {
                 const st = num(r.status);
                 const tone = statusTone(st);
+                // the drawer beside the table has no other tie back to the
+                // row it describes, so the open row says so, to the eye and
+                // to a screen reader (#1983)
+                const isOpen = selected != null && rowKey(selected) === rowKey(r);
                 return (
                   <tr
-                    key={`${r.request_id}-${r.ts}`}
+                    key={rowKey(r)}
+                    aria-selected={isOpen}
                     onClick={() => setSelected(r)}
-                    className="cursor-pointer transition-colors hover:bg-[color:var(--surface-hover)]"
+                    className={cn(
+                      "cursor-pointer transition-colors",
+                      isOpen
+                        ? "bg-[color:var(--surface-selected)]"
+                        : "hover:bg-[color:var(--surface-hover)]",
+                    )}
                   >
                     <td className={cn(TD, "truncate whitespace-nowrap")}>{fmt.dateTimeMs(r.ts)}</td>
                     <td className={cn(TD, "[overflow-wrap:anywhere]")}>{r.model}</td>
@@ -582,9 +654,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       {selected &&
         (detailAsSheet ? (
           <Sheet open onOpenChange={(next) => !next && setSelected(null)}>
+            {/* the request id sits in the verdict, where it can be copied, so
+                the header names the model the row was opened by */}
             <SheetHeader
               title={t("analytics.details")}
-              subtitle={selected.request_id || t("pages.logs.requestFallback")}
+              subtitle={selected.model}
               onClose={() => setSelected(null)}
             />
             <SheetBody>{detail}</SheetBody>
@@ -596,9 +670,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             className="w-[380px] flex-none overflow-y-auto border-l border-[color:var(--border-subtle)] bg-background focus-visible:outline-none"
           >
             <div className="flex items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3.5">
-              <span className="truncate font-mono text-sm">
-                {selected.request_id || t("pages.logs.requestFallback")}
-              </span>
+              <h2 className="min-w-0 truncate font-mono text-sm">{selected.model}</h2>
               <button
                 type="button"
                 aria-label={t("pages.logs.closeDetails")}
@@ -608,7 +680,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex flex-col gap-3.5 p-[18px]">{detail}</div>
+            <div className="p-[18px]">{detail}</div>
           </aside>
         ))}
     </div>
@@ -677,10 +749,8 @@ function PayloadBlock({
         : t("pages.logs.payloadAbsent");
 
   return (
-    <div className="mt-4">
-      <div className="mb-1.5 text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+    <div>
+      <h3 className={cn(GROUP_TITLE, "mb-1.5")}>{label}</h3>
       <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
         <p className="text-xs leading-relaxed text-muted-foreground">{reason}</p>
         {/* the deployment's log settings cannot change a role, so a withheld
@@ -765,16 +835,174 @@ function payloadLanguage(raw: string | undefined): CodeLanguage {
   }
 }
 
-function DrawerStat({ label, value, title }: { label: string; value: string; title?: string }) {
+/**
+ * The top of the detail drawer: what happened, when, and the two ids someone
+ * quotes to find this request again (#1983).
+ *
+ * The request id is what a client got back in `x-request-id`; the trace id is
+ * the caller's own W3C trace, the hop into a tracing backend. Both are copied
+ * far more often than read, so each carries a copy control. A trace id is empty
+ * when the caller sent no `traceparent`, and the drawer says so rather than
+ * offering to copy nothing.
+ */
+function Verdict({ row }: { row: InvocationRow }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const status = num(row.status);
   return (
-    <div>
-      <div className="mb-[3px] text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
-      <div className="truncate font-mono text-sm" title={title}>
-        {value}
-      </div>
+    <div className="flex flex-col gap-3">
+      <p className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="sr-only">{t("pages.logs.status")}</span>
+        {/* status 0 is a request the gateway never got an answer to: a
+            refused connection or a timeout, with no http status to show */}
+        <Badge
+          tone={verdictTone(status)}
+          className={cn("text-[0.6875rem] font-semibold", status !== 0 && "font-mono")}
+        >
+          {status === 0 ? t("pages.logs.detail.noResponse") : status}
+        </Badge>
+        <time dateTime={row.ts} className="font-mono text-xs text-foreground">
+          {fmt.dateTimeMs(row.ts)}
+        </time>
+      </p>
+      <dl className={DETAIL_GRID}>
+        <DetailId
+          label={t("pages.logs.detail.requestId")}
+          value={row.request_id}
+          copyLabel={t("pages.logs.detail.copyRequestId")}
+          absent={<Absent />}
+        />
+        <DetailId
+          label={t("pages.logs.detail.traceId")}
+          value={row.trace_id}
+          copyLabel={t("pages.logs.detail.copyTraceId")}
+          absent={
+            <span className="text-[color:var(--text-subtle)]">
+              {t("pages.logs.detail.traceNotSent")}
+            </span>
+          }
+        />
+      </dl>
     </div>
+  );
+}
+
+// label, then value. the values get the wider column, since an id or a
+// `provider → target` pair is longer than any label; a long russian label
+// wraps onto a second line instead
+const DETAIL_GRID =
+  "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-baseline gap-x-3 gap-y-1.5 text-xs";
+
+// the overline every group in the drawer is titled with, payloads included
+const GROUP_TITLE = "text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
+
+function DetailId({
+  label,
+  value,
+  copyLabel,
+  absent,
+}: {
+  label: string;
+  value: string;
+  copyLabel: string;
+  absent: React.ReactNode;
+}) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      {/* wrapped rather than truncated: an id is compared by eye against the
+          one a client quoted, and a cut-off one cannot be */}
+      <dd className="flex min-w-0 items-start gap-0.5">
+        {value ? (
+          <>
+            <code className="min-w-0 font-mono text-foreground [overflow-wrap:anywhere]">
+              {value}
+            </code>
+            {/* lifted by the difference between the 24px button and the 16px
+                line, so its icon sits on the id's first line */}
+            <CopyButton value={value} label={copyLabel} className="-mt-1 h-6 flex-none px-1" />
+          </>
+        ) : (
+          absent
+        )}
+      </dd>
+    </>
+  );
+}
+
+/** A titled group of label/value rows in the detail drawer. */
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const heading = React.useId();
+  return (
+    <section aria-labelledby={heading} className="flex flex-col gap-2">
+      <h3 id={heading} className={GROUP_TITLE}>
+        {title}
+      </h3>
+      <dl className={DETAIL_GRID}>{children}</dl>
+    </section>
+  );
+}
+
+/**
+ * One label/value row. `mono` is for a value someone might paste somewhere —
+ * an id, a slug, a number, money — and never for a word like "Hit".
+ */
+function DetailRow({
+  label,
+  mono = false,
+  children,
+}: {
+  label: string;
+  mono?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={cn("min-w-0 text-foreground [overflow-wrap:anywhere]", mono && "font-mono")}>
+        {children}
+      </dd>
+    </>
+  );
+}
+
+/** An empty field, quieter than a value so it is not read as one. */
+function Absent() {
+  return <span className="text-[color:var(--text-subtle)]">—</span>;
+}
+
+/** A governance id by its name, falling back to the id itself when no row names it. */
+function NamedId({ id, name }: { id: string; name: string | undefined }) {
+  if (!id) return <Absent />;
+  if (name) return <>{name}</>;
+  return <span className="font-mono">{id}</span>;
+}
+
+/**
+ * The virtual key a request was made with, by its name and prefix (#1983).
+ *
+ * The row only carries the key's id, which nobody recognises. The project's
+ * keys are a viewer's read, so they are asked for; a caller the gate refuses,
+ * a key since deleted, or a failed read all fall back to the id, which is still
+ * the true answer.
+ */
+function KeyIdentity({ row }: { row: InvocationRow }) {
+  const can = useCan();
+  const keys = useQuery({
+    queryKey: ["virtual-keys", row.project_id],
+    queryFn: () => fetchVirtualKeys(row.project_id),
+    enabled: can("virtual_key", "read") !== false && !!row.project_id && !!row.virtual_key_id,
+    retry: false,
+    staleTime: 60_000,
+  });
+  if (!row.virtual_key_id) return <Absent />;
+  const key = keys.data?.find((k) => k.id === row.virtual_key_id);
+  if (!key) return <span className="font-mono">{row.virtual_key_id}</span>;
+  return (
+    <span className="flex min-w-0 flex-col">
+      {key.name && <span className="truncate">{key.name}</span>}
+      <code className="font-mono text-[color:var(--text-secondary)]">{key.key_prefix}…</code>
+    </span>
   );
 }
 
@@ -789,9 +1017,7 @@ function DrawerBlock({
 }) {
   return (
     <div>
-      <div className="mb-1.5 text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <h3 className={cn(GROUP_TITLE, "mb-1.5")}>{label}</h3>
       {/* the payload is the reason the drawer was opened: it reads through the
           shared code block, so a malformed field is visible rather than hidden
           in a wall of monospace (#949). soft-wrapped, because the drawer is
