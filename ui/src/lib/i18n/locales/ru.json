@@ -177,6 +177,7 @@
       "analytics": "аналитика",
       "requestLogs": "журнал запросов",
       "routes": "маршруты",
+      "routeTargets": "цели этого маршрута",
       "teams": "команды",
       "accessProfiles": "профили доступа",
       "adaptiveSettings": "настройки адаптивной маршрутизации",

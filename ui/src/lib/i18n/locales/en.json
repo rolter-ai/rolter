@@ -169,6 +169,7 @@
       "analytics": "analytics",
       "requestLogs": "request logs",
       "routes": "routes",
+      "routeTargets": "this route's targets",
       "teams": "teams",
       "accessProfiles": "access profiles",
       "adaptiveSettings": "adaptive routing settings",

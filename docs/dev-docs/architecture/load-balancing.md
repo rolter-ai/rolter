@@ -41,9 +41,10 @@ pub trait LoadBalancer: Send + Sync {
 `pipeline` (its static-weight scorer) and `adaptive` (its fallback stack).
 Every other strategy is built from the target count alone, so a weight on one
 of their targets is stored and never consulted. The dashboard mirrors that
-list as `usesWeights()` in `ui/src/lib/strategies.ts`: the Model Catalog and
-the model sheet state a traffic share only for those three, and say the
-weights are ignored everywhere else (#1979). A new strategy that reads weights
+list as `usesWeights()` in `ui/src/lib/strategies.ts`: the Model Catalog, the
+model sheet and the Routing Rules cards state a traffic share only for those
+three, and say the weights are ignored everywhere else (#1979, #2133). A new
+strategy that reads weights
 has to be added there too, or the dashboard will tell operators its weights do
 nothing.
 
