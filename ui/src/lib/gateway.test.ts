@@ -7,6 +7,7 @@ import {
   gatewayBase,
   getPlaygroundKey,
   getPlaygroundKeyState,
+  isKeyRefusal,
   keyPropagationDelay,
   realtimeUrl,
   setKeyPropagationForTests,
@@ -189,6 +190,24 @@ describe("waiting for a minted key to reach the gateway", () => {
     expect(awaitingMintedKey(2, unauthorized)).toBe(false);
     setKeyPropagationForTests(null);
     expect(keyPropagationDelay(0)).toBe(250);
+  });
+});
+
+/**
+ * The Playground's badge says "Rejected" and holds back Send on this answer
+ * (#2061), so it has to be the gateway turning the key down and nothing else.
+ */
+describe("isKeyRefusal", () => {
+  it("is a 401 from the gateway", () => {
+    expect(isKeyRefusal(new GatewayError("invalid api key", 401))).toBe(true);
+  });
+
+  // a gateway that is down or refuses the path says nothing about the key
+  it("is not any other failure", () => {
+    expect(isKeyRefusal(new GatewayError("bad gateway", 502))).toBe(false);
+    expect(isKeyRefusal(new GatewayError("forbidden", 403))).toBe(false);
+    expect(isKeyRefusal(new TypeError("Failed to fetch"))).toBe(false);
+    expect(isKeyRefusal(null)).toBe(false);
   });
 });
 

@@ -163,7 +163,7 @@ A very large payload is shown without colour rather than kept waiting for it.
 The Playground authenticates to the gateway like any other client, with a virtual key — but you do not paste one. Opening the screen mints a **session key** for the project you have selected:
 
 - It is scoped by the control plane to the models that project routes, so it can never reach a model you could not already reach.
-- It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it.
+- It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it. When there is no key to renew, the same button reads **Mint key**.
 - It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
 - It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
 
@@ -171,9 +171,19 @@ A new key takes a few seconds to reach the gateway, which learns about keys on i
 
 If the gateway never accepts the key, the picker falls back to the configured routes and says so. That list leaves out routes the control plane is not sending to the gateway (the **Providers** screen lists them as config entries not being served to gateways), says how many it left out, and opens on a route that is served. When rolter cannot tell which routes those are, it keeps `fake-llm` selected rather than guess.
 
-A project with no routes cannot mint one: there would be nothing for the key to address, so the screen says so instead. Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
+If the gateway refuses the key, the badge reads **Rejected** rather than **Active**, and the bar suggests minting a fresh one or pasting one the gateway accepts.
 
-To test one particular key on purpose — a customer's, or one you are about to rotate — open **Use a specific key** and paste it. A pasted key is used exactly as given, with no expiry of rolter's choosing, until you replace it or renew the session key.
+The bar says one thing at a time. When the screen cannot mint a key itself, it says why and opens **Use a specific key** for you:
+
+- **No project selected.** Pick one in the scope switcher, or paste a key.
+- **The project has no routes.** There would be nothing for the key to address, so the bar says the project needs a route and links to **Routing Rules**. There is no retry: minting again cannot work until the project routes a model.
+- **Your role cannot mint.** Minting takes the **Member** role in the project. A **Viewer** is not sent into a refusal: the Playground does not try, **Mint key** says which role it takes, and the bar asks for a key someone gave you.
+
+Sign in first — minting is a per-account action, and a deployment running without accounts has none to mint against.
+
+**Send**, and the run buttons on the other tabs, stay disabled until there is a key the gateway accepts: while a new key is on its way, when there is none, and when the gateway refused the one in hand. Hover the button to see why. A gateway that is running on its own with no keys configured, as the no-database `rolter easy-up` does, answers requests without one; the Playground checks for that once and says so, and then sends without a key.
+
+To test one particular key on purpose — a customer's, or one you are about to rotate — open **Use a specific key** and paste it. A pasted key is used exactly as given, with no expiry of rolter's choosing, until you replace it or mint a session key.
 
 ## Markdown in the Playground
 

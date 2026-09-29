@@ -96,6 +96,14 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
   screen a member opens (#1848).
+- **An action a screen takes on its own.** The Playground mints its session
+  key as it opens, and minting is `my_virtual_key:create`, which takes the
+  member role. So the automatic mint waits for the answer and does not go out
+  on an explicit `false`: a viewer lands on the paste field with a line saying
+  why, rather than on a refusal they never asked for (#2061). **Mint key** /
+  **Renew key** is a `GatedButton` on the same pair. The screen reads
+  `useCan()` for the automatic mint only, since that is behaviour rather than
+  a control; an unanswered gate still mints, and the `403` stays the backstop.
 - **Links into a gated screen.** A link the caller cannot follow is a 403
   with an extra click. The LLM Logs payload drawer links to the log settings
   unless `logging_settings:read` is an explicit `false`, the rail's own rule
