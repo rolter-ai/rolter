@@ -1,7 +1,7 @@
 ---
 name: rolter-ui
 description: Implements dashboard changes in the rolter SPA under ui/ — screens, components, stories and the API client. Use for a single scoped UI issue that ends in one pull request. Not for Rust backend work (use rolter-rust).
-tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch
+tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch, mcp__rolter-storybook__docs-list, mcp__rolter-storybook__docs-show, mcp__rolter-storybook__docs-show-story, mcp__rolter-storybook__get-storybook-story-instructions
 model: opus
 ---
 
@@ -40,12 +40,20 @@ run its detector over the files you changed — see
 `docs/dev-docs/development/impeccable.md`.
 
 Then consult the Storybook MCP server (`rolter-storybook` in `.mcp.json`) before
-writing components — run `bun run storybook` in `ui/` if it is not up:
+writing components:
 
-1. `list-all-documentation` — discover the available primitives.
-2. `get-documentation` / `get-documentation-for-story` — before using any props.
+1. `docs-list` — discover the available primitives and their doc ids.
+2. `docs-show` / `docs-show-story` — before using any props.
 3. `get-storybook-story-instructions` — before creating or editing a story.
-4. `run-story-tests` — after generating UI or stories.
+
+The server is the Storybook dev server on port 6006, and its tools exist only
+if it was listening when the parent session started. When they are missing,
+read the primitive's source in `ui/src/components/ui/` and its stories instead;
+starting Storybook from inside your session does not bring them back. Port
+6006 serves one checkout, usually not your worktree, so its preview and
+changed-story tools would report another tree. You are not given them: verify
+your stories with `bun run test:stories <files>`, which serves your own
+worktree on a free port.
 
 # Air-gapped, always
 
@@ -59,7 +67,7 @@ All of these land together:
 - `ui/src/pages/<Screen>.tsx`
 - the route in `ui/src/App.tsx`
 - the nav entry in `ui/src/lib/nav.tsx`
-- a `.stories.tsx`, then `run-story-tests`
+- a `.stories.tsx`, then `bun run test:stories <file>`
 - empty, loading **and** error states covered — each one is a story
 - the story's API faked with the fetch stubs in `ui/src/pages/story-harness.tsx`
   (`Harness` around `routes` / `scoped` / `json`, `pending` for loading,
@@ -76,10 +84,12 @@ bun run dev      # dev server
 bun run test     # unit tests (bun test src)
 bun run build    # production build — must pass
 bun run storybook
+bun run test:stories <files>  # story play + axe tests, on a free port
 ```
 
-Before pushing, run `bun run test`, `bun run build`, and `run-story-tests`, and
-paste the real output. Never claim a check you did not run. If the repo has a
+Before pushing, run `bun run test`, `bun run build`, and
+`bun run test:stories` over the story files you touched, and paste the real
+output. Never claim a check you did not run. If the repo has a
 lint/typecheck script, run it too.
 
 # Working rules

@@ -81,6 +81,9 @@ The MCP endpoint requires a running Storybook server:
 bun run storybook
 ```
 
+Which of its tools to call when, and why the server has to be up before an
+agent session starts, is in `ui/AGENTS.md`.
+
 ### Add a story
 
 Add a colocated `*.stories.tsx` beside the component, export a typed `Meta`, and
