@@ -2170,7 +2170,7 @@ mod tests {
             let body: Value = serde_json::from_slice(&body).expect("json");
             assert!(body["error"]["message"]
                 .as_str()
-                .is_some_and(|m| m.contains("CLICKHOUSE_URL")));
+                .is_some_and(|m| m.contains("an internal server error occurred")));
             assert_eq!(rule_row(&db, id).await.state, "error");
         }
     }
