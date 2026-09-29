@@ -83,6 +83,18 @@ fields intact. The confirmation is mounted beside that dialog rather than
 inside it: the dialog remounts as it closes, and a confirmation inside it would
 unmount before it could report `save_confirmed`.
 
+A publish that changes which prompt reaches live traffic takes `default` as
+well, and its confirmation says who the change will refuse. Publishing or
+rolling back a prompt template version (`MakeLiveDialog` in
+`PromptRepository.tsx`, #2110) lists, as its `children`, the scopes the version
+reaches, the variables a request there must send and the ones the live version
+declared that this one drops, computed from the gateway's own rules in
+`ui/src/lib/prompt-templates.ts`. It warns and never sets `confirmDisabled`,
+since the same dialog is how an operator rolls back mid-incident. Its `name` and
+direction are latched when it opens: the landing is reported on the render that
+closes it, and by then the version is the live one, so a direction read again
+would file a publish as a roll back.
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be
