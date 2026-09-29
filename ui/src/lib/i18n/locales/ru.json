@@ -1852,12 +1852,14 @@
         "allowed": "разрешено",
         "granted": "выдано этой пользовательской ролью",
         "superadmin": "только суперадмин",
-        "denied": "запрещено",
+        "denied": "не разрешено",
         "na": "неприменимо"
       },
-      "cellTitle": "{{action}} — {{state}}",
+      "cellLabel": "{{action}}: {{state}}",
+      "legendAllowed": "Разрешено",
       "legendSuperadmin": "Только суперадмин",
       "legendGranted": "Выдано пользовательской ролью",
+      "legendDenied": "Не разрешено",
       "legendNa": "Такого действия нет",
       "tabs": {
         "matrix": "Матрица прав",
