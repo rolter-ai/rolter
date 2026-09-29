@@ -239,7 +239,7 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
         )));
     };
     kek.encrypt(secret)
-        .map_err(|_| ApiError::Core(Error::Store("failed to encrypt channel credential".into())))
+        .map_err(|_| ApiError::Curated("failed to encrypt channel credential".into()))
 }
 
 fn channel_columns() -> &'static str {
@@ -689,7 +689,9 @@ async fn evaluate_one(
             .await
             .map_err(store_error)?;
             tx.commit().await.map_err(store_error)?;
-            return Err(ApiError::Core(Error::Upstream(reason)));
+            // `read_signal` words the reason for the rule card, and never with
+            // the ClickHouse endpoint in it, so the caller may read it too
+            return Err(ApiError::Curated(reason));
         }
     };
     let next_state = if value >= rule.threshold {

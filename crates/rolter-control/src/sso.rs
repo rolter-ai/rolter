@@ -186,7 +186,7 @@ fn invalid(message: impl Into<String>) -> ApiError {
 fn api_error_message(err: ApiError) -> String {
     match err {
         ApiError::Core(e) => e.to_string(),
-        ApiError::Conflict(msg) => msg,
+        ApiError::Curated(msg) | ApiError::Conflict(msg) => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
         ApiError::TooManyAttempts(remaining) => {

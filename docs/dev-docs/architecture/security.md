@@ -186,6 +186,32 @@ legitimate, a PEM CA bundle being the obvious one. Malformed JSON now also
 comes back in the same OpenAI-style error envelope as every other failure
 instead of axum's default rejection body.
 
+## What a 500 says (#2268)
+
+A control-plane `500` answers `{"error": {"message": "internal server error"}}`
+and logs its cause at `error`, unless the message was written for the caller on
+purpose. Most server-side failures reach the response as `rolter_core::Error`,
+and `Error::Store` carries whatever the driver said: every
+`map_err(|e| Error::Store(e.to_string()))` and the store's own `store_err` pass
+sqlx text on, which can name relations, schemas, hosts and the credentials in a
+connection URL.
+
+A message that is safe and useful to show goes through `ApiError::Curated`
+instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
+
+| Message                                               | Where                                            |
+| ----------------------------------------------------- | ------------------------------------------------ |
+| `INSERT_FAILED`, the "requires CLICKHOUSE_URL" family | `ingest_failure.rs` (the store's text is logged) |
+| the reason an alert rule's signal read failed         | `alerting.rs`, worded by `read_signal`           |
+| failed to encrypt a connector or channel credential   | `connectors.rs`, `alerting.rs`                   |
+| failed to query observability connectors              | `collector_config.rs`                            |
+| unknown provider kind in a stored row                 | `crud.rs`                                        |
+
+`4xx` answers are untouched: validation (`Error::Config`) and lookups
+(`Error::NotFound`) are written for the caller. A new message that has to reach
+a `500` body is a `Curated` one, and must never interpolate anything a driver or
+upstream returned.
+
 ## Open mode (no admin token)
 
 With no `ROLTER_ADMIN_TOKEN` set, `Principal` short-circuits to `Superadmin` for

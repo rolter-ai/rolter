@@ -744,6 +744,9 @@ impl From<ApiError> for ScimError {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
             ApiError::Core(err) => err.into(),
+            ApiError::Curated(message) => {
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
+            }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }

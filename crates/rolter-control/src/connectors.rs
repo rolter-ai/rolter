@@ -130,11 +130,8 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
             "storing connector credentials requires {KEK_ENV}"
         )));
     };
-    kek.encrypt(secret).map_err(|_| {
-        ApiError::Core(Error::Store(
-            "failed to encrypt connector credential".into(),
-        ))
-    })
+    kek.encrypt(secret)
+        .map_err(|_| ApiError::Curated("failed to encrypt connector credential".into()))
 }
 
 async fn list(
