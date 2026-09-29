@@ -3,8 +3,9 @@ name: ci
 on:
   push:
     branches: [master, main]
-  # `edited` lets a title-only fix retrigger the cheap pr-title check without a
-  # new commit; the full `quality` gate skips that event (see its `if:` below)
+  # `edited` lets a title-only fix retrigger `ci-ok`'s cheap pr-title step
+  # without a new commit; the full `quality` gate skips that event (see its
+  # `if:` below)
   pull_request:
     types: [opened, synchronize, reopened, edited]
   # the release PR is opened by release-plz with the repo `GITHUB_TOKEN`, and
@@ -64,7 +65,7 @@ jobs:
   # checks). shared with the release paths via workflow_call so publish and CI
   # enforce the exact same checks on a commit.
   quality:
-    # a title-only edit reruns pr-title/ci-ok only; the heavy gate already ran
+    # a title-only edit reruns ci-ok only; the heavy gate already ran
     # (or is still running — see the concurrency group above, which keeps an
     # `edited` run from cancelling it) and never needs re-running for a
     # metadata change. `ci-ok` verifies that claim against the api before it
@@ -79,162 +80,6 @@ jobs:
     # reintroduce #1318 inside the mechanism meant to fix it
     if: github.event_name != 'pull_request' || github.event.action != 'edited'
     uses: ./.github/workflows/quality.yml
-
-  # the pr-body half of the agent-session-url check (#1406) lives here rather
-  # than in quality.yml, and the reason is the `edited` fast path directly
-  # above: a body edit skips the whole quality workflow, and `ci-ok` then
-  # accepts the earlier gate run as proof. that is correct for a title change,
-  # but it means a session url *added to the body after ci went green* would
-  # never be re-checked — the one bypass the backstop in quality.yml cannot
-  # see, since it reads the body from the event payload of a run that already
-  # happened. this job runs on every pull_request action, `edited` included, so
-  # editing the body always re-validates it. the commit-range half stays in
-  # quality.yml, where it belongs: it only needs to run when commits change.
-  #
-  # it also runs on `workflow_dispatch`, and that is not symmetry for its own
-  # sake (#1523). a dispatched run skips every `github.event_name ==
-  # 'pull_request'` job while `quality` and `codeql` still run — their guard is
-  # on `action`, which is empty on a dispatch — so `ci-ok` used to go green off
-  # a run that never looked at the body. dispatching became the cheapest way to
-  # clear a red PR, which is how #1519 and #1521 went green. resolving the PR
-  # from the api instead means the dispatch path gets a real verdict rather
-  # than a tolerated skip, and the release PR (the reason the trigger exists at
-  # all, #1025) is checked like any other.
-  #
-  # a merge_group run gets the same treatment, for the reason that makes this
-  # check unfixable-after-the-fact in the first place: a squash merge writes
-  # the pr body into the commit message, and the queue is what performs that
-  # merge. its ref is synthetic and belongs to no pr head, so the pr is
-  # resolved by the number embedded in `gh-readonly-queue/<base>/pr-<n>-<sha>`
-  # (#1318).
-  session-urls:
-    name: no agent session urls (pr body)
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # a dispatched run carries no pr in its payload; it has to look one up
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: check pr body
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
-          elif [ "${EVENT_NAME}" = "merge_group" ]; then
-            # queued: the ref is synthetic, so the pr is resolved by the number
-            # inside it rather than by head ref
-            bash scripts/check-agent-session-urls.sh --pr-for-queue-ref "${REPO}" "${REF_NAME}"
-          else
-            # dispatched: no pr in the payload, so the script resolves one by
-            # head ref. that lookup lives in the script rather than inline here
-            # so it can be exercised against a fixture instead of only in ci
-            bash scripts/check-agent-session-urls.sh --pr-for-ref "${REPO}" "${REF_NAME}"
-          fi
-
-  # the commit-message half of the same gap, and it lives here for the same
-  # reason the body half does: it needs to resolve a pull request from the api,
-  # and `quality.yml` deliberately takes no secrets so that dependabot and fork
-  # PRs — which receive none — run the identical gate (#734). that invariant is
-  # worth more than the symmetry of keeping both halves in one file.
-  #
-  # `quality.yml`'s own `session-urls` job still owns the `pull_request` path
-  # and is untouched. what it could not cover is `workflow_dispatch`: it reads
-  # base/head from `github.event.pull_request`, so a dispatched run skipped it
-  # outright — and a skipped job inside a reusable workflow does not fail it,
-  # so `quality` reported success and `ci-ok` went green having never read a
-  # commit message (#1562). the two runs that take the dispatch path are
-  # exactly the wrong ones to have no verdict on: the release PR, which only
-  # ever gets a dispatched run because release-plz opens it with the repo
-  # `GITHUB_TOKEN` (#1025), and the documented recovery for a head sha whose
-  # `opened` event froze a dirty body (#1522).
-  #
-  # a dispatch carries no pull request in its payload, so the range is resolved
-  # by head ref through the same lookup #1523 added for the body.
-  # it covers the merge queue too, and there the range needs no api call at
-  # all: the payload names both endpoints, and `base_sha..head_sha` is exactly
-  # the set of commits the queue is about to put on master — including any
-  # batched ahead of this pr, which no per-pr run ever read (#1318).
-  dispatch-commit-urls:
-    name: no agent session urls (commits, dispatch/queue)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # the base sha comes from the api, but the walk to it is local, so
-          # this path needs real history just as the pull_request one does
-          fetch-depth: 0
-      - name: check commit messages
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          REF_NAME: ${{ github.ref_name }}
-          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
-          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" = "merge_group" ]; then
-            bash scripts/check-agent-session-urls.sh \
-              --commit-range "${MERGE_GROUP_BASE}..${MERGE_GROUP_HEAD}"
-          else
-            bash scripts/check-agent-session-urls.sh --commit-range-for-ref "${REPO}" "${REF_NAME}"
-          fi
-
-  pr-title:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: validate conventional commit pr title
-        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          types: |
-            feat
-            fix
-            perf
-            refactor
-            docs
-            test
-            build
-            ci
-            chore
-            revert
-          scopes: |
-            gateway
-            balancer
-            proxy
-            core
-            store
-            auth
-            control
-            ui
-            docs
-            infra
-            ci
-            deps
-            deps-dev
-            release
-            e2e
-          requireScope: false
 
   # CodeQL security analysis, folded into ci-ok so it gates merges without being
   # a separate required status check. this advanced setup replaces GitHub's
@@ -285,9 +130,9 @@ jobs:
   # the `edited` fast path needs exactly one fact about a head sha: did the
   # heavy gate run here, and did it pass. it used to ask that by looking at the
   # *run's overall conclusion*, which conflates the gate with everything else in
-  # the run. so a run that passed `quality` and `codeql` but failed
-  # `session-urls` — on a pr body the authoring tooling dirtied before the
-  # `opened` webhook froze it (#1518) — counted as no gate at all, and that head
+  # the run. so a run that passed `quality` and `codeql` but failed the pr body
+  # check — on a body the authoring tooling dirtied before the `opened` webhook
+  # froze it (#1518) — counted as no gate at all, and that head
   # sha could never reach green again however clean the live body became: the
   # `opened` run is the only one that runs the gate, `edited` runs never re-run
   # it, and nothing can retroactively make that run succeed (#1522).
@@ -311,30 +156,55 @@ jobs:
         run: echo "quality and codeql both succeeded on this run"
 
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
-  # required status check on master; it turns green only when the quality
-  # workflow, pr-title and codeql all succeed (a skipped pr-title is fine on a
-  # push build, on the `workflow_dispatch` run that gates the release PR, and
-  # on a `merge_group` run, whose pr was title-checked before it was queued).
-  # adding/removing jobs then never requires touching branch protection
+  # required status check on master. it needs the two heavy jobs, `quality`
+  # and `codeql`, and runs the cheap pull-request metadata checks as its own
+  # steps: the pr title, the pr body and, on a dispatched or merge-group run,
+  # the commit range. those were three jobs of their own, each holding a
+  # runner for seconds of work and queueing for minutes to get one; as steps
+  # they add no runner, and a title edit starts one job instead of three
+  # (#2025). adding/removing jobs never requires touching branch protection
   # settings — and `ci-ok` being the one required check is also what makes it
   # the check the merge queue asks for, so enabling the queue needed no second
   # name anywhere (#1318). see ROL-124. the rules this job enforces, why the
   # `edited` fast-path exists at all, and why a merge-group ref may never take
   # it, are written up in `docs/dev-docs/development/ci-gating.md`.
+  #
+  # step guards follow one rule. every check step runs under
+  # `!cancelled() && <its event guard>`, so a failing check never hides the
+  # ones after it, and a superseded run spends nothing on checks nobody will
+  # read. only the verdict step runs under `always()`: in a cancelled run every
+  # other step skips, and a verdict that skipped with them would leave this
+  # job — the one required check — green over nothing
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [quality, pr-title, codeql, session-urls, dispatch-commit-urls]
+    needs: [quality, codeql]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       # listing this workflow's other runs on the same head sha is the whole
       # mechanism behind the `edited` guard below
       actions: read
+      # pr-title fetches the live pr, and a dispatched or queued run carries
+      # no pr in its payload and has to look one up
+      pull-requests: read
     steps:
-      # the `edited` fast-path below accepts a skipped `quality`/`codeql` because
-      # the gate is assumed to have already run on this commit. that assumption
-      # is unverified, and when it is false the fast-path writes a *newer*,
+      # only the two session-url steps read the tree (the script lives in it),
+      # and neither runs on a push build
+      - name: checkout
+        if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # a pull_request run needs only the script. a dispatched or queued
+          # run walks a commit range locally, which needs real history. the
+          # `a && b || c` form is safe here because `b` is 1, which is truthy;
+          # written the other way round (`&& 0 || 1`) it would always give 1
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+
+      # the `edited` fast-path accepts a skipped `quality`/`codeql` because the
+      # gate is assumed to have already run on this commit. that assumption is
+      # unverified, and when it is false the fast-path writes a *newer*,
       # successful `ci-ok` check-run on the same head sha — branch protection
       # reads the newest one, so a retitle during an in-flight gate run made the
       # commit mergeable before a single test had run (#1328, seen on #1315 and
@@ -342,11 +212,12 @@ jobs:
       # only report green when a real gate run for this exact sha has already
       # completed successfully and nothing else is still running on it.
       - name: assert the gate already ran for this commit
+        id: fast-path
         # the fast path is a pull-request affordance and nothing else. a
         # merge-group ref must never reach it: its entire purpose is to gate a
         # tree that has no prior run, so "some earlier run passed" is not a
         # question that has a meaningful answer there
-        if: github.event_name == 'pull_request' && github.event.action == 'edited'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -385,9 +256,9 @@ jobs:
 
           # a run counts as a gate pass when its `gate-ok` job concluded
           # success — not when the run as a whole did. the run's conclusion
-          # folds in `session-urls` and `pr-title`, neither of which says
-          # anything about whether the code was gated, and a `session-urls`
-          # failure on a frozen dirty body used to strand the sha forever
+          # folds in `ci-ok`'s pr title and pr body steps, neither of which
+          # says anything about whether the code was gated, and a failed body
+          # check on a frozen dirty body used to strand the sha forever
           # (#1522). a cancelled run reaches this loop as `completed` with no
           # `gate-ok` job, so it counts as no run at all rather than as a pass,
           # exactly as before
@@ -423,87 +294,262 @@ jobs:
           fi
           echo "gate already passed for ${HEAD_SHA} in ${passed} completed run(s)"
 
-      - name: assert required jobs succeeded
+      # the pr title must be one conventional commit line from the type and
+      # scope allowlists below. the action takes the pr number from the payload
+      # but fetches the title live, so on a gate run, where this step runs after
+      # `quality` and `codeql`, it sees a title that was fixed while they ran.
+      # it cannot run on a dispatch or a merge-group run, whose payload has no
+      # pr; the verdict step says what that means for each
+      - name: pr-title
+        id: pr-title
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
+          scopes: |
+            gateway
+            balancer
+            proxy
+            core
+            store
+            auth
+            control
+            ui
+            docs
+            infra
+            ci
+            deps
+            deps-dev
+            release
+            e2e
+          requireScope: false
+
+      # the pr-body half of the agent-session-url check (#1406) lives in this
+      # workflow rather than in quality.yml because of the `edited` fast path: a
+      # body edit skips the whole quality workflow, and `ci-ok` then accepts the
+      # earlier gate run as proof. that is correct for a title change, but it
+      # means a session url *added to the body after ci went green* would never
+      # be re-checked if the check lived in quality.yml. here it runs on every
+      # pull_request action, `edited` included, so editing the body always
+      # re-validates it. the commit-range half for pull requests stays in
+      # quality.yml: it only needs to run when commits change.
+      #
+      # it also runs on `workflow_dispatch`, and that is not symmetry for its
+      # own sake (#1523). a dispatched run skips everything guarded on
+      # `github.event_name == 'pull_request'` while `quality` and `codeql` still
+      # run — their guard is on `action`, which is empty on a dispatch — so
+      # `ci-ok` used to go green off a run that never looked at the body.
+      # dispatching became the cheapest way to clear a red PR, which is how
+      # #1519 and #1521 went green. resolving the PR from the api instead means
+      # the dispatch path gets a real verdict rather than a tolerated skip, and
+      # the release PR (the reason the trigger exists at all, #1025) is checked
+      # like any other.
+      #
+      # a merge_group run gets the same treatment, for the reason that makes
+      # this check unfixable-after-the-fact in the first place: a squash merge
+      # writes the pr body into the commit message, and the queue is what
+      # performs that merge. its ref is synthetic and belongs to no pr head, so
+      # the pr is resolved by the number embedded in
+      # `gh-readonly-queue/<base>/pr-<n>-<sha>` (#1318).
+      - name: no agent session urls (pr body)
+        id: pr-body
+        if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "quality:      ${{ needs.quality.result }}"
-          echo "pr-title:     ${{ needs.pr-title.result }}"
-          echo "codeql:       ${{ needs.codeql.result }}"
-          echo "session-urls: ${{ needs.session-urls.result }}"
-          echo "dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }}"
-          echo "action:       ${GITHUB_EVENT_ACTION}"
-          # quality and codeql must succeed; pr-title may be skipped (push and
-          # workflow_dispatch builds) but must not have failed. on a title-only `edited` event the heavy
-          # gate and codeql are intentionally skipped — the step above has
-          # already proven they ran and passed on this exact head sha, so
-          # skipped is acceptable here and only pr-title re-runs
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${GITHUB_EVENT_ACTION}" = "edited" ]; then
-            if [ "${{ needs.quality.result }}" != "success" ] \
-               && [ "${{ needs.quality.result }}" != "skipped" ]; then
-              echo "::error::quality gate did not pass"
-              exit 1
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
+          elif [ "${EVENT_NAME}" = "merge_group" ]; then
+            # queued: the ref is synthetic, so the pr is resolved by the number
+            # inside it rather than by head ref
+            bash scripts/check-agent-session-urls.sh --pr-for-queue-ref "${REPO}" "${REF_NAME}"
+          else
+            # dispatched: no pr in the payload, so the script resolves one by
+            # head ref. that lookup lives in the script rather than inline here
+            # so it can be exercised against a fixture instead of only in ci
+            bash scripts/check-agent-session-urls.sh --pr-for-ref "${REPO}" "${REF_NAME}"
+          fi
+
+      # the commit-message half of the same gap, and it lives in this workflow
+      # for the same reason the body half does: it needs to resolve a pull
+      # request from the api, and `quality.yml` deliberately takes no secrets so
+      # that dependabot and fork PRs — which receive none — run the identical
+      # gate (#734). that invariant is worth more than the symmetry of keeping
+      # both halves in one file.
+      #
+      # `quality.yml`'s own session-url check still owns the `pull_request`
+      # path. what it could not cover is `workflow_dispatch`: it reads base/head
+      # from `github.event.pull_request`, so a dispatched run skipped it
+      # outright — and a skipped job inside a reusable workflow does not fail
+      # it, so `quality` reported success and `ci-ok` went green having never
+      # read a commit message (#1562). the two runs that take the dispatch path
+      # are exactly the wrong ones to have no verdict on: the release PR, which
+      # only ever gets a dispatched run because release-plz opens it with the
+      # repo `GITHUB_TOKEN` (#1025), and the documented recovery for a head sha
+      # whose `opened` event froze a dirty body (#1522).
+      #
+      # a dispatch carries no pull request in its payload, so the range is
+      # resolved by head ref through the same lookup #1523 added for the body.
+      # it covers the merge queue too, and there the range needs no api call at
+      # all: the payload names both endpoints, and `base_sha..head_sha` is
+      # exactly the set of commits the queue is about to put on master —
+      # including any batched ahead of this pr, which no per-pr run ever read
+      # (#1318). both walks are local, which is why the checkout above takes
+      # full history on these two events
+      - name: no agent session urls (commits, dispatch/queue)
+        id: commit-range
+        if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "merge_group" ]; then
+            bash scripts/check-agent-session-urls.sh \
+              --commit-range "${MERGE_GROUP_BASE}..${MERGE_GROUP_HEAD}"
+          else
+            bash scripts/check-agent-session-urls.sh --commit-range-for-ref "${REPO}" "${REF_NAME}"
+          fi
+
+      # the one step that runs under `always()`. it reads every job result and
+      # step outcome through env, reports each failure rather than stopping at
+      # the first, and fails the job if any rule below is broken
+      - name: assert every required check succeeded
+        if: always()
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          QUALITY: ${{ needs.quality.result }}
+          CODEQL: ${{ needs.codeql.result }}
+          FAST_PATH: ${{ steps.fast-path.outcome }}
+          PR_TITLE: ${{ steps.pr-title.outcome }}
+          PR_BODY: ${{ steps.pr-body.outcome }}
+          COMMIT_RANGE: ${{ steps.commit-range.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "| check | result |"
+            echo "| --- | --- |"
+            echo "| quality | ${QUALITY:-none} |"
+            echo "| codeql | ${CODEQL:-none} |"
+            echo "| assert the gate already ran for this commit | ${FAST_PATH:-none} |"
+            echo "| pr-title | ${PR_TITLE:-none} |"
+            echo "| no agent session urls (pr body) | ${PR_BODY:-none} |"
+            echo "| no agent session urls (commits, dispatch/queue) | ${COMMIT_RANGE:-none} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "event:        ${EVENT_NAME} ${EVENT_ACTION}"
+          echo "quality:      ${QUALITY}"
+          echo "codeql:       ${CODEQL}"
+          echo "fast path:    ${FAST_PATH}"
+          echo "pr-title:     ${PR_TITLE}"
+          echo "pr body:      ${PR_BODY}"
+          echo "commit range: ${COMMIT_RANGE}"
+
+          failed=0
+          fail() {
+            echo "::error::$1"
+            failed=1
+          }
+
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${EVENT_ACTION}" = "edited" ]; then
+            # a title-only `edited` run skips the heavy gate and codeql on
+            # purpose. the fast-path step has to have proven they already ran
+            # and passed on this exact head sha, and a skip is the only
+            # non-success result tolerated for either
+            if [ "${FAST_PATH}" != "success" ]; then
+              fail "the gate is not proven green on this head sha (assert the gate already ran for this commit: ${FAST_PATH:-none}); see that step's log"
+            fi
+            if [ "${QUALITY}" != "success" ] && [ "${QUALITY}" != "skipped" ]; then
+              fail "quality gate did not pass (quality: ${QUALITY:-none})"
+            fi
+            if [ "${CODEQL}" != "success" ] && [ "${CODEQL}" != "skipped" ]; then
+              fail "codeql analysis did not pass (codeql: ${CODEQL:-none})"
             fi
           else
-            if [ "${{ needs.quality.result }}" != "success" ]; then
-              echo "::error::quality gate did not pass"
-              exit 1
+            if [ "${QUALITY}" != "success" ]; then
+              fail "quality gate did not pass (quality: ${QUALITY:-none})"
             fi
-            if [ "${{ needs.codeql.result }}" != "success" ]; then
-              echo "::error::codeql analysis did not pass"
-              exit 1
+            if [ "${CODEQL}" != "success" ]; then
+              fail "codeql analysis did not pass (codeql: ${CODEQL:-none})"
             fi
           fi
-          if [ "${{ needs.pr-title.result }}" = "failure" ]; then
-            echo "::error::pr-title check failed"
-            exit 1
+
+          # pr-title is never allowed to fail. on a pull_request run, the only
+          # event it can run on, a skip means the run was cancelled under it,
+          # so there it has to succeed outright
+          if [ "${PR_TITLE}" = "failure" ]; then
+            fail "pr-title check failed: the pr title is not one valid conventional commit line (see the pr-title step)"
+          elif [ "${EVENT_NAME}" = "pull_request" ] && [ "${PR_TITLE}" != "success" ]; then
+            fail "the pr title was not validated on this pull_request run (pr-title: ${PR_TITLE:-none})"
           fi
-          # this one is never skipped on `edited` — the whole point of it living
-          # here — and since #1523 it is not skipped on `workflow_dispatch`
-          # either: it resolves the pr from the api there and returns a real
-          # verdict. so `push` is the only build with no pr to check, and the
-          # only one where a skip is honest. tolerating it anywhere else is
-          # what let a dispatched run report green over an unchecked body
-          if [ "${{ needs.session-urls.result }}" != "success" ]; then
-            if [ "${GITHUB_EVENT_NAME}" = "push" ] \
-               && [ "${{ needs.session-urls.result }}" = "skipped" ]; then
-              echo "session-urls skipped: a push build has no pr body"
+
+          # the body check is never skipped on `edited` — the whole point of
+          # it living in this workflow — and since #1523 not on
+          # `workflow_dispatch` either: it resolves the pr from the api there
+          # and returns a real verdict. so `push` is the only build with no pr
+          # to check, and the only one where a skip is honest. tolerating it
+          # anywhere else is what let a dispatched run report green over an
+          # unchecked body
+          if [ "${PR_BODY}" != "success" ]; then
+            if [ "${EVENT_NAME}" = "push" ] && [ "${PR_BODY}" = "skipped" ]; then
+              echo "no agent session urls (pr body) skipped: a push build has no pr body"
             else
-              echo "::error::the pr body was not confirmed free of coding-agent session urls (session-urls: ${{ needs.session-urls.result }})"
-              exit 1
+              fail "the pr body was not confirmed free of coding-agent session urls (no agent session urls (pr body): ${PR_BODY:-none})"
             fi
           fi
-          # the commit half only runs on a dispatch, so `skipped` is the normal
-          # result everywhere else — `quality.yml`'s own session-urls job has
-          # already checked the range on a pull_request run. a `failure` here is
-          # never tolerated (#1562)
-          if [ "${{ needs.dispatch-commit-urls.result }}" = "failure" ]; then
-            echo "::error::a coding-agent session url was found in this pr's commit messages"
-            exit 1
+
+          # the commit-range step only runs on a dispatch or a merge-group run,
+          # so `skipped` is the normal result everywhere else — `quality.yml`'s
+          # own session-url check has already read the range on a pull_request
+          # run. a `failure` here is never tolerated (#1562), and on the two
+          # events it owns a skip is no more acceptable: on a merge-group run it
+          # is the only thing that ever reads the commits being batched onto
+          # master (#1318)
+          if [ "${COMMIT_RANGE}" = "failure" ]; then
+            fail "a coding-agent session url was found in this pr's commit messages"
+          elif { [ "${EVENT_NAME}" = "workflow_dispatch" ] || [ "${EVENT_NAME}" = "merge_group" ]; } \
+             && [ "${COMMIT_RANGE}" != "success" ]; then
+            fail "the commit messages were not confirmed free of coding-agent session urls on this ${EVENT_NAME} build (no agent session urls (commits, dispatch/queue): ${COMMIT_RANGE:-none})"
           fi
-          # the same job owns the merge-queue range, and there it is the only
-          # thing that ever reads the commits being batched onto master, so a
-          # skip is no more acceptable than on a dispatch (#1318)
-          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; } \
-             && [ "${{ needs.dispatch-commit-urls.result }}" != "success" ]; then
-            echo "::error::the commit messages were not confirmed free of coding-agent session urls on this ${GITHUB_EVENT_NAME} build (dispatch-commit-urls: ${{ needs.dispatch-commit-urls.result }})"
-            exit 1
-          fi
+
           # pr-title still cannot run on a dispatch — the action it uses reads
-          # the title out of the event payload. that path exists for the
+          # the pr number out of the event payload. that path exists for the
           # release PR, whose title release-plz generates, so the gap is narrow
-          # and cosmetic rather than the history-leak session-urls guards. say
-          # so out loud rather than letting a silent skip imply it was checked
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
-             && [ "${{ needs.pr-title.result }}" = "skipped" ]; then
+          # and cosmetic rather than the history-leak the session-url checks
+          # guard. say so out loud rather than letting a silent skip imply it
+          # was checked
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${PR_TITLE}" = "skipped" ]; then
             echo "::warning::pr-title did not run on this dispatched build; the pr title is unvalidated (see #1523)"
           fi
           # a merge_group payload carries no pr title either, and unlike the
           # dispatch path this one is not a gap: nothing enters the queue
           # without a green `ci-ok` on the pr itself, where `pr-title` did run
-          if [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; then
+          if [ "${EVENT_NAME}" = "merge_group" ]; then
             echo "pr-title skipped: the title was validated on the pull request before it was queued"
           fi
+
+          if [ "${failed}" -ne 0 ]; then
+            exit 1
+          fi
           echo "all required checks green"
-        env:
-          GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
