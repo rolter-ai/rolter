@@ -20,7 +20,7 @@ import {
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
-import type { GuardrailRuleRow } from "@/lib/api";
+import type { GuardrailRuleInput, GuardrailRuleRow } from "@/lib/api";
 import type { EffectiveRule } from "@/lib/guardrail-policy";
 import { atShort, expectInViewport } from "@/lib/story-viewport";
 
@@ -244,11 +244,90 @@ export const CreatesCustomRule: Story = {
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Rule name"), "Prompt injection policy");
     await pickOption(within(dialog).getByLabelText("Source"), "Custom regex");
+    // a custom regex has no detector, so the gateway's generic token applies
+    await expect(within(dialog).getByLabelText("Replacement token")).toHaveAttribute(
+      "placeholder",
+      "[REDACTED]",
+    );
     await userEvent.type(
       within(dialog).getByLabelText("Regular expression"),
       "ignore previous instructions",
     );
     await expect(within(dialog).getByRole("button", { name: "Publish rule" })).toBeEnabled();
+  },
+};
+
+// every create answers with a row; the story reads what was sent
+const creates = recording(
+  withPolicy(async (_input, init) =>
+    init?.method === "POST" ? json({ ...RULES[0], id: "rule-new" }, 201) : json(RULES),
+  ),
+);
+const postedBody = async (n: number): Promise<GuardrailRuleInput> => {
+  const posts = () => creates.calls.filter((call) => call.method === "POST");
+  await waitFor(() => expect(posts()).toHaveLength(n));
+  return JSON.parse(posts()[n - 1].body as string) as GuardrailRuleInput;
+};
+
+/**
+ * A phone redaction and a block rule, created one after the other (#2160).
+ *
+ * Every new rule used to start with `[REDACTED:EMAIL]` and nothing moved it,
+ * so a phone rule masked numbers with the email token and a block rule stored
+ * a replacement its card then reported. A new rule starts with no token now:
+ * the empty field shows the one the gateway writes, a detector change moves
+ * it, and only a redact rule sends one.
+ */
+export const CreatesAPhoneRedactionAndABlockRule: Story = {
+  render: () => {
+    creates.calls.length = 0;
+    return <Harness fetchStub={creates.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const openDialog = async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: /add rule/i }));
+      return within(await within(document.body).findByRole("dialog"));
+    };
+
+    let dialog = await openDialog();
+    await userEvent.type(dialog.getByLabelText("Rule name"), "Mask phone numbers");
+    const token = dialog.getByLabelText("Replacement token");
+    await expect(token).toHaveValue("");
+    await expect(token).toHaveAttribute("placeholder", "[REDACTED:EMAIL]");
+    await pickOption(dialog.getByLabelText("Detector"), "Phone number");
+    await expect(token).toHaveValue("");
+    await expect(token).toHaveAttribute("placeholder", "[REDACTED:PHONE]");
+    await expect(token).toHaveAccessibleDescription(
+      "Leave empty to use the default token, [REDACTED:PHONE].",
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Publish rule" }));
+    await expect(await postedBody(1)).toMatchObject({
+      name: "Mask phone numbers",
+      source_type: "builtin",
+      builtin: "phone",
+      pattern: null,
+      action: "redact",
+      replacement: null,
+    });
+    await expectSheetClosed();
+
+    dialog = await openDialog();
+    await userEvent.type(dialog.getByLabelText("Rule name"), "Block card numbers");
+    // a token the user typed survives a detector change
+    await userEvent.type(dialog.getByLabelText("Replacement token"), "<card>");
+    await pickOption(dialog.getByLabelText("Detector"), "Payment card");
+    await expect(dialog.getByLabelText("Replacement token")).toHaveValue("<card>");
+    // and is dropped once the rule no longer rewrites anything
+    await pickOption(dialog.getByLabelText("Action"), "Block traffic");
+    await expect(dialog.queryByLabelText("Replacement token")).toBeNull();
+    await userEvent.click(dialog.getByRole("button", { name: "Publish rule" }));
+    await expect(await postedBody(2)).toMatchObject({
+      name: "Block card numbers",
+      builtin: "payment_card",
+      action: "block",
+      replacement: null,
+    });
   },
 };
 
@@ -349,9 +428,81 @@ export const EditsRule: Story = {
       await canvas.findByRole("button", { name: "Edit rule Redact customer email" }),
     );
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeVisible());
-    await expect(within(document.body).getByLabelText("Rule name")).toHaveValue(
-      "Redact customer email",
+    const dialog = within(within(document.body).getByRole("dialog"));
+    await expect(dialog.getByLabelText("Rule name")).toHaveValue("Redact customer email");
+    // the stored token is the email detector's own, so it was never edited and
+    // follows the detector rather than masking phone numbers as emails (#2160)
+    const token = dialog.getByLabelText("Replacement token");
+    await expect(token).toHaveValue("[REDACTED:EMAIL]");
+    await pickOption(dialog.getByLabelText("Detector"), "Phone number");
+    await expect(token).toHaveValue("");
+    await expect(token).toHaveAttribute("placeholder", "[REDACTED:PHONE]");
+  },
+};
+
+// a phone redaction saved with no token, and a block rule still carrying the
+// token the dialog used to seed every rule with (#2160)
+const PHONE_RULE: GuardrailRuleRow = {
+  ...RULES[0],
+  id: "rule-phone",
+  name: "Mask phone numbers",
+  builtin: "phone",
+  replacement: null,
+  position: 30,
+};
+const STALE_BLOCK: GuardrailRuleRow = {
+  ...RULES[0],
+  id: "rule-cards",
+  name: "Block card numbers",
+  builtin: "payment_card",
+  action: "block",
+  replacement: "[REDACTED:EMAIL]",
+  position: 40,
+};
+const edits = recording(
+  withPolicy(
+    async (_input, init) =>
+      init?.method === "PUT" ? json(STALE_BLOCK) : json([PHONE_RULE, STALE_BLOCK]),
+    () => json(effectiveConfig({ rows: [PHONE_RULE, STALE_BLOCK] })),
+  ),
+);
+
+/**
+ * A card states the token its rule writes, and nothing for a rule that never
+ * rewrites (#2160).
+ *
+ * The phone rule stores no token, so the gateway writes its detector's; the
+ * block rule's stored token never runs, and the card used to report it all the
+ * same. Publishing that rule again drops the token.
+ */
+export const CardsReportTheTokenARuleWrites: Story = {
+  render: () => {
+    edits.calls.length = 0;
+    return <Harness fetchStub={edits.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const phone = await ruleCard(canvasElement, /Mask phone numbers/);
+    await expect(phone).toHaveTextContent("Replacement · [REDACTED:PHONE]");
+    const block = await ruleCard(canvasElement, /Block card numbers/);
+    await expect(block).toHaveTextContent("Content is not rewritten");
+    await expect(block).not.toHaveTextContent(/Replacement|REDACTED/);
+
+    await userEvent.click(
+      within(block).getByRole("button", { name: "Edit rule Block card numbers" }),
     );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    // made a redaction, it starts from the detector's token, not the stale one
+    await pickOption(dialog.getByLabelText("Action"), "Redact matches");
+    const token = dialog.getByLabelText("Replacement token");
+    await expect(token).toHaveValue("");
+    await expect(token).toHaveAttribute("placeholder", "[REDACTED:CARD]");
+    await pickOption(dialog.getByLabelText("Action"), "Block traffic");
+    await userEvent.click(dialog.getByRole("button", { name: "Publish rule" }));
+    const body = await edits.expectSentBody<GuardrailRuleInput>(
+      "PUT",
+      "/guardrails/rules/rule-cards",
+    );
+    await expect(body).toMatchObject({ action: "block", replacement: null });
   },
 };
 

@@ -1633,6 +1633,7 @@
       "actionBlock": "Block traffic",
       "actionRedact": "Redact matches",
       "fieldReplacement": "Replacement token",
+      "replacementHint": "Leave empty to use the default token, <0>{{token}}</0>.",
       "toggleEnabled": "Rule enforced",
       "toggleEnabledHint": "Paused rules remain stored and ordered.",
       "toggleSystem": "Inspect system messages",
