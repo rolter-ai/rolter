@@ -293,6 +293,148 @@ export const EditsRuleOnAShortScreen: Story = {
   },
 };
 
+// a response rule beside the two request rules, for the streaming note (#2156)
+const POST_CALL_RULE: GuardrailRuleRow = {
+  id: "rule-answers",
+  name: "Mask emails in answers",
+  enabled: true,
+  source_type: "builtin",
+  builtin: "email",
+  pattern: null,
+  stage: "post_call",
+  action: "redact",
+  replacement: "[REDACTED:EMAIL]",
+  include_system: false,
+  position: 30,
+  created_at: "2026-08-02T00:00:00Z",
+  updated_at: "2026-08-02T00:00:00Z",
+};
+
+/**
+ * The rules plus `GET /api/v1/config` answering with `streaming_post_call` set
+ * to `mode`, or failing when the effective config cannot be read.
+ */
+const streamingStub =
+  (mode: "reject" | "passthrough" | "unreadable"): FetchStub =>
+  async (input) => {
+    if (new URL(String(input), "http://localhost").pathname !== "/api/v1/config") {
+      return json([...RULES, POST_CALL_RULE]);
+    }
+    if (mode === "unreadable") return json({ error: { message: "store offline" } }, 503);
+    return json({
+      providers: [],
+      routes: [],
+      virtual_keys: [],
+      guardrails: { enabled: true, streaming_post_call: mode },
+    });
+  };
+
+/**
+ * The card of the rule named `name`, found by its heading.
+ */
+async function ruleCard(canvasElement: HTMLElement, name: RegExp): Promise<HTMLElement> {
+  const heading = await within(canvasElement).findByRole("heading", { name });
+  const card = heading.closest<HTMLElement>("article");
+  await expect(card).not.toBeNull();
+  return card!;
+}
+
+/**
+ * Walk the stage picker through both values and assert the streaming note is
+ * shown for "Before response" only, described on the stage it depends on.
+ */
+async function expectStreamingNoteOnlyForResponseStage(
+  canvasElement: HTMLElement,
+  says: RegExp,
+): Promise<void> {
+  await userEvent.click(await within(canvasElement).findByRole("button", { name: /add rule/i }));
+  const dialog = await within(document.body).findByRole("dialog");
+  const stage = within(dialog).getByLabelText("Stage");
+  // a new rule starts on "Before upstream", which streaming does not touch
+  await expect(within(dialog).queryByRole("note")).toBeNull();
+
+  await pickOption(stage, "Before response");
+  const note = await within(dialog).findByRole("note");
+  await expect(note).toHaveTextContent(says);
+  await expect(stage).toHaveAccessibleDescription(says);
+
+  await pickOption(stage, "Before upstream");
+  await waitFor(() => expect(within(dialog).queryByRole("note")).toBeNull());
+  await expect(stage).not.toHaveAccessibleDescription(says);
+}
+
+/**
+ * The default: an enforced response rule refuses every streamed request on the
+ * routes it covers (#2156).
+ *
+ * The dialog offered "Before response" with no word about streaming, so one
+ * rule could turn away most interactive traffic. Both the dialog, before
+ * saving, and the card, after, say so now, and name the setting that decides.
+ */
+export const WarnsThatAResponseRuleRefusesStreams: Story = {
+  render: () => <Harness fetchStub={streamingStub("reject")} />,
+  play: async ({ canvasElement }) => {
+    const response = await ruleCard(canvasElement, /Mask emails in answers/);
+    await expect(
+      await within(response).findByText(/Refuses streamed requests on its routes/),
+    ).toBeVisible();
+    await expect(response).toHaveTextContent('streaming_post_call = "reject"');
+    // a request rule runs before the upstream call, so streaming is no concern
+    const request = await ruleCard(canvasElement, /Redact customer email/);
+    await expect(request).not.toHaveTextContent(/streamed/i);
+
+    await expectStreamingNoteOnlyForResponseStage(
+      canvasElement,
+      /streamed requests on the routes it covers are refused with a 400.*streaming_post_call = "reject"/,
+    );
+  },
+};
+
+/**
+ * `passthrough`: the stream is served and the rule never sees it, so a redact
+ * rule whose card says "enforced" leaves streamed answers untouched (#2156).
+ */
+export const WarnsThatStreamsSkipAResponseRule: Story = {
+  render: () => <Harness fetchStub={streamingStub("passthrough")} />,
+  play: async ({ canvasElement }) => {
+    const response = await ruleCard(canvasElement, /Mask emails in answers/);
+    await expect(
+      await within(response).findByText(/Streamed responses skip this rule/),
+    ).toBeVisible();
+    await expect(response).toHaveTextContent('streaming_post_call = "passthrough"');
+    const request = await ruleCard(canvasElement, /Redact customer email/);
+    await expect(request).not.toHaveTextContent(/streamed/i);
+
+    await expectStreamingNoteOnlyForResponseStage(
+      canvasElement,
+      /Streamed responses skip this rule.*streaming_post_call = "passthrough"/,
+    );
+  },
+};
+
+/**
+ * The effective config did not answer: the screen says the setting could not
+ * be read and names both outcomes, rather than assuming the default (#2156).
+ */
+export const SaysWhenTheStreamingSettingIsUnreadable: Story = {
+  render: () => <Harness fetchStub={streamingStub("unreadable")} />,
+  play: async ({ canvasElement }) => {
+    const response = await ruleCard(canvasElement, /Mask emails in answers/);
+    await expect(
+      await within(response).findByText(/Effect on streamed requests unknown/),
+    ).toBeVisible();
+    await expect(response).toHaveTextContent("streaming_post_call could not be read");
+    await expect(response).not.toHaveTextContent('"reject"');
+    const request = await ruleCard(canvasElement, /Redact customer email/);
+    await expect(request).not.toHaveTextContent(/streamed/i);
+
+    await expectStreamingNoteOnlyForResponseStage(
+      canvasElement,
+      /streaming_post_call could not be read.*Under reject.*refused.*under passthrough.*skip the rule/,
+    );
+  },
+};
+
 // What a non-superadmin gets: the screen refused before it asks (#1606).
 //
 // `guardrail_rule` is superadmin at every action, so `superadminOnly` never

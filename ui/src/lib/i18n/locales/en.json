@@ -1613,7 +1613,15 @@
       "toggleSystem": "Inspect system messages",
       "toggleSystemHint": "Off by default because operator-authored instructions are trusted.",
       "publishing": "Publishing…",
-      "publish": "Publish rule"
+      "publish": "Publish rule",
+      "streaming": {
+        "cardReject": "Refuses streamed requests on its routes while enforced · <0>streaming_post_call = \"reject\"</0>",
+        "cardPassthrough": "Streamed responses skip this rule · <0>streaming_post_call = \"passthrough\"</0>",
+        "cardUnknown": "Effect on streamed requests unknown · <0>streaming_post_call</0> could not be read",
+        "noteReject": "While this rule is enforced, streamed requests on the routes it covers are refused with a 400, because this deployment sets <0>streaming_post_call = \"reject\"</0>. Chat clients and coding agents usually stream.",
+        "notePassthrough": "Streamed responses skip this rule, because this deployment sets <0>streaming_post_call = \"passthrough\"</0>. Only non-streamed responses are checked.",
+        "noteUnknown": "<0>streaming_post_call</0> could not be read, so what this rule does to streamed requests is unknown. Under <0>reject</0>, they are refused on the routes it covers; under <0>passthrough</0>, they skip the rule."
+      }
     },
     "guardrailProviders": {
       "confirm": {
