@@ -1,19 +1,25 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Playground from "./Playground";
 import {
   Harness,
+  NEEDS_MEMBER,
   clickWhenEnabled,
+  expectAllowed,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
   recording,
   scopeResponse,
   type FetchStub,
+  type StoryRole,
 } from "./story-harness";
 import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
+import en from "@/lib/i18n/locales/en.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
@@ -48,6 +54,14 @@ const DOGFOOD_PROBLEMS = {
 };
 
 const MINT_PATH = "/playground-key";
+
+/** What a held-back Send says, read out of the catalog so rewording cannot strand the stories. */
+const SEND_NEEDS_KEY = en.pages.playground.sendNeedsKey;
+const SEND_WAITING = en.pages.playground.sendWaiting;
+
+/** Every mint the screen asked for, from a recorder's calls. */
+const mintsIn = (calls: { method: string; url: string }[]) =>
+  calls.filter((c) => c.method === "POST" && c.url.includes(MINT_PATH)).length;
 
 /** Half an hour out, the lifetime `PLAYGROUND_KEY_TTL_MINUTES` fixes. */
 const expiry = () => new Date(Date.now() + 30 * 60_000).toISOString();
@@ -139,8 +153,14 @@ function shortKeyWait() {
   return () => setKeyPropagationForTests(null);
 }
 
-/** Clears the in-memory key, so one story's key is never another's start state. */
-function Screen({ fetchStub }: { fetchStub: FetchStub }) {
+/**
+ * Clears the in-memory key, so one story's key is never another's start state.
+ *
+ * `role` mounts the screen under the capability gate as that role; left out,
+ * no gate is mounted and every control renders enabled. The router is for the
+ * routeless project's link to Routing Rules.
+ */
+function Screen({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   // during render, not in an effect: the screen's own effects run first, and
   // a key left behind would suppress the automatic mint under test
   React.useState(() => {
@@ -149,9 +169,11 @@ function Screen({ fetchStub }: { fetchStub: FetchStub }) {
   });
   React.useEffect(() => () => setPlaygroundKey(""), []);
   return (
-    <Harness fetchStub={fetchStub}>
-      <Playground />
-    </Harness>
+    <MemoryRouter>
+      <Harness fetchStub={fetchStub} role={role}>
+        <Playground />
+      </Harness>
+    </MemoryRouter>
   );
 }
 
@@ -248,31 +270,99 @@ export const MintingShowsProgress: Story = {
 /**
  * A project with no routes cannot mint: an empty model list on a virtual key
  * means *every* model, so the control plane refuses rather than handing out the
- * widest key in the system. The screen shows the refusal and stays usable — the
- * paste field is still there.
+ * widest key in the system (#2061).
+ *
+ * That refusal is a precondition, not a failure: the band says the project
+ * needs a route and links the screen that makes one, instead of an unknown
+ * error with the server's line and a retry that can never succeed. The paste
+ * field opens, since pasting is the other way on, and Send waits for a key.
  */
-export const RoutelessProjectIsRefused: Story = {
-  render: () => (
-    <Screen
-      fetchStub={deployment(async () =>
-        json(
-          {
-            error: {
-              message:
-                "this project has no routes, so there is nothing a playground key could address",
-            },
-          },
-          400,
-        ),
-      )}
-    />
+const routeless = recording(
+  deployment(async () =>
+    json(
+      {
+        error: {
+          message:
+            "config error: this project has no routes, so there is nothing a playground key could address",
+        },
+      },
+      400,
+    ),
   ),
+);
+
+export const RoutelessProjectIsRefused: Story = {
+  render: () => <Screen fetchStub={routeless.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /this project has no routes/);
-    // the screen does not retry the refusal on its own — one automatic attempt,
-    // then it is the operator's call
-    await expect(canvas.getByRole("button", { name: "Renew key" })).toBeEnabled();
+    await canvas.findByText(/This project has no routes yet/);
+    const link = canvas.getByRole("link", { name: "Open Routing Rules" });
+    await expect(link).toHaveAttribute("href", "/routing-rules");
+
+    // not the unknown-failure alert, and no retry of a refusal a retry cannot
+    // clear
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Try again" })).toBeNull();
+    await expect(canvas.queryByText(/nothing a playground key could address/)).toBeNull();
+    // one message: nothing about a minted key that does not exist
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+
+    // the paste field is open without being asked for
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+    // one automatic attempt, then it is the operator's call
+    await expect(mintsIn(routeless.calls)).toBe(1);
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+  },
+};
+
+/**
+ * Minting takes `my_virtual_key:create`, which a viewer does not hold (#2061).
+ * The screen asks the gate before it mints, so a viewer is never sent into a
+ * refusal on arrival: the button says which role it takes, the paste field is
+ * open with one line saying why, and a pasted key is what unlocks Send.
+ */
+const viewerCalls = recording(deployment(async () => json(minted())));
+
+export const ViewerIsOfferedThePasteField: Story = {
+  render: () => <Screen role="viewer" fetchStub={viewerCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Mint key", NEEDS_MEMBER);
+    await canvas.findByText(/Your role in this project cannot mint keys/);
+    // the gate has answered by now, and the mint it refused never left
+    viewerCalls.expectNotSent("POST", MINT_PATH);
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+
+    const field = canvas.getByLabelText("Virtual key");
+    await expect(field).toBeVisible();
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+
+    await userEvent.type(field, "sk-rolter-given");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expectAllowed(canvasElement, "Send");
+  },
+};
+
+/** The gate only holds the mint back on a "no": a member still arrives with a key. */
+const memberCalls = recording(deployment(async () => json(minted())));
+
+export const MemberMintsOnceTheGateAnswers: Story = {
+  render: () => <Screen role="member" fetchStub={memberCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await memberCalls.expectSent("POST", MINT_PATH);
+    await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+    await expectAllowed(canvasElement, "Renew key");
+    await expect(mintsIn(memberCalls.calls)).toBe(1);
   },
 };
 
@@ -348,9 +438,12 @@ export const PastedKeyOverridesTheMintedOne: Story = {
 };
 
 /**
- * No project in scope, nothing to mint against. The screen says so rather than
- * leaving a button that cannot work, and the picker falls back to the control
- * plane's route list with a notice explaining what is missing from it (#946).
+ * No project in scope, nothing to mint against. The band says so once — not
+ * beside a hint about a minted key that does not exist (#2061) — the button
+ * offers to mint rather than to renew, and the paste field is open. The picker
+ * falls back to the control plane's route list with a notice explaining what
+ * is missing from it (#946), which describes the list without repeating the
+ * band's instruction.
  */
 export const NoProjectSaysWhatIsMissing: Story = {
   render: () => <Screen fetchStub={deployment(async () => json(minted()), undefined, [])} />,
@@ -359,6 +452,12 @@ export const NoProjectSaysWhatIsMissing: Story = {
     await waitFor(() =>
       expect(canvas.getByText(/Pick a project to mint a key against/)).toBeVisible(),
     );
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+    await expect(canvas.queryByText(/Set a virtual key above/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Mint key" })).toBeDisabled();
+    await expect(canvas.queryByRole("button", { name: "Renew key" })).toBeNull();
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+
     await waitFor(() => expect(canvas.getByText(/Showing configured routes/)).toBeVisible());
     await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
     const listbox = canvas.getByRole("listbox");
@@ -396,6 +495,82 @@ export const RejectedKeySaysSo: Story = {
       expect(canvas.getByText(/Could not read the gateway's model list/)).toBeVisible(),
     );
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
+
+    // the badge follows the gateway's verdict, not the mint's (#2061): no green
+    // "Active" beside a key the gateway turned down
+    await expect(canvas.getByText("Rejected")).toBeVisible();
+    await expect(canvas.queryByText("Active")).toBeNull();
+    await expect(canvas.queryByText(/Expires in/)).toBeNull();
+    await expect(canvas.getByText(/The gateway refused this key/)).toBeVisible();
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+
+    const send = canvas.getByRole("button", { name: "Send" });
+    await expect(send).toBeDisabled();
+    await expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+  },
+};
+
+/**
+ * Send waits for a key the gateway accepts (#2061). Before, it stayed enabled
+ * and the first message came back as the gateway's `401`. Enter in the composer
+ * is held back too, since it reaches the send without the button.
+ */
+const unkeyed = recording(deployment(async () => json(minted()), undefined, []));
+
+export const SendWaitsForAKey: Story = {
+  render: () => <Screen fetchStub={unkeyed.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+    // the column follows the route list here, so the model is whatever it opened on
+    await expect(
+      canvas.getByText(/^Send a message to \S+ once there is a key the gateway accepts\.$/),
+    ).toBeVisible();
+
+    await userEvent.type(canvas.getByPlaceholderText("Message…"), "hello{Enter}");
+    unkeyed.expectNotSent("POST", "/gw/v1/chat/completions");
+
+    // a key the gateway takes is what lets it through
+    await userEvent.type(canvas.getByLabelText("Virtual key"), "sk-rolter-mine");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+    await expect(canvas.getByRole("button", { name: "Send" })).not.toHaveAttribute("title");
+    await expect(canvas.getByText(/^Send a message to \S+\.$/)).toBeVisible();
+  },
+};
+
+/**
+ * The no-database `rolter easy-up`: the gateway holds no keys and no control
+ * plane manages it, so it serves anybody, and every `/api/v1/*` route answers
+ * the JSON 404 of a control plane with no store. The screen asks the gateway
+ * once without a key, and on a yes it says so and leaves Send open, rather
+ * than holding back a request the gateway would take (#2061).
+ */
+const noStore = () =>
+  json({ error: { message: "no such endpoint", code: "no_such_endpoint" } }, 404);
+
+export const KeylessGatewayNeedsNoKey: Story = {
+  render: () => (
+    <Screen
+      fetchStub={async (input) => {
+        const url = String(input);
+        if (url.includes("/gw/v1/models")) return json(GATEWAY_MODELS);
+        return noStore();
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This gateway takes requests without a key/);
+    await expect(canvas.getByText("No key")).toBeVisible();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+    // the list is the gateway's own, so there is no fallback to explain
+    await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
+    await expect(canvas.queryByText(/Pick a project to mint a key against/)).toBeNull();
   },
 };
 
@@ -429,6 +604,11 @@ export const WaitsForTheMintedKeyToGoLive: Story = {
     // while the key is on its way the notice says so, not that the list failed
     await canvas.findByText(/Asking the gateway which models this key can use/);
     await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+    // and Send says it is waiting, rather than letting a message meet the 401
+    await expect(canvas.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "title",
+      SEND_WAITING,
+    );
 
     // the same key, asked again until the gateway took it
     await waitFor(() => expect(sent.keys.length).toBe(4));
@@ -439,6 +619,7 @@ export const WaitsForTheMintedKeyToGoLive: Story = {
       expect(canvas.queryByText(/Asking the gateway which models this key can use/)).toBeNull(),
     );
     await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
 
     // and the chat column opens on a route the gateway serves, not on the
     // unservable one the store sorts first
@@ -511,7 +692,10 @@ export const NoPickWithoutTheProblemList: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText(/Could not read the gateway's model list/);
     await expect(canvas.getByRole("combobox", { name: "Model" })).toHaveValue("fake-llm");
-    await expect(canvas.getByText("Send a message to fake-llm.")).toBeVisible();
+    // the gateway refused the key, so the column waits for one it accepts
+    await expect(
+      canvas.getByText("Send a message to fake-llm once there is a key the gateway accepts."),
+    ).toBeVisible();
   },
 };
 

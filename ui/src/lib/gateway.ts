@@ -110,6 +110,18 @@ async function gwError(res: Response): Promise<GatewayError> {
   );
 }
 
+/**
+ * Whether a gateway failure is the gateway refusing the key it was sent.
+ *
+ * The gateway answers a key it does not hold, a revoked one and an expired one
+ * alike with `401` (`authenticate` in `crates/rolter-gateway/src/handlers.rs`),
+ * so the status is the whole signal. Any other failure says something about
+ * the gateway rather than the key, and must not be read as the key being bad.
+ */
+export function isKeyRefusal(error: unknown): boolean {
+  return error instanceof GatewayError && error.status === 401;
+}
+
 /** The backoff a freshly minted key is given to reach the gateway. */
 export interface KeyPropagationTiming {
   /** total time spent waiting between attempts before giving up */
@@ -154,7 +166,7 @@ export function keyPropagationDelay(failures: number): number {
  * still ends in the fallback rather than in a spinner.
  */
 export function awaitingMintedKey(failures: number, error: unknown): boolean {
-  if (!(error instanceof GatewayError) || error.status !== 401) return false;
+  if (!isKeyRefusal(error)) return false;
   let waited = 0;
   for (let n = 0; n <= failures; n += 1) waited += keyPropagationDelay(n);
   return waited <= keyPropagation.budgetMs;
