@@ -27,25 +27,29 @@ The dashboard reads the rows back through the control plane, which needs its own
 
 Every proxied request writes one row to the `request_logs` table with the following fields:
 
-| Field               | Type          | Description                                                                                                                           |
-| ------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `ts`                | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                              |
-| `request_id`        | String        | Unique request identifier, echoed in the `x-request-id` response header                                                               |
-| `model`             | String        | The public model name the client requested                                                                                            |
-| `provider`          | String        | The upstream provider that served the request                                                                                         |
-| `target`            | String        | The specific upstream target within the provider                                                                                      |
-| `status`            | UInt16        | HTTP status code returned to the client                                                                                               |
-| `prompt_tokens`     | UInt32        | Prompt / input token count reported by the upstream                                                                                   |
-| `completion_tokens` | UInt32        | Completion / output token count reported by the upstream                                                                              |
-| `cost_usd`          | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                            |
-| `unpriced`          | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))            |
-| `withheld`          | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses)) |
-| `usage_unknown`     | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free              |
-| `latency_ms`        | UInt32        | End-to-end request latency in milliseconds                                                                                            |
-| `ttft_ms`           | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                              |
-| `cached`            | Bool          | Whether the response was served from the upstream's prompt cache                                                                      |
-| `error`             | String        | Error message if the request failed; empty on success                                                                                 |
-| `variant`           | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
+| Field                | Type          | Description                                                                                                                           |
+| -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                 | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                              |
+| `request_id`         | String        | Unique request identifier, echoed in the `x-request-id` response header                                                               |
+| `trace_id`           | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                          |
+| `model`              | String        | The public model name the client requested                                                                                            |
+| `provider`           | String        | The upstream provider that served the request                                                                                         |
+| `target`             | String        | The specific upstream target within the provider                                                                                      |
+| `status`             | UInt16        | HTTP status code returned to the client                                                                                               |
+| `prompt_tokens`      | UInt32        | Prompt / input token count reported by the upstream                                                                                   |
+| `completion_tokens`  | UInt32        | Completion / output token count reported by the upstream                                                                              |
+| `cost_usd`           | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                            |
+| `unpriced`           | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))            |
+| `withheld`           | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses)) |
+| `usage_unknown`      | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free              |
+| `latency_ms`         | UInt32        | End-to-end request latency in milliseconds                                                                                            |
+| `ttft_ms`            | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                              |
+| `stream`             | UInt8         | `1` when the response was streamed                                                                                                    |
+| `cache_hit`          | UInt8         | `1` when Rolter answered from its own response cache, so no upstream was called and `provider` and `target` are empty                 |
+| `cache_read_tokens`  | UInt32        | Prompt tokens the upstream reused from its own prompt cache                                                                           |
+| `cache_write_tokens` | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                 |
+| `error`              | String        | Error message if the request failed; empty on success                                                                                 |
+| `variant`            | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
 
 A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
 
@@ -274,6 +278,18 @@ curl -H "Authorization: Bearer $ROLTER_TOKEN" \
 ```
 
 The answer is that one row, with its status, error, tokens, cost, latency and — if your role may read them — the captured bodies. `trace_id` looks a request up by its W3C trace id the same way, for when you start from a span in your tracing backend instead. Without a `since`, a lookup by either id searches every row still retained rather than the default last 7 days, so an older request is found rather than answered with an empty page. The lookup obeys the same visibility as the rest of the log: an id from a project you cannot read returns nothing.
+
+### Reading a request in LLM Logs
+
+Clicking a row in **LLM Logs** opens it in a detail drawer, and the row stays highlighted in the table while the drawer is open. The drawer starts with the verdict: the status, when the request started, and its request id and trace id, each with a copy button. A status of **No response** means the gateway never got an answer from the upstream, because the connection was refused or timed out. A trace id reads **Not sent by the caller** when the request carried no trace header, since there is nothing to follow into a tracing backend.
+
+When the request failed, its error comes next, before anything else. The rest of the row is grouped:
+
+- **Routing**: provider → target, the A/B variant, whether Rolter answered from its response cache, whether the response was streamed, time to first token and latency.
+- **Usage and cost**: input and output tokens, the upstream's prompt-cache reads and writes, and the cost.
+- **Attribution**: the virtual key by its name and prefix, the business unit and the customer. A key that cannot be looked up, for example one that has since been deleted, shows its id instead.
+
+The captured request and response bodies follow, or the reason they are absent (see [log settings](/observability/log-settings)).
 
 ## Built-in dashboard
 

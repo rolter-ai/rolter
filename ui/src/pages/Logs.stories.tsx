@@ -19,7 +19,7 @@ import {
   type FetchStub,
   type Recorder,
 } from "./story-harness";
-import type { BusinessUnitRow, CustomerRow, InvocationRow } from "@/lib/api";
+import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -620,6 +620,272 @@ export const DetailDrawerNamesTheAttribution: Story = {
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     await expect(drawer.getByText("Platform Engineering")).toBeVisible();
     await expect(drawer.getByText("Acme Corp")).toBeVisible();
+    // no key in the project's list carries this id, so the id itself stands in
+    await expect(drawer.getByText("vk-1")).toBeVisible();
+  },
+};
+
+// every fixture above answered 200, and a failed row is the one the drawer is
+// opened for most (#1983). the upstream reset the connection mid-stream, so
+// nothing was billed and no token arrived
+const FAILED = row({
+  request_id: "req-failed-7f3a",
+  trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+  status: 502,
+  stream: 1,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  latency_ms: 30012,
+  ttft_ms: 0,
+  error: "upstream openai reset the connection before the response completed",
+});
+const SERVED = row({
+  request_id: "req-served",
+  model: "claude-sonnet",
+  provider: "anthropic",
+  target: "anthropic/claude-sonnet",
+});
+
+/** The drawer's group titles, top to bottom: the order it is read in. */
+const groupTitles = (panel: HTMLElement) =>
+  within(panel)
+    .getAllByRole("heading", { level: 3 })
+    .map((h) => h.textContent);
+
+/** The value a drawer row pairs with `label`, read off the `dt` it follows. */
+const valueOf = (region: HTMLElement, label: string) =>
+  within(region).getByText(label, { selector: "dt" }).nextElementSibling?.textContent;
+
+/**
+ * #1983: a failed request opens on its verdict — the status, when it ran and
+ * the ids to quote, each copyable — and the error is the first thing after it,
+ * ahead of routing, usage and attribution. The row the drawer belongs to says
+ * it is the open one.
+ */
+export const AFailedRequestLeadsWithItsError: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([FAILED, SERVED])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const drawer = within(panel);
+
+    // the verdict line
+    await expect(drawer.getByText("502")).toBeVisible();
+    await expect(drawer.getByText(fmt.dateTimeMs(FAILED.ts))).toBeVisible();
+    await expect(
+      drawer.getByRole("button", { name: `Copy request ID: ${FAILED.request_id}` }),
+    ).toBeVisible();
+    // the hop into the tracing backend (engineer journey E5.3)
+    await expect(
+      drawer.getByRole("button", { name: `Copy trace ID: ${FAILED.trace_id}` }),
+    ).toBeVisible();
+
+    // the error, before everything the drawer groups under it
+    await expect(groupTitles(panel)).toEqual([
+      "Error",
+      "Routing",
+      "Usage and cost",
+      "Attribution",
+      "Request",
+      "Response",
+    ]);
+    const error = drawer.getByRole("region", { name: /^Error — / });
+    await expect(error).toHaveTextContent(FAILED.error);
+
+    // and the row it describes is the one marked open
+    const [failedRow, servedRow] = canvasElement.querySelectorAll("tbody tr");
+    await expect(failedRow).toHaveAttribute("aria-selected", "true");
+    await expect(servedRow).toHaveAttribute("aria-selected", "false");
+  },
+};
+
+const CI_KEY: VirtualKeyRow = {
+  id: "vk-ci",
+  project_id: "project-1",
+  key_hash: "",
+  key_prefix: "rk_live_ab12",
+  name: "ci-runner",
+  models: [],
+  providers: [],
+  disabled: false,
+  created_by: null,
+  business_unit_id: "unit-1",
+  customer_id: "cust-1",
+  created_at: "2026-03-05T10:00:00Z",
+};
+
+// a streamed canary call rolter answered from its own response cache, billed
+// through a named key. the caller sent no traceparent
+const ROUTED = row({
+  request_id: "req-routed",
+  trace_id: "",
+  virtual_key_id: "vk-ci",
+  business_unit_id: "unit-1",
+  customer_id: "cust-1",
+  variant: "canary",
+  cache_hit: 1,
+  stream: 1,
+  ttft_ms: 120,
+  cache_read_tokens: 2048,
+  cache_write_tokens: 512,
+});
+
+/**
+ * #1983: the fields that explain cache-aware routing were missing from the
+ * drawer, and the rest sat in one flat grid. Each group now holds its own —
+ * routing, usage and cost, attribution — with numbers in the house format and
+ * the key by its name and prefix rather than its id.
+ */
+export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/api/v1/analytics/invocations", () => ({ data: [ROUTED] })],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+        ["/virtual-keys", () => [CI_KEY]],
+        ["/business-units", () => [UNIT]],
+        ["/customers", () => [CUSTOMER]],
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const drawer = within(panel);
+
+    await expect(drawer.getByText("200")).toBeVisible();
+    // a request that failed nothing has no error group
+    await expect(drawer.queryByRole("heading", { name: "Error" })).toBeNull();
+    // and a caller that sent no trace is told so, with nothing to copy
+    await expect(valueOf(panel, "Trace ID")).toBe("Not sent by the caller");
+    await expect(drawer.queryByRole("button", { name: /Copy trace ID/ })).toBeNull();
+
+    const routing = drawer.getByRole("region", { name: "Routing" });
+    await expect(valueOf(routing, "Provider → target")).toBe("openai → openai/gpt-4o");
+    await expect(valueOf(routing, "Variant")).toBe("canary");
+    await expect(valueOf(routing, "Response cache")).toBe("Hit");
+    await expect(valueOf(routing, "Stream")).toBe("Streamed");
+    await expect(valueOf(routing, "Time to first token")).toBe(`${fmt.number(120)} ms`);
+    await expect(valueOf(routing, "Latency")).toBe(`${fmt.number(842)} ms`);
+
+    const usage = drawer.getByRole("region", { name: "Usage and cost" });
+    await expect(valueOf(usage, "Tokens")).toBe(`${fmt.number(8000)} in · ${fmt.number(4345)} out`);
+    await expect(valueOf(usage, "Prompt cache")).toBe(
+      `${fmt.number(2048)} read · ${fmt.number(512)} written`,
+    );
+    await expect(valueOf(usage, "Cost")).toBe(fmt.currency(0.0123, "USD"));
+
+    const attribution = drawer.getByRole("region", { name: "Attribution" });
+    // the key list answers after the drawer opens
+    await expect(await within(attribution).findByText("ci-runner")).toBeVisible();
+    await expect(within(attribution).getByText("rk_live_ab12…")).toBeVisible();
+    await expect(within(attribution).queryByText("vk-ci")).toBeNull();
+    await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");
+    await expect(valueOf(attribution, "Customer")).toBe("Acme Corp");
+  },
+};
+
+/**
+ * #1983: the drawer sits beside the table with nothing tying it to its row, so
+ * the open row carries `aria-selected` and a surface of its own. The mark moves
+ * with the selection and goes when the drawer closes.
+ */
+export const TheOpenRowIsMarkedSelected: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+    const [first, second] = Array.from(canvasElement.querySelectorAll("tbody tr"));
+    const surface = (el: Element) => getComputedStyle(el).backgroundColor;
+    await expect(first).toHaveAttribute("aria-selected", "false");
+    await expect(second).toHaveAttribute("aria-selected", "false");
+    const resting = surface(first);
+
+    await userEvent.click(
+      canvas.getByRole("button", { name: /Open request details for internal-llama/i }),
+    );
+    await canvas.findByRole("complementary", { name: "Details" });
+    await expect(second).toHaveAttribute("aria-selected", "true");
+    await expect(first).toHaveAttribute("aria-selected", "false");
+    // the row eases between surfaces, so the colour is read once it has settled
+    await waitFor(() => expect(surface(second)).not.toBe(resting));
+    await expect(surface(first)).toBe(resting);
+
+    // opening another row moves the mark rather than adding a second one
+    await userEvent.click(canvas.getByRole("button", { name: /Open request details for gpt-4o/i }));
+    await waitFor(() => expect(first).toHaveAttribute("aria-selected", "true"));
+    await expect(second).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Close details" }));
+    await waitFor(() => expect(first).toHaveAttribute("aria-selected", "false"));
+    await waitFor(() => expect(surface(first)).toBe(resting));
+  },
+};
+
+// the gateway never got an answer: the upstream timed out, so there is no
+// http status to show, only the error it recorded
+const TIMED_OUT = row({
+  request_id: "req-timeout-19c2",
+  trace_id: "0af7651916cd43dd8448eb211c80319c",
+  status: 0,
+  latency_ms: 30000,
+  ttft_ms: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  error: "upstream request timed out after 30s",
+});
+
+/**
+ * The same drawer below `lg`, where it opens as a sheet over the table: it
+ * still leads with the verdict and the error, and nothing in it pushes the page
+ * sideways. A status of 0 reads as "No response" rather than a bare zero.
+ */
+export const AFailedRequestInTheSheet: Story = {
+  ...atTablet,
+  render: () => (
+    <Harness fetchStub={withLogs([TIMED_OUT])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const dialog = await within(document.body).findByRole("dialog");
+    const sheet = within(dialog);
+    await expect(sheet.getByText("No response")).toBeVisible();
+    await expect(
+      sheet.getByRole("button", { name: `Copy request ID: ${TIMED_OUT.request_id}` }),
+    ).toBeVisible();
+    await expect(
+      sheet.getByRole("button", { name: `Copy trace ID: ${TIMED_OUT.trace_id}` }),
+    ).toBeVisible();
+    await expect(groupTitles(dialog)[0]).toBe("Error");
+    await expect(sheet.getByRole("region", { name: /^Error — / })).toHaveTextContent(
+      TIMED_OUT.error,
+    );
+    await expectNoHorizontalOverflow();
   },
 };
 
