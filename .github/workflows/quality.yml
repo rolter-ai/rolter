@@ -190,7 +190,8 @@ jobs:
   #
   # - one named step per former job (two for gitleaks, three for the release
   #   handoff, five for the helm chart), keeping that job's command, env and
-  #   event guard
+  #   event guard. the session-url commit check also carries the fixture test
+  #   of ci-ok's pr-body step (#2035)
   # - every step runs under `!cancelled()` rather than the default `success()`,
   #   so one red step never hides the ones after it. `always()` would also keep
   #   a superseded run holding its runner after ci.yml cancelled it
@@ -310,6 +311,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/check-agent-session-urls.sh --commit-range "${BASE_SHA}..${HEAD_SHA}"
+      # ci-ok's pr-body step reads the body from the api, so the only place
+      # that step's shell ever ran was a real pull request. this runs it, as
+      # extracted from ci.yml, against a fake gh and clock: a body edited after
+      # the event fired, a flaking api, and the dispatch and queue lookups
+      # (#2035). it reads nothing the step above produces
+      - name: pr body lookups against a fake gh
+        id: session-urls-fixture
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-agent-session-urls.sh
 
       # ── storage: migrations are append-only ───────────────────────────────
       # sqlx checksums every applied migration, so editing a shipped file breaks
@@ -529,6 +539,7 @@ jobs:
           OUTCOME_UV: ${{ steps.uv.outcome }}
           OUTCOME_HELM: ${{ steps.helm.outcome }}
           OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
+          OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
@@ -599,6 +610,8 @@ jobs:
           row "static checks" "set up helm" "${OUTCOME_HELM}" yes "${setup}"
           row "no agent session urls (commits)" "no agent session urls (commits)" "${OUTCOME_SESSION_URLS}" "${on_pr}" \
             "bash scripts/check-agent-session-urls.sh --commit-range origin/master..HEAD"
+          row "no agent session urls (commits)" "pr body lookups against a fake gh" "${OUTCOME_SESSION_URLS_FIXTURE}" yes \
+            "prek run agent-session-urls --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"

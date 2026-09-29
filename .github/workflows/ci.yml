@@ -367,19 +367,31 @@ jobs:
       # performs that merge. its ref is synthetic and belongs to no pr head, so
       # the pr is resolved by the number embedded in
       # `gh-readonly-queue/<base>/pr-<n>-<sha>` (#1318).
+      #
+      # on a pull_request run the body is read live from the api, never from
+      # `github.event.pull_request.body`. the payload copy is frozen when the
+      # event fires, and this step runs after `quality` and `codeql`, minutes
+      # later. a session url added in between failed only the `edited` run the
+      # edit started, whose `ci-ok` also declines while the gate is unfinished,
+      # and then this run's newer, green `ci-ok` outranked it with the url
+      # still in the body (#2035). the number in the payload cannot change, so
+      # it is the one field taken from there. this is the same `pulls.get` the
+      # pr-title step makes with the same token, so a fork or dependabot pr
+      # needs nothing it did not already have
       - name: no agent session urls (pr body)
         id: pr-body
         if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') }}
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
-            bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
+            # live: the api, with three attempts and no green on a failed read
+            bash scripts/check-agent-session-urls.sh --pr-number "${REPO}" "${PR_NUMBER}"
           elif [ "${EVENT_NAME}" = "merge_group" ]; then
             # queued: the ref is synthetic, so the pr is resolved by the number
             # inside it rather than by head ref
@@ -406,8 +418,8 @@ jobs:
       # read a commit message (#1562). the two runs that take the dispatch path
       # are exactly the wrong ones to have no verdict on: the release PR, which
       # only ever gets a dispatched run because release-plz opens it with the
-      # repo `GITHUB_TOKEN` (#1025), and the documented recovery for a head sha
-      # whose `opened` event froze a dirty body (#1522).
+      # repo `GITHUB_TOKEN` (#1025), and the dispatch that used to be the way
+      # out for a head sha whose `opened` run failed its body check (#1522).
       #
       # a dispatch carries no pull request in its payload, so the range is
       # resolved by head ref through the same lookup #1523 added for the body.
