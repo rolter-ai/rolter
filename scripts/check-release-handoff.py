@@ -512,13 +512,17 @@ def publish_gated(wf: Workflow) -> bool:
     )
 
 
-WAIT_COMMAND = re.compile(r"^(?:bash\s+)?(?:\./)?scripts/wait-for-ci-gate\.sh(?:\s|$)")
+# the step is this one bare command and nothing else. the script writes
+# `verified=true` itself as its last action, so no shell option, `||`, pipe,
+# function wrapper or write of the step's own can set the output after a red
+# gate, and the step's exit status is the script's, so a red gate is a red job
+WAIT_COMMAND = re.compile(r"(?:bash\s+)?(?:\./)?scripts/wait-for-ci-gate\.sh")
 
 
 @check(
     PLZ,
-    "release-gate must set verified only after scripts/wait-for-ci-gate.sh succeeds, in the "
-    "step its output reads, and never from a check-run lookup",
+    "release-gate must take verified from a step that runs only "
+    "scripts/wait-for-ci-gate.sh, and never from a check-run lookup",
 )
 def gate_waits_on_push_run(wf: Workflow) -> bool:
     j = job(wf, "release-gate")
@@ -530,17 +534,29 @@ def gate_waits_on_push_run(wf: Workflow) -> bool:
     step = next((s for s in steps(j) if source and s.get("id") == source.group(1)), None)
     if step is None or not isinstance(step.get("run"), str):
         return False
+    # continue-on-error would turn a red gate into a green job that skips the
+    # publish without anyone seeing why
+    if any(node.get("continue-on-error") not in (None, False) for node in (j, step)):
+        return False
     commands = [c.strip() for c in shell_commands(step["run"])]
-    # the wait runs as a plain command, neither excused with `||` nor sent to the
-    # background, so under `bash -e` a red gate ends the step before verified is
-    # written
-    waits = [
-        i
-        for i, c in enumerate(commands)
-        if WAIT_COMMAND.match(c) and "||" not in c and not re.search(r"(?<!&)&$", c)
-    ]
-    sets = [i for i, c in enumerate(commands) if "verified=true" in c and "GITHUB_OUTPUT" in c]
-    return bool(waits and sets) and waits[0] < sets[0]
+    return len(commands) == 1 and bool(WAIT_COMMAND.fullmatch(commands[0]))
+
+
+# what makes the bare call above enough: the script's one write of the output is
+# its final command, so the output exists only when every check before it passed
+@check(
+    WAIT,
+    "wait-for-ci-gate.sh must write verified=true to $GITHUB_OUTPUT once, as its last command",
+)
+def wait_writes_verified_last(script: str) -> bool:
+    commands = [c.strip() for c in shell_commands(script)]
+    writes = [i for i, c in enumerate(commands) if "verified=" in c]
+    last = commands[-1] if commands else ""
+    return (
+        writes == [len(commands) - 1]
+        and "verified=true" in last
+        and re.search(r">>\s*\"?\$\{?GITHUB_OUTPUT\b", last) is not None
+    )
 
 
 @check(
@@ -1190,12 +1206,51 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
     ),
     (
         "gate_waits_on_push_run",
-        "verified written before the wait",
+        "verified written by the step before the wait",
         replace_in_job(
             PLZ,
             "release-gate",
-            'bash scripts/wait-for-ci-gate.sh\necho "verified=true" >> "$GITHUB_OUTPUT"',
+            "bash scripts/wait-for-ci-gate.sh",
             'echo "verified=true" >> "$GITHUB_OUTPUT"\nbash scripts/wait-for-ci-gate.sh',
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "verified written by the step after the wait, with errexit off",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            'set +e\nbash scripts/wait-for-ci-gate.sh\necho "verified=true" >> "$GITHUB_OUTPUT"',
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait piped into tee, which hides its exit status",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            'bash scripts/wait-for-ci-gate.sh | tee "$RUNNER_TEMP/gate.log"',
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait wrapped in a function that is excused with ||",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            "gate() {\n  bash scripts/wait-for-ci-gate.sh\n}\ngate || true",
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait step allowed to fail",
+        edit_job(
+            PLZ,
+            "release-gate",
+            lambda j: [s.__setitem__("continue-on-error", True) for s in j["steps"]],
         ),
     ),
     (
@@ -1211,6 +1266,32 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         "gate_waits_on_push_run",
         "the wait step disabled with if: false",
         disable(PLZ, "release-gate", "scripts/wait-for-ci-gate.sh"),
+    ),
+    (
+        "wait_writes_verified_last",
+        "the wait script no longer writes verified",
+        replace_in_script(WAIT, 'echo "verified=true" >>"${GITHUB_OUTPUT:-/dev/null}"', "true"),
+    ),
+    (
+        "wait_writes_verified_last",
+        "verified also written before the verdict",
+        replace_in_script(
+            WAIT,
+            "set -euo pipefail\n",
+            'set -euo pipefail\necho "verified=true" >>"${GITHUB_OUTPUT:-/dev/null}"\n',
+        ),
+    ),
+    (
+        "wait_writes_verified_last",
+        "verified written only to the log",
+        replace_in_script(
+            WAIT, 'echo "verified=true" >>"${GITHUB_OUTPUT:-/dev/null}"', 'echo "verified=true"'
+        ),
+    ),
+    (
+        "wait_writes_verified_last",
+        "the write left only in a comment",
+        replace_in_script(WAIT, 'echo "verified=true"', '# echo "verified=true"'),
     ),
     (
         "wait_binds_push_run",
@@ -1477,6 +1558,16 @@ BENIGN: list[tuple[str, Callable[[Tree], None]]] = [
             ),
             edit_job(PLZ, "release-plz-release", set_key("needs", ["verify"])),
             edit_job(PLZ, "release-plz-release", lambda j: j.pop("if")),
+        ),
+    ),
+    (
+        "the wait step under a shell without errexit",
+        edit_job(
+            PLZ,
+            "release-gate",
+            lambda j: [
+                s.__setitem__("shell", "bash {0}") for s in j["steps"] if s.get("id") == "wait"
+            ],
         ),
     ),
     (

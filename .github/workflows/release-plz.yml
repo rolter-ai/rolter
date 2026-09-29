@@ -221,10 +221,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          bash scripts/wait-for-ci-gate.sh
-          echo "verified=true" >> "$GITHUB_OUTPUT"
+        # the script writes `verified=true` itself, as its last action, so only
+        # its success sets the output. check-release-handoff.py holds this step
+        # to the one bare command, so the step also goes red whenever the gate
+        # does
+        run: bash scripts/wait-for-ci-gate.sh
 
   # on merge of the release PR: publishes every workspace member to crates.io
   # in dependency order (`publish = true` in .github/config/release-plz.toml, using

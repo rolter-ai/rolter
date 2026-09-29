@@ -204,12 +204,18 @@ run_env() {
     GITHUB_STEP_SUMMARY="$case_dir/summary" "$@"
 }
 
-# run_wait [sha]
+# run_wait [sha]. the script writes `verified=true` to $GITHUB_OUTPUT as its
+# last action and release-plz-release runs on nothing else, so every case also
+# checks the output file holds exactly that when the script exits 0 and stays
+# empty otherwise
 run_wait() {
-  local rc=0
-  (cd "$case_dir" && run_env SHA="${1:-$sha}" bash --noprofile --norc "$wait_script") \
-    >"$case_dir/out" 2>&1 || rc=$?
+  local rc=0 want=""
+  : >"$case_dir/github_output"
+  (cd "$case_dir" && run_env SHA="${1:-$sha}" GITHUB_OUTPUT="$case_dir/github_output" \
+    bash --noprofile --norc "$wait_script") >"$case_dir/out" 2>&1 || rc=$?
   echo "$rc" >"$case_dir/rc"
+  [ "$rc" -eq 0 ] && want="verified=true"
+  check "GITHUB_OUTPUT" "$(cat "$case_dir/github_output")" "$want"
 }
 
 run_list() {
@@ -433,6 +439,17 @@ echo "runs not-json" >"$case_dir/faults"
 run_wait
 expect_rc 1
 expect_no_output "ci-ok succeeded"
+finish_case
+
+start_case "a green run outside actions exits 0 with no output file to write"
+add_run 1 push master 0 0 success
+set_jobs 1 "ci-ok=success"
+rc=0
+(cd "$case_dir" && run_env SHA="$sha" bash --noprofile --norc "$wait_script") \
+  >"$case_dir/out" 2>&1 || rc=$?
+echo "$rc" >"$case_dir/rc"
+expect_rc 0
+expect_output "ci-ok succeeded on ci.yml push run 1 for $sha"
 finish_case
 
 start_case "a sha that is not a full commit sha is refused before any call"

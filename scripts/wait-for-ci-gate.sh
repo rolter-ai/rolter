@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # waits for the ci.yml *push* run on one master commit to finish, then exits 0
-# only if that run's `ci-ok` job concluded success.
+# only if that run's `ci-ok` job concluded success. its last action is writing
+# `verified=true` to $GITHUB_OUTPUT, so reaching the end of this script is the
+# only way the step that runs it can report a verified commit.
 #
 #   REPO=rolter-ai/rolter SHA=<40-hex sha> GH_TOKEN=... bash scripts/wait-for-ci-gate.sh
 #
@@ -123,3 +125,8 @@ fi
 
 echo "ci-ok succeeded on ci.yml push run ${run_id} for ${SHA}"
 summary "release gate: ci-ok succeeded on the ci.yml push run for \`${SHA}\` (${run_url:-run ${run_id}})"
+
+# the only write of the step output, and the last command, so every failure
+# above leaves it unset whatever shell options the calling step runs under.
+# outside actions there is no output file and nothing to write
+echo "verified=true" >>"${GITHUB_OUTPUT:-/dev/null}"

@@ -188,7 +188,8 @@ read-only token (`contents: read`, `actions: read`) and does two things:
    and requires that run's `ci-ok` job to have concluded `success`. It fails
    closed on an API error that survives three attempts, on any other
    conclusion, on a finished run with no `ci-ok` job, and after 90 minutes.
-   Only then does the job write `verified=true`.
+   Its last command writes `verified=true` to the step output, and the step
+   runs that script and nothing else, so only a successful exit sets it.
 
 The gate is bound to a run, not to a check-run name. Any workflow can post a
 check-run called `ci-ok` on a master commit: a `pull_request` run from master
@@ -201,8 +202,10 @@ write check-runs there too. A `ci.yml` push run on a sha can only come from
 The publish is bound to the gate, not to the detector. A detector that wrongly
 reports nothing pending leaves `verified` unset, which delays a release but
 never publishes one unverified. `scripts/check-release-handoff.py` asserts that
-binding, and `scripts/test-release-gate.sh` runs both scripts against a fake
-`gh`, `curl`, `cargo` and clock, as a step in `quality.yml`'s
+binding, that the wait step is the bare script call, and that the script's one
+write of `verified` is its last command. `scripts/test-release-gate.sh` runs
+both scripts against a fake `gh`, `curl`, `cargo` and clock, checking that the
+output is written exactly when the wait exits 0, as a step in `quality.yml`'s
 `release handoff wired` job and as a prek hook.
 
 The job waits rather than re-running `quality.yml` on the merge commit, which
