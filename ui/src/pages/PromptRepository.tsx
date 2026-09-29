@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Braces,
@@ -14,12 +15,13 @@ import {
   Trash2,
 } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
   DialogDescription,
@@ -49,13 +51,17 @@ import {
   rollbackPromptTemplateVersion,
   setPromptTemplateScopes,
   updatePromptTemplate,
+  type OrgRow,
+  type ProjectRow,
   type PromptTemplateDecorator,
   type PromptTemplateRow,
   type PromptTemplateScopeInput,
+  type PromptTemplateScopeType,
   type PromptTemplateVariable,
   type PromptTemplateVersionRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib/prompt-templates";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -116,6 +122,17 @@ function draftProblem(draft: Draft): Problem | undefined {
   return undefined;
 }
 
+type LiveAction = "publish" | "rollback";
+
+// publishing and rolling back move the same pointer
+// (`set_prompt_template_version` in crates/rolter-control/src/crud.rs) and
+// differ only in the audit row, so the verb follows the direction: a version
+// newer than the live one is published, an older one is rolled back to, and
+// with nothing live every version is a publish (#2110)
+function liveAction(version: number, published?: number | null): LiveAction {
+  return version > (published ?? 0) ? "publish" : "rollback";
+}
+
 export default function PromptRepository() {
   const scope = useScope();
   const queryClient = useQueryClient();
@@ -130,7 +147,11 @@ export default function PromptRepository() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [renameOpen, setRenameOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
-  const [rollbackVersion, setRollbackVersion] = React.useState<number>();
+  // the version waiting on the publish / roll back confirmation. the direction
+  // is fixed when the button is pressed: once the publish lands, the version
+  // *is* the live one, and a direction read again would call the landing a
+  // roll back
+  const [liveTarget, setLiveTarget] = React.useState<{ version: number; action: LiveAction }>();
 
   const templates = useQuery({
     queryKey: ["prompt-templates", scope.orgId],
@@ -326,16 +347,26 @@ export default function PromptRepository() {
     },
   });
 
-  const publish = useMutation({
-    mutationFn: (version: number) => publishPromptTemplateVersion(selectedId as string, version),
-    onSuccess: (template) => {
+  // one mutation for both directions, so both go through one confirmation;
+  // the endpoint still follows the direction, since it is what the audit log
+  // records the change as
+  const makeLive = useMutation({
+    mutationFn: ({ version, action }: { version: number; action: LiveAction }) =>
+      action === "publish"
+        ? publishPromptTemplateVersion(selectedId as string, version)
+        : rollbackPromptTemplateVersion(selectedId as string, version),
+    onSuccess: (template, { action }) => {
       queryClient.setQueryData<PromptTemplateRow[]>(
         ["prompt-templates", scope.orgId],
         (current = []) => current.map((item) => (item.id === template.id ? template : item)),
       );
+      setLiveTarget(undefined);
       toast.push({
         tone: "success",
-        title: t("pages.promptRepo.publishedNotice", { version: template.published_version }),
+        title:
+          action === "publish"
+            ? t("pages.promptRepo.publishedNotice", { version: template.published_version })
+            : t("pages.promptRepo.rolledBack", { version: template.published_version }),
       });
     },
     onError: (error) => {
@@ -346,28 +377,12 @@ export default function PromptRepository() {
       });
     },
   });
-
-  const rollback = useMutation({
-    mutationFn: (version: number) => rollbackPromptTemplateVersion(selectedId as string, version),
-    onSuccess: (template) => {
-      queryClient.setQueryData<PromptTemplateRow[]>(
-        ["prompt-templates", scope.orgId],
-        (current = []) => current.map((item) => (item.id === template.id ? template : item)),
-      );
-      setRollbackVersion(undefined);
-      toast.push({
-        tone: "success",
-        title: t("pages.promptRepo.rolledBack", { version: template.published_version }),
-      });
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
-      });
-    },
-  });
+  const liveVersion = orderedVersions.find(
+    (version) => version.version === selected?.published_version,
+  );
+  const targetVersion = orderedVersions.find((version) => version.version === liveTarget?.version);
+  const confirmMakeLive = (version: number) =>
+    setLiveTarget({ version, action: liveAction(version, selected?.published_version) });
 
   if (scope.isLoading || templates.isLoading) return <LoadingState />;
   // never hand-rolled: the bespoke "repository unavailable / Try again" panel
@@ -440,12 +455,12 @@ export default function PromptRepository() {
             virtualKeys={keys.data ?? []}
             orgId={scope.orgId}
             projectId={scope.projectId}
-            pending={saveDraft.isPending || publish.isPending}
-            error={(saveDraft.error ?? publish.error) as Error | null}
+            pending={saveDraft.isPending || makeLive.isPending}
+            error={saveDraft.error as Error | null}
             onDraftChange={setDraft}
             onSamplesChange={setSamples}
             onSave={() => saveDraft.mutate()}
-            onPublish={(version) => publish.mutate(version)}
+            onMakeLive={confirmMakeLive}
             onRename={() => setRenameOpen(true)}
             onDelete={() => setDeleteOpen(true)}
           />
@@ -459,7 +474,7 @@ export default function PromptRepository() {
             selectedVersion={selectedVersion}
             loading={versions.isLoading}
             onSelect={setSelectedVersion}
-            onRollback={setRollbackVersion}
+            onMakeLive={confirmMakeLive}
           />
         )}
       </div>
@@ -471,13 +486,28 @@ export default function PromptRepository() {
         onOpenChange={setCreateOpen}
         onSubmit={(input) => create.mutate(input)}
       />
-      <RollbackDialog
-        version={rollbackVersion}
-        publishedVersion={selected?.published_version}
-        pending={rollback.isPending}
-        error={rollback.error as Error | null}
-        onClose={() => setRollbackVersion(undefined)}
-        onConfirm={() => rollbackVersion && rollback.mutate(rollbackVersion)}
+      <MakeLiveDialog
+        template={selected}
+        target={targetVersion}
+        action={liveTarget?.action}
+        live={liveVersion}
+        routes={routes.data ?? []}
+        virtualKeys={keys.data ?? []}
+        orgs={scope.orgs}
+        projects={scope.projects}
+        pending={makeLive.isPending}
+        error={makeLive.error}
+        onOpenChange={(open) => {
+          if (open) return;
+          setLiveTarget(undefined);
+          // a refusal for one version must not greet the next one opened
+          makeLive.reset();
+        }}
+        onConfirm={() =>
+          targetVersion &&
+          liveTarget &&
+          makeLive.mutate({ version: targetVersion.version, action: liveTarget.action })
+        }
       />
       <RenameTemplateDialog
         open={renameOpen && !!selected}
@@ -610,7 +640,7 @@ function PromptWorkbench({
   onDraftChange,
   onSamplesChange,
   onSave,
-  onPublish,
+  onMakeLive,
   onRename,
   onDelete,
 }: {
@@ -627,12 +657,13 @@ function PromptWorkbench({
   onDraftChange: (draft: Draft) => void;
   onSamplesChange: (samples: Record<string, string>) => void;
   onSave: () => void;
-  onPublish: (version: number) => void;
+  onMakeLive: (version: number) => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
   const problem = draftProblem(draft);
+  const action = baseVersion && liveAction(baseVersion.version, template.published_version);
   const problemText =
     problem &&
     t(`pages.promptRepo.${problem.key}`, {
@@ -662,16 +693,28 @@ function PromptWorkbench({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {baseVersion && !selectedPublished && (
+            {baseVersion && !selectedPublished && action === "publish" && (
               <GatedButton
                 gate="prompt_template:update"
                 control="prompt-publish"
                 variant="outline"
                 disabled={pending}
-                onClick={() => onPublish(baseVersion.version)}
+                onClick={() => onMakeLive(baseVersion.version)}
               >
                 <Check className="h-4 w-4" />{" "}
                 {t("pages.promptRepo.publishVersion", { version: baseVersion.version })}
+              </GatedButton>
+            )}
+            {baseVersion && !selectedPublished && action === "rollback" && (
+              <GatedButton
+                gate="prompt_template:update"
+                control="prompt-header-rollback"
+                variant="outline"
+                disabled={pending}
+                onClick={() => onMakeLive(baseVersion.version)}
+              >
+                <RotateCcw className="h-4 w-4" />{" "}
+                {t("pages.promptRepo.rollbackTo", { version: baseVersion.version })}
               </GatedButton>
             )}
             <GatedButton
@@ -1182,7 +1225,37 @@ function PreviewPanel({
           </>
         )}
       </div>
+      {variables.length > 0 && (
+        // not a landmark of its own: the code block below is the region, named
+        // after this heading, and a second region by the same name is noise
+        <div className="mt-6">
+          <h4 className="text-sm font-semibold">{t("pages.promptRepo.requestShapeTitle")}</h4>
+          <p className="mb-2 mt-0.5 text-xs leading-5 text-muted-foreground">
+            <CallerVarsHint />
+          </p>
+          <CodeBlock
+            value={templateVarsExample(variables, samples)}
+            language="json"
+            label={t("pages.promptRepo.requestShapeTitle")}
+          />
+        </div>
+      )}
     </aside>
+  );
+}
+
+/** how a caller passes template variables and what the gateway answers when
+ * they do not fit, one sentence shared by the preview and the publish
+ * confirmation so the two can never disagree */
+function CallerVarsHint() {
+  return (
+    <Trans
+      i18nKey="pages.promptRepo.callerVarsHint"
+      components={[
+        <code key="field" className="font-mono text-[color:var(--text-secondary)]" />,
+        <code key="code" className="font-mono text-[color:var(--text-secondary)]" />,
+      ]}
+    />
   );
 }
 
@@ -1218,7 +1291,7 @@ export function VersionRail({
   selectedVersion,
   loading,
   onSelect,
-  onRollback,
+  onMakeLive,
 }: {
   className?: string;
   template: PromptTemplateRow;
@@ -1226,7 +1299,7 @@ export function VersionRail({
   selectedVersion?: number;
   loading: boolean;
   onSelect: (version: number) => void;
-  onRollback: (version: number) => void;
+  onMakeLive: (version: number) => void;
 }) {
   const { t } = useTranslation();
   const format = useFormat();
@@ -1258,6 +1331,7 @@ export function VersionRail({
         ) : (
           versions.map((version) => {
             const published = template.published_version === version.version;
+            const action = liveAction(version.version, template.published_version);
             return (
               <div
                 key={version.version}
@@ -1293,12 +1367,23 @@ export function VersionRail({
                     })}
                   </p>
                 </button>
-                {!published && template.published_version && (
+                {!published && action === "publish" && (
+                  <GatedButton
+                    gate="prompt_template:update"
+                    control="prompt-rail-publish"
+                    variant="ghost"
+                    onClick={() => onMakeLive(version.version)}
+                  >
+                    <Check className="h-3.5 w-3.5" />{" "}
+                    {t("pages.promptRepo.publishVersion", { version: version.version })}
+                  </GatedButton>
+                )}
+                {!published && action === "rollback" && (
                   <GatedButton
                     gate="prompt_template:update"
                     control="prompt-rollback"
                     variant="ghost"
-                    onClick={() => onRollback(version.version)}
+                    onClick={() => onMakeLive(version.version)}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />{" "}
                     {t("pages.promptRepo.rollbackTo", { version: version.version })}
@@ -1542,46 +1627,287 @@ function DeleteTemplateDialog({
   );
 }
 
-function RollbackDialog({
-  version,
-  publishedVersion,
+const SCOPE_TYPE_KEYS: Record<PromptTemplateScopeType, string> = {
+  org: "pages.promptRepo.publish.scopeOrg",
+  project: "pages.promptRepo.publish.scopeProject",
+  route: "pages.promptRepo.publish.scopeRoute",
+  virtual_key: "pages.promptRepo.publish.scopeVirtualKey",
+};
+
+/** a scope's row name, and whether it is an identifier set in mono */
+function scopeName(
+  scope: PromptTemplateScopeInput,
+  lists: {
+    orgs: OrgRow[];
+    projects: ProjectRow[];
+    routes: { id: string; model: string }[];
+    virtualKeys: { id: string; name?: string | null; key_prefix: string }[];
+  },
+): { name: string; mono: boolean } {
+  const id = scope.scope_id;
+  switch (scope.scope_type) {
+    case "org": {
+      const org = lists.orgs.find((row) => row.id === id);
+      if (org) return { name: org.name, mono: false };
+      break;
+    }
+    case "project": {
+      const project = lists.projects.find((row) => row.id === id);
+      if (project) return { name: project.name, mono: false };
+      break;
+    }
+    case "route": {
+      const route = lists.routes.find((row) => row.id === id);
+      if (route) return { name: route.model, mono: true };
+      break;
+    }
+    case "virtual_key": {
+      const key = lists.virtualKeys.find((row) => row.id === id);
+      if (key)
+        return key.name ? { name: key.name, mono: false } : { name: key.key_prefix, mono: true };
+      break;
+    }
+  }
+  // a row outside the project the screen has loaded (another project's route
+  // or key) is still named, by the start of its id
+  return { name: id.slice(0, 8), mono: true };
+}
+
+function ImpactSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const id = React.useId();
+  return (
+    <section aria-labelledby={id}>
+      <h3 id={id} className="text-xs font-medium text-muted-foreground">
+        {title}
+      </h3>
+      <div className="mt-1.5">{children}</div>
+    </section>
+  );
+}
+
+function ImpactRows({ children }: { children: React.ReactNode }) {
+  return (
+    <ul className="divide-y divide-[color:var(--border-subtle)] border-y border-[color:var(--border-subtle)]">
+      {children}
+    </ul>
+  );
+}
+
+/**
+ * The one confirmation for making a version live, forwards or back (#2110).
+ *
+ * It says what the gateway will do with the version before it does it: the
+ * scopes it reaches, marking those the live version does not; the variables a
+ * request there must send, marking those the live version did not need; and
+ * the variables it no longer declares. Those are the three ways a publish
+ * turns working callers into 400s, and the rules behind them are the
+ * gateway's own, mirrored in `@/lib/prompt-templates`.
+ *
+ * It warns and never blocks. Rolling back is what an operator reaches for
+ * mid-incident, and a scope list that failed to load must not stand between
+ * them and it.
+ */
+function MakeLiveDialog({
+  template,
+  target,
+  action,
+  live,
+  routes,
+  virtualKeys,
+  orgs,
+  projects,
   pending,
   error,
-  onClose,
+  onOpenChange,
   onConfirm,
 }: {
-  version?: number;
-  publishedVersion?: number | null;
+  template?: PromptTemplateRow;
+  target?: PromptTemplateVersionRow;
+  action?: LiveAction;
+  live?: PromptTemplateVersionRow;
+  routes: { id: string; model: string }[];
+  virtualKeys: { id: string; name?: string | null; key_prefix: string }[];
+  orgs: OrgRow[];
+  projects: ProjectRow[];
   pending: boolean;
-  error: Error | null;
-  onClose: () => void;
+  error: unknown;
+  onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
   const { t } = useTranslation();
+  // the request is latched through the closing render: the dialog's `name`
+  // keys its UX stream rows, and the landing or the abandon is reported on the
+  // render that closes it, when the parent has already let go of the target
+  const request = target && action ? { target, action } : undefined;
+  const [latched, setLatched] = React.useState(request);
+  if (request && (request.target !== latched?.target || request.action !== latched?.action)) {
+    setLatched(request);
+  }
+  const shown = request ?? latched;
+  const version = shown?.target.version;
+  const publishing = shown?.action !== "rollback";
+
+  // the same keys the workbench reads a version's scopes under, so a version
+  // just edited or selected opens with its scopes already in hand
+  const targetScopes = useQuery({
+    queryKey: ["prompt-template-scopes", template?.id, target?.version],
+    queryFn: () => fetchPromptTemplateScopes(template?.id as string, target?.version as number),
+    enabled: !!template && !!target,
+  });
+  const liveScopes = useQuery({
+    queryKey: ["prompt-template-scopes", template?.id, live?.version],
+    queryFn: () => fetchPromptTemplateScopes(template?.id as string, live?.version as number),
+    enabled: !!template && !!target && !!live,
+  });
+
+  const scopes = targetScopes.data ?? [];
+  const fresh = live && liveScopes.data ? addedScopes(scopes, liveScopes.data) : new Set<string>();
+  const impact = shown
+    ? publishImpact(shown.target, live)
+    : { required: [], newlyRequired: [], dropped: [] };
+  const newlyRequired = new Set(impact.newlyRequired);
+  // a published version with no scopes is skipped when the gateway's snapshot
+  // is built, so it reaches nothing and refuses nobody
+  const unscoped = targetScopes.isSuccess && scopes.length === 0;
+  // who gets refused: a request missing a variable it never had to send, or
+  // sending one nothing declares any more. with nothing live, or in a scope
+  // the live version never reached, no request sends anything yet
+  const breaks =
+    !unscoped &&
+    (impact.newlyRequired.length > 0 ||
+      impact.dropped.length > 0 ||
+      (impact.required.length > 0 && (!live || fresh.size > 0)));
+  const scopesError = targetScopes.error ?? liveScopes.error;
+  const liveNumber = template?.published_version;
+
   return (
-    <Dialog open={version !== undefined} onOpenChange={(open) => !open && onClose()}>
-      <DialogHeader>
-        <DialogTitle>{t("pages.promptRepo.rollbackTo", { version })}</DialogTitle>
-        <DialogDescription>
-          {t("pages.promptRepo.rollbackDescription", { from: publishedVersion, to: version })}
-        </DialogDescription>
-      </DialogHeader>
-      {error && (
-        <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-          {error.message}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          {t("pages.promptRepo.keepLive", { version: publishedVersion })}
-        </Button>
-        <Button disabled={pending} onClick={onConfirm}>
-          <RotateCcw className="h-4 w-4" />
-          {pending
-            ? t("pages.promptRepo.rollingBack")
-            : t("pages.promptRepo.rollbackTo", { version })}
-        </Button>
-      </DialogFooter>
-    </Dialog>
+    <ConfirmDialog
+      name={publishing ? "prompt-template-publish" : "prompt-template-rollback"}
+      open={!!request}
+      onOpenChange={onOpenChange}
+      title={
+        publishing
+          ? t("pages.promptRepo.publish.titlePublish", { version, name: template?.name ?? "" })
+          : t("pages.promptRepo.publish.titleRollback", { version, name: template?.name ?? "" })
+      }
+      description={
+        !liveNumber
+          ? t("pages.promptRepo.publish.bodyFirst", { version })
+          : publishing
+            ? t("pages.promptRepo.publish.bodyPublish", { version, live: liveNumber })
+            : t("pages.promptRepo.publish.bodyRollback", { version, live: liveNumber })
+      }
+      confirmLabel={
+        publishing
+          ? t("pages.promptRepo.publishVersion", { version })
+          : t("pages.promptRepo.rollbackTo", { version })
+      }
+      tone="default"
+      pending={pending}
+      error={error}
+      onConfirm={onConfirm}
+    >
+      <div className="space-y-4 text-sm">
+        <ImpactSection title={t("pages.promptRepo.publish.appliesTo")}>
+          {targetScopes.isLoading || (!!live && liveScopes.isLoading) ? (
+            <LoadingRegion testId="prompt-publish-scopes-loading">
+              <Skeleton width="100%" height={36} radius={6} />
+            </LoadingRegion>
+          ) : scopesError ? (
+            <LoadError
+              error={scopesError}
+              resource={t("errors.resources.promptTemplateScopes")}
+              onRetry={() => {
+                void targetScopes.refetch();
+                if (live) void liveScopes.refetch();
+              }}
+            />
+          ) : unscoped ? (
+            <p className="text-[color:var(--status-warning-text)]">
+              {t("pages.promptRepo.publish.unscoped", { version })}
+            </p>
+          ) : (
+            <ImpactRows>
+              {scopes.map((scope) => {
+                const { name, mono } = scopeName(scope, { orgs, projects, routes, virtualKeys });
+                return (
+                  <li key={scopeKey(scope)} className="flex min-w-0 items-center gap-3 py-1.5">
+                    <span className="w-32 shrink-0 text-xs text-muted-foreground">
+                      {t(SCOPE_TYPE_KEYS[scope.scope_type])}
+                    </span>
+                    <span
+                      className={cn("min-w-0 flex-1 truncate", mono && "font-mono text-xs")}
+                      title={scope.scope_id}
+                    >
+                      {name}
+                    </span>
+                    {fresh.has(scopeKey(scope)) && (
+                      <Badge tone="warning">{t("pages.promptRepo.publish.newBadge")}</Badge>
+                    )}
+                  </li>
+                );
+              })}
+            </ImpactRows>
+          )}
+        </ImpactSection>
+
+        {!unscoped && (
+          <>
+            <ImpactSection title={t("pages.promptRepo.publish.requiredTitle")}>
+              {impact.required.length === 0 ? (
+                <p className="text-muted-foreground">{t("pages.promptRepo.publish.noRequired")}</p>
+              ) : (
+                <ImpactRows>
+                  {impact.required.map((name) => (
+                    <li key={name} className="flex min-w-0 items-center gap-3 py-1.5">
+                      <code className="min-w-0 flex-1 truncate font-mono text-xs">{name}</code>
+                      {newlyRequired.has(name) && (
+                        <Badge tone="warning">{t("pages.promptRepo.publish.newBadge")}</Badge>
+                      )}
+                    </li>
+                  ))}
+                </ImpactRows>
+              )}
+            </ImpactSection>
+            {impact.dropped.length > 0 && (
+              <ImpactSection title={t("pages.promptRepo.publish.droppedTitle")}>
+                <ImpactRows>
+                  {impact.dropped.map((name) => (
+                    <li key={name} className="py-1.5">
+                      <code className="font-mono text-xs">{name}</code>
+                    </li>
+                  ))}
+                </ImpactRows>
+              </ImpactSection>
+            )}
+            <div
+              className={cn(
+                "flex gap-2 text-xs leading-5",
+                breaks
+                  ? "rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5 p-2.5 text-[color:var(--text-secondary)]"
+                  : "text-muted-foreground",
+              )}
+            >
+              {breaks && (
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--status-warning)]"
+                  aria-hidden
+                />
+              )}
+              <p>
+                {breaks && (
+                  <span className="font-medium text-foreground">
+                    {liveNumber
+                      ? t("pages.promptRepo.publish.breaksLeadLive", { live: liveNumber })
+                      : t("pages.promptRepo.publish.breaksLeadFirst")}{" "}
+                  </span>
+                )}
+                <CallerVarsHint />
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+    </ConfirmDialog>
   );
 }

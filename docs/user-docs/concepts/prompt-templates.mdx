@@ -23,11 +23,54 @@ A version can be assigned to the entire organization, the current project, an in
 
 Scope assignment belongs to the version. Once a version is published, both its content and scopes remain immutable. Create a new draft to make a change.
 
+Every published template whose scopes match a request applies to it, in slug order. No scope takes precedence over another: a route-scoped template and a project-scoped one both decorate a request that matches both.
+
+## Send variables from the client
+
+Callers pass variable values in a `rolter_template_vars` object in the request body, beside `model` and `messages`. Every value is a string. The gateway removes the object before it forwards the request upstream.
+
+```json
+{
+  "model": "support",
+  "messages": [{ "role": "user", "content": "My order has not arrived." }],
+  "rolter_template_vars": {
+    "customer_name": "Aster Labs"
+  }
+}
+```
+
+A placeholder takes the caller's value first and the variable's default second. The gateway refuses the request with HTTP 400 and the code `invalid_prompt_template` when:
+
+- a decorator uses a variable that the request does not send and that has no default;
+- the request sends a variable that no template applied to it declares;
+- `rolter_template_vars` is not an object of strings, a value is longer than 4 KiB, or a rendered decorator is longer than 16 KiB.
+
+```json
+{
+  "error": {
+    "message": "missing required variable 'ticket_id' for prompt template '<org id>:support-concierge'",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_prompt_template"
+  }
+}
+```
+
+The preview panel in the dashboard shows the `rolter_template_vars` object for the draft you are editing, filled in with your sample values or the defaults.
+
 ## Publish and roll back
 
-**Save as new draft** creates the next immutable version. Select that version in the history rail and publish it when it is ready. Publishing changes the template's live-version pointer; it does not rewrite the saved version.
+**Save as new draft** creates the next immutable version. A version newer than the live one offers **Publish**, in the workbench header and in the history rail; an older one offers **Roll back**. Both change the template's live-version pointer rather than the saved version, and the audit log records each under its own name. When nothing is live yet, every version offers **Publish**.
 
-To restore previous behavior, choose an older version and select **Roll back**. The older version becomes live again, while all newer versions remain visible in history.
+Both open the same confirmation before anything changes. It lists:
+
+- the scopes the version applies to, marking the ones the live version does not reach;
+- the variables a request in those scopes must send, marking the ones the live version did not need;
+- the variables the live version declares and this one does not.
+
+Each of these can refuse requests that work today, so the dialog warns when one applies. It never blocks the change, because a roll back during an incident should not wait on a warning. A version with no scopes applies to no requests, and the dialog says that instead.
+
+After a roll back, the newer versions stay in history and can be published again.
 
 ## Rename and delete
 
