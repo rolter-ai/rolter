@@ -66,7 +66,7 @@ This guide takes a deployment from nothing to "our people and our applications c
 
     1. **Make a call with no credentials** — the Playground answers with `fake-llm`.
     2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
-    3. **Add a route** — **Models → Routing Rules**: the public model name your clients will send, and where it lands.
+    3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add model** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on.
     4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.
 
     Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).

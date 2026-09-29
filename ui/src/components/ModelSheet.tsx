@@ -4,6 +4,8 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
+import { RouteTargetList } from "@/components/RouteTargetList";
+import { StrategyHint } from "@/components/StrategyHint";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
@@ -46,8 +48,12 @@ import {
   type EffectiveModelDto,
   type ProviderRow,
   type RouteRow,
+  type RouteTargetRow,
 } from "@/lib/api";
+import type { RouteTargetView } from "@/lib/route-targets";
+import { strategyOptions, usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +81,28 @@ interface DraftHeader {
   locked: boolean;
 }
 
+/**
+ * One target of the route, as the sheet edits it (#1979).
+ *
+ * `id` is the stored row this line was seeded from and is absent on a line
+ * added in the sheet; `key` only keeps React's rows stable while lines are
+ * added and removed.
+ */
+interface DraftTarget {
+  key: string;
+  id?: string;
+  providerId: string;
+  /** the model id sent upstream; blank sends the public name through as-is */
+  upstream: string;
+  weight: string;
+}
+
+let targetKeys = 0;
+function newTarget(providerId: string, upstream = "", weight = "1", id?: string): DraftTarget {
+  targetKeys += 1;
+  return { key: `t${targetKeys}`, id, providerId, upstream, weight };
+}
+
 interface Caps {
   streaming: boolean;
   tools: boolean;
@@ -84,10 +112,11 @@ interface Caps {
 }
 
 interface ModelDraft {
-  providerId: string;
+  /** the public name clients send in `model`, which is the route's name */
+  name: string;
+  strategy: string;
+  targets: DraftTarget[];
   modality: Modality;
-  upstreamName: string;
-  alias: string;
   baseUrl: string;
   description: string;
   enabled: boolean;
@@ -109,7 +138,6 @@ interface ModelDraft {
     concurrency: string;
     timeoutMs: string;
     retries: string;
-    weight: string;
     context: string;
     maxOutput: string;
   };
@@ -192,10 +220,12 @@ function defaultCaps(modality: Modality): Caps {
 
 function blankDraft(providerId: string): ModelDraft {
   return {
-    providerId,
+    name: "",
+    strategy: STRATEGIES[0],
+    // one line to start from, on the first provider: the common case is one
+    // model on one provider, and a fleet adds lines from there
+    targets: providerId ? [newTarget(providerId)] : [],
     modality: "chat",
-    upstreamName: "",
-    alias: "",
     baseUrl: "",
     description: "",
     enabled: true,
@@ -217,7 +247,6 @@ function blankDraft(providerId: string): ModelDraft {
       concurrency: "",
       timeoutMs: "",
       retries: "",
-      weight: "100",
       context: "",
       maxOutput: "",
     },
@@ -442,6 +471,39 @@ function seedParams(
   }
 }
 
+// a weight is a whole number from 1: `create_route_target` refuses anything
+// else, so the sheet says so before the save rather than after it
+function weightValid(weight: string): boolean {
+  return /^\d+$/.test(weight.trim()) && Number(weight) >= 1;
+}
+
+// an upstream model equal to the public name is the passthrough the backend
+// stores as no model at all, so both are written — and compared — as absent
+function upstreamFor(upstream: string | null | undefined, publicName: string): string | undefined {
+  const u = (upstream ?? "").trim();
+  return u && u !== publicName ? u : undefined;
+}
+
+function targetInput(target: DraftTarget, publicName: string) {
+  return {
+    provider_id: target.providerId,
+    upstream_model: upstreamFor(target.upstream, publicName),
+    weight: Number(target.weight),
+  };
+}
+
+function sameTarget(
+  row: RouteTargetRow,
+  input: ReturnType<typeof targetInput>,
+  publicName: string,
+): boolean {
+  return (
+    row.provider_id === input.provider_id &&
+    upstreamFor(row.upstream_model, publicName) === input.upstream_model &&
+    row.weight === input.weight
+  );
+}
+
 function effLock(mode: LockMode, locked: boolean): boolean {
   return mode === "lockAll" ? true : mode === "unlockAll" ? false : locked;
 }
@@ -484,20 +546,21 @@ function paramsToApi(draft: ModelDraft): {
  * confirmation of fields the sheet then dropped (#1189). Every key below is a
  * body the save actually puts on the wire.
  */
-function buildPreview(draft: ModelDraft, providerName: string, advanced: Record<string, unknown>) {
+function buildPreview(
+  draft: ModelDraft,
+  providerName: (id: string) => string,
+  advanced: Record<string, unknown>,
+) {
   const { params, paramPolicy } = paramsToApi(draft);
-  const upstream = draft.upstreamName.trim();
-  const publicName = draft.alias.trim() || upstream;
+  const publicName = draft.name.trim();
   const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
   const obj = {
-    route: { model: publicName || undefined, enabled: draft.enabled },
-    target: draft.providerId
-      ? {
-          provider: providerName || undefined,
-          upstream_model: upstream !== publicName ? upstream : undefined,
-          weight: Number(draft.net.weight) || 1,
-        }
-      : undefined,
+    route: { model: publicName || undefined, strategy: draft.strategy, enabled: draft.enabled },
+    targets: draft.targets.map((tg) => ({
+      provider: providerName(tg.providerId) || undefined,
+      upstream_model: upstreamFor(tg.upstream, publicName),
+      weight: weightValid(tg.weight) ? Number(tg.weight) : tg.weight,
+    })),
     params,
     param_policy: paramPolicy,
     model_price: hasPricing
@@ -515,11 +578,139 @@ function buildPreview(draft: ModelDraft, providerName: string, advanced: Record<
 }
 
 // ---------------------------------------------------------------------------
+// the route's targets: provider, the model id sent to it, and a weight
+// ---------------------------------------------------------------------------
+
+function TargetEditor({
+  targets,
+  providers,
+  publicName,
+  strategy,
+  labelId,
+  emptyErrorId,
+  weightErrorId,
+  weightInvalid,
+  onChange,
+}: {
+  targets: DraftTarget[];
+  providers: ProviderRow[];
+  publicName: string;
+  strategy: string;
+  /** the id the list is labelled by */
+  labelId: string;
+  /** the error saying a target is needed, which the add button points at */
+  emptyErrorId: string;
+  /** the error a weight field that fails validation points at */
+  weightErrorId: string;
+  weightInvalid: (target: DraftTarget) => boolean;
+  onChange: (next: DraftTarget[]) => void;
+}) {
+  const { t } = useTranslation();
+  const update = (i: number, patch: Partial<DraftTarget>) =>
+    onChange(targets.map((tg, idx) => (idx === i ? { ...tg, ...patch } : tg)));
+  // provider, then the upstream model and weight; below `sm` the provider takes
+  // a line of its own so neither text field is squeezed to nothing
+  const row =
+    "grid grid-cols-[minmax(0,1fr)_72px_auto] items-center gap-2 sm:grid-cols-[minmax(0,1.1fr)_minmax(0,1.4fr)_72px_auto]";
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <FieldLabel
+          label={t("modelSheet.targets.title")}
+          required
+          info={t("modelSheet.targets.info")}
+          id={labelId}
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={providers.length === 0}
+          aria-describedby={targets.length === 0 ? emptyErrorId : undefined}
+          onClick={() => onChange([...targets, newTarget(providers[0]?.id ?? "")])}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t("modelSheet.targets.add")}
+        </Button>
+      </div>
+      {providers.length === 0 && (
+        <p className="text-xs text-muted-foreground">{t("modelSheet.targets.noProviders")}</p>
+      )}
+      {targets.length > 0 && (
+        // captions for the eye; every field names itself for a screen reader
+        <div
+          aria-hidden="true"
+          className={cn(
+            row,
+            "text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)] max-sm:hidden",
+          )}
+        >
+          <span>{t("modelSheet.targets.provider")}</span>
+          <span>{t("modelSheet.targets.upstream")}</span>
+          <span>{t("modelSheet.targets.weight")}</span>
+          <span className="w-8" />
+        </div>
+      )}
+      <ul aria-labelledby={labelId} className="space-y-2">
+        {targets.map((tg, i) => {
+          const n = i + 1;
+          const badWeight = weightInvalid(tg);
+          return (
+            <li key={tg.key} className={row}>
+              <Combobox
+                aria-label={t("modelSheet.targets.providerAria", { n })}
+                className="col-span-3 font-mono sm:col-span-1"
+                value={tg.providerId}
+                onChange={(providerId) => update(i, { providerId })}
+                options={providers.map((p) => ({ value: p.id, label: p.name }))}
+              />
+              <Input
+                aria-label={t("modelSheet.targets.upstreamAria", { n })}
+                className="font-mono"
+                value={tg.upstream}
+                placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
+                onChange={(e) => update(i, { upstream: e.target.value })}
+              />
+              <Input
+                aria-label={t("modelSheet.targets.weightAria", { n })}
+                type="number"
+                min={1}
+                step={1}
+                className="font-mono"
+                value={tg.weight}
+                aria-invalid={badWeight || undefined}
+                aria-describedby={describedBy(badWeight && weightErrorId)}
+                onChange={(e) => update(i, { weight: e.target.value })}
+              />
+              <DeleteIconButton
+                label={t("modelSheet.targets.removeAria", { n })}
+                title={t("common.remove")}
+                onClick={() => onChange(targets.filter((_, idx) => idx !== i))}
+              />
+            </li>
+          );
+        })}
+      </ul>
+      {targets.length > 1 && !usesWeights(strategy) && (
+        <p className="text-xs leading-snug text-muted-foreground">
+          <Trans
+            i18nKey="routeTargets.weightsIgnored"
+            values={{ strategy }}
+            components={[<span key="strategy" className="font-mono text-foreground" />]}
+          />
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // the sheet
 // ---------------------------------------------------------------------------
 
 const SECTIONS = [
   "general",
+  "routing",
   "params",
   "caps",
   "pricing",
@@ -541,6 +732,9 @@ export interface ModelSheetProps {
   route?: RouteRow | null;
   // view mode: the readonly config-owned model
   configModel?: EffectiveModelDto | null;
+  // view mode: that model's targets as the effective config states them, so
+  // the read-only sheet shows where its traffic goes (#1979)
+  configTargets?: RouteTargetView[] | null;
   // every effective model, for name-conflict checks + duplicate-from
   models: EffectiveModelDto[];
   routes: RouteRow[];
@@ -556,6 +750,7 @@ export function ModelSheet({
   providers,
   route,
   configModel,
+  configTargets,
   models,
   routes,
   onDone,
@@ -566,6 +761,7 @@ export function ModelSheet({
   const [draft, setDraft] = React.useState<ModelDraft>(() => blankDraft(""));
   const [secOpen, setSecOpen] = React.useState<Record<SectionKey, boolean>>({
     general: true,
+    routing: true,
     params: false,
     caps: false,
     pricing: false,
@@ -634,13 +830,15 @@ export function ModelSheet({
     seededRef.current = true;
     const d = blankDraft(providers[0]?.id ?? "");
     if (mode === "edit" && route) {
-      const target = targets.data?.[0];
-      d.providerId = target?.provider_id ?? "";
-      d.upstreamName = target?.upstream_model || route.model;
-      d.alias = target?.upstream_model ? route.model : "";
+      d.name = route.model;
+      d.strategy = route.strategy;
+      // every target the route has, not only the first: editing one line of a
+      // fleet used to rewrite target 0 and never show the rest (#1979)
+      d.targets = (targets.data ?? []).map((tg) =>
+        newTarget(tg.provider_id, tg.upstream_model ?? "", String(tg.weight), tg.id),
+      );
       d.enabled = route.enabled;
       seedAdvanced(d, route.advanced ?? {});
-      d.net.weight = target ? String(target.weight) : "100";
       seedParams(d, route.params ?? {}, route.param_policy ?? {});
       const price = prices.data?.find((p) => p.model === route.model);
       if (price) {
@@ -650,13 +848,15 @@ export function ModelSheet({
         d.price.currency = price.currency || "USD";
       }
     } else if (mode === "view" && configModel) {
-      d.providerId = "";
-      d.upstreamName = configModel.model;
+      d.name = configModel.model;
+      d.strategy = configModel.strategy;
+      d.targets = [];
     }
     setDraft(d);
     setDupFrom("");
     setSecOpen({
       general: true,
+      routing: true,
       params: false,
       caps: false,
       pricing: false,
@@ -707,14 +907,11 @@ export function ModelSheet({
       return { ...d, caps, params: [...paramDefs("chat", on), ...custom] };
     });
 
-  const provider = providers.find((p) => p.id === draft.providerId) ?? null;
-  const providerName = provider?.name ?? (mode === "view" ? "config" : "");
+  const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? "";
 
   // -- validation (verbose, blocks save) ------------------------------------
-  const publicName = draft.alias.trim() || draft.upstreamName.trim();
-  const errProvider = !readonly && !draft.providerId ? t("modelSheet.errors.provider") : "";
-  const errUpstream =
-    !readonly && !draft.upstreamName.trim() ? t("modelSheet.errors.upstream") : "";
+  const publicName = draft.name.trim();
+  const errName = !readonly && !publicName ? t("modelSheet.errors.name") : "";
   const nameConflict =
     !readonly &&
     publicName !== "" &&
@@ -723,7 +920,13 @@ export function ModelSheet({
         m.model.toLowerCase() === publicName.toLowerCase() &&
         (mode !== "edit" || m.model !== route?.model),
     );
-  const errAlias = nameConflict ? t("modelSheet.errors.alias", { name: publicName }) : "";
+  const errNameTaken = nameConflict ? t("modelSheet.errors.nameTaken", { name: publicName }) : "";
+  // a route with no target is accepted by the API and answers every request
+  // with an error, so the sheet does not create one
+  const errTargets = !readonly && draft.targets.length === 0 ? t("modelSheet.errors.targets") : "";
+  const weightRowInvalid = (tg: DraftTarget) => !weightValid(tg.weight);
+  const errWeight =
+    !readonly && draft.targets.some(weightRowInvalid) ? t("modelSheet.errors.weight") : "";
   const errBaseUrl =
     draft.baseUrl.trim() !== "" && !/^https?:\/\//i.test(draft.baseUrl.trim())
       ? t("modelSheet.errors.baseUrl")
@@ -734,9 +937,15 @@ export function ModelSheet({
     h.value.trim() !== "" && h.key.trim() === "";
   const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
   const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
-  const errors = [errProvider, errUpstream, errAlias, errBaseUrl, errParam, errHeader].filter(
-    Boolean,
-  );
+  const errors = [
+    errName,
+    errNameTaken,
+    errTargets,
+    errWeight,
+    errBaseUrl,
+    errParam,
+    errHeader,
+  ].filter(Boolean);
   const canSave = !readonly && !editLoading && errors.length === 0;
   // the one the footer repeats beside the disabled button; the summary above it
   // still lists the rest
@@ -745,11 +954,12 @@ export function ModelSheet({
   // one prefix for the ids tying each field to its hint and error
   const fid = React.useId();
   const ids = {
-    providerErr: `${fid}-provider-err`,
-    upstreamHint: `${fid}-upstream-hint`,
-    upstreamErr: `${fid}-upstream-err`,
-    aliasHint: `${fid}-alias-hint`,
-    aliasErr: `${fid}-alias-err`,
+    nameHint: `${fid}-name-hint`,
+    nameErr: `${fid}-name-err`,
+    strategyHint: `${fid}-strategy-hint`,
+    targetsLabel: `${fid}-targets-label`,
+    targetsErr: `${fid}-targets-err`,
+    weightErr: `${fid}-weight-err`,
     baseUrlHint: `${fid}-base-url-hint`,
     baseUrlErr: `${fid}-base-url-err`,
     paramErr: `${fid}-param-err`,
@@ -757,10 +967,10 @@ export function ModelSheet({
   };
 
   // -- persistence ----------------------------------------------------------
-  // route + first target, default params with the lock policy, the enabled
-  // flag and pricing go through their own endpoints; the catalog metadata,
-  // limits, headers and visibility travel together as the route's `advanced`
-  // blob (#1189).
+  // the route with its strategy, every target, default params with the lock
+  // policy, the enabled flag and pricing go through their own endpoints; the
+  // catalog metadata, limits, headers and visibility travel together as the
+  // route's `advanced` blob (#1189).
   // form lifecycle for the UX stream (#805); names the form, never its contents
   const ux = useFormTelemetry(mode === "add" ? "model-create" : "model-edit", open, { dirty });
   // the advanced blob is the last write of the save, so a rejection there means
@@ -782,19 +992,17 @@ export function ModelSheet({
     mutationFn: async () => {
       setAdvancedRejected(false);
       const { params, paramPolicy } = paramsToApi(draft);
-      const upstream = draft.upstreamName.trim();
       const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
       if (mode === "add") {
+        // the strategy the operator picked, not the first one on the list:
+        // every model used to be created `round_robin` (#1979)
         const created = await createRoute(projectId as string, {
           model: publicName,
-          strategy: STRATEGIES[0],
+          strategy: draft.strategy,
         });
-        if (draft.providerId) {
-          await createRouteTarget(created.id, {
-            provider_id: draft.providerId,
-            upstream_model: upstream !== publicName ? upstream : undefined,
-            weight: Number(draft.net.weight) || 1,
-          });
+        // one at a time, so the targets are stored in the order they are listed
+        for (const target of draft.targets) {
+          await createRouteTarget(created.id, targetInput(target, publicName));
         }
         if (Object.keys(params).length > 0 || draft.paramMode !== "unlockAll") {
           await updateRouteParams(created.id, params, paramPolicy);
@@ -816,22 +1024,23 @@ export function ModelSheet({
       const r = route!;
       await updateRouteParams(r.id, params, paramPolicy);
       if (draft.enabled !== r.enabled) await setRouteEnabled(r.id, draft.enabled);
-      const target = targets.data?.[0];
-      const wantUpstream = upstream !== r.model ? upstream : undefined;
-      const weight = Number(draft.net.weight) || 1;
-      const targetChanged =
-        draft.providerId &&
-        (!target ||
-          target.provider_id !== draft.providerId ||
-          (target.upstream_model ?? undefined) !== wantUpstream ||
-          target.weight !== weight);
-      if (targetChanged) {
-        if (target) await deleteRouteTarget(target.id);
-        await createRouteTarget(r.id, {
-          provider_id: draft.providerId,
-          upstream_model: wantUpstream,
-          weight,
-        });
+      // a target has no update endpoint (#2208), so a changed line is a new target and
+      // the old one goes. every create runs before any delete: the gateway
+      // picks up each write as it lands, and this order never leaves the route
+      // with nothing to send to part-way through the save
+      const stored = targets.data ?? [];
+      const kept = new Set<string>();
+      for (const target of draft.targets) {
+        const input = targetInput(target, r.model);
+        const was = target.id ? stored.find((row) => row.id === target.id) : undefined;
+        if (was && sameTarget(was, input, r.model)) {
+          kept.add(was.id);
+          continue;
+        }
+        await createRouteTarget(r.id, input);
+      }
+      for (const row of stored) {
+        if (!kept.has(row.id)) await deleteRouteTarget(row.id);
       }
       if (hasPricing) {
         await upsertModelPrice({
@@ -852,6 +1061,8 @@ export function ModelSheet({
       // from it on the next open — a stale list would reopen on the values
       // this save just replaced
       queryClient.invalidateQueries({ queryKey: ["routes"] });
+      // the catalog reads each route's targets from the effective config
+      queryClient.invalidateQueries({ queryKey: ["config"] });
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       toast.push(
@@ -884,17 +1095,39 @@ export function ModelSheet({
     onOpenChange,
   });
 
-  // duplicate-from: prefill the draft from an existing db route, then tweak
-  const applyDupFrom = (routeId: string) => {
+  // duplicate-from: prefill the draft from an existing db route, then tweak.
+  // the source's targets are read first, so the copy starts with the same
+  // strategy and the same upstream models behind it
+  const dupRequest = React.useRef("");
+  const applyDupFrom = async (routeId: string) => {
     setDupFrom(routeId);
+    dupRequest.current = routeId;
     if (!routeId) return;
     const src = routes.find((r) => r.id === routeId);
     if (!src) return;
+    let srcTargets: RouteTargetRow[] = [];
+    try {
+      srcTargets = await queryClient.fetchQuery({
+        queryKey: ["route-targets", src.id],
+        queryFn: () => fetchRouteTargets(src.id),
+      });
+    } catch {
+      // the name, strategy and params still copy; the operator adds targets
+    }
+    // a later pick won the race while this one was reading
+    if (dupRequest.current !== routeId) return;
     setDraft((d) => {
-      const next = blankDraft(d.providerId || providers[0]?.id || "");
-      next.upstreamName = src.model;
-      next.alias = "";
+      const next = blankDraft(d.targets[0]?.providerId || providers[0]?.id || "");
+      next.name = src.model;
+      next.strategy = src.strategy;
       next.enabled = src.enabled;
+      // a passthrough target sent the source's name upstream; the copy is
+      // renamed next, so it names that model outright instead
+      if (srcTargets.length > 0) {
+        next.targets = srcTargets.map((tg) =>
+          newTarget(tg.provider_id, tg.upstream_model || src.model, String(tg.weight)),
+        );
+      }
       seedParams(next, src.params ?? {}, src.param_policy ?? {});
       return next;
     });
@@ -907,9 +1140,7 @@ export function ModelSheet({
         ? t("modelSheet.titleView")
         : t("modelSheet.titleEdit");
   const subtitle =
-    mode === "add"
-      ? t("modelSheet.subtitleAdd")
-      : `${providerName || "—"} · ${draft.upstreamName.trim() || "—"}`;
+    mode === "add" ? t("modelSheet.subtitleAdd") : `${publicName || "—"} · ${draft.strategy}`;
   const cta = mode === "add" ? t("modelSheet.ctaAdd") : t("modelSheet.ctaSave");
 
   const showCaps = draft.modality === "chat" || draft.modality === "audio";
@@ -1019,36 +1250,33 @@ export function ModelSheet({
           onToggle={() => toggleSec("general")}
           className="space-y-3.5"
         >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
             <div className="space-y-1.5">
               <FieldLabel
-                label={t("modelSheet.fields.provider")}
+                label={t("modelSheet.fields.name")}
                 required
-                info={t("modelSheet.fields.providerInfo")}
+                info={t("modelSheet.fields.nameInfo")}
                 htmlFor="ms-field-2"
               />
-              <Combobox
+              <Input
                 id="ms-field-2"
                 className="font-mono"
-                value={draft.providerId}
-                disabled={readonly}
-                aria-invalid={errProvider ? true : undefined}
-                aria-describedby={describedBy(errProvider && ids.providerErr)}
-                onChange={(providerId) => set({ providerId })}
-                options={[
-                  // the "nothing picked" row stays a real option rather than a
-                  // placeholder: the field is required, and un-picking is how
-                  // the sheet's own validation is reached
-                  {
-                    value: "",
-                    label: readonly
-                      ? t("modelSheet.fields.providerConfig")
-                      : t("modelSheet.fields.providerSelect"),
-                  },
-                  ...providers.map((p) => ({ value: p.id, label: p.name })),
-                ]}
+                value={draft.name}
+                placeholder="gpt-4o"
+                disabled={readonly || mode === "edit"}
+                aria-invalid={errName || errNameTaken ? true : undefined}
+                aria-describedby={describedBy(
+                  ids.nameHint,
+                  (errName || errNameTaken) && ids.nameErr,
+                )}
+                onChange={(e) => set({ name: e.target.value })}
               />
-              <FieldError id={ids.providerErr} error={errProvider} />
+              <p id={ids.nameHint} className="text-xs text-muted-foreground">
+                {mode === "add"
+                  ? t("modelSheet.fields.nameHint")
+                  : t("modelSheet.fields.nameHintEdit")}
+              </p>
+              <FieldError id={ids.nameErr} error={errName || errNameTaken} />
             </div>
             <div className="space-y-1.5">
               <FieldLabel
@@ -1065,51 +1293,6 @@ export function ModelSheet({
                 options={MODALITIES.map((m) => ({ value: m, label: m }))}
               />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.fields.upstream")}
-              required
-              info={t("modelSheet.fields.upstreamInfo")}
-              htmlFor="ms-field-4"
-            />
-            <Input
-              id="ms-field-4"
-              className="font-mono"
-              value={draft.upstreamName}
-              placeholder="gpt-4o"
-              disabled={readonly || mode === "edit"}
-              aria-invalid={errUpstream ? true : undefined}
-              aria-describedby={describedBy(ids.upstreamHint, errUpstream && ids.upstreamErr)}
-              onChange={(e) => set({ upstreamName: e.target.value })}
-            />
-            <p id={ids.upstreamHint} className="text-xs text-muted-foreground">
-              {mode === "edit"
-                ? t("modelSheet.fields.upstreamHintEdit")
-                : t("modelSheet.fields.upstreamHint")}
-            </p>
-            <FieldError id={ids.upstreamErr} error={errUpstream} />
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.fields.alias")}
-              info={t("modelSheet.fields.aliasInfo")}
-              htmlFor="ms-field-5"
-            />
-            <Input
-              id="ms-field-5"
-              className="font-mono"
-              value={draft.alias}
-              placeholder={draft.upstreamName.trim() || t("modelSheet.fields.aliasPlaceholder")}
-              disabled={readonly || mode === "edit"}
-              aria-invalid={errAlias ? true : undefined}
-              aria-describedby={describedBy(ids.aliasHint, errAlias && ids.aliasErr)}
-              onChange={(e) => set({ alias: e.target.value })}
-            />
-            <p id={ids.aliasHint} className="text-xs text-muted-foreground">
-              {t("modelSheet.fields.aliasHint")}
-            </p>
-            <FieldError id={ids.aliasErr} error={errAlias} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1153,6 +1336,72 @@ export function ModelSheet({
             disabled={readonly}
             onChange={(v) => set({ enabled: v })}
           />
+        </FormSection>
+
+        {/* ===== Routing: how the route spreads traffic (#1979) ===== */}
+        <FormSection
+          title={t("modelSheet.sections.routing")}
+          info={t("modelSheet.sections.routingInfo")}
+          open={secOpen.routing}
+          onToggle={() => toggleSec("routing")}
+          className="space-y-4"
+        >
+          <div className="space-y-1.5">
+            <FieldLabel
+              label={t("modelSheet.routing.strategy")}
+              info={t("modelSheet.routing.strategyInfo")}
+              htmlFor="ms-strategy"
+            />
+            <Combobox
+              id="ms-strategy"
+              className="font-mono"
+              value={draft.strategy}
+              // the control plane takes a strategy when the route is created
+              // and has no call that changes it afterwards (#2208)
+              disabled={readonly || mode === "edit"}
+              aria-describedby={mode === "edit" ? ids.strategyHint : undefined}
+              onChange={(strategy) => set({ strategy })}
+              options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
+            />
+            <StrategyHint strategy={draft.strategy} />
+            {mode === "edit" && (
+              <p id={ids.strategyHint} className="text-xs text-muted-foreground">
+                {t("modelSheet.routing.strategyFixed")}
+              </p>
+            )}
+          </div>
+          {readonly ? (
+            configTargets && configTargets.length > 0 ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-[color:var(--text-secondary)]">
+                  {t("modelSheet.targets.title")}
+                </p>
+                <RouteTargetList
+                  label={t("routeTargets.listLabel", { model: publicName })}
+                  strategy={draft.strategy}
+                  targets={configTargets}
+                />
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {t("routeTargets.count", { count: configModel?.targets ?? 0 })}
+              </p>
+            )
+          ) : (
+            <TargetEditor
+              targets={draft.targets}
+              providers={providers}
+              publicName={publicName}
+              strategy={draft.strategy}
+              labelId={ids.targetsLabel}
+              emptyErrorId={ids.targetsErr}
+              weightErrorId={ids.weightErr}
+              weightInvalid={weightRowInvalid}
+              onChange={(next) => set({ targets: next })}
+            />
+          )}
+          <FieldError id={ids.targetsErr} error={errTargets} />
+          <FieldError id={ids.weightErr} error={errWeight} />
         </FormSection>
 
         {/* ===== Default parameters ===== */}
@@ -1426,7 +1675,6 @@ export function ModelSheet({
             )}
             {numInput("timeoutMs", t("modelSheet.net.timeout"), "30000")}
             {numInput("retries", t("modelSheet.net.retries"), "2")}
-            {numInput("weight", t("modelSheet.net.weight"), "100", t("modelSheet.net.weightInfo"))}
             {numInput("context", t("modelSheet.net.context"), "128000")}
             {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384")}
           </div>

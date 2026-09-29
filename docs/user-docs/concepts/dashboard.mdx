@@ -134,6 +134,14 @@ Hover the pill to see when it was last checked. One failed check does not change
 
 Every role sees the same pill. It reports the gateway the control plane forwards to: with several gateway replicas behind one address it means one of them answered, and it cannot tell whether a gateway has picked up the latest configuration. The Cluster screen, for superadmins, lists every node, whether it is live, and whether it runs the current configuration.
 
+## Models, strategies and targets
+
+**Models → Model Catalog** lists every model the gateway serves, the ones shipped in `rolter.toml` and the ones created in the dashboard alike. Each row shows its route's strategy as the identifier you would write in the config file, and how many targets the route spreads traffic across. A strategy with a caveat says so under its name: `precise_cache_aware` and `lmcache_aware` need a cache-telemetry source on their providers, and `adaptive` is governed by the deployment-wide adaptive-routing policy.
+
+Open the target count to see each target: its provider, the model id sent upstream, and its weight. Only `weighted`, `pipeline` and `adaptive` read weights, so only those routes show each weight as a share of traffic. Under any other strategy the list says the weights do not split traffic. Where the health rollups are available (they need ClickHouse), each target also shows its uptime over the last 7 days against a 99% SLA, the row names how many targets are below it, and a target nothing has observed yet says **no health data**.
+
+**+ Add model** takes the name clients will send, the strategy, and one or more targets. **+ Add route** on Routing Rules opens the same sheet, so a route is created the same way from either screen. Editing a model shows every target and saves only the lines you changed. The strategy is fixed once the model exists, for now ([#2208](https://github.com/rolter-ai/rolter/issues/2208)).
+
 ## When part of a screen fails to load
 
 Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.

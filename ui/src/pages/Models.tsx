@@ -1,5 +1,5 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Lock, Tag } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,8 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { ModelPriceCell } from "@/components/ModelPriceCell";
 import { ModelSheet, type ModelSheetMode } from "@/components/ModelSheet";
+import { RouteTargetList } from "@/components/RouteTargetList";
+import { StrategyHint } from "@/components/StrategyHint";
 import {
   ListActionsHeader,
   ListCell,
@@ -31,24 +33,38 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
   deleteModel,
+  fetchConfig,
   fetchModelPrices,
   fetchModels,
   fetchProviders,
   fetchRoutes,
-  fetchRouteTargets,
+  fetchUptime,
   type EffectiveModelDto,
+  type RouteDto,
   type RouteRow,
-  type RouteTargetRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { HEALTH_SLA, targetViews, type RouteTargetView } from "@/lib/route-targets";
 import { useScope } from "@/lib/scope";
+import { strategyHintKey } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-const GRID = "1.5fr 0.95fr 0.95fr 0.9fr 1.05fr 0.55fr 108px";
+// model · provider · strategy · targets · origin · price · actions. strategy
+// is sized for `precise_cache_aware`, the longest identifier it has to hold,
+// and the actions for a db row's three buttons in russian, the longer catalog:
+// at 108px they spilled over the price cell, which the weight column beside it
+// used to hide
+const GRID = "1.25fr 0.8fr 1.05fr 0.85fr 1fr 0.95fr 168px";
 
 type Origin = "all" | "config" | "db";
+
+// the few words a row has room for, per caveat `strategyHintKey` can name
+const CAVEAT_LABEL: Record<string, string> = {
+  "pages.routing.strategyHints.needsTelemetry": "pages.models.strategyCaveat.needsTelemetry",
+  "pages.routing.strategyHints.deploymentWide": "pages.models.strategyCaveat.deploymentWide",
+};
 
 interface CatalogRow {
   name: string;
@@ -63,6 +79,12 @@ interface CatalogRow {
    * second provider used to be invisible to both (#1202)
    */
   providerNames: string[];
+  /**
+   * where the route's traffic goes, read from the effective config the
+   * gateway serves (#1979). `null` until that answers, when only the count the
+   * catalog carries is known — and a config-file route used to stop there
+   */
+  targets: RouteTargetView[] | null;
   targetCount: number;
   strategy: string;
   origin: "config" | "db";
@@ -78,7 +100,6 @@ interface CatalogRow {
    * it only knows the former.
    */
   priced: boolean | null;
-  weight: string;
 }
 
 // model catalog: search + origin chips over a
@@ -117,12 +138,37 @@ export default function Models() {
     queryFn: fetchModelPrices,
     retry: false,
   });
-  const targetQueries = useQueries({
-    queries: (routes.data ?? []).map((r) => ({
-      queryKey: ["route-targets", r.id],
-      queryFn: () => fetchRouteTargets(r.id),
-    })),
+  // the catalog carries a strategy and a target count per model and no more.
+  // the targets themselves come from the effective config, the merged view the
+  // gateway serves, which holds a `rolter.toml` route and a database one alike
+  // and names each target's provider rather than its row id (#1979). rows are
+  // matched by name, which two orgs can share until the model list carries its
+  // own targets (#2210)
+  const hasModels = (models.data?.length ?? 0) > 0;
+  const config = useQuery({
+    queryKey: ["config"],
+    queryFn: fetchConfig,
+    enabled: hasModels,
+    retry: false,
   });
+  // health is shown where it is known: the uptime rollup needs ClickHouse and
+  // analytics access, and without either the targets simply carry no health.
+  // the key is the Health screen's, so the two share an answer
+  const uptime = useQuery({
+    queryKey: ["health-uptime", HEALTH_SLA],
+    queryFn: async () => (await fetchUptime(HEALTH_SLA)) ?? [],
+    enabled: hasModels,
+    retry: false,
+  });
+  const healthKnown = uptime.isSuccess && Array.isArray(uptime.data);
+  const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set());
+  const toggleTargets = (model: string) =>
+    setExpanded((open) => {
+      const next = new Set(open);
+      if (!next.delete(model)) next.add(model);
+      return next;
+    });
+  const detailPrefix = React.useId();
 
   const [search, setSearch] = React.useState("");
   const [labelFilter, setLabelFilter] = React.useState("");
@@ -132,11 +178,12 @@ export default function Models() {
   const labels = useSubjectLabels(undefined, "model");
   const [origin, setOrigin] = React.useState<Origin>("all");
   const [unpricedOnly, setUnpricedOnly] = React.useState(false);
-  const { sort, cycle, apply } = useSort<"name" | "provider" | "origin" | "weight">();
+  const { sort, cycle, apply } = useSort<"name" | "provider" | "strategy" | "targets" | "origin">();
   const [sheet, setSheet] = React.useState<{
     mode: ModelSheetMode;
     route?: RouteRow | null;
     configModel?: EffectiveModelDto | null;
+    configTargets?: RouteTargetView[] | null;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<EffectiveModelDto | null>(null);
 
@@ -146,15 +193,13 @@ export default function Models() {
     return map;
   }, [routes.data]);
 
-  const targetsByRoute = React.useMemo(() => {
-    const map = new Map<string, RouteTargetRow[]>();
-    (routes.data ?? []).forEach((r, i) => map.set(r.id, targetQueries[i]?.data ?? []));
+  const effectiveRoute = React.useMemo(() => {
+    const map = new Map<string, RouteDto>();
+    const list = config.data?.routes;
+    if (Array.isArray(list))
+      for (const route of list) if (!map.has(route.model)) map.set(route.model, route);
     return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routes.data, targetQueries.map((q) => q.dataUpdatedAt).join(",")]);
-
-  const providerName = (id: string | undefined) =>
-    (id && providers.data?.find((p) => p.id === id)?.name) || "—";
+  }, [config.data]);
 
   // an absent price row only means "unpriced" once the catalogue has actually
   // been read: while it is loading, or if the request failed, every model would
@@ -163,13 +208,13 @@ export default function Models() {
 
   const rows: CatalogRow[] = (models.data ?? []).map((entry) => {
     const route = routeByModel.get(entry.model) ?? null;
-    const targets = route ? (targetsByRoute.get(route.id) ?? []) : [];
-    // the first target names the provider column; a route spread over several
-    // providers says so instead of pretending it lives on one
-    const target = targets[0];
-    const providerNames = [...new Set(targets.map((tg) => providerName(tg.provider_id)))].filter(
-      (n) => n !== "—",
-    );
+    const effective = effectiveRoute.get(entry.model);
+    const targets = effective
+      ? targetViews(effective, healthKnown ? uptime.data : undefined)
+      : null;
+    // the first provider names the column; a route spread over several says so
+    // instead of pretending it lives on one
+    const providerNames = [...new Set((targets ?? []).map((tg) => tg.provider))];
     const price = prices.data?.find((p) => p.model === entry.model);
     const policy = route?.param_policy as Record<string, unknown> | undefined;
     const deny = Array.isArray(policy?.deny) ? (policy.deny as unknown[]) : [];
@@ -178,13 +223,15 @@ export default function Models() {
       entry,
       route,
       providerName:
-        targets.length > 1
+        providerNames.length > 1
           ? t("pages.models.providerCount", {
-              first: providerName(target?.provider_id),
-              count: targets.length - 1,
+              first: providerNames[0],
+              count: providerNames.length - 1,
             })
-          : providerName(target?.provider_id),
+          : (providerNames[0] ?? "—"),
       providerNames,
+      targets,
+      targetCount: targets?.length ?? entry.targets,
       strategy: entry.strategy,
       origin: entry.source === "config" ? "config" : "db",
       locked: policy?.mode === "deny" || deny.length > 0,
@@ -194,8 +241,6 @@ export default function Models() {
       inPrice: price ? fmt.currency(Number(price.input_per_mtok), price.currency) : "—",
       outPrice: price ? fmt.currency(Number(price.output_per_mtok), price.currency) : "—",
       priced: pricesKnown ? !!price : null,
-      weight: target ? String(target.weight) : "—",
-      targetCount: targets.length,
     };
   });
 
@@ -212,8 +257,9 @@ export default function Models() {
   const sorted = apply(filtered, {
     name: (r) => r.name,
     provider: (r) => r.providerName,
+    strategy: (r) => r.strategy,
+    targets: (r) => r.targetCount,
     origin: (r) => r.origin,
-    weight: (r) => (r.weight === "—" ? -1 : Number(r.weight)),
   });
 
   const counts = {
@@ -228,6 +274,7 @@ export default function Models() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["models"] });
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
+    queryClient.invalidateQueries({ queryKey: ["config"] });
   };
 
   const removeModel = useMutation({
@@ -344,7 +391,7 @@ export default function Models() {
         </p>
       )}
 
-      <ListTable label={t("screens.model-catalog.title")}>
+      <ListTable label={t("screens.model-catalog.title")} minWidth={940}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.models.columns.model")}
@@ -358,7 +405,18 @@ export default function Models() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <ListHeaderCell>{t("pages.models.columns.strategy")}</ListHeaderCell>
+          <SortLabel
+            label={t("pages.models.columns.strategy")}
+            col="strategy"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
+            label={t("pages.models.columns.targets")}
+            col="targets"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
           <SortLabel
             label={t("pages.models.columns.origin")}
             col="origin"
@@ -366,13 +424,6 @@ export default function Models() {
             onCycle={(c) => cycle(c as never)}
           />
           <ListHeaderCell className="text-right">{t("pages.models.columns.price")}</ListHeaderCell>
-          <SortLabel
-            label={t("pages.models.columns.weight")}
-            col="weight"
-            sort={sort}
-            onCycle={(c) => cycle(c as never)}
-            justify="flex-end"
-          />
           <ListActionsHeader />
         </ListHeader>
         {models.isLoading && (
@@ -380,116 +431,210 @@ export default function Models() {
             <ListSkeleton rows={5} className="p-3" />
           </ListStateRow>
         )}
-        {sorted.map((r) => (
-          <ListRow key={r.name} grid={GRID}>
-            <ListCell className="flex min-w-0 items-center gap-2">
-              <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
-              <span className="flex min-w-0 flex-col gap-1">
-                <span className="truncate font-mono text-sm">{r.name}</span>
-                <LabelChips labels={labels.bySubject(r.name)} />
-              </span>
-              {r.locked && (
-                <span
-                  className="flex-none cursor-help text-[color:var(--text-subtle)]"
-                  title={t("pages.models.lockedHint")}
+        {sorted.map((r) => {
+          const open = expanded.has(r.name) && !!r.targets?.length;
+          const detailId = `${detailPrefix}-${r.name}`;
+          const hintKey = strategyHintKey(r.strategy);
+          const withHealth = (r.targets ?? []).filter((tg) => tg.health);
+          const failing = withHealth.filter((tg) => tg.health?.breached).length;
+          return (
+            <React.Fragment key={r.name}>
+              <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
+                <ListCell className="flex min-w-0 items-center gap-2">
+                  <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className="truncate font-mono text-sm">{r.name}</span>
+                    <LabelChips labels={labels.bySubject(r.name)} />
+                  </span>
+                  {r.locked && (
+                    <span
+                      className="flex-none cursor-help text-[color:var(--text-subtle)]"
+                      title={t("pages.models.lockedHint")}
+                    >
+                      <Lock className="h-3 w-3" />
+                    </span>
+                  )}
+                </ListCell>
+                <ListCell
+                  className={cn(
+                    "truncate font-mono text-xs text-[color:var(--text-secondary)]",
+                    r.providerNames.length > 1 && "cursor-help",
+                  )}
+                  title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
                 >
-                  <Lock className="h-3 w-3" />
-                </span>
-              )}
-            </ListCell>
-            <ListCell
-              className={cn(
-                "truncate font-mono text-xs text-[color:var(--text-secondary)]",
-                r.providerNames.length > 1 && "cursor-help",
-              )}
-              title={r.providerNames.length > 1 ? r.providerNames.join(", ") : undefined}
-            >
-              {r.providerName}
-            </ListCell>
-            <ListCell>
-              <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                {r.strategy}
-              </Pill>
-            </ListCell>
-            <ListCell>
-              {r.origin === "config" ? (
-                <Pill
-                  color="var(--text-secondary)"
-                  tint="var(--surface-subtle)"
-                  border="var(--border-default)"
-                >
-                  <Lock className="h-3 w-3" />
-                  {t("pages.models.readOnlyPill")}
-                </Pill>
-              ) : (
-                <Pill
-                  color="var(--status-success-text)"
-                  tint="rgba(22,163,74,.14)"
-                  border="color-mix(in srgb, var(--status-success) 32%, transparent)"
-                >
-                  db
-                </Pill>
-              )}
-            </ListCell>
-            <ListCell className="grid">
-              <ModelPriceCell priced={r.priced} inPrice={r.inPrice} outPrice={r.outPrice} />
-            </ListCell>
-            <ListCell className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
-              {r.weight}
-            </ListCell>
-            <ListCell className="flex items-center justify-end gap-1.5">
-              {/* a config-file model opens read-only, so only the
+                  {r.providerName}
+                </ListCell>
+                {/* verbatim and in mono: a strategy is a config value an operator
+                copies into rolter.toml, not a label to restyle (#1979) */}
+                <ListCell className="flex min-w-0 flex-col gap-0.5">
+                  <span className="truncate font-mono text-xs text-foreground" title={r.strategy}>
+                    {r.strategy}
+                  </span>
+                  {/* the caveat is written in the row rather than behind a
+                      tooltip, which the table's scroll frame clips on the last
+                      rows; the sentence opens with the targets below */}
+                  {hintKey && (
+                    <span
+                      className="truncate text-[11px] text-[color:var(--status-warning)]"
+                      title={t(hintKey)}
+                    >
+                      {t(CAVEAT_LABEL[hintKey] ?? "pages.models.strategyCaveat.other")}
+                    </span>
+                  )}
+                </ListCell>
+                <ListCell className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                  {r.targets && r.targets.length > 0 ? (
+                    <button
+                      type="button"
+                      aria-expanded={open}
+                      aria-controls={open ? detailId : undefined}
+                      aria-label={t("pages.models.targets.toggleAria", {
+                        targets: t("routeTargets.count", { count: r.targetCount }),
+                        model: r.name,
+                      })}
+                      onClick={() => toggleTargets(r.name)}
+                      className="inline-flex items-center gap-1 rounded-sm font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <ChevronRight
+                        aria-hidden="true"
+                        className={cn(
+                          "h-3 w-3 flex-none transition-transform",
+                          open && "rotate-90",
+                        )}
+                      />
+                      {t("routeTargets.count", { count: r.targetCount })}
+                    </button>
+                  ) : (
+                    <span
+                      className={cn(
+                        "font-mono text-xs",
+                        r.targetCount === 0
+                          ? "text-[color:var(--status-warning)]"
+                          : "text-[color:var(--text-secondary)]",
+                      )}
+                    >
+                      {r.targetCount === 0
+                        ? t("pages.models.targets.none")
+                        : t("routeTargets.count", { count: r.targetCount })}
+                    </span>
+                  )}
+                  {/* health where the rollup has it: a failing target is named in
+                  the row, a clean bill is a dot, and no data says nothing */}
+                  {failing > 0 ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--status-danger-text)]">
+                      <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
+                      {t("pages.models.targets.failing", { count: failing })}
+                    </span>
+                  ) : (
+                    withHealth.length > 0 && (
+                      <span className="inline-flex items-center">
+                        <StatusDot color="var(--status-success)" className="h-1.5 w-1.5" />
+                        <span className="sr-only">{t("pages.models.targets.healthy")}</span>
+                      </span>
+                    )
+                  )}
+                </ListCell>
+                <ListCell>
+                  {r.origin === "config" ? (
+                    <Pill
+                      color="var(--text-secondary)"
+                      tint="var(--surface-subtle)"
+                      border="var(--border-default)"
+                    >
+                      <Lock className="h-3 w-3" />
+                      {t("pages.models.readOnlyPill")}
+                    </Pill>
+                  ) : (
+                    <Pill
+                      color="var(--status-success-text)"
+                      tint="rgba(22,163,74,.14)"
+                      border="color-mix(in srgb, var(--status-success) 32%, transparent)"
+                    >
+                      db
+                    </Pill>
+                  )}
+                </ListCell>
+                <ListCell className="grid">
+                  <ModelPriceCell priced={r.priced} inPrice={r.inPrice} outPrice={r.outPrice} />
+                </ListCell>
+                <ListCell className="flex items-center justify-end gap-1.5">
+                  {/* a config-file model opens read-only, so only the
                   editable half of this control is gated (#1258) */}
-              {r.origin === "config" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-[30px]"
-                  aria-label={t("pages.models.viewAria", { model: r.name })}
-                  onClick={() => setSheet({ mode: "view", configModel: r.entry })}
-                >
-                  {t("pages.models.view")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="route:update"
-                  control="model-edit"
-                  size="sm"
-                  variant="outline"
-                  className="h-[30px]"
-                  aria-label={t("pages.models.editAria", { model: r.name })}
-                  disabled={!r.route}
-                  onClick={() => r.route && setSheet({ mode: "edit", route: r.route })}
-                >
-                  {t("pages.models.edit")}
-                </GatedButton>
-              )}
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("labels.labelsOf", { name: r.name })}
-                onClick={() => setLabelling(r.name)}
-              >
-                <Tag className="h-3.5 w-3.5" />
-              </Button>
-              {/* a db-backed row's edit is its route, but forgetting a model
+                  {r.origin === "config" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-[30px]"
+                      aria-label={t("pages.models.viewAria", { model: r.name })}
+                      onClick={() =>
+                        setSheet({ mode: "view", configModel: r.entry, configTargets: r.targets })
+                      }
+                    >
+                      {t("pages.models.view")}
+                    </Button>
+                  ) : (
+                    <GatedButton
+                      gate="route:update"
+                      control="model-edit"
+                      size="sm"
+                      variant="outline"
+                      className="h-[30px]"
+                      aria-label={t("pages.models.editAria", { model: r.name })}
+                      disabled={!r.route}
+                      onClick={() => r.route && setSheet({ mode: "edit", route: r.route })}
+                    >
+                      {t("pages.models.edit")}
+                    </GatedButton>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-[30px]"
+                    aria-label={t("labels.labelsOf", { name: r.name })}
+                    onClick={() => setLabelling(r.name)}
+                  >
+                    <Tag className="h-3.5 w-3.5" />
+                  </Button>
+                  {/* a db-backed row's edit is its route, but forgetting a model
                   outright is deployment-wide: two capabilities on one row (#1258) */}
-              {r.origin === "db" && (
-                <DeleteIconButton
-                  gate="model:delete"
-                  control="model-delete"
-                  label={t("pages.models.deleteAria", { model: r.name })}
-                  pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
-                  onClick={() => {
-                    removeModel.reset();
-                    setDeleteTarget(r.entry);
-                  }}
-                />
+                  {r.origin === "db" && (
+                    <DeleteIconButton
+                      gate="model:delete"
+                      control="model-delete"
+                      label={t("pages.models.deleteAria", { model: r.name })}
+                      pending={removeModel.isPending && deleteTarget?.model === r.entry.model}
+                      onClick={() => {
+                        removeModel.reset();
+                        setDeleteTarget(r.entry);
+                      }}
+                    />
+                  )}
+                </ListCell>
+              </ListRow>
+              {/* weights on demand: the row's own disclosure opens a row beneath
+              it, one line per target, rather than a popover the table's
+              scroll frame would clip */}
+              {open && r.targets && (
+                <div
+                  role="row"
+                  className="border-b border-[color:var(--border-subtle)] pb-3.5 pl-[31px] pr-4 last:border-b-0"
+                >
+                  <div role="cell" id={detailId}>
+                    <StrategyHint strategy={r.strategy} />
+                    <RouteTargetList
+                      label={t("routeTargets.listLabel", { model: r.name })}
+                      strategy={r.strategy}
+                      targets={r.targets}
+                      // a column of "no health data" says nothing a missing
+                      // column does not, so it shows once any target has data
+                      health={withHealth.length > 0}
+                    />
+                  </div>
+                </div>
               )}
-            </ListCell>
-          </ListRow>
-        ))}
+            </React.Fragment>
+          );
+        })}
         {!models.isLoading && sorted.length === 0 && (
           // "no rows" and "nothing matched the filters" are different answers:
           // one wants a model created, the other wants the filter cleared
@@ -542,6 +687,7 @@ export default function Models() {
         providers={providers.data ?? []}
         route={sheet?.route ?? null}
         configModel={sheet?.configModel ?? null}
+        configTargets={sheet?.configTargets ?? null}
         models={models.data ?? []}
         routes={routes.data ?? []}
         onDone={invalidate}

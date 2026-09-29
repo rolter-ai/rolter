@@ -12,9 +12,12 @@ import {
   expectToast,
   json,
   pending,
+  pickOption,
+  PROJECT,
   recording,
   scoped,
   type FetchStub,
+  type Recorder,
   expectEmptyState,
   expectForbidden,
 } from "./story-harness";
@@ -128,6 +131,55 @@ export const Loaded: Story = {
     // weights are rendered as shares of the route's total, so 80/100 is 80%
     await waitFor(() => expect(canvas.getByText("80%")).toBeInTheDocument());
     await expect(canvas.getByText("disabled")).toBeInTheDocument();
+  },
+};
+
+/**
+ * "Add route" opens the model sheet, the same one Model Catalog opens (#1979).
+ * The two screens used to create the same route through two forms that asked
+ * for different things; a route now gets its strategy, its targets and the
+ * rest of a model's settings in one place, whichever screen it starts from.
+ */
+let creates: Recorder;
+export const AddRouteOpensTheModelSheet: Story = {
+  render: () => {
+    creates = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.endsWith("/routes")) {
+          return json({ ...ROUTES[0], id: "route-new", model: "llama-70b" });
+        }
+        if (init?.method === "POST") return json({ id: "rt-new" });
+        if (url.includes("/models")) return json([]);
+        if (url.includes("/currency")) return json({ settlement: "USD", codes: ["USD"] });
+        return answer(ROUTES)(input, init);
+      }),
+    );
+    return (
+      <Harness fetchStub={creates.stub}>
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the button waits for the scope to name a project to create the route in
+    const add = await canvas.findByRole("button", { name: /Add route/ });
+    await waitFor(() => expect(add).toBeEnabled());
+    await userEvent.click(add);
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(dialog.getByRole("heading", { name: "Add model" })).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
+    );
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-70b");
+    await pickOption(dialog.getByLabelText("Strategy"), "power_of_two");
+    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await expect(await creates.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)).toEqual({
+      model: "llama-70b",
+      strategy: "power_of_two",
+    });
+    await creates.expectSent("POST", "/routes/route-new/targets");
   },
 };
 
