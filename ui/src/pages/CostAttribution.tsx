@@ -751,7 +751,9 @@ export function BusinessUnits() {
       kind="unit"
       rows={units.data ?? []}
       units={units.data ?? []}
-      isLoading={units.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(units)}
       isError={units.isError}
       error={units.error as Error | undefined}
       onRetry={() => void units.refetch()}
@@ -893,7 +895,9 @@ export function Customers() {
       kind="customer"
       rows={customers.data ?? []}
       units={units.data ?? []}
-      isLoading={customers.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(customers)}
       isError={customers.isError}
       error={customers.error as Error | undefined}
       onRetry={() => void customers.refetch()}

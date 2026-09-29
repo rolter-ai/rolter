@@ -467,8 +467,8 @@ function withDocsBase(base: string | undefined) {
  * the three credentials it wants (#943).
  */
 async function openTheProviderKeyField(canvasElement: HTMLElement) {
-  const canvas = within(canvasElement);
-  await userEvent.click(await canvas.findByRole("button", { name: "+ Add provider" }));
+  // the button is disabled by its own prop until the scope resolves an org
+  await clickWhenEnabled(canvasElement, "+ Add provider");
   return within(await within(document.body).findByRole("dialog"));
 }
 
