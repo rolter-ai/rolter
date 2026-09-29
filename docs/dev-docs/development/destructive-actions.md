@@ -73,6 +73,16 @@ Five properties are load-bearing:
 and revocations, `default` for something irreversible that is not a removal —
 key rotation is the case that motivated it.
 
+A save that hands over control of every request goes through the same dialog,
+with `tone="default"`. Activating a guardrail provider pauses the active one
+and sends all traffic through the new one, so `GuardrailProviders` raises the
+confirmation over its provider dialog. The confirmation names the provider it
+pauses and says what the failure policy then does to a request (#2163). The
+provider dialog stays open behind it, so a cancel returns to the form with the
+fields intact. The confirmation is mounted beside that dialog rather than
+inside it: the dialog remounts as it closes, and a confirmation inside it would
+unmount before it could report `save_confirmed`.
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be

@@ -34,6 +34,12 @@ Choose the failure policy deliberately:
 - **Fail closed** rejects traffic when the provider times out or errors. This favors enforcement.
 - **Fail open** lets traffic continue when the provider cannot decide. This favors availability.
 
+The **Evaluation URL** starts empty and is required. The address shown in the empty field is an example, not a default, so a provider cannot be saved pointing at a host nobody typed.
+
+Activating a provider asks for confirmation. The **Activate provider** switch names the provider it would pause, and saving with it on opens a dialog that names that provider again, or says none is active, and states what the failure policy then does to every request: a fail-closed provider refuses a request with `guardrail_blocked` when it times out or errors, and a fail-open one lets it go upstream unchecked. When a config-file webhook is enabled, the dialog also says the new provider is ignored until that webhook is turned off. Cancelling returns to the form with nothing saved. Saving a provider that is already active does not ask again.
+
+The dashboard cannot send a test request to a provider yet, so check that the service answers before you activate a fail-closed provider.
+
 Rolter stores only an environment variable name for bearer or shared-secret authentication. Put the secret value in every gateway's environment; it is never returned by the control-plane API.
 
 Only the **Before upstream** stage (`pre_call`) is enforced today. The gateway does not run the **Before response** stage (`post_call`) yet, so the dashboard does not let you pick it. A provider already saved at that stage is marked **not enforcing** on its card and in the banner. Activating one pauses the active provider and puts nothing in its place.
