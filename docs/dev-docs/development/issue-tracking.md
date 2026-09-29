@@ -123,8 +123,9 @@ An issue or PR that a workflow opens with its own `GITHUB_TOKEN` raises no
 event that token can start, so such a workflow dispatches `project-automation.yml`
 with the item's number, and may name an `Area` and `Effort` to seed on top of
 the defaults. `extended.yml`'s `report failure` job does this for the nightly
-tracking issue (#2201). The same dispatch puts any item that missed the board
-back on it by hand:
+tracking issue (#2201), and `ui-security-updates.yml` does it for its pull
+request (#2245). The same dispatch puts any item that missed the board back on
+it by hand:
 
 ```bash
 gh workflow run project-automation.yml -f number=<n> -f area=ci -f effort=XS
