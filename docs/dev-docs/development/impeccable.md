@@ -26,7 +26,9 @@ the detector's caches, live-mode sessions and critique reports.
 
 ## Setting it up on a machine
 
-Install the plugin once per machine, at user scope:
+The repository declares the plugin in `.claude/settings.json` (its marketplace under
+`extraKnownMarketplaces`, the plugin under `enabledPlugins`), so Claude Code offers to install it
+the first time you trust the checkout. To install it by hand instead:
 
 ```bash
 claude plugin marketplace add pbakaus/impeccable
@@ -55,8 +57,9 @@ to run it unless the `.sha256` sidecar matches.
   responsive behaviour. Findings become issues on the board like any other out-of-scope find.
 - `/impeccable polish`, `harden`, `clarify`, `layout`, `typeset` and the rest refine an existing
   screen. The full list is `/impeccable` with no argument.
-- Screen work still starts with `/frontend-design:frontend-design rolter` (see `ui/AGENTS.md`);
-  impeccable reads the same `DESIGN.md` and checks the result.
+- `/impeccable shape <screen>` plans a new screen before any code: a short discovery interview,
+  then a brief the build follows. It and `critique` stop to ask questions, so the `rolter-ui`
+  subagent leaves both to the main session and uses `audit`, `adapt`, `harden` and `polish`.
 
 The detector runs on every `Edit`/`Write` to a UI file and prints a short reminder when it finds a
 mechanical problem: clipped content, a contrast failure, gradient text, a colour that is not a
@@ -70,3 +73,13 @@ A one-off scan without the hook:
 ```bash
 "$HOME/.claude/plugins/cache/impeccable/impeccable/<version>/skills/impeccable/scripts/impeccable" detect ui/src/pages/Models.tsx
 ```
+
+## Which skills the repository declares
+
+`.claude/settings.json` and the agent instructions (`AGENTS.md`, `ui/AGENTS.md`,
+`.claude/agents/`) name only generic, open-source skills such as impeccable: ones anyone can
+install from a public repository and that do not depend on a single vendor's product. Skills
+native to one vendor (Anthropic's `frontend-design` plugin, Claude Design and its DesignSync)
+stay out of the repository; a developer who wants them installs them at user scope. The dashboard's
+design record is `PRODUCT.md` and `DESIGN.md` in this repository, never a project in an external
+design tool.
