@@ -75,10 +75,12 @@ jobs:
           SHA="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
           IFS=',' read -ra names <<< "$REQUIRED"
 
-          # release-plz dispatches this the moment it finishes tagging, while
-          # ci.yml is often still running the very same commit, so a required
-          # check being *pending* is expected rather than a failure. wait for a
-          # verdict; only a real non-success, or the timeout, is fatal.
+          # a release-plz dispatch normally passes on the first poll: its
+          # release-gate saw ci-ok finish on the commit before tagging it, and
+          # ci-ok needs every codeql leg. a tag dispatched by hand, or a check
+          # re-run after tagging, can still leave a required check *pending*,
+          # which is expected rather than a failure. wait for a verdict; only a
+          # real non-success, or the timeout, is fatal.
           deadline=$(( $(date -u +%s) + 45 * 60 ))
           while :; do
             # "<timestamp>\t<name>\t<status>\t<conclusion>" per check-run. the

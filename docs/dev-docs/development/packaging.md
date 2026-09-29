@@ -362,10 +362,12 @@ verified by construction. The assertion binds to the
 _tagged_ SHA — which re-running never did — costs no duplicate 20-minute run,
 and checks out nothing.
 
-Because release-plz dispatches the moment it finishes tagging, `ci-ok` is often
-still running for that commit. A pending check is therefore expected, not a
-failure: the job waits up to 45 minutes for a verdict, fails immediately on a
-real non-success, and fails closed if a required check never appears.
+On the release-plz path the loop normally passes on its first poll:
+`release-gate` saw `ci-ok` finish before the tag existed, and `ci-ok` needs
+every CodeQL leg. A tag dispatched by hand, or a check re-run after tagging, can
+still leave a required check pending, and that is expected, not a failure: the
+job waits up to 45 minutes for a verdict, fails immediately on a real
+non-success, and fails closed if a required check never appears.
 
 [#988]: https://github.com/rolter-ai/rolter/issues/988
 

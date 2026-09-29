@@ -61,8 +61,11 @@ jobs:
   # full quality/security gate (fmt, clippy, nextest, doc tests, feature matrix,
   # cargo doc, cargo-deny, gitleaks, actionlint, ui, storybook, smoke, +
   # informational
-  # checks). shared with the release paths via workflow_call so publish and CI
-  # enforce the exact same checks on a commit.
+  # checks). the release paths do not re-run it: release-plz.yml's
+  # `release-gate` waits for `ci-ok` on this workflow's push run, and
+  # release.yml's `verify-external-checks` requires `ci-ok` on the tagged sha,
+  # so nothing publishes a commit this gate has not passed. only the one-shot
+  # publish-bootstrap.yml still calls quality.yml directly.
   quality:
     # a title-only edit reruns pr-title/ci-ok only; the heavy gate already ran
     # (or is still running — see the concurrency group above, which keeps an
