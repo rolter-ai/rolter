@@ -1056,6 +1056,7 @@
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
       "checking": "Checking your invitation…",
       "title": "Join {{org}}",
+      "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",
       "password": "Password (at least 8 characters)",
       "confirm": "Confirm password",

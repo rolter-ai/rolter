@@ -22,6 +22,7 @@ import {
   type MfaEnrolmentChallenge,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useDocumentTitle } from "@/lib/document-title";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
 
@@ -50,6 +51,8 @@ export default function Login() {
   const { signIn, expired } = useAuth();
   const toast = useToast();
   const fmt = useFormat();
+  // signed out there is no shell `Screen` to name the tab, so the page does (#2002)
+  useDocumentTitle(t("auth.title"));
   // empty by design: a pre-filled demo account here would be shown to every
   // operator of a real deployment as if it were a login
   const [email, setEmail] = useState("");

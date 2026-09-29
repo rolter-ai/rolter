@@ -2,7 +2,14 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import App from "./App";
-import { AppShell, EXPERIMENTAL_SUBSYSTEM, shellStubWithStability } from "./pages/shell-harness";
+import {
+  AppShell,
+  EXPERIMENTAL_SUBSYSTEM,
+  shellStub,
+  shellStubWithStability,
+} from "./pages/shell-harness";
+import { expectForbidden, withCapabilities } from "./pages/story-harness";
+import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { SHORTCUTS, chordText, shortcutChord } from "@/lib/shortcuts";
@@ -474,5 +481,64 @@ export const ShortcutReferenceFromDrawer: Story = {
     await userEvent.click(await within(drawer).findByRole("button", { name: SHORTCUTS_FOOTER }));
     await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
     await expectNoHorizontalOverflow();
+  },
+};
+
+// the tab title is document state, which outlives a story: blank it first, so
+// a title the previous story left behind can never pass for this one's
+const blankTitle = () => {
+  document.title = "";
+};
+
+/**
+ * The tab names the screen on display (#2002): the header's own title from
+ * `screens.<key>.title`, then the name, lowercase. Picking another language
+ * from the rail renames the tab in place, the same way it relabels the screen.
+ */
+export const DocumentTitle: Story = {
+  render: () => <AppShell route="/playground" />,
+  beforeEach: () => {
+    blankTitle();
+    // the picker persists its choice, so hand english back to the next story
+    return async () => {
+      await setLocale(DEFAULT_LOCALE);
+    };
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("heading", { level: 1, name: screens.playground.title });
+    await waitFor(() => expect(document.title).toBe(`${screens.playground.title} · rolter`));
+
+    await userEvent.click(canvas.getByRole("button", { name: en.locale.change }));
+    await userEvent.click(await canvas.findByRole("menuitemradio", { name: LOCALE_NAMES.ru }));
+    await waitFor(() => expect(document.title).toBe(`${ru.screens.playground.title} · rolter`));
+  },
+};
+
+/**
+ * A screen the caller may not read keeps its name in the tab. The header still
+ * names it above the refusal, and the tab says the same thing.
+ */
+export const DocumentTitleOnARefusedScreen: Story = {
+  render: () => (
+    <AppShell route="/audit-logs" fetchStub={withCapabilities("viewer", shellStub())} />
+  ),
+  beforeEach: blankTitle,
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+    await expect(document.title).toBe(`${screens["audit-logs"].title} · rolter`);
+  },
+};
+
+/** A path no screen answers to lands on the dashboard, and the tab follows it there. */
+export const DocumentTitleOnAnUnknownPath: Story = {
+  render: () => <AppShell route="/no-such-screen" />,
+  beforeEach: blankTitle,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", {
+      level: 1,
+      name: screens.dashboard.title,
+    });
+    await waitFor(() => expect(document.title).toBe(`${screens.dashboard.title} · rolter`));
   },
 };

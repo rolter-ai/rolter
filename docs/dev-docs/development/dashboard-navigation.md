@@ -211,6 +211,37 @@ before, so the fallback rendered nowhere — dead code that still advertised tha
 the rail was allowed to point at a screen which does not exist. Both the set and
 the placeholder are gone; the test is what keeps the table complete.
 
+## The document title
+
+Each screen names the browser tab `{title} · rolter` (#2002). Before that every
+screen shared the one `<title>` in `ui/index.html`, so tabs, history entries and
+a screen reader's page announcement could not tell one screen from another
+(WCAG 2.4.2).
+
+`useDocumentTitle` in `ui/src/lib/document-title.ts` writes it. The name is
+appended in code rather than taken from a catalog, because it is lowercase in
+every locale, the tab title included (see the brand guidelines). The title part
+is the caller's already-translated string, so switching language re-renders the
+caller and renames the tab without a reload.
+
+Three places call it:
+
+- `Screen` in `ui/src/App.tsx`, with the header's own `screens.<key>.title`.
+  That covers every routed leaf. The refused state renders inside `Screen`, so a
+  screen the caller may not read keeps its name in the tab, and an unknown or
+  legacy path redirects to a leaf that names itself.
+- `Login`, with `auth.title`. Signed out there is no `Screen` around it.
+- `AcceptInvite`, with `pages.acceptInvite.title` once the preview names the
+  org. While the preview is in flight, or when the link is dead, it uses
+  `pages.acceptInvite.genericTitle`.
+
+A new page rendered outside `Screen` calls the hook itself. Stories:
+`DocumentTitle`, `DocumentTitleOnARefusedScreen` and
+`DocumentTitleOnAnUnknownPath` in `App.stories.tsx`, `DocumentTitle` in
+`Login.stories.tsx`, and the `Loaded` and `InvalidLink` stories in
+`AcceptInvite.stories.tsx`. Each blanks `document.title` in `beforeEach`,
+because the title outlives a story and one left behind would pass for the next.
+
 ## The experimental marker
 
 `SUBSYSTEMS` in `crates/rolter-core/src/stability.rs` is the only list of what

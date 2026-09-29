@@ -57,6 +57,12 @@ function Stage({ stub }: { stub: FetchStub }) {
   );
 }
 
+// the tab title is document state, which outlives a story: blank it first, so
+// a title the previous story left behind can never pass for this one's
+const blankTitle = () => {
+  document.title = "";
+};
+
 const meta = {
   title: "Screens/AcceptInvite",
   component: AcceptInvite,
@@ -70,9 +76,12 @@ type Story = StoryObj<typeof meta>;
 /** The link checks out: who invited whom, and as what. */
 export const Loaded: Story = {
   render: () => <Stage stub={invite(() => json(PREVIEW))} />,
+  beforeEach: blankTitle,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("heading", { name: "Join Acme" })).toBeVisible();
+    // outside the shell, so the page names the tab itself (#2002)
+    await waitFor(() => expect(document.title).toBe("Join Acme · rolter"));
     // the address and the role are stated before a password is chosen: an
     // invite to the wrong account is only catchable here
     await expect(canvas.getByText(PREVIEW.email)).toBeVisible();
@@ -96,10 +105,13 @@ export const Loading: Story = {
  */
 export const InvalidLink: Story = {
   render: () => <Stage stub={invite(() => json({ error: { message: "not found" } }, 404))} />,
+  beforeEach: blankTitle,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/This invitation link is not valid/)).toBeVisible();
     await expect(canvas.queryByRole("button")).not.toBeInTheDocument();
+    // a dead link names no org, so the tab falls back to the plain noun
+    await expect(document.title).toBe("Invitation · rolter");
   },
 };
 
