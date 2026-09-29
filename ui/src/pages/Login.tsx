@@ -50,8 +50,8 @@ export default function Login() {
   const { signIn, expired } = useAuth();
   const toast = useToast();
   const fmt = useFormat();
-  // empty by design: the prototype shipped a fake demo account here, which a
-  // real deployment then showed to every operator as if it were a login
+  // empty by design: a pre-filled demo account here would be shown to every
+  // operator of a real deployment as if it were a login
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);

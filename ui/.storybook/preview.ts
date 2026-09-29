@@ -32,9 +32,9 @@ import { DEFAULT_LOCALE, LOCALES, LOCALE_NAMES, setLocale, type Locale } from ".
 // not get slower — only less willing to call a slow machine a broken screen.
 configure({ asyncUtilTimeout: 5000 });
 
-// the Rolter Design System is a dark-only control-plane theme (see src/index.css
+// the dashboard theme is dark-only (see the src/index.css
 // header): `:root` is the dark surface and there is no light variant, so stories
-// render on the design's dark canvas rather than a fabricated light mode. every
+// render on the theme's dark canvas rather than a fabricated light mode. every
 // story is wrapped in the base background/foreground tokens + a little padding so
 // components sit on the real surface they ship against.
 const withSurface: Decorator = (Story) =>

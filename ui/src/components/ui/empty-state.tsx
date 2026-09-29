@@ -5,7 +5,7 @@ import { useEmptyState } from "@/lib/ux-react";
 
 // centered empty/zero-data placeholder. one of the two sanctioned places the
 // folkloric вышивка thread is allowed to show — a quiet cross-stitch rule under
-// the message. mirrors the Rolter Design System feedback/EmptyState.
+// the message
 export interface EmptyStateProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   icon?: React.ReactNode;
   title?: React.ReactNode;

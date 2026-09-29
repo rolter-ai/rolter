@@ -63,7 +63,7 @@ function GatewayPill() {
 // every query but the pill's own: what the refresh button re-reads and waits on
 const isScreenData = (query: Query) => query.queryKey[0] !== GATEWAY_HEALTH_KEY[0];
 
-// per-screen header from the design prototype: title + subtitle on the left,
+// per-screen header: title + subtitle on the left,
 // gateway status pill + refresh on the right, over the вышивка rule that
 // recurs under the header on every screen. the org/project scope picker lives
 // in the sidebar user menu, not here.

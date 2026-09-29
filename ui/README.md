@@ -63,9 +63,9 @@ Components are copied into `src/components/ui`. A starter `button` and `card` ar
 ## Storybook
 
 Storybook (v10) uses the same local Tailwind/design-token stylesheet as the
-dashboard, so it has **no runtime CDN dependency** (air-gapped-safe). The Rolter
-Design System is dark-only, so `.storybook/preview.ts` renders every story on the
-design's dark surface — there is no light variant to toggle.
+dashboard, so it has **no runtime CDN dependency** (air-gapped-safe). The
+dashboard theme is dark-only, so `.storybook/preview.ts` renders every story on
+the theme's dark surface — there is no light variant to toggle.
 
 ### Storybook MCP
 
