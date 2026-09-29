@@ -6,8 +6,13 @@
 #
 # usage:
 #   check-agent-session-urls.sh --file PATH           # one file's content (commit-msg hook)
-#   check-agent-session-urls.sh --text TEXT           # one literal string (pr body)
+#   check-agent-session-urls.sh --text TEXT           # one literal string
 #   check-agent-session-urls.sh --commit-range A..B   # each commit message in a range
+#
+# one that reads a pr's body live from the api by number, for a pull_request
+# run, whose payload holds the body as it was when the event fired (#2035):
+#
+#   check-agent-session-urls.sh --pr-number REPO N               # that pr's body
 #
 # and two that resolve an open pr from the api by its head ref, for the
 # dispatched ci run whose event payload carries no pull request (#1523, #1562):
@@ -32,26 +37,40 @@ PATTERN='claude\.ai/code/session|[A-Za-z][A-Za-z0-9_-]*-Session:[[:space:]]*http
 
 fail=0
 
+# writes the api response for PATH to a temp file and prints the file's path.
+# every lookup below goes through here, so they share one failure rule: three
+# attempts five seconds apart, then fail. a flaking query must never resolve to
+# green, and a check that reports "no url found" over a body it never read is
+# exactly that. the output goes to a file rather than a pipeline because under
+# `pipefail` a short-circuiting reader would fail this for the wrong reason
+# (#1291, #1306)
+api_get() {
+  local path="$1" what="$2"
+  local out attempt=1
+  out="$(mktemp)"
+  until gh api "$path" > "$out"; do
+    if [ "$attempt" -ge 3 ]; then
+      echo "::error::could not read ${what} after ${attempt} attempts; refusing to report this as checked" >&2
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+  printf '%s' "$out"
+}
+
 # writes the open-pull-request listing for REPO to stdout as a file path.
-# shared by the two --*-for-ref modes below so the lookup, its failure rule and
-# its fixture override exist once rather than twice. set ROLTER_PULLS_JSON to a
-# file of the same shape the api returns and no network call is made, which is
-# what makes both modes runnable outside ci.
+# shared by the three modes below that resolve a pr from a ref, so the lookup
+# and its fixture override exist once. set ROLTER_PULLS_JSON to a file of the
+# same shape the api returns and no network call is made, which is what makes
+# those modes runnable outside ci.
 open_pulls_file() {
   local repo="$1"
   if [ -n "${ROLTER_PULLS_JSON:-}" ]; then
     printf '%s' "${ROLTER_PULLS_JSON}"
     return 0
   fi
-  local pulls
-  pulls="$(mktemp)"
-  # no pipeline: under `pipefail` a short-circuiting reader would fail this for
-  # the wrong reason (#1291, #1306)
-  if ! gh api "repos/${repo}/pulls?state=open&per_page=100" > "$pulls"; then
-    echo "::error::could not list open pull requests for ${repo}; refusing to report this as checked" >&2
-    return 1
-  fi
-  printf '%s' "$pulls"
+  api_get "repos/${repo}/pulls?state=open&per_page=100" "the open pull requests for ${repo}"
 }
 
 check_text() {
@@ -73,6 +92,30 @@ while [ "$#" -gt 0 ]; do
     --text)
       check_text "pr body" "$2"
       shift 2
+      ;;
+    # check the body of pull request N as it stands now. a pull_request run
+    # carries the body in its payload, but that copy was frozen when the event
+    # fired, and `ci-ok` reads it only after `quality` and `codeql`, minutes
+    # later. a url added in between used to pass on the stale copy, and that
+    # run's newer green `ci-ok` outranked the red one the edit itself had
+    # triggered (#2035). the number comes from the payload and cannot change;
+    # the body is read live
+    --pr-number)
+      repo="$2"
+      number="$3"
+      if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+        echo "::error::'${number}' is not a pull request number; refusing to report a body as checked" >&2
+        exit 1
+      fi
+      pull="$(api_get "repos/${repo}/pulls/${number}" "pull request #${number} in ${repo}")" || exit 1
+      # a response that is not this pr, or not json at all, is no answer
+      if ! jq -e --argjson n "$number" '.number == $n' "$pull" > /dev/null 2>&1; then
+        echo "::error::the api response for pull request #${number} in ${repo} is not that pull request; refusing to report its body as checked" >&2
+        exit 1
+      fi
+      body="$(jq -r '.body // ""' "$pull")"
+      check_text "pr body for #${number}" "$body"
+      shift 3
       ;;
     --commit-range)
       while IFS= read -r sha; do

@@ -212,6 +212,16 @@ language = "system"
 files = "^scripts/(wait-for-ci-gate|unpublished-crates|test-release-gate)\\.sh$"
 pass_filenames = false
 
+# ci-ok's pr-body step reads the body from the api, so its shell only ever ran
+# on a real pull request. this runs it, extracted from ci.yml, against a fake gh
+[[repos.hooks]]
+id = "agent-session-urls"
+name = "pr body lookups against a fake gh"
+entry = "bash scripts/test-agent-session-urls.sh"
+language = "system"
+files = "^(\\.github/workflows/ci\\.yml|scripts/(check|test)-agent-session-urls\\.sh)$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "project-automation"
 name = "board automation retry policy"
