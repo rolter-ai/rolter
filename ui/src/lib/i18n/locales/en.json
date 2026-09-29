@@ -104,7 +104,8 @@
       "default": "Documentation",
       "opensInNewTab": "{{label}} (opens in a new tab)",
       "whichKey": "Which key do I need?",
-      "virtualKeys": "About virtual keys"
+      "virtualKeys": "About virtual keys",
+      "cacheAwareRouting": "About cache-aware routing"
     }
   },
   "errors": {
@@ -678,7 +679,7 @@
     },
     "routing": {
       "strategyHints": {
-        "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) configured on the target providers. Without one it quietly falls back to least-load.",
+        "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) on the target providers. The source is set per provider in rolter.toml; a provider added in the dashboard cannot carry one yet. Without one, this strategy quietly falls back to least-load.",
         "deploymentWide": "Controlled by the deployment-wide adaptive-routing policy, not from here. Kept so this route is not changed by saving."
       },
       "confirm": {
