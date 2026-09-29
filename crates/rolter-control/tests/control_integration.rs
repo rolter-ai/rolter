@@ -3504,6 +3504,61 @@ async fn version_endpoint_reports_the_running_build_and_the_disabled_check() {
     assert_eq!(as_admin.status(), 200);
 }
 
+/// `GET /api/v1/public-url` is where the dashboard reads the base it builds a
+/// not-yet-registered provider's redirect uri from (#2083): any signed-in
+/// caller reads it, an anonymous one does not, and it says whether
+/// `ROLTER_PUBLIC_URL` was set or the default is standing in for it.
+#[tokio::test]
+async fn public_url_endpoint_reports_the_base_and_whether_it_was_configured() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let client = reqwest::Client::new();
+
+    // configured: the app knows its own listener as the public url
+    let addr = serve_with_public_url(pool.clone(), Some("sekrit".to_string())).await;
+    let base = format!("http://{addr}");
+    let denied = client
+        .get(format!("{base}/api/v1/public-url"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+
+    // a viewer with no membership anywhere is still an authenticated caller
+    let viewer = seed_user(&pool, "public-url-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "publicurlviewer").await;
+    let body: Value = client
+        .get(format!("{base}/api/v1/public-url"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body, json!({"public_url": base, "configured": true}));
+
+    // unset: the default stands in, and the answer says so
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let unset = serve(app).await;
+    let body: Value = client
+        .get(format!("http://{unset}/api/v1/public-url"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        body,
+        json!({"public_url": "http://localhost:4001", "configured": false})
+    );
+}
+
 /// A superadmin password reset through `PUT /api/v1/users/{id}` ends every
 /// session the account holds (#1936): the usual reason for a reset is that the
 /// old password is compromised, and whoever signed in with it must not keep a
@@ -5500,6 +5555,25 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
         !provider_text.contains("s3cret") && !provider_text.contains("secret_ciphertext"),
         "client secret leaked into the api response: {provider_text}"
     );
+    // the row names the two addresses an operator needs, built from the
+    // deployment's public url rather than left for the dashboard to guess
+    // from its own origin (#2083)
+    assert_eq!(
+        provider["redirect_uri"],
+        format!("{base}/auth/sso/stub/callback")
+    );
+    assert_eq!(provider["login_url"], format!("{base}/auth/sso/stub/start"));
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed[0]["redirect_uri"], provider["redirect_uri"]);
+    assert_eq!(listed[0]["login_url"], provider["login_url"]);
 
     // map an IdP group to a team-scoped admin role
     let mapping = client
@@ -5529,6 +5603,13 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
         .to_string();
     assert!(location.starts_with(&format!("{issuer}/authorize?response_type=code")));
     assert!(location.contains("code_challenge_method=S256"));
+    // and the redirect uri it carries is the one the provider row advertised,
+    // so what an operator registered in the IdP is what the IdP is sent
+    let advertised = provider["redirect_uri"].as_str().unwrap();
+    assert_eq!(
+        url_param(&location, "redirect_uri"),
+        advertised.replace(':', "%3A").replace('/', "%2F")
+    );
     let state = url_param(&location, "state");
 
     // an id token minted for a different login (wrong nonce) is refused
@@ -6891,7 +6972,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "model_price:read",
             "model:read",
             "version:read",
-            "stability:read"
+            "stability:read",
+            "public_url:read"
         ]
     );
 

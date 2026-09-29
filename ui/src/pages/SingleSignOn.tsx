@@ -1,8 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Eraser, KeyRound, Loader2, Pencil, Plus, ShieldCheck, Trash2, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  Eraser,
+  KeyRound,
+  Loader2,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  Users,
+} from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
@@ -33,25 +43,29 @@ import {
   deleteSsoProvider,
   fetchAuthPolicy,
   fetchMemberships,
+  fetchPublicUrl,
   fetchSsoGroupMappings,
   fetchSsoProviders,
   ROLES,
-  ssoStartPath,
+  ssoRedirectUri,
   updateAuthPolicy,
   MFA_POLICIES,
   type MfaPolicy,
   type OrgAuthPolicy,
+  type PublicUrl,
   type SsoGroupMappingRow,
   type SsoProviderRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
+const PUBLIC_URL_KEY = "public-url";
 
 // the roles a group mapping may grant, mirroring `parse_role` in
 // crates/rolter-control/src/sso.rs. deliberately not /api/v1/roles: that list
@@ -65,17 +79,126 @@ function roleLabel(t: TFunction, role: string): string {
   return t(`shell.roles.${role}`, { defaultValue: role });
 }
 
-// a labelled line inside a provider card: mono value, optionally copyable
-function Detail({ label, value, copyLabel }: { label: string; value: string; copyLabel?: string }) {
+// a labelled line inside a provider card: mono value, optionally copyable. an
+// address wraps instead of truncating, because the end of it is what tells the
+// redirect uri from the login url; `note` says what the value is for
+function Detail({
+  label,
+  value,
+  copyLabel,
+  note,
+  wrap = false,
+}: {
+  label: string;
+  value: string;
+  copyLabel?: string;
+  note?: string;
+  wrap?: boolean;
+}) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="w-[104px] flex-none text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+    <div className="flex min-w-0 items-start gap-2">
+      <span className="w-[104px] flex-none text-[0.6875rem] uppercase leading-4 tracking-[0.07em] text-[color:var(--text-subtle)]">
         {label}
       </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
-        {value}
-      </span>
-      {copyLabel && <CopyButton value={value} label={copyLabel} />}
+      <div className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block font-mono text-xs leading-4 text-[color:var(--text-secondary)]",
+            wrap ? "break-all" : "truncate",
+          )}
+        >
+          {value}
+        </span>
+        {note && <span className="mt-0.5 block text-xs text-muted-foreground">{note}</span>}
+      </div>
+      {/* centred on the value's first line, so a copyable row keeps the same
+          rhythm as the rows around it */}
+      {copyLabel && <CopyButton value={value} label={copyLabel} className="-my-2" />}
+    </div>
+  );
+}
+
+/**
+ * Said once above the provider list when `ROLTER_PUBLIC_URL` is unset (#2083).
+ *
+ * Every URL on this screen is built from the control plane's public base, and
+ * without the variable that base is the built-in default. A redirect URI
+ * copied from here into an identity provider would then send any user whose
+ * browser is not on the control plane's own host to an address that is not
+ * rolter, and the provider's error would name a mismatch rather than the cause.
+ */
+function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="note"
+      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-4 py-3"
+    >
+      <AlertTriangle
+        aria-hidden
+        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
+      />
+      <div className="min-w-0 space-y-1 text-sm">
+        <p className="font-medium text-foreground">{t("pages.sso.publicUrl.title")}</p>
+        <p className="text-muted-foreground">
+          <Trans
+            i18nKey="pages.sso.publicUrl.body"
+            values={{ url: publicUrl.public_url }}
+            components={{ code: <code className="font-mono text-xs text-foreground" /> }}
+          />
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The redirect URI as a row of the provider sheet, with its copy button (#2083).
+ *
+ * An identity provider asks for it before it issues the client ID and secret
+ * this form wants, so the add sheet shows it from the slug as it is typed
+ * rather than only on the card of a provider that already exists. It is not an
+ * input: nothing here is editable, and a disabled field would read as refused
+ * rather than derived. The value is `select-all`, so on a plain-http dashboard,
+ * where the clipboard API is withheld, it can still be copied by hand.
+ */
+function RedirectUriRow({
+  value,
+  hint,
+  children,
+}: {
+  /** null until there is a slug to build it from */
+  value: string | null;
+  hint: string;
+  /** a note under the hint: why the value is incomplete or only a default */
+  children?: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const labelId = React.useId();
+  const hintId = React.useId();
+  return (
+    <div role="group" aria-labelledby={labelId} aria-describedby={hintId} className="space-y-1.5">
+      <p id={labelId} className="text-sm font-medium leading-none">
+        {t("pages.sso.create.redirectUri")}
+      </p>
+      <div className="flex min-h-9 min-w-0 items-center gap-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] py-1 pl-3 pr-1">
+        {value ? (
+          <>
+            <span className="min-w-0 flex-1 select-all break-all font-mono text-xs text-foreground">
+              {value}
+            </span>
+            <CopyButton value={value} label={t("pages.sso.providers.copyRedirectUri")} />
+          </>
+        ) : (
+          <span className="text-sm text-muted-foreground">
+            {t("pages.sso.create.redirectUriEmpty")}
+          </span>
+        )}
+      </div>
+      <p id={hintId} className="text-xs text-muted-foreground">
+        {hint}
+      </p>
+      {children}
     </div>
   );
 }
@@ -616,9 +739,6 @@ function ProviderCard({
   toggling: boolean;
 }) {
   const { t } = useTranslation();
-  // the login button's href, as the control plane builds it. absolute so it can
-  // be pasted into a bookmark or an IdP's test console, not only followed here
-  const startUrl = `${window.location.origin}${ssoStartPath(provider.slug)}`;
 
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
@@ -721,10 +841,24 @@ function ProviderCard({
               : t("pages.sso.providers.secretMissing")
           }
         />
+        {/* both addresses come from the control plane, built from its
+            configured public url by the functions the login flow itself uses.
+            they used to be assembled from the browser's origin, which is wrong
+            behind a proxy, and the only one shown was the login url, which is
+            not what an identity provider asks for (#2083) */}
+        <Detail
+          label={t("pages.sso.providers.redirectUri")}
+          value={provider.redirect_uri}
+          copyLabel={t("pages.sso.providers.copyRedirectUri")}
+          note={t("pages.sso.providers.redirectUriNote")}
+          wrap
+        />
         <Detail
           label={t("pages.sso.providers.startUrl")}
-          value={startUrl}
+          value={provider.login_url}
           copyLabel={t("pages.sso.providers.copyStartUrl")}
+          note={t("pages.sso.providers.startUrlNote")}
+          wrap
         />
         <Detail label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
         <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
@@ -782,6 +916,8 @@ function ProviderSheet({
   onOpenChange,
   orgId,
   provider,
+  publicUrl,
+  publicUrlFailed,
   onSaved,
 }: {
   open: boolean;
@@ -789,6 +925,10 @@ function ProviderSheet({
   orgId: string;
   /** the provider being edited, or null to register a new one */
   provider: SsoProviderRow | null;
+  /** the control plane's public base, for the redirect uri preview; absent
+   * while it loads or when it could not be read */
+  publicUrl: PublicUrl | undefined;
+  publicUrlFailed: boolean;
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
@@ -870,6 +1010,22 @@ function ProviderSheet({
     !!draft.issuer.trim() &&
     !!draft.clientId.trim();
 
+  // a saved provider carries the server's own redirect uri. a new one is
+  // previewed from the typed slug on the server's public base, never the
+  // browser's origin; with the base unread, only the path is honest to show
+  const slug = draft.slug.trim();
+  const redirect = provider
+    ? provider.redirect_uri
+    : slug
+      ? ssoRedirectUri(publicUrl?.public_url ?? "", slug)
+      : null;
+  const redirectNote =
+    !provider && publicUrlFailed
+      ? "pages.sso.create.redirectUriUnknown"
+      : publicUrl?.configured === false
+        ? "pages.sso.create.redirectUriDefault"
+        : null;
+
   return (
     <EditorSheet
       name={editing ? "sso-connection-edit" : "sso-connection-create"}
@@ -902,6 +1058,20 @@ function ProviderSheet({
           placeholder={t("pages.sso.create.slugPlaceholder")}
         />
       </Field>
+      <RedirectUriRow
+        value={redirect}
+        hint={editing ? t("pages.sso.edit.redirectUriHint") : t("pages.sso.create.redirectUriHint")}
+      >
+        {redirectNote && (
+          <p className="text-xs text-[color:var(--status-warning-text)]">
+            <Trans
+              i18nKey={redirectNote}
+              values={{ url: publicUrl?.public_url ?? "" }}
+              components={{ code: <code className="font-mono" /> }}
+            />
+          </p>
+        )}
+      </RedirectUriRow>
       <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")}>
         <Input
           value={draft.issuer}
@@ -985,6 +1155,15 @@ export default function SingleSignOn() {
     queryFn: () => fetchAuthPolicy(orgId as string),
     enabled: !!orgId,
     retry: false,
+  });
+  // the base every URL here is built from (#2083). the cards read theirs off
+  // the provider rows, so this only feeds the add sheet's preview and the
+  // notice for an unset ROLTER_PUBLIC_URL, and the screen does not wait on it
+  const publicUrl = useQuery({
+    queryKey: [PUBLIC_URL_KEY],
+    queryFn: fetchPublicUrl,
+    retry: false,
+    staleTime: Infinity,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -1114,6 +1293,12 @@ export default function SingleSignOn() {
         </GatedButton>
       </div>
 
+      {/* only beside a list this caller may read: a member refused the
+          providers has no URL here to be warned about */}
+      {!providers.isError && publicUrl.data?.configured === false && (
+        <PublicUrlNotice publicUrl={publicUrl.data} />
+      )}
+
       {providers.isError && (
         <LoadError
           error={providers.error}
@@ -1165,6 +1350,8 @@ export default function SingleSignOn() {
           onOpenChange={setSheetOpen}
           orgId={orgId}
           provider={editing}
+          publicUrl={publicUrl.data}
+          publicUrlFailed={publicUrl.isError}
           onSaved={invalidate}
         />
       )}

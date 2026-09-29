@@ -578,6 +578,11 @@ fn operations() -> Vec<Op> {
                 "Subsystems this build marks experimental; absence means stable",
             )
             .ok(Payload::List("SubsystemStability")),
+            Op::get(
+                "/api/v1/public-url",
+                "getPublicUrl",
+                "The control plane's public base URL, and whether it was configured",
+            ),
             Op::post(
                 "/api/v1/ui-events",
                 "ingestUiEvent",

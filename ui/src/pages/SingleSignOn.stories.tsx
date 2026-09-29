@@ -24,25 +24,44 @@ import {
   Toasted,
   type FetchStub,
 } from "./story-harness";
-import type { OrgAuthPolicy, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
+import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 
 const NOW = "2026-08-01T10:00:00Z";
 
-const provider = (over: Partial<SsoProviderRow> = {}): SsoProviderRow => ({
-  id: "sso-1",
-  org_id: ORG.id,
-  name: "Acme Okta",
-  slug: "okta",
-  issuer: "https://acme.okta.com",
-  client_id: "0oa1b2c3d4",
-  has_client_secret: true,
-  scopes: ["openid", "email", "profile"],
-  group_claim: "groups",
-  default_role: "member",
-  enabled: true,
-  created_at: NOW,
-  ...over,
-});
+/**
+ * The control plane's configured public url (#2083).
+ *
+ * Deliberately not the story's own origin: a card or a preview that fell back
+ * to `window.location` would show the storybook host here and fail the
+ * assertion, which is the bug the server-built urls exist to prevent.
+ */
+const PUBLIC_BASE = "https://rolter.acme.example";
+const PUBLIC_URL: PublicUrl = { public_url: PUBLIC_BASE, configured: true };
+// `ROLTER_PUBLIC_URL` unset: the control plane falls back to its default
+const DEFAULT_BASE = "http://localhost:4001";
+const UNSET: PublicUrl = { public_url: DEFAULT_BASE, configured: false };
+
+const provider = (over: Partial<SsoProviderRow> = {}): SsoProviderRow => {
+  const slug = over.slug ?? "okta";
+  return {
+    id: "sso-1",
+    org_id: ORG.id,
+    name: "Acme Okta",
+    slug,
+    issuer: "https://acme.okta.com",
+    client_id: "0oa1b2c3d4",
+    has_client_secret: true,
+    scopes: ["openid", "email", "profile"],
+    group_claim: "groups",
+    default_role: "member",
+    enabled: true,
+    created_at: NOW,
+    // built by the server from its public url, as `ProviderView` does
+    redirect_uri: `${PUBLIC_BASE}/auth/sso/${slug}/callback`,
+    login_url: `${PUBLIC_BASE}/auth/sso/${slug}/start`,
+    ...over,
+  };
+};
 
 const PROVIDERS: SsoProviderRow[] = [
   provider(),
@@ -98,7 +117,7 @@ const POLICY: OrgAuthPolicy = {
 };
 
 /**
- * The screen's three endpoints, routed by path.
+ * The screen's endpoints, routed by path.
  *
  * `/sso-providers/{id}/group-mappings` contains `sso-providers`, so the
  * mappings branch has to come first or the provider list answers it and every
@@ -107,11 +126,15 @@ const POLICY: OrgAuthPolicy = {
 function api({
   providers = () => PROVIDERS as unknown,
   policy = () => POLICY as unknown,
+  publicUrl = () => json(PUBLIC_URL),
   status = 200,
   putPolicy,
 }: {
   providers?: () => unknown;
   policy?: () => unknown;
+  /** answers `GET /api/v1/public-url`, which every signed-in caller may read,
+   * so it keeps its own status rather than following `status` */
+  publicUrl?: () => Response;
   status?: number;
   /** answers a policy save; by default it echoes the body back as saved */
   putPolicy?: () => Response;
@@ -121,6 +144,7 @@ function api({
   return scoped(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/api/v1/public-url")) return publicUrl();
     if (url.includes("/group-mappings")) {
       if (method === "POST") return json(MAPPINGS["sso-1"][0], 201);
       const id = url.split("/sso-providers/")[1]?.split("/")[0] ?? "";
@@ -169,10 +193,12 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Acme Okta")).toBeVisible());
 
-    // the login URL is the thing an operator has to hand to the IdP, so it is
-    // on the card and copyable rather than something to reconstruct by hand
-    await expect(canvas.getByText(new RegExp("/auth/sso/okta/start"))).toBeVisible();
+    // the card's addresses are the server's, on its configured public url
+    await expect(canvas.getByText(`${PUBLIC_BASE}/auth/sso/okta/callback`)).toBeVisible();
+    await expect(canvas.getByText(`${PUBLIC_BASE}/auth/sso/okta/start`)).toBeVisible();
     await expect(canvas.getByText("https://acme.okta.com")).toBeVisible();
+    // and with the public url configured, nothing warns about it
+    await expect(canvas.queryByText(/use the default address/)).toBeNull();
 
     // a group mapping is the thing that grants a role. its own request is
     // separate from the provider list, so it settles after the card is drawn
@@ -224,6 +250,175 @@ export const SaysWhenAClientSecretIsStored: Story = {
   },
 };
 
+/**
+ * #2083: the card shows the redirect URI an identity provider asks for, next
+ * to the login URL users follow, and each one says which it is.
+ *
+ * Before, the only copyable address was the login URL, so an admin looking for
+ * "the URL to give the IdP" pasted that one where the callback belongs and the
+ * IdP refused every sign-in with a redirect mismatch. Both come off the row,
+ * built by the server from its configured public url, never from the
+ * browser's own origin.
+ */
+export const ShowsTheRedirectUriToRegister: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const redirect = `${PUBLIC_BASE}/auth/sso/okta/callback`;
+    const login = `${PUBLIC_BASE}/auth/sso/okta/start`;
+    await waitFor(() => expect(canvas.getByText(redirect)).toBeVisible());
+
+    // labelled: the redirect uri is what the identity provider is given, the
+    // login url is what users follow
+    await expect(canvas.getByText("Redirect URI")).toBeVisible();
+    await expect(canvas.getByText("Register this in your identity provider.")).toBeVisible();
+    await expect(canvas.getByText(login)).toBeVisible();
+    await expect(canvas.getByText("What users follow to sign in.")).toBeVisible();
+
+    // each copy button is named for the value it copies, so the two are never
+    // mistaken for one another
+    await expect(
+      canvas.getByRole("button", { name: `Copy redirect URI: ${redirect}` }),
+    ).toBeVisible();
+    await expect(canvas.getByRole("button", { name: `Copy login URL: ${login}` })).toBeVisible();
+
+    // neither was assembled from the page's own origin
+    await expect(canvas.queryByText(new RegExp(window.location.origin))).toBeNull();
+  },
+};
+
+/**
+ * #2083: the identity provider wants the redirect URI before it issues the
+ * client ID and secret this sheet asks for, so the add sheet builds it from the
+ * slug as it is typed, on the public url the server reported.
+ */
+const previews = recording(api({ providers: () => [provider()] }));
+
+export const PreviewsTheRedirectUriFromTheSlug: Story = {
+  render: () => (
+    <Harness fetchStub={previews.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    // the sheet animates in, so visibility is polled once rather than read (#2287)
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+
+    // nothing to build from yet, and the row says what would fill it
+    await expect(within(preview).getByText("Type a slug to see the redirect URI.")).toBeVisible();
+    await expect(preview).toHaveAccessibleDescription(/when you create the application/);
+
+    // it follows the slug keystroke by keystroke, with no request per key
+    const reads = () => previews.calls.filter((c) => c.url.includes("/public-url")).length;
+    const before = reads();
+    const slug = panel.getByLabelText("Slug");
+    await userEvent.type(slug, "ok");
+    await expect(within(preview).getByText(`${PUBLIC_BASE}/auth/sso/ok/callback`)).toBeVisible();
+    await userEvent.type(slug, "ta");
+    const uri = `${PUBLIC_BASE}/auth/sso/okta/callback`;
+    await expect(within(preview).getByText(uri)).toBeVisible();
+    await expect(
+      within(preview).getByRole("button", { name: `Copy redirect URI: ${uri}` }),
+    ).toBeVisible();
+    await expect(reads()).toBe(before);
+
+    // a configured public url needs no warning
+    await expect(within(preview).queryByText(/ROLTER_PUBLIC_URL/)).toBeNull();
+
+    // and clearing the slug takes the uri away again rather than leaving a
+    // stale one to copy
+    await userEvent.clear(slug);
+    await expect(within(preview).getByText("Type a slug to see the redirect URI.")).toBeVisible();
+    await expect(within(preview).queryByRole("button")).toBeNull();
+  },
+};
+
+/**
+ * #2083: with `ROLTER_PUBLIC_URL` unset the control plane builds every address
+ * from its default, which an identity provider can only send a browser back to
+ * on the control plane's own host. The screen says so once above the list, and
+ * the sheet says so beside the preview, naming the address it will use.
+ */
+export const WarnsWhenThePublicUrlIsUnset: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        publicUrl: () => json(UNSET),
+        providers: () => [
+          provider({
+            redirect_uri: `${DEFAULT_BASE}/auth/sso/okta/callback`,
+            login_url: `${DEFAULT_BASE}/auth/sso/okta/start`,
+          }),
+        ],
+      })}
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByRole("note");
+    await expect(
+      within(notice).getByText("The redirect and login URLs use the default address"),
+    ).toBeVisible();
+    await expect(notice).toHaveTextContent(`ROLTER_PUBLIC_URL is not set`);
+    await expect(notice).toHaveTextContent(DEFAULT_BASE);
+    // the card still shows what the server built, default and all
+    await expect(canvas.getByText(`${DEFAULT_BASE}/auth/sso/okta/callback`)).toBeVisible();
+
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+    await userEvent.type(panel.getByLabelText("Slug"), "entra");
+    await expect(
+      within(preview).getByText(`${DEFAULT_BASE}/auth/sso/entra/callback`),
+    ).toBeVisible();
+    await expect(within(preview).getByText(/uses the default address/)).toBeVisible();
+  },
+};
+
+/**
+ * The public url could not be read. The sheet shows the path it can vouch for
+ * and says what goes in front of it, rather than guessing a host from the
+ * browser; the provider cards are unaffected, since each row carries its own.
+ */
+export const PreviewsOnlyThePathWhenThePublicUrlIsUnreadable: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        publicUrl: () => json({ error: { message: "upstream unavailable" } }, 502),
+        providers: () => [provider()],
+      })}
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(`${PUBLIC_BASE}/auth/sso/okta/callback`)).toBeVisible(),
+    );
+    // an unread public url is not an unset one
+    await expect(canvas.queryByRole("note")).toBeNull();
+
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await expect(within(preview).getByText("/auth/sso/okta/callback")).toBeVisible();
+    await expect(within(preview).getByText(/only the path is shown/)).toBeVisible();
+  },
+};
+
 export const Loading: Story = {
   render: () => (
     <Harness fetchStub={pending}>
@@ -265,6 +460,9 @@ export const Forbidden: Story = {
       fetchStub={api({
         providers: () => ({ error: { message: "forbidden" } }),
         policy: () => ({ error: { message: "forbidden" } }),
+        // readable by anyone signed in, and unset here, so the notice below
+        // is withheld by the refused list and not by a missing answer
+        publicUrl: () => json(UNSET),
         status: 403,
       })}
     >
@@ -281,6 +479,8 @@ export const Forbidden: Story = {
     await expect(canvas.queryByRole("button", { name: /Try again/ })).toBeNull();
     await expect(canvas.getByRole("button", { name: /Add provider/ })).toBeDisabled();
     await expectNoFalseEmpty(canvasElement, /No identity provider yet/);
+    // a caller refused the providers has no URL here to be warned about
+    await expect(canvas.queryByText(/use the default address/)).toBeNull();
   },
 };
 
@@ -379,6 +579,11 @@ export const EditsAProviderInPlace: Story = {
     // the slug is in the login url, so it is shown but not editable
     await expect(panel.getByLabelText("Slug")).toBeDisabled();
     await expect(panel.getByText(/cannot be changed/)).toBeVisible();
+    // and the redirect uri beside it is the saved provider's own, from the row
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+    await waitFor(() =>
+      expect(within(preview).getByText(`${PUBLIC_BASE}/auth/sso/okta/callback`)).toBeVisible(),
+    );
 
     // the sealed secret is not readable, so the field starts empty and an
     // empty field must mean "keep", never "clear"

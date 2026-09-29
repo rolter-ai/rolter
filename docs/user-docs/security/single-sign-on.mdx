@@ -16,7 +16,7 @@ Everything below lives on one screen: **Governance → Single Sign-On**.
   </Card>
 
   <Card title="Identity providers" icon="fingerprint">
-    The OIDC providers registered for this org, and the login URL each one answers on.
+    The OIDC providers registered for this org, the redirect URI each one needs registered, and the login URL users follow.
   </Card>
 
   <Card title="Group mappings" icon="users">
@@ -29,12 +29,23 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
 ## Register an identity provider
 
 <Steps>
-  <Step title="Create the application in your identity provider">
-    Create an OIDC web application. The redirect URI is `https://your-rolter-host/auth/sso/<slug>/callback`, where `<slug>` is the short name you are about to give the provider in Rolter. Rolter derives that URI from its own configured base URL and never from the incoming request, so a crafted link cannot send an authorization code somewhere else.
+  <Step title="Pick a slug and copy the redirect URI">
+    Open **Governance → Single Sign-On** and choose **Add provider**. Type the **Slug** first: the short name the provider will have in Rolter's URLs. The **Redirect URI** row under it fills in as you type, `https://your-rolter-host/auth/sso/<slug>/callback`, with a copy button beside it.
+
+    The host part is the control plane's public URL, `ROLTER_PUBLIC_URL`, as the server reports it through [`GET /api/v1/public-url`](/api/public-url), not the address your browser happens to be using. Rolter builds the redirect URI from that configured base and never from the incoming request, so a crafted link cannot send an authorization code somewhere else, and the value in the sheet is exactly the one the login flow will send.
+
+    <Warning>
+    If `ROLTER_PUBLIC_URL` is not set, the control plane falls back to `http://localhost:4001`, which reaches Rolter only from a browser on the control plane's own host. The screen says so above the provider list and beside the redirect URI. Set `ROLTER_PUBLIC_URL` to the address your users open Rolter at and restart the control plane before you register the URI with your identity provider.
+    </Warning>
+
   </Step>
 
-  <Step title="Add the provider in Rolter">
-    Open **Governance → Single Sign-On** and choose **Add provider**. Four fields are required:
+  <Step title="Create the application in your identity provider">
+    Leave the sheet open and create an OIDC web application in your identity provider. Paste the redirect URI where it asks for one: Okta lists it under *Sign-in redirect URIs*, Entra ID as a *Redirect URI* on the *Web* platform, Keycloak under *Valid redirect URIs*. The identity provider then issues the client ID and, for a confidential client, the client secret.
+  </Step>
+
+  <Step title="Fill in the rest of the provider">
+    Back in the sheet, four fields are required:
 
     <ParamField path="Name" type="string" required>
       What the button on the sign-in screen says — `Acme Okta`, `Entra ID`.
@@ -67,8 +78,14 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
 
   </Step>
 
-  <Step title="Copy the login URL">
-    The provider's card shows the URL its sign-in button points at, `https://your-rolter-host/auth/sso/<slug>/start`. Copy it straight from the card to test the flow or to link it from an internal portal.
+  <Step title="Check the two URLs on the card">
+    The provider's card lists two addresses, each with its own copy button, and says which is which:
+
+    - **Redirect URI**, `https://your-rolter-host/auth/sso/<slug>/callback`, is the value registered in your identity provider. It is the one to copy if you need to fix the application there.
+    - **Login URL**, `https://your-rolter-host/auth/sso/<slug>/start`, is what users follow to sign in, and what the provider's button on the sign-in screen points at. Use it to test the flow or to link sign-in from an internal portal. It does not belong in the identity provider; pasting it where the redirect URI goes makes the provider refuse every sign-in with a redirect mismatch.
+
+    Both come from the control plane as `redirect_uri` and `login_url` on each row of `GET /api/v1/orgs/{org_id}/sso-providers`, built from the same public URL, so they match what the login flow sends even behind a reverse proxy.
+
   </Step>
 </Steps>
 

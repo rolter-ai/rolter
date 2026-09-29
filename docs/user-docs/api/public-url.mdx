@@ -1,0 +1,74 @@
+---
+title: "The Rolter Control Plane's Public URL"
+sidebarTitle: "Public URL"
+description: "GET /api/v1/public-url reports the base URL the control plane builds every address it hands an identity provider from, and whether ROLTER_PUBLIC_URL set it or the default is standing in."
+---
+
+The control plane gives out addresses that something outside it has to call:
+the redirect URI an identity provider sends a user back to after single sign-on,
+and the login URL a user starts that sign-in from. It builds each of them from
+one base, `ROLTER_PUBLIC_URL`, and never from the incoming request, so a spoofed
+`Host` header cannot redirect an authorization code elsewhere.
+
+`GET /api/v1/public-url` returns that base. The dashboard's **Single Sign-On**
+screen reads it to preview a provider's redirect URI in the add sheet, before
+the provider exists, and to warn when the variable is unset. A client that needs
+one of these addresses before the server has built it should append the path to
+this value, not to its own origin: behind a reverse proxy, or under a second
+hostname, the two differ, and the identity provider then refuses the sign-in
+with a redirect mismatch.
+
+## Request
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  http://localhost:4001/api/v1/public-url
+```
+
+Any signed-in caller may read it, including a viewer with no membership
+anywhere. The `public_url` capability that `GET /api/v1/rbac/matrix` publishes
+is read-only for every authenticated caller and writable by nobody: the value is
+a fact about the deployment, the same for everyone. An anonymous request is
+`401`.
+
+## Response
+
+```json
+{
+  "public_url": "https://rolter.example.com",
+  "configured": true
+}
+```
+
+| Field        | Type    | Meaning                                                                                                             |
+| ------------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `public_url` | string  | the base every externally called address is built from, with no trailing slash, so an absolute path can be appended |
+| `configured` | boolean | `true` when `ROLTER_PUBLIC_URL` supplied it; `false` when it is unset or blank and the default stands in            |
+
+With `ROLTER_PUBLIC_URL` unset, the answer is the built-in default:
+
+```json
+{
+  "public_url": "http://localhost:4001",
+  "configured": false
+}
+```
+
+That address reaches the control plane only from a browser running on the
+control plane's own host. An identity provider redirecting anyone else to it
+sends them nowhere, so set `ROLTER_PUBLIC_URL` to the address users open the
+dashboard at before you register a provider. The variable is read once at
+startup; a change needs a restart. See
+[Environment variables](/configuration/environment-variables).
+
+## Addresses built from it
+
+| Address                | Path                        | Where it appears                                                |
+| ---------------------- | --------------------------- | --------------------------------------------------------------- |
+| SSO redirect URI       | `/auth/sso/{slug}/callback` | `redirect_uri` on every SSO provider row; the add sheet preview |
+| SSO login URL          | `/auth/sso/{slug}/start`    | `login_url` on every SSO provider row                           |
+| MCP OAuth redirect URI | `/auth/mcp/callback`        | `redirect_uri` on an MCP server's OAuth client                  |
+| Invitation accept link | `/invite/{token}`           | the link returned when an invitation is created                 |
+
+See [Single Sign-On](/security/single-sign-on) for where the redirect URI goes in
+your identity provider.
