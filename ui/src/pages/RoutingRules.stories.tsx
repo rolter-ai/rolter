@@ -219,12 +219,19 @@ export const DeletingARoute: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }));
+    const trigger = canvas.getByRole("button", { name: "Delete route gpt-4o" });
+    await userEvent.click(trigger);
     await confirmDestructive(/gpt-4o/, /delete route/i);
     const dialog = within(document.body).getByRole("dialog");
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: /delete route/i })).toBeDisabled(),
     );
+    // the pressed button going disabled takes focus with it; the panel picks
+    // it up, so the next Tab stays out of the table behind the scrim (#1998)
+    await waitFor(() => expect(dialog).toHaveFocus());
+    await userEvent.tab();
+    await expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await expect(trigger.closest("[inert]")).not.toBeNull();
   },
 };
 

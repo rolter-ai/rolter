@@ -281,6 +281,84 @@ export const SavingRefusesDismissal: Story = {
       screen().queryByRole("dialog", { name: /discard unsaved changes/i }),
     ).not.toBeInTheDocument();
     await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
+    // the refused click on the scrim leaves nothing focused; the panel takes
+    // focus back, so the next Tab cannot reach "Open editor" behind it (#1998)
+    await waitFor(() => expect(sheet()).toHaveFocus());
+    await userEvent.tab();
+    await expect(sheet()).toContainElement(document.activeElement as HTMLElement);
+    await expect(screen().getByRole("button", { name: "Open editor" })).not.toHaveFocus();
+  },
+};
+
+// finishes the save the story started, the way the network would: from
+// outside the sheet, whose surroundings are inert while it is up
+let finishSave: (() => void) | null = null;
+
+/** a sheet opened from a trigger, whose save stays on the wire until told */
+function SavesOnPress() {
+  const [open, setOpen] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [name, setName] = React.useState("openai-prod");
+  React.useEffect(() => {
+    finishSave = () => {
+      setSaving(false);
+      setOpen(false);
+    };
+    return () => {
+      finishSave = null;
+    };
+  }, []);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Open editor
+      </button>
+      <EditorSheet
+        name="provider-edit"
+        open={open}
+        onOpenChange={setOpen}
+        title="Edit provider"
+        subtitle="openai-prod · openai"
+        dirty={name !== "openai-prod"}
+        saveLabel="Save provider"
+        canSave
+        saving={saving}
+        onSave={() => setSaving(true)}
+      >
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+      </EditorSheet>
+    </>
+  );
+}
+
+/**
+ * Pressing save disables the button that holds focus, along with Cancel and
+ * the header's close. Focus falls to the panel rather than to `<body>`, Tab
+ * cycles inside the sheet while the page behind is inert, and the landed save
+ * hands focus back to the trigger (#1998).
+ */
+export const SavingKeepsFocusInside: Story = {
+  render: () => <SavesOnPress />,
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Open editor" });
+    await userEvent.click(trigger);
+    const dialog = await screen().findByRole("dialog");
+    const save = within(dialog).getByRole("button", { name: "Save provider" });
+    await userEvent.click(save);
+    await waitFor(() => expect(save).toBeDisabled());
+    await waitFor(() => expect(dialog).toHaveFocus());
+    for (const shift of [false, false, false, true, true, true]) {
+      await userEvent.tab({ shift });
+      await expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
+    await expect(trigger.closest("[inert]")).not.toBeNull();
+
+    finishSave?.();
+    await expectSheetClosed();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await expect(trigger.closest("[inert]")).toBeNull();
   },
 };
 
