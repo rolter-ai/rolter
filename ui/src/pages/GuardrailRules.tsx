@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -307,7 +308,7 @@ function RuleDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.guardrailRules.dialogBody")}</DialogDescription>
       </DialogHeader>
-      <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
+      <DialogBody className="space-y-4">
         <Field label={t("pages.guardrailRules.fieldName")} htmlFor="rule-name">
           <Input
             id="rule-name"
@@ -438,7 +439,7 @@ function RuleDialog({
             {error}
           </p>
         )}
-      </div>
+      </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}

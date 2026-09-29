@@ -339,6 +339,11 @@ Sheets slide in from the right at up to 580px wide and take the full width on sm
 page never scrolls sideways: grid and flex children carry `min-w-0`, and wide tables scroll inside
 their card.
 
+Below `sm` a sheet's footer stacks (`SheetActions`): Cancel and the primary action share the bottom
+line, the primary last and widest, and anything else sits above them. A dialog never opens taller
+than the window. A form dialog's fields scroll in a `DialogBody` between a header and a footer that
+stay put, and any other dialog is scrolled whole by its overlay, top first.
+
 Below the screen header sits a faint вышивка rule (10px, 28% opacity) that separates the header
 from the content.
 

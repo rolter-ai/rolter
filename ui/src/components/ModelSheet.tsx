@@ -16,7 +16,14 @@ import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 import { LockButton } from "@/components/ui/lock-button";
 import { Segmented } from "@/components/ui/segmented";
-import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetActions,
+  SheetBody,
+  SheetError,
+  SheetFooter,
+  SheetHeader,
+} from "@/components/ui/sheet";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -41,7 +48,6 @@ import {
   type RouteRow,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 // ---------------------------------------------------------------------------
@@ -1640,47 +1646,53 @@ export function ModelSheet({
               : undefined
           }
         />
-        <div className="flex items-center gap-2.5 px-[22px] py-3.5">
-          {/* no connection check here until the provider probe can say whether
-              it serves this upstream model (#2008, #2009). the provider's own
-              test answers "does the provider answer", which beside a model
-              name reads as a claim about the model */}
-          {/* the primary action stays where it is and greys out instead of
-              vanishing (#1265): a footer that reflows tells an operator who
-              never scrolled to the field errors only that saving is gone, so
-              the first error travels with the button and names the reason */}
-          {blockingError && (
-            <p
-              id={blockingErrorId}
-              role="alert"
-              className="ml-auto max-w-[52%] text-right text-xs leading-snug text-[color:var(--status-danger-text)]"
-            >
-              {blockingError}
-            </p>
-          )}
-          <span className={cn("inline-flex gap-2.5", !blockingError && "ml-auto")}>
-            <Button variant="ghost" disabled={locked} onClick={close}>
-              {t("common.cancel")}
-            </Button>
-            {readonly && (
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                {t("common.close")}
-              </Button>
-            )}
-            {!readonly && (
-              <Button
-                disabled={!canSave || save.isPending}
-                aria-describedby={blockingError ? blockingErrorId : undefined}
-                onClick={() => {
-                  ux.submitted();
-                  save.mutate();
-                }}
+        {/* no connection check here until the provider probe can say whether
+            it serves this upstream model (#2008, #2009). the provider's own
+            test answers "does the provider answer", which beside a model name
+            reads as a claim about the model */}
+        <SheetActions
+          start={
+            // the primary action stays where it is and greys out instead of
+            // vanishing (#1265): a footer that reflows tells an operator who
+            // never scrolled to the field errors only that saving is gone, so
+            // the first error travels with the button and names the reason.
+            // below `sm` the summary directly above already opens with that
+            // same line, and a second copy squeezed beside the buttons is what
+            // pushed Save off a phone (#2003), so there it is only announced.
+            // a zero basis lets it give up width to the buttons rather than
+            // wrap the row
+            blockingError && (
+              <p
+                id={blockingErrorId}
+                role="alert"
+                className="text-xs leading-snug text-[color:var(--status-danger-text)] max-sm:sr-only sm:max-w-[52%] sm:flex-[1_1_0] sm:text-right"
               >
-                {cta}
-              </Button>
-            )}
-          </span>
-        </div>
+                {blockingError}
+              </p>
+            )
+          }
+        >
+          <Button variant="ghost" disabled={locked} onClick={close}>
+            {t("common.cancel")}
+          </Button>
+          {readonly && (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              {t("common.close")}
+            </Button>
+          )}
+          {!readonly && (
+            <Button
+              disabled={!canSave || save.isPending}
+              aria-describedby={blockingError ? blockingErrorId : undefined}
+              onClick={() => {
+                ux.submitted();
+                save.mutate();
+              }}
+            >
+              {cta}
+            </Button>
+          )}
+        </SheetActions>
       </SheetFooter>
       {prompt}
     </Sheet>

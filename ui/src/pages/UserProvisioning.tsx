@@ -23,7 +23,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, type TableColumn } from "@/components/ui/table";
 import {
@@ -593,7 +593,7 @@ function IssueTokenSheet({
         )}
       </SheetBody>
       <SheetFooter>
-        <div className="flex justify-end gap-2 px-[22px] py-3">
+        <SheetActions>
           {issued ? (
             <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
           ) : (
@@ -607,7 +607,7 @@ function IssueTokenSheet({
               </Button>
             </>
           )}
-        </div>
+        </SheetActions>
       </SheetFooter>
     </Sheet>
   );

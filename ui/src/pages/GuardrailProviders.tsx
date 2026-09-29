@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -301,7 +302,7 @@ function ProviderDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.guardrailProviders.dialogBody")}</DialogDescription>
       </DialogHeader>
-      <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
+      <DialogBody className="space-y-4">
         <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
           <Input
             id="provider-name"
@@ -438,7 +439,7 @@ function ProviderDialog({
             {error}
           </p>
         )}
-      </div>
+      </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}

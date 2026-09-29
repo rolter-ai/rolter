@@ -74,6 +74,43 @@ easy to lose when the shape is retyped in the next sheet:
 Every one of those is asserted in the primitive's own story, so a rewrite that
 drops one fails the story rather than shipping.
 
+## Footers and bodies on small screens
+
+The buttons that finish a form live in the overlay's own file, beside the
+panel, not in this table. Two of them decide whether a form can be finished on
+a phone or in a short window at all (#2003).
+
+`SheetActions` (`ui/src/components/ui/sheet.tsx`) is the button row inside a
+`SheetFooter`. Its children are Cancel and then the primary action. Its
+`start` slot takes anything outside that pair: `ProviderSheet`'s connection
+test, which pins itself left with `mr-auto`, or `ModelSheet`'s line naming why
+Save is disabled (#1265). Below `sm` the sheet is the whole screen and cannot
+be scrolled sideways, so the row becomes a column. `start` goes on top, and the
+pair gets the bottom line to itself with the primary action last, taking the
+width Cancel leaves. From `sm` up it is one row that wraps rather than overflows.
+Every sheet footer uses it. A sheet that writes its own `flex justify-end` row
+brings back the single line that pushed `ModelSheet`'s Save into the gutter
+and `ProviderSheet`'s connection test 151 px off the left edge in Russian.
+
+`ModelSheet` hides its disabled-save reason visually below `sm` and keeps it as
+the button's description and a live region. The error summary directly above
+the buttons already starts with the same line, and a second copy squeezed beside
+them is what pushed Save into the gutter.
+
+`DialogBody` (`ui/src/components/ui/dialog.tsx`) holds a dialog form's fields,
+between `DialogHeader` and `DialogFooter`. A panel with a body caps itself at
+the window's height and only the body scrolls, so the title, the close button
+and the primary action stay on screen at 640×360. A dialog with no body keeps
+its natural height, and the overlay scrolls the whole panel, top edge first.
+The panel is never capped without something inside it to shrink, since that
+would push the footer out past the panel's own border. Use `DialogBody` for
+any dialog with more than a couple of fields. A hand-written
+`max-h-[65vh] overflow-y-auto` body is the shape it replaced in
+`GuardrailRules`, `GuardrailProviders`, `Plugins` and `McpManagement`.
+
+`DialogFooter` wraps as well. The primary action is its last child, so a wrapped
+footer leaves it at the bottom right, where it was.
+
 ## Copy
 
 The primitives carry the small amount of copy they own under `common.*` in the
