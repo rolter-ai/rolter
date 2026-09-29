@@ -50,6 +50,14 @@ name. `story-harness.tsx` exports `expectSkeleton` for exactly that.
 **A screen must not render its content shape while a request is in flight.**
 That is the `Logs` bug: an empty table and a loading table looked the same.
 
+**An empty state needs a successful answer.** Gate it on `isSuccess`, not on
+`!isLoading && !error`. The two differ exactly when react-query parks a retry:
+in a hidden tab, or with the browser offline, a failed first attempt leaves the
+query `pending` but not fetching, so it is neither loading nor failed. In that
+window LLM Logs said "Nothing logged yet" about a load that had failed (#1984).
+For the same reason the skeleton keys on `isPending`, which covers the parked
+retry, rather than `isLoading`, which does not.
+
 ### Empty: what it is, and what to do about it
 
 An `EmptyState` carries an icon, a title, one sentence of description, and —
@@ -76,8 +84,10 @@ Two rules the wording depends on:
 - **A deployment answer is not an empty state.** A control plane with no
   ClickHouse has not "served nothing yet" — it was never asked to record
   anything, and no amount of traffic will fill the screen. That is a
-  `noAnalytics` [load error](error-states.md), not an `EmptyState`; the
-  Dashboard rendered it as the latter until #1236.
+  `noAnalytics` state, not an `EmptyState`; the Dashboard rendered it as the
+  latter until #1236. Nor is it an outage: LLM Logs shows it as an
+  informational panel rather than a red alert (#1984), and the other screens
+  follow in #1976 and #2016 (see [error states](error-states.md)).
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.
