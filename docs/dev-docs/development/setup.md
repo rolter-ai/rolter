@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Rust** (stable) via [rustup](https://rustup.rs) — the workspace pins the toolchain in `rust-toolchain.toml`.
-- **Bun** for the UI — `curl -fsSL https://bun.sh/install | bash`.
+- **Bun** for the UI, at the version `.bun-version` pins (CI reads the same file) — from the repo root, `curl -fsSL https://bun.sh/install | bash -s "bun-v$(cat .bun-version)"`.
 - **prek** for repository Git hooks — install with `uv tool install prek` or `brew install prek`.
 - **Docker** + Compose for Postgres/Redis/ClickHouse.
 - **uv** (optional) for the PyPI-wheel install path and tooling.

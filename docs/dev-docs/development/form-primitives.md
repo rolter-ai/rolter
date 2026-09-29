@@ -120,7 +120,7 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 ## The guard
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
-this page from being advice. It runs in the `ui lint / build` job and fails on
+this page from being advice. It runs in the `ui, storybook, docs` job and fails on
 six things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a

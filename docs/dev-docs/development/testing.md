@@ -606,7 +606,7 @@ span reads the same) or make the target public if it deserves to be.
 
 ### UI dependencies and the lockfile
 
-The `ui` and `storybook` jobs both install with `bun install --frozen-lockfile`,
+The `ui, storybook, docs` job installs with `bun install --frozen-lockfile`,
 for everyone — dependabot included. That was not always true, and the reason it
 is now is worth recording.
 
@@ -854,7 +854,7 @@ The four suppressions in the tree today are:
 
 ### Storybook play tests
 
-The `storybook` job builds the static Storybook, serves it, and runs the
+The `ui, storybook, docs` job builds the static Storybook, serves it, and runs the
 interaction (play) tests with `@storybook/test-runner` against a headless
 chromium. It is a **merge gate** (#753): a failing play test fails `quality`,
 which fails `ci-ok`. Locally:
@@ -946,7 +946,7 @@ await waitFor(() => expect(canvas.getByRole("button", { name: "open" })).toHaveF
 ```
 
 `bun run check:focus` (`ui/scripts/check-story-focus.ts`) fails on the unwrapped
-shape and runs in the `ui lint / build` job, so this cannot reach a PR again. An
+shape and runs in the `ui, storybook, docs` job, so this cannot reach a PR again. An
 assertion straight after `.focus()`, a `userEvent` call or another `expect(…)`
 needs no waiter — those have already settled where focus is, and the check
 allows them.
@@ -1079,7 +1079,7 @@ probe is the harness's and never the dashboard's: no production component
 learns a test-only attribute.
 
 `bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces all three
-shapes, in the same `ui lint / build` job as `check:focus` and on the same
+shapes, in the same `ui, storybook, docs` job as `check:focus` and on the same
 grep-level terms:
 
 - a `toBeDisabled()` outside a waiter, in a story whose harness carries a

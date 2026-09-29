@@ -130,8 +130,9 @@ Notes:
 - `userEvent.click` refuses to click a `disabled` control; assert `toBeDisabled()`
   and pass `{ pointerEventsCheck: 0 }` if you must force the click.
 - `test-storybook` needs a running Storybook — the runner points at a served
-  static build (see the `storybook` CI job in `.github/workflows/quality.yml`),
-  and locally `bun run test-storybook` drives whatever is on `:6006`.
+  static build (see the storybook steps of the `ui, storybook, docs` job in
+  `.github/workflows/quality.yml`), and locally `bun run test-storybook` drives
+  whatever is on `:6006`.
 
 Stories currently cover the core UI-kit primitives (button, input, textarea,
 select, switch, badge, tag, card, stat-card, empty-state, skeleton, tabs), the

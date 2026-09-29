@@ -34,6 +34,9 @@ jobs:
             up -d --build --wait --wait-timeout 360
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          # one pin for every setup-bun step in the repo (#1922)
+          bun-version-file: .bun-version
 
       - name: install ui deps
         working-directory: ui

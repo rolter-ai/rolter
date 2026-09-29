@@ -12,8 +12,8 @@ name: quality
 # need: `static checks` for the ones that only read the tree, `rust lint` for
 # the rust checks that link nothing, `rust build` for the ones that link or boot
 # a binary. each runs one named step per concern plus a report step that names
-# whichever failed. nextest, the image smoke, the ui checks and coverage run
-# as jobs of their own.
+# whichever failed. `ui, storybook, docs` does the same for every check that
+# runs on bun. nextest, the image smoke and coverage run as jobs of their own.
 # ci.yml aggregates every job here (plus pr-title) into a single `ci-ok` check
 # for branch protection. coverage runs as informational (continue-on-error) on
 # pull requests only; the informational checks that need a full build and gate
@@ -1003,19 +1003,77 @@ jobs:
           fi
           echo "every static check that applies to \`${EVENT_NAME}\` passed" >> "${summary}"
 
-  # ── ui: typecheck + production build ────────────────────────────────────────
+  # ── ui, storybook, docs: every check that runs on bun ───────────────────────
+  # the dashboard checks, the storybook play tests, the docs formatting check
+  # and the llms.txt check. until #2025 they were four jobs (`ui lint / build`,
+  # `storybook build + play tests`, `docs formatting (prettier)`,
+  # `llms.txt tracks the docs nav`), each with its own checkout and bun
+  # download, and the first two each ran their own `bun install`. they share
+  # one runner now, under the rules of `static checks`: one named step per
+  # former check, every check step under `!cancelled()` so one red step never
+  # hides the next, each guarded on the setup it reads, and a `report` step
+  # that names whichever failed and fails the job when one was skipped.
+  #
+  # the two docs steps read nothing from ui/node_modules: scripts/format-docs.sh
+  # runs its own `bunx prettier@<version>` and gen-llms-txt.ts imports only
+  # node:fs and node:path. so they are guarded on setup-bun alone, and a broken
+  # `bun install` does not hide a docs failure
   ui:
-    name: ui lint / build
+    name: ui, storybook, docs
     runs-on: ubuntu-latest
+    # about 5-6 min, most of it the chromium download and the storybook build.
+    # a hung play test fails the gate in 25 minutes instead of GitHub's
+    # 360-minute default
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
         with:
           persist-credentials: false
+      # the version comes from .bun-version, the one place it is pinned (#1922).
+      # without it every run took whatever bun was latest that day, and a bun
+      # release that changed the bun.lock format would fail every frozen install
+      # at once with no change in the repo. extended.yml's `bun pin` job fails
+      # nightly once a newer bun is out, so the pin does not go stale
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        id: setup-bun
+        if: ${{ !cancelled() }}
+        with:
+          bun-version-file: .bun-version
+
+      # ── docs formatting (prettier) ────────────────────────────────────────
+      # ui/ has had a prettier config and a `format:check` step since #1667;
+      # every markdown, mdx, json and yaml file outside it had none, so
+      # wrapping, table padding and list markers were whatever each author
+      # typed and a one-word edit showed up in review as a reflowed paragraph
+      # (#1695). the style is the root .prettierrc and the exclusions are
+      # .prettierignore — the same pair the
+      # `prettier (markdown / json / yaml outside ui/)` prek hook reads
+      - name: docs formatting (prettier)
+        id: format-docs
+        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
+        working-directory: .
+        run: bash scripts/format-docs.sh --check
+
+      # ── llms.txt tracks the docs nav ──────────────────────────────────────
+      # llms.txt is generated from docs.json plus each page's frontmatter
+      # (#1582). a hand-maintained index goes stale silently — a page is added
+      # and the index keeps listing the ones that existed when someone last
+      # remembered — so the committed file is regenerated here and the step
+      # fails when it has drifted
+      - name: llms.txt tracks the docs nav
+        id: llms-txt
+        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
+        working-directory: .
+        run: bun scripts/gen-llms-txt.ts --check
+
+      # ── ui lint / build ───────────────────────────────────────────────────
       - name: install
+        id: install
+        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
         # frozen for everyone, dependabot included. it used to self-heal on
         # dependabot's PRs, because the npm ecosystem bumped package.json
         # without writing bun.lock — but that made dependabot's PR pass without
@@ -1025,6 +1083,8 @@ jobs:
         # that caused it, and never reaches master
         run: bun install --frozen-lockfile
       - name: lint (tsc --noEmit)
+        id: lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run lint
       # ui/ had no formatter config at all until #1667, so `npx prettier` on a
       # file it just edited rewrote the whole thing to prettier's 80 columns and
@@ -1032,10 +1092,14 @@ jobs:
       # the tree already had (printWidth 100, everything else prettier's
       # default) and this step keeps it from drifting again
       - name: formatting (prettier --check)
+        id: format
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run format:check
       # every locale must match the en base catalog: a missing key falls back to
       # english mid-sentence, an orphan is copy nothing renders (#489)
       - name: i18n catalog parity
+        id: i18n
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:i18n
       # catalog parity cannot see a string that never reached a catalog at all,
       # which is how `window.confirm("Discard unsaved changes?")` shipped green
@@ -1043,6 +1107,8 @@ jobs:
       # that is not in a catalog; the baseline is retired and only reasoned
       # notation in ui/src/lib/i18n/literals-allowlist.ts is tolerated (#958)
       - name: no new hardcoded user-facing strings
+        id: literals
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:literals
       # the maintenance matrix's four "never hand-roll this" rules — Combobox
       # over a bare <select>, CodeBlock over a raw <pre>, ConfirmDialog over
@@ -1052,6 +1118,8 @@ jobs:
       # looked. a case the rule is genuinely not about carries an inline
       # `ui-primitives-allow:` waiver with its reason
       - name: no hand-rolled shared components
+        id: primitives
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:primitives
       # focus moves from an effect, a step after a dialog or drawer enters or
       # leaves the document, so a story that asserts it with no waiter is
@@ -1060,6 +1128,8 @@ jobs:
       # workflow runs (#1675); #1672's 5s budget does not reach them, because an
       # assertion that never polls waits zero milliseconds at any budget
       - name: story focus assertions wait for the handover
+        id: focus
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:focus
       # the same class of defect one step out: an assertion that never polls
       # waits zero milliseconds at any budget, so a one-shot `toBeDisabled()` on
@@ -1068,74 +1138,40 @@ jobs:
       # are still a request behind the dialog. #1689 was six plays of exactly
       # that, passing only while the stub answered inside the same tick (#1700)
       - name: story assertions do not depend on zero latency
+        id: waits
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:waits
       - name: unit tests (bun test)
+        id: unit
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run test
       - name: build
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build
 
-  # ── docs: prose, data and workflow files are formatted ─────────────────────
-  # ui/ has had a prettier config and a `format:check` step since #1667; every
-  # markdown, mdx, json and yaml file outside it had none, so wrapping, table
-  # padding and list markers were whatever each author typed and a one-word
-  # edit showed up in review as a reflowed paragraph (#1695). the style is the
-  # root .prettierrc and the exclusions are .prettierignore — the same pair the
-  # `prettier (markdown / json / yaml outside ui/)` prek hook reads
-  format-docs:
-    name: docs formatting (prettier)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - name: check
-        run: bash scripts/format-docs.sh --check
-
-  # ── docs: the agent-facing index tracks the nav ─────────────────────────────
-  # llms.txt is generated from docs.json plus each page's frontmatter (#1582).
-  # a hand-maintained index goes stale silently — a page is added and the index
-  # keeps listing the ones that existed when someone last remembered — so the
-  # committed file is regenerated here and the job fails when it has drifted
-  llms-txt:
-    name: llms.txt tracks the docs nav
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - name: check
-        run: bun scripts/gen-llms-txt.ts --check
-
-  # ── storybook: build + play/interaction tests (headless chromium) ───────────
-  # builds the static Storybook and runs the interaction (play) tests via the
-  # test-runner against it. a merge gate since #753 — every screen ships stories
-  # for loaded/loading/empty/error plus play tests, so a regression here is a
-  # real one. the heavy step is the one-off chromium download; the tests
-  # themselves are seconds.
-  storybook:
-    name: storybook build + play tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ui
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - name: install
-        # frozen for everyone; see the ui job's install step for why (#1137)
-        run: bun install --frozen-lockfile
-      # the test-runner launches the headless shell, a separate download from the
-      # full chromium build. ui/package.json pins the test-runner's playwright to
-      # the same version as @playwright/test, so one install serves both (#737)
+      # ── storybook build + play tests (headless chromium) ─────────────────
+      # builds the static Storybook and runs the interaction (play) tests via
+      # the test-runner against it. a merge gate since #753 — every screen
+      # ships stories for loaded/loading/empty/error plus play tests, so a
+      # regression here is a real one. the heavy step is the one-off chromium
+      # download; the tests themselves are seconds.
+      #
+      # the test-runner launches the headless shell, a separate download from
+      # the full chromium build. ui/package.json pins the test-runner's
+      # playwright to the same version as @playwright/test, so one install
+      # serves both (#737)
       - name: install chromium (playwright)
+        id: chromium
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bunx playwright install --with-deps chromium chromium-headless-shell
       - name: build storybook
+        id: build-storybook
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build-storybook
       - name: run play tests
+        id: play-tests
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.build-storybook.outcome == 'success' }}
         # serve the static build, wait for it, then run the test-runner against it
         run: |
           python3 -m http.server 6006 --directory storybook-static &
@@ -1144,6 +1180,90 @@ jobs:
             sleep 1
           done
           bun run test-storybook --url http://127.0.0.1:6006
+
+      # the verdict for the whole job. every step here must run on every event,
+      # so a skip counts as a failure (#1562). outcomes arrive through env,
+      # never inline in the script (zizmor's template-injection rule); a step
+      # id that does not exist yields an empty outcome, which also fails
+      - name: report
+        if: ${{ !cancelled() }}
+        working-directory: .
+        env:
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_SETUP_BUN: ${{ steps.setup-bun.outcome }}
+          OUTCOME_FORMAT_DOCS: ${{ steps.format-docs.outcome }}
+          OUTCOME_LLMS_TXT: ${{ steps.llms-txt.outcome }}
+          OUTCOME_INSTALL: ${{ steps.install.outcome }}
+          OUTCOME_LINT: ${{ steps.lint.outcome }}
+          OUTCOME_FORMAT: ${{ steps.format.outcome }}
+          OUTCOME_I18N: ${{ steps.i18n.outcome }}
+          OUTCOME_LITERALS: ${{ steps.literals.outcome }}
+          OUTCOME_PRIMITIVES: ${{ steps.primitives.outcome }}
+          OUTCOME_FOCUS: ${{ steps.focus.outcome }}
+          OUTCOME_WAITS: ${{ steps.waits.outcome }}
+          OUTCOME_UNIT: ${{ steps.unit.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_CHROMIUM: ${{ steps.chromium.outcome }}
+          OUTCOME_BUILD_STORYBOOK: ${{ steps.build-storybook.outcome }}
+          OUTCOME_PLAY_TESTS: ${{ steps.play-tests.outcome }}
+        run: |
+          set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY}"
+          failed=0
+
+          {
+            echo "### ui, storybook, docs"
+            echo
+            echo "| former job | step | outcome | reproduce locally |"
+            echo "| --- | --- | --- | --- |"
+          } >> "${summary}"
+
+          # row <former job> <step> <outcome> <command>
+          row() {
+            local job="$1" step="$2" outcome="$3" repro="$4" shown
+            shown="${outcome:-no outcome}"
+            if [ "${outcome}" = "skipped" ]; then
+              shown="**skipped, but must run**"
+              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
+              failed=1
+            elif [ "${outcome}" != "success" ]; then
+              shown="**${outcome:-no outcome}**"
+              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
+              failed=1
+            fi
+            # a literal | would end the table cell early
+            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
+          }
+
+          setup="nothing to run locally; re-run the job"
+          ui="ui lint / build"
+          sb="storybook build + play tests"
+          row "ui, storybook, docs" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
+          row "ui, storybook, docs" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
+          row "docs formatting (prettier)" "docs formatting (prettier)" "${OUTCOME_FORMAT_DOCS}" "just fmt-docs-check"
+          row "llms.txt tracks the docs nav" "llms.txt tracks the docs nav" "${OUTCOME_LLMS_TXT}" \
+            "bun scripts/gen-llms-txt.ts --check"
+          row "${ui}" "install" "${OUTCOME_INSTALL}" "cd ui && bun install --frozen-lockfile"
+          row "${ui}" "lint (tsc --noEmit)" "${OUTCOME_LINT}" "cd ui && bun run lint"
+          row "${ui}" "formatting (prettier --check)" "${OUTCOME_FORMAT}" "cd ui && bun run format:check"
+          row "${ui}" "i18n catalog parity" "${OUTCOME_I18N}" "cd ui && bun run check:i18n"
+          row "${ui}" "no new hardcoded user-facing strings" "${OUTCOME_LITERALS}" "cd ui && bun run check:literals"
+          row "${ui}" "no hand-rolled shared components" "${OUTCOME_PRIMITIVES}" "cd ui && bun run check:primitives"
+          row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
+          row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
+          row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
+          row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
+          row "${sb}" "install chromium (playwright)" "${OUTCOME_CHROMIUM}" \
+            "cd ui && bunx playwright install --with-deps chromium chromium-headless-shell"
+          row "${sb}" "build storybook" "${OUTCOME_BUILD_STORYBOOK}" "cd ui && bun run build-storybook"
+          row "${sb}" "run play tests" "${OUTCOME_PLAY_TESTS}" "cd ui && bun run test:stories"
+
+          echo >> "${summary}"
+          if [ "${failed}" -ne 0 ]; then
+            echo "one or more ui, storybook or docs checks did not pass; each has an error annotation naming its former job" >> "${summary}"
+            exit 1
+          fi
+          echo "every ui, storybook and docs check passed" >> "${summary}"
 
   # ── image smoke: the single image through published ports ───────────────────
   # runs the image the quickstart documents (default command, ports published
