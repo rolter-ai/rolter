@@ -43,6 +43,7 @@ export function PolicyCard({
   title,
   description,
   enabled,
+  status,
   badges,
   details,
   actions,
@@ -50,19 +51,28 @@ export function PolicyCard({
   title: string;
   description: string;
   enabled: boolean;
+  /**
+   * The status badge, when `enabled` alone would overstate it. A guardrail
+   * provider can be switched on and still enforce nothing (#2162).
+   */
+  status?: { tone: "success" | "warning" | "neutral"; label: string };
   badges: React.ReactNode;
   details: React.ReactNode;
   actions: React.ReactNode;
 }) {
   const { t } = useTranslation();
+  const badge = status ?? {
+    tone: enabled ? ("success" as const) : ("neutral" as const),
+    label: enabled ? t("guardrailPanel.enforced") : t("guardrailPanel.paused"),
+  };
   return (
     <article className="flex min-h-[172px] flex-col rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-4 transition-colors hover:border-[color:var(--border-default)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-sm font-semibold">{title}</h2>
-            <Badge tone={enabled ? "success" : "neutral"} dot>
-              {enabled ? t("guardrailPanel.enforced") : t("guardrailPanel.paused")}
+            <Badge tone={badge.tone} dot>
+              {badge.label}
             </Badge>
           </div>
           <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{description}</p>
