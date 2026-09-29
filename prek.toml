@@ -189,15 +189,27 @@ id = "release-handoff"
 name = "release handoff is wired"
 entry = "scripts/check-release-handoff.py"
 language = "python"
-files = "^(\\.github/workflows/(release|release-plz|ci)\\.yml|scripts/check-release-handoff\\.py)$"
+files = "^(\\.github/workflows/(release|release-plz|ci)\\.yml|scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh))$"
 pass_filenames = false
 
+# the self-test's broken fixtures edit the wait script's text, so an edit there
+# can leave one with nothing to break
 [[repos.hooks]]
 id = "release-handoff-self-test"
 name = "release handoff checks can still fail"
 entry = "scripts/check-release-handoff.py --self-test"
 language = "python"
-files = "^scripts/check-release-handoff\\.py$"
+files = "^scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh)$"
+pass_filenames = false
+
+# release-plz.yml's release-gate runs both scripts only on a push to master,
+# so this is where they are tested: against a fake gh, curl, cargo and clock
+[[repos.hooks]]
+id = "release-gate"
+name = "release gate scripts against a fake gh"
+entry = "bash scripts/test-release-gate.sh"
+language = "system"
+files = "^scripts/(wait-for-ci-gate|unpublished-crates|test-release-gate)\\.sh$"
 pass_filenames = false
 
 [[repos.hooks]]

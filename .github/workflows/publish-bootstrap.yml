@@ -29,8 +29,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # reuse the same fmt/clippy/test/cargo-deny gate as CI/release so a broken
-  # commit can never be bootstrap-published (ROL-103).
+  # reuse the same fmt/clippy/test/cargo-deny gate as CI so a broken commit can
+  # never be bootstrap-published (ROL-103). release-plz.yml waits for ci.yml's
+  # push run instead of re-running it (#2025), but a manual dispatch here can
+  # name any ref, which may have no push run to wait for, so this one re-runs.
   verify:
     uses: ./.github/workflows/quality.yml
 

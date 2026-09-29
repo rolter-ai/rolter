@@ -11,6 +11,11 @@ accident because neither has a test behind it:
     release-plz.yml  --workflow_dispatch-->  release.yml  --> wheels/pypi/ghcr
     release-plz.yml  --workflow_dispatch-->  ci.yml       --> ci-ok on the release pr
 
+and it publishes to crates.io only behind a gate that is just as easy to cut:
+
+    release-gate  --scripts/wait-for-ci-gate.sh-->  ci-ok of this sha's ci.yml push run
+    release-plz-release  runs only when release-gate reports it verified
+
 release-plz tags with the repo GITHUB_TOKEN, and GitHub suppresses downstream
 events for token-created refs, so release.yml's `push: tags` trigger never fires
 for a real release. `workflow_dispatch` is the documented exception: it always
@@ -21,8 +26,9 @@ to v0.0.6-v0.0.10 while PyPI sat on 0.0.5 (#903).
 Every assertion reads the workflows as parsed YAML: a job exists, its `needs`
 *set* holds the required ids, a trigger or input is declared. The few that are
 text by nature (a command inside a `run:` block, an option string passed to an
-action) search only the job they belong to, and read its shell with the
-comments taken out, so a command that survives only as a comment does not count.
+action, the api query in the gate's wait script) search only the job or script
+they belong to, and read its shell with the comments taken out, so a command
+that survives only as a comment does not count.
 A job or step switched off with `if: false` counts as missing. So the check
 passes however a workflow is laid out, reflowed by prettier included, and fails
 when the wiring itself is wrong (#1723).
@@ -53,10 +59,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PLZ = ".github/workflows/release-plz.yml"
 REL = ".github/workflows/release.yml"
 CI = ".github/workflows/ci.yml"
+WAIT = "scripts/wait-for-ci-gate.sh"
 FILES = (PLZ, REL, CI)
+SCRIPTS = (WAIT,)
 
 Workflow = dict
-Tree = dict  # workflow path -> parsed workflow
+Tree = dict  # workflow path -> parsed workflow, script path -> its text
 
 
 # ── reading a workflow the way the runner does ──────────────────────────────
@@ -124,6 +132,12 @@ def load(root: Path) -> tuple[Tree, list[str]]:
             tree[rel] = parse(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as err:
             errors.append(f"{rel}: not a readable workflow: {err}")
+    for rel in SCRIPTS:
+        path = root / rel
+        if not path.is_file():
+            errors.append(f"{rel} is missing; the release gate runs it")
+            continue
+        tree[rel] = path.read_text(encoding="utf-8")
     return tree, errors
 
 
@@ -284,14 +298,14 @@ class Check:
     id: str
     file: str
     message: str
-    holds: Callable[[Workflow], bool]
+    holds: Callable[[Any], bool]  # a parsed workflow, or a script's text
 
 
 CHECKS: list[Check] = []
 
 
 def check(file: str, message: str) -> Callable:
-    def register(fn: Callable[[Workflow], bool]) -> Callable[[Workflow], bool]:
+    def register(fn: Callable[[Any], bool]) -> Callable[[Any], bool]:
         CHECKS.append(Check(fn.__name__, file, message, fn))
         return fn
 
@@ -444,6 +458,105 @@ def ci_ok_job(wf: Workflow) -> bool:
     return j is not None and j.get("name", "ci-ok") == "ci-ok"
 
 
+# gating the crates.io publish. release-plz-release runs cargo publish with the
+# persisted contents: write token, so it must never start on a commit nothing
+# verified (ROL-103). it used to need a job that re-ran all of quality.yml on
+# the merge commit; it now needs release-gate, which waits for ci-ok on this
+# sha's ci.yml push run (#2025). either wiring passes. what must hold is that
+# the publish is bound to the gate itself: release-gate skips the wait when
+# nothing is pending, and a detector that says so by mistake must leave the
+# release skipped, never ungated. the checks above only notice a job switched
+# off with a literal `if: false`, so the binding is asserted in its own right
+
+VERIFIED = {
+    "needs.release-gate.outputs.verified=='true'",
+    "'true'==needs.release-gate.outputs.verified",
+}
+# a status function replaces the implicit success() that keeps a failed or
+# cancelled gate from reaching the publish
+OVERRIDES_SUCCESS = re.compile(r"\b(?:always|failure|cancelled)\(\)")
+
+
+def widened(cond: Any) -> bool:
+    # a `||` or a status function lets the job run past a gate that did not pass
+    expr = expression(cond)
+    return "||" in expr or bool(OVERRIDES_SUCCESS.search(expr))
+
+
+def runs_on_verified(cond: Any) -> bool:
+    # one `&&` conjunct is exactly the verified comparison
+    return any(term.strip("()") in VERIFIED for term in expression(cond).split("&&"))
+
+
+def runs_quality(j: Optional[dict]) -> bool:
+    return bool(
+        re.search(r"\.github/workflows/quality\.ya?ml(?:@|$)", str((j or {}).get("uses", "")))
+    )
+
+
+@check(
+    PLZ,
+    "release-plz-release must need release-gate and run only when "
+    "needs.release-gate.outputs.verified == 'true' (or need a job that runs quality.yml)",
+)
+def publish_gated(wf: Workflow) -> bool:
+    j = job(wf, "release-plz-release")
+    if j is None or widened(j.get("if")):
+        return False
+    if any(runs_quality(job(wf, need)) for need in needs(j)):
+        return True
+    return (
+        "release-gate" in needs(j)
+        and job(wf, "release-gate") is not None
+        and runs_on_verified(j.get("if"))
+    )
+
+
+WAIT_COMMAND = re.compile(r"^(?:bash\s+)?(?:\./)?scripts/wait-for-ci-gate\.sh(?:\s|$)")
+
+
+@check(
+    PLZ,
+    "release-gate must set verified only after scripts/wait-for-ci-gate.sh succeeds, in the "
+    "step its output reads, and never from a check-run lookup",
+)
+def gate_waits_on_push_run(wf: Workflow) -> bool:
+    j = job(wf, "release-gate")
+    if j is None or "check-runs" in run_text(j):
+        return False
+    source = re.fullmatch(
+        r"steps\.([\w-]+)\.outputs\.verified", expression((j.get("outputs") or {}).get("verified"))
+    )
+    step = next((s for s in steps(j) if source and s.get("id") == source.group(1)), None)
+    if step is None or not isinstance(step.get("run"), str):
+        return False
+    commands = [c.strip() for c in shell_commands(step["run"])]
+    # the wait runs as a plain command, neither excused with `||` nor sent to the
+    # background, so under `bash -e` a red gate ends the step before verified is
+    # written
+    waits = [
+        i
+        for i, c in enumerate(commands)
+        if WAIT_COMMAND.match(c) and "||" not in c and not re.search(r"(?<!&)&$", c)
+    ]
+    sets = [i for i, c in enumerate(commands) if "verified=true" in c and "GITHUB_OUTPUT" in c]
+    return bool(waits and sets) and waits[0] < sets[0]
+
+
+@check(
+    WAIT,
+    "wait-for-ci-gate.sh must query ci.yml push runs on master for the sha and require "
+    "their ci-ok job, never a check-run name",
+)
+def wait_binds_push_run(script: str) -> bool:
+    text = "\n".join(shell_commands(script))
+    queries = re.findall(r"actions/workflows/ci\.yml/runs\?(\S*)", text)
+    bound = any(all(p in q for p in ("head_sha=", "event=push", "branch=master")) for q in queries)
+    reads_jobs = re.search(r"actions/runs/\S+/jobs", text)
+    ci_ok_job = re.search(r'select\(\s*\.name\s*==\s*"ci-ok"\s*\)', text)
+    return bound and bool(reads_jobs and ci_ok_job) and "check-runs" not in text
+
+
 # the receiving end
 
 
@@ -594,9 +707,10 @@ def failures(tree: Tree) -> list[Check]:
 FOOTER = """
 the release handoff is broken. see docs/dev-docs/development/packaging.md ("Release
 pipeline"); a release that loses this wiring publishes a github release and
-crates.io but never a pypi wheel, or leaves the release pr unable to reach a
-green ci-ok, and nothing goes red. a job or step disabled with `if: false`
-counts as missing, and so does a command left only in a shell comment."""
+crates.io but never a pypi wheel, leaves the release pr unable to reach a
+green ci-ok, or publishes to crates.io from a commit nothing verified, and
+nothing goes red. a job or step disabled with `if: false` counts as missing,
+and so does a command left only in a shell comment."""
 
 
 def run(root: Path) -> int:
@@ -723,6 +837,15 @@ def disable(file: str, name: str, step_mentioning: Optional[str] = None) -> Call
                 s["if"] = "${{ false }}"
                 return
         raise NoOp(f"{file}: {name} has no step running {step_mentioning!r}")
+
+    return mutate
+
+
+def replace_in_script(file: str, old: str, new: str) -> Callable[[Tree], None]:
+    def mutate(tree: Tree) -> None:
+        if old not in tree[file]:
+            raise NoOp(f"{file} never mentions {old!r}")
+        tree[file] = tree[file].replace(old, new)
 
     return mutate
 
@@ -978,6 +1101,146 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         comment_out(PLZ, "dispatch-release-pr-ci", "actions/workflows/ci.yml/runs?event="),
     ),
     ("ci_dispatchable", "ci.yml workflow_dispatch removed", drop_trigger(CI, "workflow_dispatch")),
+    (
+        "publish_gated",
+        "release-plz-release no longer needs release-gate",
+        drop_need(PLZ, "release-plz-release", "release-gate"),
+    ),
+    (
+        "publish_gated",
+        "the verified condition dropped from release-plz-release",
+        edit_job(PLZ, "release-plz-release", lambda j: j.pop("if")),
+    ),
+    (
+        "publish_gated",
+        "the verified condition widened with always()",
+        edit_job(
+            PLZ,
+            "release-plz-release",
+            set_key("if", "${{ always() && needs.release-gate.outputs.verified == 'true' }}"),
+        ),
+    ),
+    (
+        "publish_gated",
+        "the verified condition or-ed with another",
+        edit_job(
+            PLZ,
+            "release-plz-release",
+            set_key(
+                "if", "needs.release-gate.outputs.verified == 'true' || github.event_name == 'push'"
+            ),
+        ),
+    ),
+    (
+        "publish_gated",
+        "release-plz-release keyed on the pending detector instead",
+        edit_job(
+            PLZ,
+            "release-plz-release",
+            set_key("if", "needs.release-gate.outputs.pending == 'true'"),
+        ),
+    ),
+    ("publish_gated", "release-gate disabled with if: false", disable(PLZ, "release-gate")),
+    (
+        "publish_gated",
+        "a quality.yml gate run past with always()",
+        chain(
+            lambda t: jobs_of(t, PLZ).__setitem__(
+                "verify", {"uses": "./.github/workflows/quality.yml"}
+            ),
+            edit_job(PLZ, "release-plz-release", set_key("needs", ["verify"])),
+            edit_job(PLZ, "release-plz-release", set_key("if", "${{ always() }}")),
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait replaced by a check-runs name lookup",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            'gh api "repos/$REPO/commits/$SHA/check-runs" '
+            "-q '.check_runs[] | select(.name == \"ci-ok\") | .conclusion' | grep -qx success",
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait commented out",
+        comment_out(PLZ, "release-gate", "scripts/wait-for-ci-gate.sh"),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait made non-fatal",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            "bash scripts/wait-for-ci-gate.sh || true",
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait sent to the background",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            "bash scripts/wait-for-ci-gate.sh",
+            "bash scripts/wait-for-ci-gate.sh &",
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "verified written before the wait",
+        replace_in_job(
+            PLZ,
+            "release-gate",
+            'bash scripts/wait-for-ci-gate.sh\necho "verified=true" >> "$GITHUB_OUTPUT"',
+            'echo "verified=true" >> "$GITHUB_OUTPUT"\nbash scripts/wait-for-ci-gate.sh',
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "verified read from the pending detector",
+        edit_job(
+            PLZ,
+            "release-gate",
+            set_key("outputs", {"verified": "${{ steps.pending.outputs.pending }}"}),
+        ),
+    ),
+    (
+        "gate_waits_on_push_run",
+        "the wait step disabled with if: false",
+        disable(PLZ, "release-gate", "scripts/wait-for-ci-gate.sh"),
+    ),
+    (
+        "wait_binds_push_run",
+        "runs of any event accepted",
+        replace_in_script(WAIT, "&event=push", ""),
+    ),
+    (
+        "wait_binds_push_run",
+        "runs of any branch accepted",
+        replace_in_script(WAIT, "&branch=master", ""),
+    ),
+    (
+        "wait_binds_push_run",
+        "the wait moved onto check-runs by name",
+        replace_in_script(
+            WAIT,
+            "actions/workflows/ci.yml/runs?head_sha=${SHA}&event=push&branch=master",
+            "commits/${SHA}/check-runs?check_name=ci-ok",
+        ),
+    ),
+    (
+        "wait_binds_push_run",
+        "the ci-ok job no longer required",
+        replace_in_script(WAIT, 'select(.name == "ci-ok")', 'select(.name == "gate-ok")'),
+    ),
+    (
+        "wait_binds_push_run",
+        "the push-run query left only in a comment",
+        replace_in_script(WAIT, 'runs_path="repos/', '# runs_path="repos/'),
+    ),
     ("ci_ok_job", "ci-ok job deleted", drop_job(CI, "ci-ok")),
     ("ci_ok_job", "ci-ok check renamed", edit_job(CI, "ci-ok", set_key("name", "all green"))),
     (
@@ -1187,6 +1450,42 @@ BENIGN: list[tuple[str, Callable[[Tree], None]]] = [
         ),
     ),
     (
+        "the verified condition beside another, as an expression",
+        edit_job(
+            PLZ,
+            "release-plz-release",
+            set_key(
+                "if",
+                "${{ github.repository == 'rolter-ai/rolter' && "
+                "needs.release-gate.outputs.verified == 'true' }}",
+            ),
+        ),
+    ),
+    (
+        "the verified condition in parentheses, compared the other way round",
+        edit_job(
+            PLZ,
+            "release-plz-release",
+            set_key("if", "${{ ('true' == needs.release-gate.outputs.verified) }}"),
+        ),
+    ),
+    (
+        "release-plz-release gated by a job that re-runs quality.yml instead",
+        chain(
+            lambda t: jobs_of(t, PLZ).__setitem__(
+                "verify", {"uses": "./.github/workflows/quality.yml"}
+            ),
+            edit_job(PLZ, "release-plz-release", set_key("needs", ["verify"])),
+            edit_job(PLZ, "release-plz-release", lambda j: j.pop("if")),
+        ),
+    ),
+    (
+        "the wait script run by path",
+        replace_in_job(
+            PLZ, "release-gate", "bash scripts/wait-for-ci-gate.sh", "./scripts/wait-for-ci-gate.sh"
+        ),
+    ),
+    (
         "a job or step with a real condition",
         chain(
             edit_job(
@@ -1218,8 +1517,12 @@ def relayouts(tree: Tree) -> Iterator[tuple[str, Tree]]:
         yield (
             style,
             {
-                f: parse(
-                    yaml.safe_dump(reversed_needs(wf), default_flow_style=flow, sort_keys=True)
+                f: (
+                    parse(
+                        yaml.safe_dump(reversed_needs(wf), default_flow_style=flow, sort_keys=True)
+                    )
+                    if isinstance(wf, dict)
+                    else wf
                 )
                 for f, wf in tree.items()
             },
@@ -1286,7 +1589,8 @@ def self_test(root: Path) -> int:
         drop_need(REL, "verify-parity", "publish-pypi")(broken)
         for rel, wf in broken.items():
             (Path(tmp) / rel).parent.mkdir(parents=True, exist_ok=True)
-            (Path(tmp) / rel).write_text(yaml.safe_dump(wf), encoding="utf-8")
+            text = yaml.safe_dump(wf) if isinstance(wf, dict) else wf
+            (Path(tmp) / rel).write_text(text, encoding="utf-8")
         if [c.id for c in failures(load(Path(tmp))[0])] != ["parity_observes_publish"]:
             problems.append(
                 "a workflow broken on disk did not fail exactly parity_observes_publish"
