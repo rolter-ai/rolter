@@ -162,6 +162,8 @@ jobs:
           toolchain: stable
       - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
         name: fetch dependencies for analysis
         run: cargo fetch --locked
