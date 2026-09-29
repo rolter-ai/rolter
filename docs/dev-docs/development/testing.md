@@ -473,9 +473,9 @@ The checks that read the tree and build nothing run as steps of one job,
 `static checks` (`static` in `quality.yml`): gitleaks over the working tree and
 the branch history, the session-url check over the PR's commits, migrations
 append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
-release handoff checker and its self-test, the board automation retry policy,
-and the helm chart's appVersion check, lint and three renders. Until #2025 each
-was a job of its own. They did 0-15 s of work apiece and then waited a median
+release handoff checker, its self-test and the release gate scripts' fixture
+test, the board automation retry policy, and the helm chart's appVersion check,
+lint and three renders. Until #2025 each was a job of its own. They did 0-15 s of work apiece and then waited a median
 86-200 s for a runner, since every job a push starts draws on the same 20
 concurrent slots. The decision and its trade-offs are in
 [the CI runner budget ADR](../adr/2026-09-29-ci-runner-budget.md).

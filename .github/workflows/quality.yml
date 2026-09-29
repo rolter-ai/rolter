@@ -1,8 +1,11 @@
 name: quality
 
-# reusable quality/security gate. run standalone from ci.yml on every push/pr
-# and via workflow_call from the release paths so nothing publishes on a commit
-# whose tests, lint or supply-chain check has not passed.
+# reusable quality/security gate, called from ci.yml on every push/pr (and from
+# the one-shot publish-bootstrap.yml). the release paths do not re-run it: they
+# wait for ci.yml's `ci-ok` on the commit they publish (release-plz.yml's
+# `release-gate` on the push run, release.yml's `verify-external-checks` on the
+# tagged sha), so nothing publishes on a commit whose tests, lint or
+# supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
 # reviewer: many independent checks. the ones that only read the tree share the
@@ -184,8 +187,9 @@ jobs:
   # against the org's 20 concurrent slots, so 16 queued even on an idle org
   # (#2025). they share one runner now, and a failure still names its concern:
   #
-  # - one named step per former job (two for gitleaks and the release handoff,
-  #   five for the helm chart), keeping that job's command, env and event guard
+  # - one named step per former job (two for gitleaks, three for the release
+  #   handoff, five for the helm chart), keeping that job's command, env and
+  #   event guard
   # - every step runs under `!cancelled()` rather than the default `success()`,
   #   so one red step never hides the ones after it. `always()` would also keep
   #   a superseded run holding its runner after ci.yml cancelled it
@@ -427,7 +431,9 @@ jobs:
       # release-plz.yml is the only thing that starts wheel/pypi publishing.
       # losing it fails silently — releases keep shipping, just without a wheel
       # (#903). the checker reads the workflows as parsed yaml (#1723); `uv run
-      # --script` installs the pyyaml pinned in its inline metadata, nothing else
+      # --script` installs the pyyaml pinned in its inline metadata, nothing
+      # else. it also asserts the crates.io publish still waits on
+      # `release-gate` (#2025)
       - name: release handoff wired
         id: release-handoff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
@@ -437,6 +443,14 @@ jobs:
         id: release-handoff-self-test
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         run: uv run --script scripts/check-release-handoff.py --self-test
+      # release-plz.yml's `release-gate` only waits on a release push to master,
+      # so a regression in its scripts would first show as a release published
+      # ungated or never published. this runs both against a fake gh, curl,
+      # cargo and clock. it reads nothing the steps above produce
+      - name: release gate scripts against a fake gh
+        id: release-gate
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-release-gate.sh
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
@@ -523,6 +537,7 @@ jobs:
           OUTCOME_ZIZMOR: ${{ steps.zizmor.outcome }}
           OUTCOME_RELEASE_HANDOFF: ${{ steps.release-handoff.outcome }}
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
+          OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
           OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
@@ -597,6 +612,8 @@ jobs:
             "prek run release-handoff --all-files"
           row "release handoff wired" "release handoff wired (self-test)" "${OUTCOME_RELEASE_HANDOFF_SELF_TEST}" yes \
             "prek run release-handoff-self-test --all-files"
+          row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
+            "prek run release-gate --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \

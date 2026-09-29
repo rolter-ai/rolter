@@ -134,9 +134,9 @@ release-plz.yml ── release-pr ──►  "Release PR" (version bump + change
       │
       │ (that PR is merged)
       ▼
-release-plz.yml ── verify ──► release ──►  crates.io publish
-                                           tag v{version}
-                                           github release
+release-plz.yml ── release-gate ──► release ──►  crates.io publish
+                   (ci-ok of this sha's          tag v{version}
+                    ci.yml push run)             github release
       │
       │ workflow_dispatch -f tag=v{version}      ← dispatch-artifact-release
       ▼
@@ -176,6 +176,65 @@ Two properties make the barrier real:
 
 Each build is its own job, so a single flaky platform can be re-run on its own
 without re-publishing anything that already succeeded.
+
+### The crates.io publish waits for the push run
+
+`release-plz release` publishes to crates.io, pushes the tag and creates the
+GitHub release with a persisted `contents: write` token, so it must never start
+on a commit nothing verified (ROL-103). It needs the `release-gate` job and
+runs only when that job's `verified` output is `true`. `release-gate` holds a
+read-only token (`contents: read`, `actions: read`) and does two things:
+
+1. `scripts/unpublished-crates.sh` lists every workspace crate whose `publish`
+   is not `[]` in `cargo metadata` (today everything except `rolter-ui`) and
+   looks its version up on crates.io. When every version is already there,
+   which is every push except the merge of the release PR, the job prints a
+   notice and stops without setting `verified`, so `release-plz release` is
+   skipped. A lookup that fails for any reason counts as unpublished.
+2. Otherwise `scripts/wait-for-ci-gate.sh` waits for the `ci.yml` **push** run
+   on the same commit
+   (`actions/workflows/ci.yml/runs?head_sha=<sha>&event=push&branch=master`)
+   and requires that run's `ci-ok` job to have concluded `success`. It fails
+   closed on an API error that survives three attempts, on any other
+   conclusion, on a finished run with no `ci-ok` job, and after 90 minutes.
+   Its last command writes `verified=true` to the step output, and the step
+   runs that script and nothing else, so only a successful exit sets it.
+
+The gate is bound to a run, not to a check-run name. Any workflow can post a
+check-run called `ci-ok` on a master commit: a `pull_request` run from master
+into another branch reports on master's head, and workflows fired by outsiders
+write check-runs there too. A `ci.yml` push run on a sha can only come from
+`ci.yml` at that sha, and a later push never cancels it. `release.yml`'s
+`verify-external-checks` still matches check-run names
+([below](#the-gate-is-asserted-not-re-run)); the two are separate mechanisms.
+
+The publish is bound to the gate, not to the detector. A detector that wrongly
+reports nothing pending leaves `verified` unset, which delays a release but
+never publishes one unverified. `scripts/check-release-handoff.py` asserts that
+binding, that the wait step is the bare script call, and that the script's one
+write of `verified` is its last command. `scripts/test-release-gate.sh` runs
+both scripts against a fake `gh`, `curl`, `cargo` and clock, checking that the
+output is written exactly when the wait exits 0, as a step of `quality.yml`'s
+`static checks` job and as a prek hook.
+
+The job waits rather than re-running `quality.yml` on the merge commit, which
+cost 27 jobs on every push while `ci.yml`'s own push run was gating the same
+sha. A push with nothing to publish now costs one short job. A release push
+holds one runner, and the `release-plz` concurrency group, for as long as the
+push gate takes; the 90-minute deadline leaves room above the slowest push gate
+measured (61 minutes).
+
+A timeout or a red `ci-ok` fails `release gate` and skips the publish. Get
+`ci-ok` green on that push run first (re-run its failed jobs if the failure was
+a flake), then re-run the gate and everything after it:
+
+```bash
+gh run rerun <release-plz run id> --failed
+```
+
+If a later push's release-plz run starts first, it finds the version still
+unpublished, gates its own commit and publishes from that later tree, which is
+verified the same way.
 
 ### Why the release PR needs a dispatch too
 
@@ -222,9 +281,11 @@ Without it the pipeline half-works in the worst way: the GitHub release and
 crates.io advance while no wheel is ever built, and every job stays green. That
 is how v0.0.6 through v0.0.10 shipped while PyPI sat on 0.0.5 ([#903]).
 `scripts/check-release-handoff.py` (a merge gate in `quality.yml` and a prek
-hook) asserts the wiring is still in place. It reads `release-plz.yml`,
-`release.yml` and `ci.yml` as parsed YAML and checks structure: a job exists, its
-`needs` set holds the required job ids, a trigger or dispatch input is declared.
+hook) asserts the wiring is still in place, the crates.io publish gate above
+included. It reads `release-plz.yml`, `release.yml` and `ci.yml` as parsed YAML
+(and `scripts/wait-for-ci-gate.sh` as shell text) and checks structure: a job
+exists, its `needs` set holds the required job ids, a trigger or dispatch input
+is declared.
 The few assertions that are text by nature, a `gh workflow run` command or the
 `push-by-digest=true` option, look only inside the job they belong to, and they
 read its shell with the comments removed: a dispatch commented out to pause
@@ -270,13 +331,14 @@ red instead of quietly leaving a channel behind.
 
 ### Publishing gates
 
-| Gate                                    | Effect                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------- |
-| `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed |
-| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names the gate above requires (comma-separated)            |
-| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                            |
-| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                           |
-| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored            |
+| Gate                                    | Effect                                                                                                    |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed |
+| `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed                                |
+| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names `verify-external-checks` requires (comma-separated)                                 |
+| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                           |
+| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                                                          |
+| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored                                           |
 
 Wheels are built with `maturin-action` but uploaded with `pypa/gh-action-pypi-publish`:
 `maturin upload` is deprecated and slated for removal ([PyO3/maturin#2334]). The
@@ -302,15 +364,19 @@ arbitrary dispatch-supplied ref in a default-branch context, whose caches
 trusted runs later restore — cache poisoning, and CodeQL flags it.
 
 Asserting settles both. Every commit on master carries a `ci-ok` check-run from
-`ci.yml`, and release-plz re-runs the gate on the release commit before tagging,
-so a tagged commit is verified by construction. The assertion binds to the
+`ci.yml`, and release-plz tags only after `release-gate` has seen `ci-ok` succeed
+on the release commit's `ci.yml` push run
+([above](#the-cratesio-publish-waits-for-the-push-run)), so a tagged commit is
+verified by construction. The assertion binds to the
 _tagged_ SHA — which re-running never did — costs no duplicate 20-minute run,
 and checks out nothing.
 
-Because release-plz dispatches the moment it finishes tagging, `ci-ok` is often
-still running for that commit. A pending check is therefore expected, not a
-failure: the job waits up to 45 minutes for a verdict, fails immediately on a
-real non-success, and fails closed if a required check never appears.
+On the release-plz path the loop normally passes on its first poll:
+`release-gate` saw `ci-ok` finish before the tag existed, and `ci-ok` needs
+every CodeQL leg. A tag dispatched by hand, or a check re-run after tagging, can
+still leave a required check pending, and that is expected, not a failure: the
+job waits up to 45 minutes for a verdict, fails immediately on a real
+non-success, and fails closed if a required check never appears.
 
 [#988]: https://github.com/rolter-ai/rolter/issues/988
 
