@@ -278,7 +278,7 @@ reuses an action name.
 | `ci-ok` step _no agent session urls (pr body)_                 | runs, and must succeed          | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
 | `ci-ok` step _no agent session urls (commits, dispatch/queue)_ | runs, and must succeed          | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
 | `ci-ok` step `pr-title`                                        | skipped                         | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
-| `gitleaks` (branch history step)                               | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
+| `static checks` step _gitleaks (branch history)_               | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
 
 The two session-url steps resolve their subject differently here, because a queue
 ref belongs to no pull request head and `--pr-for-ref` cannot match it:
@@ -303,8 +303,9 @@ Both of those steps live in `ci.yml`'s `ci-ok` job rather than in `quality.yml`,
 because resolving a pull request needs a token and `quality.yml` deliberately
 takes none (#734).
 
-Two places inside `quality.yml` did need adjusting. `migrations append-only` diffs
-against `origin/master`, and a merge-queue checkout is a synthetic ref with no
+Two places inside `quality.yml` did need adjusting, both steps of the
+`static checks` job today. `migrations append-only` diffs against
+`origin/master`, and a merge-queue checkout is a synthetic ref with no
 `origin/master` fetched — the script's _no such ref; skipping_ branch would have
 turned the gate into a silent no-op on exactly the runs that matter. It now takes
 its base from `github.event.merge_group.base_sha`, which the payload provides and
@@ -313,7 +314,7 @@ everywhere else. A called workflow sees the original event, so the expression
 resolves inside `quality.yml` without ci.yml having to pass anything in, and no
 secret is involved.
 
-The other is the `gitleaks` job's branch-history pass. On a pull request it reads
+The other is the `gitleaks (branch history)` step. On a pull request it reads
 `pull_request.base.sha..head.sha`, and a `merge_group` payload has no
 `pull_request` object, so until #1722 the step skipped itself and only the
 working-tree pass ran. The working-tree pass is the half that matters for the
@@ -323,8 +324,8 @@ run those are the commits `master` is about to receive: this entry's plus every
 entry batched ahead of it, which no single per-PR run ever scanned as one range.
 It now takes `merge_group.base_sha..merge_group.head_sha` from the payload, the
 same way `ci-ok`'s commit-range step does, so it needs no API call and no token.
-`base_sha` is an ancestor of the queue head, and the job checks out with
-`fetch-depth: 0`, so the commit is in the clone.
+`base_sha` is an ancestor of the queue head, and the `static checks` job checks
+out with `fetch-depth: 0`, so the commit is in the clone.
 
 ### Concurrency
 
@@ -341,14 +342,14 @@ per-run group makes that impossible rather than unlikely.
 `scripts/check-agent-session-urls.sh` rejects a coding-agent session or
 remote-connection url — a `claude.ai/code/session…` link, or any agent's own
 `<Name>-Session:` git trailer carrying a url — in a commit message or a pull
-request body. It runs as the `no-agent-session-urls` prek hook, as
-`session-urls` in `quality.yml` over every commit the PR introduces, and as two
-steps of `ci-ok` in `ci.yml`: _no agent session urls (pr body)_ over the PR
-body, and _no agent session urls (commits, dispatch/queue)_ over the commit
-range on a dispatched or merge-queue run, where the `quality.yml` job cannot
-see one. The links are ephemeral and sometimes private, and a merged commit
-message can only be corrected with a history rewrite, so the rule has no
-exceptions.
+request body. It runs as the `no-agent-session-urls` prek hook, as the
+`no agent session urls (commits)` step of `quality.yml`'s `static checks` job
+over every commit the PR introduces, and as two steps of `ci-ok` in `ci.yml`:
+_no agent session urls (pr body)_ over the PR body, and _no agent session urls
+(commits, dispatch/queue)_ over the commit range on a dispatched or merge-queue
+run, where the `quality.yml` step cannot see one. The links are ephemeral and
+sometimes private, and a merged commit message can only be corrected with a
+history rewrite, so the rule has no exceptions.
 
 The part that surprises people is that the offending line is often not one the
 author wrote. **PR-authoring tooling for a coding agent may append a
@@ -433,8 +434,9 @@ Anywhere else, a skip is a failure rather than a pass.
 #### The commit half of the dispatch path
 
 The body was only one half. `quality.yml`'s `session-urls` job — the one that
-reads the commit messages the PR introduces — took base and head from
-`github.event.pull_request`, so a dispatched run skipped it. A skipped job
+reads the commit messages the PR introduces, today the
+`no agent session urls (commits)` step of `static checks` — took base and head
+from `github.event.pull_request`, so a dispatched run skipped it. A skipped job
 inside a reusable workflow does not fail it, so `quality` still reported
 `success` and `ci-ok` went green having never read a commit message (#1562).
 
@@ -453,6 +455,12 @@ beside its `pull_request` twin **because `quality.yml` takes no secrets**
 so the gate behaves identically on dependabot and fork PRs, which receive none.
 Resolving a pull request needs a token, so it belongs on this side of the line.
 The `pull_request` path in `quality.yml` is unchanged.
+
+Since #2025 that path is a step inside `static checks` rather than a job, and a
+skipped step does not fail a job any more than a skipped job fails a workflow.
+The job's `report` step closes that gap for every step it holds: it knows which
+events each step must run on and fails the job when one of them was skipped
+there (see [the static checks job](testing.md#the-static-checks-job)).
 
 The contract matches the body half: no open PR for the ref is a `::notice::`
 and a pass, a failed API listing fails the step, and a range whose endpoints are

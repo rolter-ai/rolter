@@ -116,7 +116,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] cibuildwheel/maturin-action wheels → PyPI (`uv tool install rolter`) (`build-wheels` + `publish-pypi` in `release.yml`, PEP 740 attestations; `rolter` 0.0.11 is on PyPI)
 - [x] Publish crates to crates.io (#279)
 - [x] Multi-arch images → GHCR (`build-image` in `release.yml`, amd64 + arm64)
-- [x] Helm chart / K8s manifests (`charts/rolter/`, gated by the `helm chart` job in `quality.yml`)
+- [x] Helm chart / K8s manifests (`charts/rolter/`, gated by the `helm chart` steps of the `static checks` job in `quality.yml`)
 - [x] Release automation from Conventional Commits (release-plz, per-crate changelogs — see [Changelogs](AGENTS.md#changelogs))
 - [x] `cargo deny` + dependency/advisory scanning in CI (#283)
 

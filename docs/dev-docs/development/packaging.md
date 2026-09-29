@@ -104,9 +104,9 @@ deployed (#1140). Two things now hold it:
 
 - the `release-plz pr` job runs `scripts/sync-chart-appversion.py --fix` on the
   release branch and pushes the result, so the Release PR is already consistent
-- `quality.yml`'s `helm chart` job runs the same script in check mode, so a
-  disagreement fails CI rather than shipping — including if the release-branch
-  step ever stops working
+- a `helm chart` step of `quality.yml`'s `static checks` job runs the same
+  script in check mode, so a disagreement fails CI rather than shipping —
+  including if the release-branch step ever stops working
 
 The script is also a `prek` hook on `Cargo.toml` and `Chart.yaml`, so a manual
 version-line move is caught before it is pushed. To reconcile by hand:
@@ -257,8 +257,8 @@ never publishes one unverified. `scripts/check-release-handoff.py` asserts that
 binding, that the wait step is the bare script call, and that the script's one
 write of `verified` is its last command. `scripts/test-release-gate.sh` runs
 both scripts against a fake `gh`, `curl`, `cargo` and clock, checking that the
-output is written exactly when the wait exits 0, as a step in `quality.yml`'s
-`release handoff wired` job and as a prek hook.
+output is written exactly when the wait exits 0, as a step of `quality.yml`'s
+`static checks` job and as a prek hook.
 
 The job waits rather than re-running `quality.yml` on the merge commit, which
 cost 27 jobs on every push while `ci.yml`'s own push run was gating the same
