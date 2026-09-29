@@ -29,22 +29,32 @@ changes. Setup and triage rules are in
 When working on dashboard UI, consult the project MCP server
 (`rolter-storybook` in `.mcp.json`) before writing components:
 
-- run `list-all-documentation` first to discover available primitives
-- run `get-documentation` / `get-documentation-for-story` before using
-  component props
+- run `docs-list` first to discover available primitives and their doc ids
+- run `docs-show` / `docs-show-story` before using component props
 - run `get-storybook-story-instructions` before creating or editing stories
-- run `preview-stories` after generating UI or stories, and include the
-  returned URLs in your reply
+- run `stories-find-by-component` and `stories-preview` after changing how UI
+  looks, and include the returned URLs in your reply — but only when your own
+  checkout is the one serving port 6006 (see below)
+
+The story tests themselves are not an MCP tool: run them with
+`bun run test:stories <files>`, which serves your checkout on a free port.
 
 That MCP server _is_ the Storybook dev server on port 6006, so it has to be
 listening before the agent session starts — a session that begins with port
-6006 down has no `rolter-storybook` tools for its entire lifetime, and starting
-Storybook mid-session does not attach them. The `post-start` hook in
-`.config/wt.toml` starts it for every new worktree and tears it down with the
-worktree, so this is handled as long as hooks are approved
-(`wt config approvals add`). Outside a Worktrunk worktree, start it yourself
-with `bun run storybook` in `ui/` before launching the session. Only one
-worktree can hold port 6006 at a time.
+6006 down has no `rolter-storybook` tools, and starting Storybook mid-session
+does not attach them on its own; reconnect the server from `/mcp` or start a
+new session. The `post-start` hook in `.config/wt.toml` starts it for every new
+worktree and tears it down with the worktree, so this is handled as long as
+hooks are approved (`wt config approvals add`). Outside a Worktrunk worktree,
+start it yourself in `ui/` before launching the session, detached so it
+outlives the session: `nohup bun run storybook --ci --no-open --exact-port &`.
+
+Only one checkout can hold port 6006 at a time; the first worktree to start
+takes it and the hook fails fast in the others. The docs tools describe the
+shared primitives, which rarely differ between checkouts, but `stories-preview`
+and `stories-changed` describe the checkout that is serving, not necessarily
+yours. For that reason the `rolter-ui` subagent (`.claude/agents/rolter-ui.md`)
+is given the three `docs-*` tools and `get-storybook-story-instructions` only.
 
 This applies to every state a screen has, empty/loading/error included. Assets
 stay vendored locally — the dashboard must work air-gapped, so no runtime CDN
