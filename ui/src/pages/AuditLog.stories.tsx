@@ -71,7 +71,7 @@ export const Loaded: Story = {
 
     const group = canvas.getByRole("radiogroup", { name: "Time range filter" });
     await expect(group).toBeInTheDocument();
-    const allRadio = canvas.getByRole("radio", { name: "All time" });
+    const allRadio = canvas.getByRole("radio", { name: "All" });
     await expect(allRadio).toHaveAttribute("aria-checked", "true");
   },
 };
