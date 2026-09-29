@@ -651,3 +651,33 @@ trade.
 Pull-request runs are unchanged: pushing again to a PR still cancels the
 in-flight run for the superseded commit, which is what you want, because nobody
 will ever merge that sha.
+
+## `codeql (rust)` on a pull request with no Rust change
+
+`codeql (rust)` is the longest job `ci-ok` waits on (about 8 min), and about
+half of all pull requests touch no Rust at all. On `pull_request` runs its first
+step, _detect rust changes_, diffs the merge commit against its first parent
+(the base) and looks for a `*.rs` file, a `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain.toml` or anything under `.github/codeql/`. With none of those,
+the leg skips the toolchain setup, `cargo fetch`, `initialize codeql` and
+`analyze`, writes a notice saying so, and ends `success`. The other codeql legs
+are untouched.
+
+This is the one diff-based skip in the gate ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)),
+and it cannot change a verdict: the codeql job never fails on alerts, so a
+skipped analysis and a clean one both leave `codeql` at `success`. The limits
+that keep it safe:
+
+- only `pull_request` skips. `push`, `merge_group` and `workflow_dispatch`
+  always analyse, so the merge queue runs the full Rust analysis on the tree
+  that is about to land, and every `master` commit (and so every release tag)
+  keeps a complete one. That queue run is also what catches a pull request that
+  breaks the leg itself, since a change to `ci.yml` alone does not count as a
+  Rust change;
+- the step fails open. A `HEAD` that is not a merge commit, a failed diff or a
+  failed `grep` all mean analyse, and the step is `continue-on-error`, so an
+  error in it leaves the output unset, which every later guard reads as run.
+
+A skipped PR has no `/language:rust` analysis of its own, so GitHub's code
+scanning summary on it may say a configuration present on `master` was not
+found. That is expected and blocks nothing.
