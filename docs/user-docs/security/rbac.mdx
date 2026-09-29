@@ -123,15 +123,17 @@ A resource's sub-resources sit at the same bar as the resource itself. A route's
 
 **Roles & Permissions** renders `GET /api/v1/rbac/matrix` directly, so the grid on screen is the deployment's own rule set rather than a copy of it. One row per resource, grouped by the scope the resource lives under (deployment-wide, organization, team, project); one column per role, with the built-in three first and your org's custom roles after them, ordered by the base role each extends.
 
-Each cell carries four chips — read, create, update, delete — and each chip says one of four things:
+Each cell carries four chips, one each for read, create, update and delete in that order, and each chip says one of five things:
 
-| Chip   | Means                                                                                                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Filled | The role's rank clears the minimum, or the action needs no membership at all.                                                                                                |
-| Faded  | Denied. The role exists at this scope but is not senior enough.                                                                                                              |
-| Amber  | Superadmin only. No org role reaches it, and no custom grant can either.                                                                                                     |
-| `–`    | The action does not exist for that resource — an audit log is append-only, an org has no update route. Nobody can perform it, including a superadmin, so it is not a denial. |
-| Blue   | Granted explicitly by that custom role, on top of its base role.                                                                                                             |
+| Chip                             | Means                                                                                                                                                                        |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The action's letter (R, C, U, D) | Allowed. The role's rank clears the minimum, or the action needs no membership at all.                                                                                       |
+| The letter in a dashed border    | Granted explicitly by that custom role, on top of its base role.                                                                                                             |
+| A lock                           | Superadmin only. No org role reaches it, and no custom grant can either.                                                                                                     |
+| A cross                          | Not allowed. The role exists at this scope but is not senior enough.                                                                                                         |
+| `–`                              | The action does not exist for that resource — an audit log is append-only, an org has no update route. Nobody can perform it, including a superadmin, so it is not a denial. |
+
+The chip's colour repeats its state but never carries it alone, so the grid reads the same in greyscale, and the legend under it names all five. The grid is a table: a screen reader announces the role and the resource with each cell and reads every chip as its action and state, for example "Create: not allowed".
 
 The rest of the dashboard asks `GET /api/v1/rbac/effective` for your own answer and shapes itself around it, so a control you may not use is not offered rather than refused after the click. A create button your role does not reach is disabled and names the role it would take; so is every per-row control beside it — the edit, delete, retire, revoke, drain and enabled toggles on each row of Providers, Virtual Keys, Routing Rules, Users, Alerting and the rest carry the same check, so a read-only account sees a list it can read rather than a list of buttons that all end in a refusal; a navigation group whose every screen you may not read is hidden instead of leading to a wall of refusals; and a deployment-wide settings screen tells a non-superadmin so immediately, without the pause of a request that was always going to be denied. This is presentation, not enforcement — the control plane still checks every request, so a refusal you route around by hand is still a `403`. When the dashboard cannot get an answer (an older control plane, a network blip) it shows every control as before and lets the server have the last word.
 

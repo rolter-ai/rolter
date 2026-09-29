@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeySquare, Pencil, Trash2 } from "lucide-react";
+import { KeySquare, Lock, Pencil, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -34,6 +34,7 @@ import {
 } from "@/lib/api";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // Roles & Permissions, rendered from `GET /api/v1/rbac/matrix` (#1178).
@@ -80,9 +81,12 @@ interface RoleColumn {
   custom?: RbacCustomRoleView;
 }
 
-// a cell holds a letter, so `color` is always the -text half of the hue and the
-// border keeps the fill. the quiet states carry no `opacity` either: --text-subtle
-// at 0.45 is about 2.3:1, and an empty tint already reads as "not granted" (#1181)
+// a cell holds a letter or a glyph, so `color` is always the -text half of the
+// hue and the border keeps the fill. the quiet states carry no `opacity` either:
+// --text-subtle at 0.45 is about 2.3:1, and an empty tint already reads as "not
+// granted" (#1181). the hue is never the only difference (#2081): the glyph
+// tells allowed from not allowed from superadmin-only, and a custom grant's
+// dashed border tells it from a base-role allow in a greyscale render too
 const CELL_STYLE: Record<CellState, React.CSSProperties> = {
   allowed: {
     color: "var(--red-folk-text)",
@@ -91,12 +95,13 @@ const CELL_STYLE: Record<CellState, React.CSSProperties> = {
   },
   granted: {
     color: "var(--status-info-text)",
-    background: "rgba(59, 130, 246, .14)",
+    background: "color-mix(in srgb, var(--status-info) 14%, transparent)",
     borderColor: "color-mix(in srgb, var(--status-info) 34%, transparent)",
+    borderStyle: "dashed",
   },
   superadmin: {
     color: "var(--status-warning-text)",
-    background: "rgba(245, 158, 11, .12)",
+    background: "color-mix(in srgb, var(--status-warning) 12%, transparent)",
     borderColor: "color-mix(in srgb, var(--status-warning) 32%, transparent)",
   },
   denied: {
@@ -126,6 +131,49 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
     (g) => g.resource === resource.resource && g.action === action,
   );
   return granted ? "granted" : "denied";
+}
+
+/**
+ * What one matrix cell draws: the action's letter where the role may act, a
+ * glyph where it may not.
+ *
+ * Purely visual and hidden from assistive technology. The matrix pairs each
+ * mark with the same statement in text, and the legend with its own label, so
+ * neither the tint nor the glyph is the only way the state is told (#2081).
+ */
+function CellMark({
+  state,
+  action,
+  title,
+  className,
+}: {
+  state: CellState;
+  action: RbacAction;
+  title?: string;
+  className?: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <span
+      aria-hidden
+      title={title}
+      className={cn(
+        "flex items-center justify-center rounded-[6px] border font-mono text-[10px] font-semibold",
+        className,
+      )}
+      style={CELL_STYLE[state]}
+    >
+      {state === "denied" ? (
+        <X className="h-2.5 w-2.5" strokeWidth={3} />
+      ) : state === "superadmin" ? (
+        <Lock className="h-2.5 w-2.5" strokeWidth={3} />
+      ) : state === "na" ? (
+        "–"
+      ) : (
+        t(`pages.rbac.letters.${action}`)
+      )}
+    </span>
+  );
 }
 
 /** Group resources by scope, widest scope first, keeping table order within. */
@@ -242,7 +290,12 @@ function MatrixTab({
     new Set(memberships.filter((m) => m.role === role).map((m) => m.user_id)).size;
 
   const cols = columns(matrix);
-  const grid = `minmax(200px, 1.6fr) repeat(${cols.length}, minmax(132px, 1fr))`;
+  // the resource column takes 1.6 shares to a role column's one, and no column
+  // gets narrower than its content: 200px for a resource name, 132px for a role's
+  // four marks, each plus the 12px the cell padding puts between columns. past
+  // that floor the table scrolls inside its border instead of wrapping the marks
+  const resourceShare = `${(1.6 / (1.6 + cols.length)) * 100}%`;
+  const minWidth = Math.max(720, 212 + cols.length * 144);
   const unknown = matrix.custom_roles.flatMap((r) => r.unknown_grants);
 
   return (
@@ -264,116 +317,134 @@ function MatrixTab({
         </p>
       )}
 
+      {/* a native table, so a screen reader announces the role and the
+          resource with every cell (#2081). `relative` gives the cells' sr-only
+          text a containing block inside the scroller: without it they resolve
+          against the page and widen the document to the table's full width */}
       <div
         tabIndex={0}
-        className="overflow-x-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        <div className="min-w-[720px] overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
-          <div
-            className="grid items-end gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-4 py-[11px]"
-            style={{ gridTemplateColumns: grid }}
-          >
-            <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
-              {t("pages.rbac.resourceColumn")}
-            </span>
+        <table className="w-full table-fixed border-collapse text-left" style={{ minWidth }}>
+          <caption className="sr-only">{t("pages.rbac.tabs.matrix")}</caption>
+          <colgroup>
+            <col style={{ width: resourceShare }} />
             {cols.map((col) => (
-              <div key={col.key} className="flex flex-col gap-0.5">
-                <span className="text-sm font-semibold capitalize">{col.label}</span>
-                <span className="text-[10px] text-[color:var(--text-subtle)]">
-                  {col.custom
-                    ? t("pages.rbac.viaAccessProfiles")
-                    : membershipsFailed
-                      ? t("pages.rbac.membersUnknown")
-                      : t("pages.rbac.memberCount", { count: memberCount(col.key) })}
-                </span>
-              </div>
+              <col key={col.key} />
             ))}
-          </div>
+          </colgroup>
+          <thead className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]">
+            <tr>
+              <th
+                scope="col"
+                className="px-1.5 py-[11px] align-bottom text-[0.6875rem] font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)] first:pl-4 last:pr-4"
+              >
+                {t("pages.rbac.resourceColumn")}
+              </th>
+              {cols.map((col) => (
+                <th
+                  key={col.key}
+                  scope="col"
+                  className="px-1.5 py-[11px] align-bottom font-normal first:pl-4 last:pr-4"
+                >
+                  <span className="block text-sm font-semibold capitalize">{col.label}</span>
+                  <span className="mt-0.5 block text-[10px] text-[color:var(--text-subtle)]">
+                    {col.custom
+                      ? t("pages.rbac.viaAccessProfiles")
+                      : membershipsFailed
+                        ? t("pages.rbac.membersUnknown")
+                        : t("pages.rbac.memberCount", { count: memberCount(col.key) })}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
 
           {byScope(matrix.resources).map(([scopeKey, resources]) => (
-            <div key={scopeKey}>
-              <div className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/40 px-4 py-2">
-                <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
-                  {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
-                </span>
-              </div>
-              {resources.map((resource) => (
-                <div
-                  key={resource.resource}
-                  className="grid items-center gap-3 border-b border-[color:var(--border-subtle)] px-4 py-[11px] last:border-b-0"
-                  style={{ gridTemplateColumns: grid }}
+            <tbody key={scopeKey}>
+              <tr className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/40">
+                <th
+                  scope="rowgroup"
+                  colSpan={cols.length + 1}
+                  className="px-4 py-2 text-[0.6875rem] font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)]"
                 >
-                  <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
+                  {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
+                </th>
+              </tr>
+              {resources.map((resource) => (
+                <tr
+                  key={resource.resource}
+                  className="border-b border-[color:var(--border-subtle)] last:border-b-0"
+                >
+                  <th
+                    scope="row"
+                    className="truncate px-1.5 py-[11px] font-mono text-xs font-normal text-[color:var(--text-secondary)] first:pl-4 last:pr-4"
+                  >
                     {resource.resource}
-                  </span>
+                  </th>
                   {cols.map((col) => (
-                    <div key={col.key} className="flex flex-wrap gap-1">
-                      {ACTIONS.map((action) => {
-                        const state = cellState(resource, action, col);
-                        return (
-                          <span
-                            key={action}
-                            title={t("pages.rbac.cellTitle", {
-                              action: t(`pages.rbac.actions.${action}`),
-                              state: t(`pages.rbac.states.${state}`),
-                            })}
-                            className="flex h-5 w-[22px] items-center justify-center rounded-[6px] border font-mono text-[10px] font-semibold"
-                            style={CELL_STYLE[state]}
-                          >
-                            {state === "na" ? "–" : t(`pages.rbac.letters.${action}`)}
-                          </span>
-                        );
-                      })}
-                    </div>
+                    <td key={col.key} className="px-1.5 py-[11px] first:pl-4 last:pr-4">
+                      <div className="flex flex-wrap gap-1">
+                        {ACTIONS.map((action) => {
+                          const state = cellState(resource, action, col);
+                          const label = t("pages.rbac.cellLabel", {
+                            action: t(`pages.rbac.actions.${action}`),
+                            state: t(`pages.rbac.states.${state}`),
+                          });
+                          return (
+                            <React.Fragment key={action}>
+                              <CellMark
+                                state={state}
+                                action={action}
+                                title={label}
+                                className="h-5 w-[22px]"
+                              />
+                              <span className="sr-only">{label}</span>
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                    </td>
                   ))}
-                </div>
+                </tr>
               ))}
-            </div>
+            </tbody>
           ))}
-        </div>
+        </table>
       </div>
 
+      {/* the letters first, then every state a cell can be in, each drawn the
+          way the matrix draws it and named in words */}
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-xs text-[color:var(--text-subtle)]">
         {ACTIONS.map((action) => (
           <span key={action} className="inline-flex items-center gap-[5px]">
-            <span
-              className="flex h-[18px] w-[18px] items-center justify-center rounded-[6px] border font-mono text-[10px] font-semibold"
-              style={CELL_STYLE.allowed}
-            >
+            <span className="font-mono text-[10px] font-semibold text-[color:var(--text-secondary)]">
               {t(`pages.rbac.letters.${action}`)}
             </span>
             {t(`pages.rbac.actions.${action}`)}
           </span>
         ))}
-        <span className="inline-flex items-center gap-[5px]">
-          <span
-            aria-hidden
-            className="h-[18px] w-[18px] rounded-[6px] border"
-            style={CELL_STYLE.superadmin}
-          />
-          {t("pages.rbac.legendSuperadmin")}
-        </span>
-        <span className="inline-flex items-center gap-[5px]">
-          <span
-            aria-hidden
-            className="h-[18px] w-[18px] rounded-[6px] border"
-            style={CELL_STYLE.granted}
-          />
-          {t("pages.rbac.legendGranted")}
-        </span>
-        <span className="inline-flex items-center gap-[5px]">
-          <span
-            className="flex h-[18px] w-[18px] items-center justify-center rounded-[6px] border font-mono text-[10px] font-semibold"
-            style={CELL_STYLE.na}
-          >
-            –
+        <span aria-hidden className="h-3.5 w-px bg-[color:var(--border-default)]" />
+        {LEGEND.map(([state, key]) => (
+          <span key={state} className="inline-flex items-center gap-[5px]">
+            <CellMark state={state} action="read" className="h-[18px] w-[18px]" />
+            {t(key)}
           </span>
-          {t("pages.rbac.legendNa")}
-        </span>
+        ))}
       </div>
     </>
   );
 }
+
+// every state, in the order a reader meets them: the two that allow, then the
+// three that do not
+const LEGEND: [CellState, string][] = [
+  ["allowed", "pages.rbac.legendAllowed"],
+  ["granted", "pages.rbac.legendGranted"],
+  ["superadmin", "pages.rbac.legendSuperadmin"],
+  ["denied", "pages.rbac.legendDenied"],
+  ["na", "pages.rbac.legendNa"],
+];
 
 // ---------------------------------------------------------------------------
 // org-defined roles

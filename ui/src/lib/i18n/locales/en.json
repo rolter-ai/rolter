@@ -1751,12 +1751,14 @@
         "allowed": "allowed",
         "granted": "granted by this custom role",
         "superadmin": "superadmin only",
-        "denied": "denied",
+        "denied": "not allowed",
         "na": "not applicable"
       },
-      "cellTitle": "{{action}} — {{state}}",
+      "cellLabel": "{{action}}: {{state}}",
+      "legendAllowed": "Allowed",
       "legendSuperadmin": "Superadmin only",
       "legendGranted": "Granted by a custom role",
+      "legendDenied": "Not allowed",
       "legendNa": "No such action",
       "tabs": {
         "matrix": "Permission matrix",
