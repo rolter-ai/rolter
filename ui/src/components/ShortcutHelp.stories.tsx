@@ -53,6 +53,8 @@ export const ListsEveryShortcut: Story = {
     const dialog = await body.findByRole("dialog", { name: copy.title });
     await expect(dialog).toHaveAccessibleDescription(copy.description);
 
+    // it animates in, so the first visibility read is polled (#2287)
+    await waitFor(() => expect(dialog).toBeVisible());
     const items = copy.items as Record<string, string>;
     for (const shortcut of SHORTCUTS) {
       await expect(within(dialog).getByText(items[shortcut.id]!)).toBeVisible();

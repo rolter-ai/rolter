@@ -258,7 +258,9 @@ export const MobileDrawer: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Open navigation" }));
     const drawer = await canvas.findByRole("dialog", { name: /navigation/i });
     // labels are readable in the drawer whatever the rail was folded to
-    await expect(within(drawer).getByRole("button", { name: "Playground" })).toBeVisible();
+    await waitFor(() =>
+      expect(within(drawer).getByRole("button", { name: "Playground" })).toBeVisible(),
+    );
     await expectNoHorizontalOverflow();
 
     // Escape puts it away again, like every other modal in the dashboard
