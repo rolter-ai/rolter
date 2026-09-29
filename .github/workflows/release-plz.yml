@@ -5,7 +5,7 @@ on:
     branches: [master]
 
 # least-privilege default; only the two release-plz jobs need write (the
-# `verify` reusable call runs read-only), so the write grant lives per-job below
+# `release-gate` job only reads), so the write grant lives per-job below
 permissions:
   contents: read
 
@@ -157,19 +157,86 @@ jobs:
           echo "::error::dispatched ci.yml for $BRANCH but no workflow run appeared within 5m"
           exit 1
 
+  # ── gate the publish on this commit's ci.yml push run ───────────────────────
+  # cargo publish must never run on an unverified commit (ROL-103). this job
+  # used to re-run all of quality.yml on the merge commit, 27 jobs on every push
+  # to master while ci.yml's own push run was gating the same sha. it now waits
+  # for that run instead (#2025), and only when there is something to publish:
+  #
+  # - a push whose crate versions are all on crates.io already (every push but
+  #   the release PR's merge) prints a notice and stops without `verified`, so
+  #   release-plz release is skipped. a lookup that fails counts as pending, and
+  #   a wrong "nothing pending" only ever delays a release, never publishes one
+  # - otherwise scripts/wait-for-ci-gate.sh waits for the ci.yml *push* run on
+  #   this sha and requires its `ci-ok` job to succeed. a run, not a check-run
+  #   name: any workflow can post a check-run called `ci-ok` on a master sha,
+  #   while a ci.yml push run on a sha can only come from ci.yml at that sha.
+  #   api errors, a red or cancelled ci-ok and 90 minutes without a verdict all
+  #   fail closed
+  #
+  # the wait lives here, with a read-only token, so the job that holds the
+  # persisted contents: write token never sits on a runner through it. a
+  # timeout or a red run is recovered with `gh run rerun <this run> --failed`
+  # once ci-ok is green; see docs/dev-docs/development/packaging.md
+  release-gate:
+    name: release gate
+    runs-on: ubuntu-latest
+    # the wait's own deadline is 90 minutes; this only catches a hung step
+    timeout-minutes: 100
+    permissions:
+      contents: read # check out the gate scripts and read the workspace crates
+      actions: read # list ci.yml runs on this sha and read their jobs
+    outputs:
+      verified: ${{ steps.wait.outputs.verified }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: find crate versions not yet on crates.io
+        id: pending
+        env:
+          SHA: ${{ github.sha }}
+          # `cargo metadata --no-deps` works on any toolchain, so use the
+          # runner's stable instead of letting rust-toolchain.toml's component
+          # list set one up
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          set -euo pipefail
+          if ! unpublished="$(bash scripts/unpublished-crates.sh)"; then
+            echo "::warning::could not tell which crate versions are on crates.io; gating as if a release were pending"
+            unpublished="(unknown)"
+          fi
+          if [ -z "$unpublished" ]; then
+            echo "::notice::every publishable crate version at ${SHA} is already on crates.io; nothing to release, so release-plz release is skipped"
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "not on crates.io yet:"
+          echo "$unpublished"
+          echo "pending=true" >> "$GITHUB_OUTPUT"
+      - name: wait for ci-ok on this commit's ci.yml push run
+        id: wait
+        if: steps.pending.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        # the script writes `verified=true` itself, as its last action, so only
+        # its success sets the output. check-release-handoff.py holds this step
+        # to the one bare command, so the step also goes red whenever the gate
+        # does
+        run: bash scripts/wait-for-ci-gate.sh
+
   # on merge of the release PR: publishes every workspace member to crates.io
   # in dependency order (`publish = true` in .github/config/release-plz.toml, using
   # CARGO_REGISTRY_TOKEN), tags `v{version}` and creates the github release.
   # the tag alone does NOT start release.yml — see dispatch-artifact-release.
-  # same quality/security gate as CI, on the merge commit that would be
-  # tagged/published. release-plz-release needs this so cargo publish cannot
-  # run on an unverified commit (ROL-103).
-  verify:
-    uses: ./.github/workflows/quality.yml
-
+  # it runs only once release-gate has verified this commit: a failed gate, and
+  # a push with nothing to publish, both leave `verified` unset and skip it.
   release-plz-release:
     name: release-plz release
-    needs: verify
+    needs: release-gate
+    if: needs.release-gate.outputs.verified == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write # push tags + create the github release

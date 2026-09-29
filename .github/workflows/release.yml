@@ -35,11 +35,17 @@ jobs:
   # cache poisoning, flagged by CodeQL, and a real one.
   #
   # asserting instead of re-running settles both. every commit on master already
-  # carries a `ci-ok` check-run from ci.yml, and release-plz re-runs the gate on
-  # the release commit before tagging, so the tagged commit is verified by
-  # construction. checking the recorded result binds the gate to the *tagged*
-  # SHA — which re-running never did — costs no duplicate 20-minute run, and
-  # checks out nothing.
+  # carries a `ci-ok` check-run from ci.yml, and release-plz tags only after its
+  # `release-gate` job has seen `ci-ok` succeed on the ci.yml push run for the
+  # release commit, so the tagged commit is verified by construction. checking
+  # the recorded result binds the gate to the *tagged* SHA — which re-running
+  # never did — costs no duplicate 20-minute run, and checks out nothing.
+  #
+  # release-gate reads the ci-ok *job* of the ci.yml push run on the sha
+  # (scripts/wait-for-ci-gate.sh), because any workflow can post a check-run
+  # called `ci-ok` on a master commit. the loop below still matches check-run
+  # names: a different mechanism, not a copy of that script, and moving it onto
+  # the run-bound one needs the checkout this job avoids.
   #
   # these are exact check-run *names*, so they rot when a scanner is renamed or
   # reconfigured — and because the job is fail-closed, a stale name blocks every
@@ -69,10 +75,12 @@ jobs:
           SHA="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
           IFS=',' read -ra names <<< "$REQUIRED"
 
-          # release-plz dispatches this the moment it finishes tagging, while
-          # ci.yml is often still running the very same commit, so a required
-          # check being *pending* is expected rather than a failure. wait for a
-          # verdict; only a real non-success, or the timeout, is fatal.
+          # a release-plz dispatch normally passes on the first poll: its
+          # release-gate saw ci-ok finish on the commit before tagging it, and
+          # ci-ok needs every codeql leg. a tag dispatched by hand, or a check
+          # re-run after tagging, can still leave a required check *pending*,
+          # which is expected rather than a failure. wait for a verdict; only a
+          # real non-success, or the timeout, is fatal.
           deadline=$(( $(date -u +%s) + 45 * 60 ))
           while :; do
             # "<timestamp>\t<name>\t<status>\t<conclusion>" per check-run. the
