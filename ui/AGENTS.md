@@ -16,6 +16,16 @@ existing rolter design system (DesignSync / the Claude Design project), which
 supplies the tokens and primitives the dashboard already ships: run the skill
 first, then build against the tokens. Never hard-code a hex or font the tokens
 already carry.
+
+The product and visual record for design agents lives at the repository root:
+`PRODUCT.md` (who the dashboard is for, the constraints) and `DESIGN.md` (the
+tokens and rules, derived from `ui/src/index.css`). The impeccable skill loads
+both before UI work, and its detector hook checks each edit to a UI file. Review
+a screen with `/impeccable critique <screen>` and `/impeccable audit <screen>`,
+and refresh `DESIGN.md` with `/impeccable document` when a token or primitive
+changes. Setup and triage rules are in
+`docs/dev-docs/development/impeccable.md`.
+
 When working on dashboard UI, consult the project MCP server
 (`rolter-storybook` in `.mcp.json`) before writing components:
 

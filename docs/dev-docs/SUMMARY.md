@@ -81,6 +81,7 @@
 - [Dashboard capability gating](development/rbac-gating.md)
 - [Dashboard navigation rail](development/dashboard-navigation.md)
 - [Dashboard theme](development/dashboard-theme.md)
+- [Dashboard design context for agents (impeccable)](development/impeccable.md)
 - [Dashboard code highlighting](development/highlighting.md)
 - [Dashboard dropdowns and the Combobox](development/combobox.md)
 - [Dashboard form primitives](development/form-primitives.md)

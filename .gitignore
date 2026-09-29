@@ -84,3 +84,16 @@ integration/dogfood/.journeys/
 videos/
 *.webm
 *.log
+
+# impeccable (the design skill, see docs/dev-docs/development/impeccable.md).
+# PRODUCT.md, DESIGN.md, .impeccable/config.json and .impeccable/design.json are
+# shared and tracked; everything below is per developer or per run: hook consent,
+# the detector's dedup cache, live-mode sessions and critique reports
+.impeccable/config.local.json
+**/.impeccable/hook.cache.json
+**/.impeccable/hook.pending.json
+.impeccable/history/
+.impeccable/critique/
+.impeccable/live/*
+!.impeccable/live/config.json
+.claude/settings.local.json
