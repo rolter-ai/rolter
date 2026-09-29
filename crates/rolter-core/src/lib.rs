@@ -86,8 +86,3 @@ pub const CONFIG_CHANNEL: &str = "rolter.config";
 /// one tenant can never take the builtin away from the others; a route in a
 /// config file may still shadow it, which is how an operator replaces it.
 pub const FAKE_LLM_MODEL: &str = "fake-llm";
-
-#[doc(hidden)]
-pub fn ci_proof_clippy_warning() -> u32 {
-    return 1;
-}
