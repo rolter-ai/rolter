@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Wrench, X } from "lucide-react";
+import { ChevronRight, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -7,6 +7,7 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
 import {
+  ListActionsHeader,
   ListCell,
   ListHeader,
   ListHeaderCell,
@@ -58,7 +59,7 @@ const STATUS_TONE: Record<string, [string, string]> = {
 const statusTone = (s: string) =>
   STATUS_TONE[s] ?? ["var(--text-secondary)", "var(--surface-subtle)"];
 
-const GRID = "150px 1.1fr 1.3fr 130px 110px 90px";
+const GRID = "150px 1.1fr 1.3fr 130px 110px 90px 24px";
 
 // clickhouse-backed MCP tool-call log explorer: summary KPIs, filterable
 // cursor-paginated table, and a per-event detail drawer with redacted payloads
@@ -239,6 +240,7 @@ function McpLogsScreen() {
                 <ListHeaderCell>{t("pages.mcpLogs.status")}</ListHeaderCell>
                 <ListHeaderCell>{t("pages.mcpLogs.transport")}</ListHeaderCell>
                 <ListHeaderCell className="text-right">{t("pages.mcpLogs.latency")}</ListHeaderCell>
+                <ListActionsHeader label={t("analytics.details")} />
               </ListHeader>
               {rows.map((r) => (
                 <McpRow key={r.event_id} row={r} onSelect={() => setSelected(r.event_id)} />
@@ -279,6 +281,26 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
       </ListCell>
       <ListCell className="text-right font-mono text-xs text-[color:var(--text-secondary)]">
         {t("analytics.ms", { value: fmt.number(Math.round(row.latency_ms)) })}
+      </ListCell>
+      <ListCell className="grid">
+        {/* the row's click target is a mouse convenience; this button is the
+            keyboard's and the screen reader's way into the same drawer (#2022),
+            named with the time as well since a server's tool repeats down the page */}
+        <button
+          type="button"
+          aria-label={t("pages.mcpLogs.openDetails", {
+            tool: row.tool,
+            server: row.server,
+            time: fmt.dateTime(row.ts),
+          })}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect();
+          }}
+          className="flex h-6 w-6 items-center justify-center rounded-[6px] text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
       </ListCell>
     </ListRow>
   );
