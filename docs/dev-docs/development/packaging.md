@@ -117,10 +117,12 @@ python3 scripts/sync-chart-appversion.py --fix
 
 ## Release pipeline
 
-Releases are fully automated from Conventional Commits. Two workflows do the
-release work and `ci.yml` gates the release PR; the handoffs between them are
-the part worth understanding, because all three are `workflow_dispatch` calls
-made to get around GitHub's event suppression rather than ordinary triggers.
+Releases are automated from Conventional Commits, apart from one step: a
+maintainer labels the release PR `release:ready` when it should go out (see
+[cutting a release](#cutting-a-release)). Two workflows do the release work and
+`ci.yml` gates the release PR; the handoffs between them are the part worth
+understanding, because each one is a `workflow_dispatch` call made to get
+around GitHub's event suppression rather than an ordinary trigger.
 
 ```text
 merge to master
@@ -128,9 +130,14 @@ merge to master
       ▼
 release-plz.yml ── release-pr ──►  "Release PR" (version bump + changelogs)
       │                                    │
+      │                                    │ a maintainer adds the release:ready label
+      │                                    │
       │                                    │ workflow_dispatch --ref <release branch>
-      │                                    ▼          ← dispatch-release-pr-ci
-      │                                 ci.yml ──►  ci-ok on the Release PR
+      │                                    ▼          ← release-pr-ready.yml, on the label
+      │                                 ci.yml        ← dispatch-release-pr-ci, on each
+      │                                    │            later push while it stays
+      │                                    ▼
+      │                          ci-ok on the Release PR
       │
       │ (that PR is merged)
       ▼
@@ -176,6 +183,42 @@ Two properties make the barrier real:
 
 Each build is its own job, so a single flaky platform can be re-run on its own
 without re-publishing anything that already succeeded.
+
+### Cutting a release
+
+release-plz keeps one release PR open, on a branch named
+`release-plz-<timestamp>`, and rewrites it on every push to master. Nothing
+runs `ci.yml` on it until a maintainer decides the release should go out:
+
+1. Add the `release:ready` label to the release PR:
+
+   ```bash
+   gh pr edit <number> --add-label release:ready
+   ```
+
+   `release-pr-ready.yml` runs on that label event and dispatches `ci.yml` on
+   the release branch. release-plz updates the same PR in place, so the label
+   survives its force-pushes, and every later push to master that moves the
+   branch dispatches `ci.yml` again through `dispatch-release-pr-ci` for as
+   long as the label stays.
+
+2. Wait for `ci-ok` on the release PR, then merge it. The merge commit's own
+   push run then gates the crates.io publish
+   ([below](#the-cratesio-publish-waits-for-the-push-run)).
+
+3. To hold back a release that was labelled too early, remove the label. The
+   head that already has `ci-ok` stays mergeable, but the next push that
+   rewrites the branch gets no dispatch, so the PR goes back to `BLOCKED`.
+
+If the label produced no `ci.yml` run, dispatch it by hand:
+
+```bash
+gh workflow run ci.yml --ref <release branch>
+```
+
+That covers a failed `release pr ready` run, and a release PR with a merge
+conflict, on which GitHub starts no `pull_request` workflow at all. release-plz
+rebuilds the branch from master on every push, so a conflict there is rare.
 
 ### The crates.io publish waits for the push run
 
@@ -251,10 +294,33 @@ because those do not come from a workflow event.
 `dispatch-release-pr-ci` closes it with the same tool as the tag handoff. It
 runs after `release-plz-pr` — so it sees the head that the `sync chart
 appVersion` step leaves behind, not the one before it — finds the open PR whose
-head branch starts with `release-plz-`, and runs `gh workflow run ci.yml --ref
+head branch starts with `release-plz-` and lives in this repository, and, if
+that PR carries the `release:ready` label, runs `gh workflow run ci.yml --ref
 <branch>`. A `workflow_dispatch` run's check-runs attach to the head commit of
 the ref, which is exactly the commit branch protection is looking at. Like the
 tag handoff, the job fails if the dispatch produces no run.
+
+Before #2025 it dispatched on every push to master. Each of those runs gated a
+PR nobody was about to merge, and the next push often cancelled it part-way:
+11 of the 33 release-PR dispatches between 2026-09-21 and 09-28 were cancelled
+mid-flight, and on 09-28 the dispatches took 16.7% of the day's runner time
+([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). The label moves that cost
+to the moment someone intends to merge. The check fails closed. No open release
+PR, or one without the label (a listing that shows no labels at all included),
+means no dispatch, and the PR stays `BLOCKED` until someone adds the label. An
+API error fails the job.
+
+A label added by a person is not a `GITHUB_TOKEN` event, so it does start a
+workflow, and `release-pr-ready.yml` is the one it starts. It runs on
+`pull_request` (`labeled`) and dispatches only for `release:ready` on a
+`release-plz-` branch of this repository; every other label event skips its one
+job without taking a runner. The job holds `actions: write`, checks nothing out
+and uses no action. It uses `pull_request` rather than `pull_request_target`
+because a fork's `pull_request` run gets a read-only token whatever the job
+asks for, while `pull_request_target` would hand it a write token; zizmor's
+`dangerous-triggers` audit rejects the latter. A branch of this repository can
+only come from someone who can already push workflows, so running that
+branch's copy of the workflow grants nothing new.
 
 It deliberately does **not** read the branch from the action's `prs` output:
 that output is populated only on the run that _creates_ the PR, while the branch
@@ -282,10 +348,13 @@ crates.io advance while no wheel is ever built, and every job stays green. That
 is how v0.0.6 through v0.0.10 shipped while PyPI sat on 0.0.5 ([#903]).
 `scripts/check-release-handoff.py` (a merge gate in `quality.yml` and a prek
 hook) asserts the wiring is still in place, the crates.io publish gate above
-included. It reads `release-plz.yml`, `release.yml` and `ci.yml` as parsed YAML
-(and `scripts/wait-for-ci-gate.sh` as shell text) and checks structure: a job
-exists, its `needs` set holds the required job ids, a trigger or dispatch input
-is declared.
+included. It reads `release-plz.yml`, `release-pr-ready.yml`, `release.yml`
+and `ci.yml` as parsed YAML (and `scripts/wait-for-ci-gate.sh` as shell text)
+and checks structure: a job exists, its `needs` set holds the required job ids,
+a trigger or dispatch input is declared. It also holds both release-PR
+dispatches to the same label name, so renaming `release:ready` in one workflow
+fails the check instead of leaving one path that never fires, and it keeps
+`release-pr-ready.yml` free of any action, a checkout included.
 The few assertions that are text by nature, a `gh workflow run` command or the
 `push-by-digest=true` option, look only inside the job they belong to, and they
 read its shell with the comments removed: a dispatch commented out to pause
@@ -334,6 +403,7 @@ red instead of quietly leaving a channel behind.
 | Gate                                    | Effect                                                                                                    |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed |
+| `release:ready` label on the release PR | `ci.yml` runs on the release PR only while it is present, so without it the PR stays `BLOCKED`            |
 | `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed                                |
 | `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names `verify-external-checks` requires (comma-separated)                                 |
 | `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                           |

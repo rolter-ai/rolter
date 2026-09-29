@@ -387,8 +387,11 @@ into history inside a line that merely looks generated.
 `ci.yml` can be triggered manually, and that trigger is not decoration: the
 release PR is opened by release-plz with the repo `GITHUB_TOKEN`, GitHub
 suppresses downstream events for token-created refs, and so neither `push` nor
-`pull_request` ever fires for it (#1025). `release-plz.yml` dispatches `ci.yml`
-against the release branch to gate it.
+`pull_request` ever fires for it (#1025). `ci.yml` is dispatched against the
+release branch to gate it once a maintainer labels the PR `release:ready`: by
+`release-pr-ready.yml` when the label is added, and by `release-plz.yml` on
+each later push while it stays (see
+[cutting a release](packaging.md#cutting-a-release)).
 
 The trap is that a dispatched run skips everything guarded by
 `github.event_name == 'pull_request'`, which once included both the PR-body
