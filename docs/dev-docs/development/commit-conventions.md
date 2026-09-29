@@ -61,9 +61,10 @@ be, and then it is not breaking.
   message, a PR body, or anywhere else — once merged, a commit message can
   only be corrected with a history rewrite. `scripts/check-agent-session-urls.sh`
   enforces this as the `no-agent-session-urls` prek hook (`commit-msg` stage)
-  and, in CI, as two jobs: `session-urls` in `quality.yml` re-checks every
+  and, in CI, in two places: `session-urls` in `quality.yml` re-checks every
   commit the PR introduces, so a `--no-verify` push or an amend is still
-  caught, and `session-urls` in `ci.yml` checks the PR body. The body half has
+  caught, and a step of the `ci-ok` job in `ci.yml` checks the PR body (plus
+  the commit range on a dispatched or merge-queue run). The body half has
   to live in `ci.yml` because a body edit takes the `edited` fast path, which
   skips `quality.yml` entirely — a body check inside that workflow could never
   see the edit that introduced a URL. See #1406 and

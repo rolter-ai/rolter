@@ -465,7 +465,7 @@ Policy (ROL-246):
 
 ## CI
 
-`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
 
 ### The rustdoc gate is the one CI check nothing local reproduces
 

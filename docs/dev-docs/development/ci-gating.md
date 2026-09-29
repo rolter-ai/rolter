@@ -1,19 +1,72 @@
 # The `ci-ok` gate and the title-edit fast path
 
-`ci-ok` is the single required status check on `master`. Everything else —
-`quality`, `pr-title`, `codeql` — is aggregated into it, so adding or removing a
-job never means touching branch protection settings. This page records the one
+`ci-ok` is the single required status check on `master`. Everything else is
+aggregated into it, so adding or removing a job never means touching branch
+protection settings. The two heavy jobs, `quality` and `codeql`, reach it
+through `needs`; the cheap pull-request metadata checks (`pr-title` and the two
+agent-session-url checks) run as steps inside it (see
+[What runs inside `ci-ok`](#what-runs-inside-ci-ok)). This page records the one
 place that aggregation is subtle: the fast path for a pull-request **title
 edit**, and the rule that keeps it honest.
+
+## What runs inside `ci-ok`
+
+`ci-ok` needs `[quality, codeql]` and runs on every event (`if: always()`). Its
+steps, in order:
+
+| Step                                              | Runs on                                             |
+| ------------------------------------------------- | --------------------------------------------------- |
+| checkout                                          | `pull_request`, `workflow_dispatch`, `merge_group`  |
+| _assert the gate already ran for this commit_     | `pull_request` with action `edited` (the fast path) |
+| `pr-title`                                        | `pull_request`                                      |
+| _no agent session urls (pr body)_                 | `pull_request`, `workflow_dispatch`, `merge_group`  |
+| _no agent session urls (commits, dispatch/queue)_ | `workflow_dispatch`, `merge_group`                  |
+| _assert every required check succeeded_ (verdict) | every event, under `always()`                       |
+
+The checkout takes `fetch-depth: 1` on a pull request, where only the script
+is read, and full history on a dispatch or queue run, where the commit-range
+step walks the range locally. The expression is
+`github.event_name == 'pull_request' && 1 || 0`. That form is safe because its
+middle operand, `1`, is truthy. The reverse, `cond && 0 || 1`, would always
+yield `1`, since `0` is falsy.
+
+Every check step is guarded by `!cancelled() && <its event guard>`, never by
+`always()`. One failing check does not hide the ones after it, and a run that the
+concurrency group cancelled spends nothing on checks nobody will read. Only the
+verdict step runs under `always()`. In a cancelled run every other step skips,
+and a verdict that skipped with them would leave the job, which is the one
+required check, green over nothing.
+
+The verdict reads every job result and step outcome through `env:` and reports
+every broken rule before it exits, not just the first one:
+
+| Result                                            | Must be                                                                                                                      |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `quality`, `codeql`                               | `success`; on an `edited` run, `success` or `skipped`                                                                        |
+| _assert the gate already ran_                     | `success` on an `edited` run                                                                                                 |
+| `pr-title`                                        | never `failure`; `success` on any `pull_request` run                                                                         |
+| _no agent session urls (pr body)_                 | `success` on every event except `push`, where it is `skipped`                                                                |
+| _no agent session urls (commits, dispatch/queue)_ | never `failure`; `success` on `workflow_dispatch` and `merge_group`                                                          |
+| `pr-title` skipped on a `workflow_dispatch` run   | allowed, with a `::warning::` that the title went unvalidated (see [below](#the-workflow_dispatch-path-checks-the-body-too)) |
+
+These three checks used to be jobs of their own, `pr-title`, `session-urls` and
+`dispatch-commit-urls`, each holding a runner for a few seconds of work and
+often queueing minutes to get one (#2025). As steps they cost no extra runner,
+and a title or body edit starts one job instead of three. The price is when
+title feedback arrives. On a push, `pr-title` now runs only after `quality` and
+`codeql` finish, about eight minutes in, rather than seconds after the push.
+The action fetches the title live rather than reading it from the payload, so
+a title fixed while the gate is still running is the one that step validates.
 
 ## Why the fast path exists
 
 `ci.yml` triggers on `pull_request: [opened, synchronize, reopened, edited]`.
 The `edited` type is there for a single reason: PR titles are validated as
-Conventional Commits by the `pr-title` job, so fixing a bad title has to be able
-to turn `ci-ok` green **without a new commit**. Without an `edited` trigger, the
-only way to re-run the title check would be to push an empty commit, which
-invalidates every review and re-runs a twenty-minute gate for a typo.
+Conventional Commits by `ci-ok`'s `pr-title` step, so fixing a bad title has to
+be able to turn `ci-ok` green **without a new commit**. Without an `edited`
+trigger, the only way to re-run the title check would be to push an empty
+commit, which invalidates every review and re-runs a twenty-minute gate for a
+typo.
 
 The heavy jobs are skipped on that event (`if: github.event.action != 'edited'`
 on `quality` and `codeql`): a title lives in GitHub's database, not in the tree,
@@ -26,15 +79,15 @@ Every run of `ci.yml` writes a check-run named `ci-ok` against the pull
 request's **head sha**. Branch protection, and anything reading
 `check-runs?check_name=ci-ok`, resolves the _newest_ check-run with that name.
 
-An `edited` run finishes in under a minute, because it only runs `pr-title`. So
-retitling a PR while the real gate run on the same sha is still in progress
-produced a newer, successful `ci-ok` on that sha, and the commit became
-mergeable before a single test had run. That is not theoretical: on 2026-09-08,
-#1315 (head `67586128`) and #1267 (head `cae26a31`) were each rebased, pushed
-and retitled inside a minute, ended up with two `ci` runs per sha — one `edited`
-run green at 17:50:08Z, one real `pull_request` run still `in_progress` — and
-#1315 was squash-merged on the hollow green. The gate went green afterwards, so
-`master` survived on luck (#1328).
+An `edited` run finishes in under a minute, because it skips the gate and runs
+only the metadata checks. So retitling a PR while the real gate run on the same
+sha is still in progress produced a newer, successful `ci-ok` on that sha, and
+the commit became mergeable before a single test had run. That is not
+theoretical: on 2026-09-08, #1315 (head `67586128`) and #1267 (head `cae26a31`)
+were each rebased, pushed and retitled inside a minute, ended up with two `ci`
+runs per sha — one `edited` run green at 17:50:08Z, one real `pull_request` run
+still `in_progress` — and #1315 was squash-merged on the hollow green. The gate
+went green afterwards, so `master` survived on luck (#1328).
 
 An earlier round of this (#767) had already made the `edited` run harmless in
 one direction, by giving it a per-run concurrency group so it cannot _cancel_
@@ -71,8 +124,8 @@ answered something broader: _is there a run on this sha whose **overall
 conclusion** is `success`_.
 
 Those differ whenever a run fails on something that is not the gate. A run can
-pass `quality` and `codeql` and still end `failure` because `session-urls`
-rejected the PR body. Under the old question that run counted as **no gate at
+pass `quality` and `codeql` and still end `failure` because the PR-body check
+rejected the body. Under the old question that run counted as **no gate at
 all**, and since the `opened` run is the only one that runs the gate and
 `edited` runs never re-run it, nothing could ever make that sha green again —
 the failure was permanent and unfixable from the PR side (#1522).
@@ -125,18 +178,20 @@ is needed for any of this.
 
 `ci-ok` goes red on the `edited` run with `gate still running on <sha>`,
 preceded by a `::notice::` spelling out that nothing is wrong with the commit.
-This is expected and self-healing: when the gate run finishes it writes its own
-`ci-ok` on the same sha, which is newer and wins.
+The verdict step then adds `the gate is not proven green on this head sha`,
+which points back at that step and adds nothing new. This is expected and
+self-healing: when the gate run finishes it writes its own `ci-ok` on the same
+sha, which is newer and wins.
 
 Editing a PR body during a long gate run is an ordinary two-step — write the
 body, then add the follow-up issue numbers once those issues exist — so this
 red is common. The two branches of the guard are worded to be told apart at a
 glance, because they mean opposite things:
 
-| Message                                    | Means                                        | Action                                  |
-| ------------------------------------------ | -------------------------------------------- | --------------------------------------- |
-| `gate still running on <sha>`              | the gate is fine and unfinished              | none; the in-flight run supersedes this |
-| `no completed, successful ci run on <sha>` | the gate failed, was cancelled, or never ran | push a fix or re-run the gate           |
+| Message                                                       | Means                                        | Action                                  |
+| ------------------------------------------------------------- | -------------------------------------------- | --------------------------------------- |
+| `gate still running on <sha>`                                 | the gate is fine and unfinished              | none; the in-flight run supersedes this |
+| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate failed, was cancelled, or never ran | push a fix or re-run the gate           |
 
 The one case that needs a human is the narrow race where the gate run completes
 between the listing and the assertion — then the red `edited` `ci-ok` is the
@@ -161,9 +216,9 @@ recorded here so it is not re-litigated:
   `ci-ok` on a sha must be trustworthy (#1328).
 - **Self-cancelling the run to reach `cancelled` (grey) costs more than it
   buys.** It needs `actions: write` on `ci-ok` — the one required status check
-  — purely for a colour, and `ci-ok` runs `if: always()`, so a run where
-  `session-urls` genuinely failed would go grey and hide a real finding unless
-  the cancel were conditioned on every sibling's result first.
+  — purely for a colour, and `ci-ok` runs `if: always()`, so a run whose
+  PR-body check genuinely failed would go grey and hide a real finding unless
+  the cancel were conditioned on every other check's result first.
 
 So the colour stays. What changed instead is the message: the unfinished case
 now names itself and says no action is needed, rather than reading like the
@@ -203,11 +258,11 @@ Today `merge_group` carries `action: checks_requested`, so a guard written as
 of GitHub's event vocabulary, not a rule. So every guard around the fast path is
 scoped to the event as well as the action:
 
-|                                              | guard                                                                                   |
-| -------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `quality`, `codeql`, `gate-ok`               | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'`              |
-| `ci-ok`'s _assert the gate already ran_ step | `github.event_name == 'pull_request' && github.event.action == 'edited'`                |
-| `ci-ok`'s shell branch for the skipped gate  | `"${GITHUB_EVENT_NAME}" = "pull_request"` **and** `"${GITHUB_EVENT_ACTION}" = "edited"` |
+|                                               | guard                                                                                    |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `quality`, `codeql`, `gate-ok`                | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'`               |
+| `ci-ok`'s _assert the gate already ran_ step  | `!cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited'` |
+| `ci-ok`'s verdict branch for the skipped gate | `"${EVENT_NAME}" = "pull_request"` **and** `"${EVENT_ACTION}" = "edited"`                |
 
 These are equivalent to the old conditions on every event that exists now. The
 change is that they cannot stop being equivalent when GitHub adds an event or
@@ -215,15 +270,15 @@ reuses an action name.
 
 ### What runs, and what is allowed to skip
 
-| Job                              | On `merge_group`                | Why                                                                                                                |
-| -------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `quality`, `codeql`, `gate-ok`   | run                             | the point of the run                                                                                               |
-| `session-urls` (pr body)         | runs                            | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
-| `dispatch-commit-urls` (commits) | runs, and must succeed          | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
-| `pr-title`                       | skipped                         | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
-| `gitleaks` (branch history step) | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
+| Job or step                                                    | On `merge_group`                | Why                                                                                                                |
+| -------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `quality`, `codeql`, `gate-ok`                                 | run                             | the point of the run                                                                                               |
+| `ci-ok` step _no agent session urls (pr body)_                 | runs, and must succeed          | a squash merge writes the body into the commit message, and the queue is what performs the merge                   |
+| `ci-ok` step _no agent session urls (commits, dispatch/queue)_ | runs, and must succeed          | the only thing that reads the commit messages of PRs batched ahead of this one                                     |
+| `ci-ok` step `pr-title`                                        | skipped                         | the payload has no title, and nothing enters the queue without a green `ci-ok` on the PR, where `pr-title` did run |
+| `gitleaks` (branch history step)                               | runs, over `base_sha..head_sha` | scans the commits the queue is about to write to `master`, entries batched ahead of this one included              |
 
-The two session-url jobs resolve their subject differently here, because a queue
+The two session-url steps resolve their subject differently here, because a queue
 ref belongs to no pull request head and `--pr-for-ref` cannot match it:
 
 - the **body** is fetched with `--pr-for-queue-ref`, which parses the PR number
@@ -242,9 +297,9 @@ ref belongs to no pull request head and `--pr-for-ref` cannot match it:
   endpoints, so the range is `base_sha..head_sha` through the plain
   `--commit-range` mode.
 
-Both of those jobs live in `ci.yml` rather than in `quality.yml`, because
-resolving a pull request needs a token and `quality.yml` deliberately takes none
-(#734).
+Both of those steps live in `ci.yml`'s `ci-ok` job rather than in `quality.yml`,
+because resolving a pull request needs a token and `quality.yml` deliberately
+takes none (#734).
 
 Two places inside `quality.yml` did need adjusting. `migrations append-only` diffs
 against `origin/master`, and a merge-queue checkout is a synthetic ref with no
@@ -265,7 +320,7 @@ way. The history pass is the only one that reads commits, though, and on a queue
 run those are the commits `master` is about to receive: this entry's plus every
 entry batched ahead of it, which no single per-PR run ever scanned as one range.
 It now takes `merge_group.base_sha..merge_group.head_sha` from the payload, the
-same way `dispatch-commit-urls` does, so it needs no API call and no token.
+same way `ci-ok`'s commit-range step does, so it needs no API call and no token.
 `base_sha` is an ancestor of the queue head, and the job checks out with
 `fetch-depth: 0`, so the commit is in the clone.
 
@@ -285,12 +340,13 @@ per-run group makes that impossible rather than unlikely.
 remote-connection url — a `claude.ai/code/session…` link, or any agent's own
 `<Name>-Session:` git trailer carrying a url — in a commit message or a pull
 request body. It runs as the `no-agent-session-urls` prek hook, as
-`session-urls` in `quality.yml` over every commit the PR introduces, as
-`session-urls` in `ci.yml` over the PR body, and as `dispatch-commit-urls` in
-`ci.yml` over the commit range on a dispatched run, where the `quality.yml` job
-cannot see one. The links are ephemeral and
-sometimes private, and a merged commit message can only be corrected with a
-history rewrite, so the rule has no exceptions.
+`session-urls` in `quality.yml` over every commit the PR introduces, and as two
+steps of `ci-ok` in `ci.yml`: _no agent session urls (pr body)_ over the PR
+body, and _no agent session urls (commits, dispatch/queue)_ over the commit
+range on a dispatched or merge-queue run, where the `quality.yml` job cannot
+see one. The links are ephemeral and sometimes private, and a merged commit
+message can only be corrected with a history rewrite, so the rule has no
+exceptions.
 
 The part that surprises people is that the offending line is often not one the
 author wrote. **PR-authoring tooling for a coding agent may append a
@@ -332,23 +388,24 @@ suppresses downstream events for token-created refs, and so neither `push` nor
 `pull_request` ever fires for it (#1025). `release-plz.yml` dispatches `ci.yml`
 against the release branch to gate it.
 
-The trap is that a dispatched run skips every job guarded by
-`github.event_name == 'pull_request'` — `session-urls` and `pr-title` — while
-`quality` and `codeql` still run, because their guard is on `action`, which is
-empty on a dispatch. `ci-ok` used to accept both skips, so a dispatched run
-reported green having never looked at the PR body. That made dispatching the
-cheapest way to clear a red PR, and it is how #1519 and #1521 actually went
-green (#1523).
+The trap is that a dispatched run skips everything guarded by
+`github.event_name == 'pull_request'`, which once included both the PR-body
+check and `pr-title`, while `quality` and `codeql` still run, because their
+guard is on `action`, which is empty on a dispatch. `ci-ok` used to accept both
+skips, so a dispatched run reported green having never looked at the PR body.
+That made dispatching the cheapest way to clear a red PR, and it is how #1519
+and #1521 actually went green (#1523).
 
-So `session-urls` now runs on `workflow_dispatch` as well. With no pull request
-in the event payload it resolves one from the API by head ref:
+So the _no agent session urls (pr body)_ step runs on `workflow_dispatch` as
+well. With no pull request in the event payload it resolves one from the API by
+head ref:
 
 - **an open PR has this ref as its head** → its body is checked, exactly as on a
   `pull_request` run. This includes the release PR, which is the whole reason
   the trigger exists.
-- **no open PR has this ref** → nothing to check, and the job says so with a
+- **no open PR has this ref** → nothing to check, and the step says so with a
   `::notice::` and succeeds.
-- **the API listing fails** → the job fails. A flaking query must never resolve
+- **the API listing fails** → the step fails. A flaking query must never resolve
   to green; the same rule `ci-ok`'s own run listing follows.
 
 That resolution lives in `scripts/check-agent-session-urls.sh --pr-for-ref`
@@ -364,9 +421,9 @@ ROLTER_PULLS_JSON=pulls.json \
 Workflow-embedded shell is shell nobody can run, and this logic decides whether
 a gate reports green.
 
-`ci-ok` was tightened to match: a skipped `session-urls` is accepted **only** on
-a `push` build, the one case with no pull request to check. Anywhere else, a
-skip is a failure rather than a pass.
+`ci-ok`'s verdict was tightened to match: a skipped PR-body check is accepted
+**only** on a `push` build, the one case with no pull request to check.
+Anywhere else, a skip is a failure rather than a pass.
 
 #### The commit half of the dispatch path
 
@@ -382,21 +439,23 @@ for a head sha whose `opened` event froze a dirty body. A commit message is
 also the half that cannot be fixed after the fact — correcting a merged one
 takes a history rewrite.
 
-`ci.yml` therefore carries a `dispatch-commit-urls` job that runs only on
-`workflow_dispatch` and resolves the range through
-`--commit-range-for-ref`. It lives in `ci.yml` rather than beside its
-`pull_request` twin **because `quality.yml` takes no secrets** (#734): every
-job there scans the checked-out source with pinned public tooling, so the gate
-behaves identically on dependabot and fork PRs, which receive none. Resolving a
-pull request needs a token, so it belongs on this side of the line. The
-`pull_request` path in `quality.yml` is unchanged.
+`ci-ok` therefore runs a _no agent session urls (commits, dispatch/queue)_ step
+on `workflow_dispatch` and `merge_group`. On a dispatch it resolves the range
+through `--commit-range-for-ref`; on a queue run the payload names both ends
+(see [the merge queue](#the-merge-queue)). It lives in `ci.yml` rather than
+beside its `pull_request` twin **because `quality.yml` takes no secrets**
+(#734): every job there scans the checked-out source with pinned public tooling,
+so the gate behaves identically on dependabot and fork PRs, which receive none.
+Resolving a pull request needs a token, so it belongs on this side of the line.
+The `pull_request` path in `quality.yml` is unchanged.
 
 The contract matches the body half: no open PR for the ref is a `::notice::`
-and a pass, a failed API listing fails the job, and a range whose endpoints are
-not both in the clone fails rather than silently checking nothing. `ci-ok`
+and a pass, a failed API listing fails the step, and a range whose endpoints are
+not both in the clone fails rather than silently checking nothing. The `ci-ok`
+checkout takes full history on these two events for that reason. The verdict
 treats a `failure` here as fatal on any event, and additionally requires
-`success` on a dispatched build — a skip is honest only where the job does not
-apply.
+`success` on a dispatched or queued build — a skip is honest only where the
+step does not apply.
 
 Both `--pr-for-ref` and `--commit-range-for-ref` share one lookup helper and
 one fixture override, so neither is shell that only CI can run:
@@ -406,22 +465,23 @@ ROLTER_PULLS_JSON=pulls.json \
   bash scripts/check-agent-session-urls.sh --commit-range-for-ref rolter-ai/rolter some/branch
 ```
 
-`pr-title` still cannot run on a dispatch — the action it uses reads the title
-out of the event payload, and there is no supported way to hand it one. The
-remaining gap is therefore narrow: two PRs take the dispatch path, and a
+`pr-title` still cannot run on a dispatch — the action it uses takes the pull
+request out of the event payload, and there is no supported way to hand it one.
+The remaining gap is therefore narrow: two PRs take the dispatch path, and a
 workflow writes both titles. release-plz titles the release PR, and
 `ui-security-updates.yml` gives its PR a fixed title that
-`ui/scripts/security-updates.test.ts` checks (see
-[UI security updates](testing.md#ui-security-updates)). `ci-ok` emits a
-`::warning::` naming that the title went unvalidated rather than letting a
-silent skip imply otherwise.
+`ui/scripts/security-updates.test.ts` checks (see [UI security
+updates](testing.md#ui-security-updates)). `ci-ok` emits a `::warning::` naming
+that the title went unvalidated rather than letting a silent skip imply
+otherwise.
 
 ### Recovering a sha whose `opened` run saw a dirty body
 
-`session-urls` reads `${{ github.event.pull_request.body }}` — the snapshot the
-webhook froze, not the PR's live body. So if a session URL is present when the
-`opened` event fires, _that run's_ `session-urls` fails permanently: no later
-`PATCH` can change what an already-delivered payload contained.
+On a `pull_request` run the _no agent session urls (pr body)_ step reads
+`${{ github.event.pull_request.body }}` — the snapshot the webhook froze, not
+the PR's live body. So if a session URL is present when the `opened` event
+fires, _that run's_ body check fails permanently: no later `PATCH` can change
+what an already-delivered payload contained.
 
 That used to strand the head sha. The `opened` run is the only one that runs the
 heavy gate, and the `edited` fast path — which _does_ re-read the live body, and
@@ -452,11 +512,11 @@ This is not the guard misbehaving; it is the guard working exactly as #1511
 describes. But it costs a cycle every time, so the order matters. Seen on #1565,
 the first PR opened after `gate-ok` landed (#1566):
 
-| Run         | Event    | Started  | Outcome                                                           |
-| ----------- | -------- | -------- | ----------------------------------------------------------------- |
-| 35249017068 | `opened` | 16:50:04 | `session-urls` failed on the frozen body; **`gate-ok` succeeded** |
-| 35249064201 | `edited` | 16:50:35 | `ci-ok` red — _gate still running_, the strip was too early       |
-| 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit           |
+| Run         | Event    | Started  | Outcome                                                                                   |
+| ----------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
+| 35249017068 | `opened` | 16:50:04 | `session-urls`, then a job of its own, failed on the frozen body; **`gate-ok` succeeded** |
+| 35249064201 | `edited` | 16:50:35 | `ci-ok` red — _gate still running_, the strip was too early                               |
+| 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit                                   |
 
 The third run is what the second would have been, had the strip waited.
 
@@ -468,12 +528,14 @@ opposite things:
 | `gate still running on <sha>`                                 | the strip was early, or the gate simply has not finished | wait for the gate, then edit the body once |
 | `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran    | fix the commit; no amount of editing helps |
 
-**Reading the live body in `session-urls` was considered and not done.** It
-would not help the case that matters: the `opened` run starts seconds after the
-PR is created, so a live read would race the `PATCH` and usually still see the
-dirty body. It would also make every `pull_request` run depend on an API call
-that a fork's read-only token may not be able to make. The frozen snapshot is
-fine once a failed `session-urls` no longer condemns the sha.
+**Reading the live body was considered and not done.** While the check was a
+job of its own it ran seconds after the PR was created, so a live read would
+have raced the `PATCH` and usually still seen the dirty body. It would also
+make every `pull_request` run depend on an API call that a fork's read-only
+token may not be able to make. The frozen snapshot is fine once a failed body
+check no longer condemns the sha. Since the check became a step of `ci-ok`, it
+runs after `quality` and `codeql`, minutes after the PR opens, so the first
+objection no longer holds; a live read is planned as a follow-up under #2025.
 
 ## Why not a separate `pr-title` workflow
 
@@ -487,7 +549,9 @@ It was rejected on one point: `pr-title` would stop being aggregated into
 a repository-settings change no pull request can make. Until a human made it,
 PR titles would be unenforced — a silent regression traded for a loud one. The
 `ci-ok`-is-the-only-required-check invariant is load-bearing here, and the API
-query keeps it.
+query keeps it. Since #2025, `pr-title` is a step inside `ci-ok` rather than a
+job it needs, which holds the same invariant with no second check to
+aggregate at all.
 
 ## Every merge commit keeps its run
 
