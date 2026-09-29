@@ -620,7 +620,7 @@
         },
         "post_response": {
           "label": "Post-response",
-          "description": "Inspect or transform the provider response before client delivery."
+          "description": "Inspect or transform the provider response before client delivery. Streamed responses never reach this stage."
         }
       },
       "stateEnabled": "enabled",
@@ -669,7 +669,12 @@
         "body": "The gateway stops consulting this plugin immediately, at every stage it was configured for."
       },
       "deleteAria": "Delete plugin {{name}}",
-      "configureAria": "Configure plugin {{name}}"
+      "configureAria": "Configure plugin {{name}}",
+      "streaming": {
+        "cardRefused": "Refuses streamed requests in its scope while enabled",
+        "noteRefused": "While this plugin is enabled, streamed requests in its scope are refused with <0>400 plugin_streaming_unsupported</0>. A fail-closed plugin must approve every response, and it cannot see a stream. Chat clients and coding agents usually stream; choose {{option}} to let their streams through unchecked.",
+        "noteSkipped": "Streamed responses skip this plugin and reach the client unchecked; only non-streamed responses are sent to it. Under {{option}}, streamed requests in its scope would be refused instead."
+      }
     },
     "routing": {
       "strategyHints": {

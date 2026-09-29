@@ -408,6 +408,8 @@ Output guardrails, `post_response` plugins and the PII sanitizer's response leg 
 
 A plugin's waiver is its own failure mode rather than a new setting. `fail_closed` already says "never deliver what I have not approved", and a stream is exactly a response the plugin cannot approve. `fail_open` already says "deliver when I cannot answer", which is all a stream permits. The check (`handlers.rs`, beside `post_response_plugin_list`) refuses when any applicable plugin is fail closed and names it in the message. Before #1776, every `post_response` plugin was silently skipped for a stream. Tests: the `*_post_response_plugin_*stream*` cases in `crates/rolter-gateway/tests/integration.rs`, including a cached stream refused after a hot reload adds the plugin.
 
+The dashboard states the consequence where the choice is made (#2178). `ui/src/pages/Plugins.tsx` shows a note in the plugin dialog once the stage is `post_response`, worded by the selected `failure_mode` and wired as the description of both pickers, and a `post_response` card with `fail_closed` carries a one-line warning. Unlike the guardrail rule screen, which has to read `streaming_post_call` from the effective config, both follow from the plugin's own fields. The stories `WarnsThatAFailClosedPostResponsePluginRefusesStreams` and `DialogNoteTracksStageAndFailurePolicy` pin it.
+
 ## Failed-login throttling (#1079)
 
 `POST /api/v1/auth/login` is unauthenticated and runs one argon2id verification
