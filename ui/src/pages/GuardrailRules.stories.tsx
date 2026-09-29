@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailRules from "./GuardrailRules";
@@ -20,6 +21,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
+import type { EffectiveRule } from "@/lib/guardrail-policy";
 import { atShort, expectInViewport } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
@@ -55,6 +57,63 @@ const RULES: GuardrailRuleRow[] = [
   },
 ];
 
+/** the effective rule the postgres store builds from a dashboard row */
+const asEffective = (row: GuardrailRuleRow): EffectiveRule => ({
+  name: row.name,
+  ...(row.builtin ? { builtin: row.builtin } : {}),
+  ...(row.pattern ? { pattern: row.pattern } : {}),
+  stage: row.stage,
+  action: row.action,
+  ...(row.replacement ? { replacement: row.replacement } : {}),
+  include_system: row.include_system,
+});
+
+/**
+ * `GET /api/v1/config` as the store builds it: the config file's rules first,
+ * then the enabled rows whose names the file does not take, with
+ * `guardrails.enabled` set from the flag (#2157).
+ */
+function effectiveConfig({
+  rows = RULES,
+  file = [],
+  on = true,
+  streaming = "reject",
+}: {
+  rows?: GuardrailRuleRow[];
+  file?: EffectiveRule[];
+  on?: boolean;
+  streaming?: "reject" | "passthrough";
+} = {}) {
+  const taken = new Set(file.map((rule) => rule.name));
+  return {
+    providers: [],
+    routes: [],
+    virtual_keys: [],
+    feature_flags: { guardrails: on },
+    guardrails: {
+      enabled: on,
+      streaming_post_call: streaming,
+      rules: [
+        ...file,
+        ...rows.filter((row) => row.enabled && !taken.has(row.name)).map(asEffective),
+      ],
+    },
+  };
+}
+
+const isConfig = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/config";
+
+/**
+ * Answer the effective config on its own path and `list` everywhere else. The
+ * config defaults to the one `RULES` alone produce, which is what every story
+ * not about the effective policy wants: both rules enforced, no banner.
+ */
+const withPolicy =
+  (list: FetchStub, config: () => Response = () => json(effectiveConfig())): FetchStub =>
+  async (input, init) =>
+    isConfig(input) ? config() : list(input, init);
+
 /**
  * The screen under the shared fetch-stub harness, with a role to render as.
  *
@@ -76,16 +135,19 @@ function Harness({
   role?: StoryRole;
   toasted?: boolean;
 }) {
+  // the flag-off banner links to Feature Flags, and a link needs a router
   return (
-    <ScreenHarness fetchStub={fetchStub} role={role}>
-      {toasted ? (
-        <Toasted>
+    <MemoryRouter>
+      <ScreenHarness fetchStub={fetchStub} role={role}>
+        {toasted ? (
+          <Toasted>
+            <GuardrailRules />
+          </Toasted>
+        ) : (
           <GuardrailRules />
-        </Toasted>
-      ) : (
-        <GuardrailRules />
-      )}
-    </ScreenHarness>
+        )}
+      </ScreenHarness>
+    </MemoryRouter>
   );
 }
 
@@ -97,15 +159,43 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Loaded: Story = { render: () => <Harness fetchStub={async () => json(RULES)} /> };
+/**
+ * Every rule the dashboard lists is in the effective policy and the flag is on,
+ * so each card says enforced and nothing above the cards says otherwise.
+ */
+export const Loaded: Story = {
+  render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
+  play: async ({ canvasElement }) => {
+    for (const name of [/Redact customer email/, /Block override attempts/]) {
+      const card = await ruleCard(canvasElement, name);
+      await expect(within(card).getByText("enforced", { exact: true })).toBeVisible();
+    }
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.queryByRole("region", { name: /switched off|Could not confirm/ }),
+    ).toBeNull();
+    await expect(canvas.queryByRole("heading", { name: "Config-file rules" })).toBeNull();
+  },
+};
 export const Loading: Story = {
   render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
   play: async ({ canvasElement }) => expectSkeleton(canvasElement),
 };
 export const Empty: Story = {
-  render: () => <Harness fetchStub={async () => json([])} />,
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json([]),
+        () => json(effectiveConfig({ rows: [] })),
+      )}
+    />
+  ),
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No inspection rules/, /Add first rule/);
+    // it used to tell the operator to turn the flag on later, while the
+    // screen never read whether the flag was on (#2157)
+    await expect(within(canvasElement).getByText(/published to the gateway/)).toBeVisible();
+    await expect(canvasElement).not.toHaveTextContent(/flag/i);
   },
 };
 export const Error: Story = {
@@ -143,9 +233,9 @@ export const Unreachable: Story = {
 export const CreatesCustomRule: Story = {
   render: () => (
     <Harness
-      fetchStub={async (_input, init) =>
-        init?.method === "POST" ? json(RULES[1], 201) : json(RULES)
-      }
+      fetchStub={withPolicy(async (_input, init) =>
+        init?.method === "POST" ? json(RULES[1], 201) : json(RULES),
+      )}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -172,11 +262,11 @@ export const CreateRejectedByTheServer: Story = {
   render: () => (
     <Harness
       toasted
-      fetchStub={async (_input, init) =>
+      fetchStub={withPolicy(async (_input, init) =>
         init?.method === "POST"
           ? json({ error: { message: "the pattern does not compile: unbalanced group" } }, 422)
-          : json(RULES)
-      }
+          : json(RULES),
+      )}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -205,15 +295,22 @@ export const CreateRejectedByTheServer: Story = {
 // the list shrinks once the DELETE lands, so the story can assert the outcome
 // — the toast, the row gone — rather than that the request left. A stub that
 // answers the full list forever passes either way, which is how a 204 fixture
-// that threw went unnoticed (#1260)
+// that threw went unnoticed (#1260). the effective config shrinks with it: a
+// rule still in the policy after its row is gone is the config file's (#2157)
 let ruleDeleted = false;
-const deletes = recording(async (_input, init) => {
-  if (init?.method === "DELETE") {
-    ruleDeleted = true;
-    return json({}, 204);
-  }
-  return json(ruleDeleted ? RULES.filter((rule) => rule.id !== "rule-email") : RULES);
-});
+const remaining = () => (ruleDeleted ? RULES.filter((rule) => rule.id !== "rule-email") : RULES);
+const deletes = recording(
+  withPolicy(
+    async (_input, init) => {
+      if (init?.method === "DELETE") {
+        ruleDeleted = true;
+        return json({}, 204);
+      }
+      return json(remaining());
+    },
+    () => json(effectiveConfig({ rows: remaining() })),
+  ),
+);
 
 export const ConfirmsBeforeDeletingARule: Story = {
   render: () => {
@@ -245,7 +342,7 @@ export const ConfirmsBeforeDeletingARule: Story = {
 };
 
 export const EditsRule: Story = {
-  render: () => <Harness fetchStub={async () => json(RULES)} />,
+  render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
@@ -268,7 +365,7 @@ export const EditsRule: Story = {
  */
 export const EditsRuleOnAShortScreen: Story = {
   ...atShort,
-  render: () => <Harness fetchStub={async () => json(RULES)} />,
+  render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
@@ -314,26 +411,25 @@ const POST_CALL_RULE: GuardrailRuleRow = {
  * The rules plus `GET /api/v1/config` answering with `streaming_post_call` set
  * to `mode`, or failing when the effective config cannot be read.
  */
-const streamingStub =
-  (mode: "reject" | "passthrough" | "unreadable"): FetchStub =>
-  async (input) => {
-    if (new URL(String(input), "http://localhost").pathname !== "/api/v1/config") {
-      return json([...RULES, POST_CALL_RULE]);
-    }
-    if (mode === "unreadable") return json({ error: { message: "store offline" } }, 503);
-    return json({
-      providers: [],
-      routes: [],
-      virtual_keys: [],
-      guardrails: { enabled: true, streaming_post_call: mode },
-    });
-  };
+const streamingStub = (mode: "reject" | "passthrough" | "unreadable"): FetchStub =>
+  withPolicy(
+    async () => json([...RULES, POST_CALL_RULE]),
+    () =>
+      mode === "unreadable"
+        ? json({ error: { message: "store offline" } }, 503)
+        : json(effectiveConfig({ rows: [...RULES, POST_CALL_RULE], streaming: mode })),
+  );
 
 /**
- * The card of the rule named `name`, found by its heading.
+ * The card of the rule named `name`, found by its heading: level 2 for a rule
+ * added on this screen, level 3 for one listed under "Config-file rules".
  */
-async function ruleCard(canvasElement: HTMLElement, name: RegExp): Promise<HTMLElement> {
-  const heading = await within(canvasElement).findByRole("heading", { name });
+async function ruleCard(
+  canvasElement: HTMLElement,
+  name: RegExp,
+  level: 2 | 3 = 2,
+): Promise<HTMLElement> {
+  const heading = await within(canvasElement).findByRole("heading", { name, level });
   const card = heading.closest<HTMLElement>("article");
   await expect(card).not.toBeNull();
   return card!;
@@ -432,6 +528,236 @@ export const SaysWhenTheStreamingSettingIsUnreadable: Story = {
       canvasElement,
       /streaming_post_call could not be read.*Under reject.*refused.*under passthrough.*skip the rule/,
     );
+  },
+};
+
+/** the status badge on a card, by its exact label */
+const expectStatus = async (card: HTMLElement, label: string) =>
+  expect(within(card).getByText(label, { exact: true })).toBeVisible();
+
+/**
+ * The `guardrails` feature flag is off, so no rule inspects traffic (#2157).
+ *
+ * The cards used to say enforced regardless, and the empty state told the
+ * operator to turn the flag on later, on a screen that never read it. A banner
+ * says so now and links to the one screen that changes it, and no card claims
+ * enforcement.
+ */
+export const SaysWhenTheGuardrailsFlagIsOff: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json(RULES),
+        () => json(effectiveConfig({ on: false })),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const banner = await canvas.findByRole("region", { name: "Guardrails are switched off" });
+    await expect(banner).toHaveTextContent(/no rule inspects traffic/);
+    await expect(within(banner).getByRole("link", { name: "Open Feature Flags" })).toHaveAttribute(
+      "href",
+      "/feature-flags",
+    );
+    for (const name of [/Redact customer email/, /Block override attempts/]) {
+      const card = await ruleCard(canvasElement, name);
+      await expectStatus(card, "not enforced");
+      await expect(within(card).queryByText("enforced", { exact: true })).toBeNull();
+    }
+  },
+};
+
+// the config file's version of the email rule: it blocks where the row redacts
+const FILE_EMAIL: EffectiveRule = {
+  name: "Redact customer email",
+  builtin: "email",
+  stage: "pre_call",
+  action: "block",
+  include_system: false,
+};
+
+// the injection rule again, in the file, beside a paused row of the same name
+const FILE_INJECTION: EffectiveRule = {
+  name: "Block override attempts",
+  pattern: "(?i)disregard (all|previous) instructions",
+  stage: "pre_call",
+  action: "block",
+  include_system: true,
+};
+
+const PAUSED_INJECTION: GuardrailRuleRow = { ...RULES[1], enabled: false };
+
+/**
+ * A row whose name the config file also uses (#2157).
+ *
+ * The store keeps the file's rule and drops the row, while its card kept
+ * saying enforced. The card says overridden now and names the file rule, which
+ * is listed below it. A paused row under a file rule's name says it would not
+ * run if resumed, and the dialog warns before a name clash is saved.
+ */
+export const ShowsARowTheConfigFileOverrides: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json([RULES[0], PAUSED_INJECTION]),
+        () =>
+          json(
+            effectiveConfig({
+              rows: [RULES[0], PAUSED_INJECTION],
+              file: [FILE_EMAIL, FILE_INJECTION],
+            }),
+          ),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const overridden = await ruleCard(canvasElement, /10 · Redact customer email/);
+    await expectStatus(overridden, "overridden by config file");
+    await expect(overridden).toHaveTextContent(
+      "Not running. The config file also defines Redact customer email",
+    );
+    await expect(within(overridden).queryByText("enforced", { exact: true })).toBeNull();
+
+    const paused = await ruleCard(canvasElement, /20 · Block override attempts/);
+    await expectStatus(paused, "paused");
+    await expect(paused).toHaveTextContent(
+      "The config file also defines Block override attempts, so this rule would not run if resumed",
+    );
+
+    // the rule that runs instead is on the screen, read-only
+    const file = await ruleCard(canvasElement, /^Redact customer email$/, 3);
+    await expectStatus(file, "enforced");
+    await expect(within(file).getByText("block")).toBeVisible();
+
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: "Edit rule Redact customer email" }),
+    );
+    const dialog = await within(document.body).findByRole("dialog");
+    const name = within(dialog).getByLabelText("Rule name");
+    await expect(name).toHaveAccessibleDescription(/config file already defines a rule/);
+    await userEvent.type(name, " (dashboard)");
+    await waitFor(() => expect(name).not.toHaveAccessibleDescription(/config file/));
+  },
+};
+
+// a rule only the config file defines
+const FILE_AWS: EffectiveRule = {
+  name: "Block AWS access keys",
+  pattern: "AKIA[A-Z0-9]{16}",
+  stage: "pre_call",
+  action: "block",
+  include_system: true,
+};
+
+// and a response rule there, so its card carries the streaming line too
+const FILE_CARDS: EffectiveRule = {
+  name: "Mask card numbers in answers",
+  builtin: "payment_card",
+  stage: "post_call",
+  action: "redact",
+  replacement: "[CARD]",
+  include_system: false,
+};
+
+/**
+ * Config-file rules run but were never listed, so the screen was not the whole
+ * policy a reviewer signs off (#2157). They are listed now under a heading of
+ * their own, read-only, with the source on every card and no edit or delete.
+ */
+export const ListsConfigFileRulesReadOnly: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json(RULES),
+        () => json(effectiveConfig({ file: [FILE_AWS, FILE_CARDS] })),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const section = await canvas.findByRole("region", { name: "Config-file rules" });
+    await expect(section).toHaveTextContent("[[guardrails.rules]]");
+    await expect(section).toHaveTextContent(/run before the rules above/);
+
+    const aws = await ruleCard(canvasElement, /Block AWS access keys/, 3);
+    await expectStatus(aws, "enforced");
+    await expect(aws).toHaveTextContent("AKIA[A-Z0-9]{16}");
+    await expect(within(aws).getByText("Read-only · config file")).toBeVisible();
+    await expect(within(aws).queryByRole("button")).toBeNull();
+
+    const cards = await ruleCard(canvasElement, /Mask card numbers in answers/, 3);
+    await expect(cards).toHaveTextContent("Replacement · [CARD]");
+    await expect(cards).toHaveTextContent(/Refuses streamed requests on its routes/);
+
+    // the rows added here are unchanged
+    await expectStatus(await ruleCard(canvasElement, /Redact customer email/), "enforced");
+  },
+};
+
+/**
+ * No rule added here, but the config file has some: "No inspection rules"
+ * would misstate the policy, so the empty state says whose rules run (#2157).
+ */
+export const EmptyBesideConfigFileRules: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json([]),
+        () => json(effectiveConfig({ rows: [], file: [FILE_AWS] })),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No rules added here/, /Add first rule/);
+    await expect(within(canvasElement).queryByText(/No inspection rules/)).toBeNull();
+    await ruleCard(canvasElement, /Block AWS access keys/, 3);
+  },
+};
+
+// flipped by the play function, so the retry is the request that succeeds
+let configAnswers = false;
+
+/**
+ * The effective config did not answer, so the screen cannot say whether the
+ * flag is on or which config-file rules apply (#2157). It says so rather than
+ * calling every row enforced, and a retry that reaches the config clears it.
+ */
+export const SaysWhenTheEffectivePolicyIsUnreadable: Story = {
+  render: () => {
+    configAnswers = false;
+    return (
+      <Harness
+        fetchStub={withPolicy(
+          async () => json(RULES),
+          () =>
+            configAnswers
+              ? json(effectiveConfig())
+              : json({ error: { message: "store offline" } }, 503),
+        )}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const banner = await canvas.findByRole("region", {
+      name: "Could not confirm which rules the gateway runs",
+    });
+    await expect(banner).toHaveTextContent(/could not be read/);
+    for (const name of [/Redact customer email/, /Block override attempts/]) {
+      const card = await ruleCard(canvasElement, name);
+      await expectStatus(card, "status unknown");
+      await expect(within(card).queryByText("enforced", { exact: true })).toBeNull();
+    }
+
+    configAnswers = true;
+    await userEvent.click(within(banner).getByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      expect(
+        canvas.queryByRole("region", { name: "Could not confirm which rules the gateway runs" }),
+      ).toBeNull(),
+    );
+    await expectStatus(await ruleCard(canvasElement, /Redact customer email/), "enforced");
   },
 };
 
