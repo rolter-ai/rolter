@@ -7,6 +7,7 @@
 - **prek** for repository Git hooks — install with `uv tool install prek` or `brew install prek`.
 - **Docker** + Compose for Postgres/Redis/ClickHouse.
 - **uv** (optional) for the PyPI-wheel install path and tooling.
+*   planted prettier violation for the #2025 proof, reverted next commit
 
 ## Clone & build
 
