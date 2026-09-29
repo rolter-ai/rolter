@@ -32,11 +32,12 @@ the moment it merges until the next release, no matter how deliberate it was.
 That is not a bug in the tool. It is what happens when a gate is pointed at a
 surface that has not been declared stable yet.
 
-## What the job checks now
+## What the check covers now
 
 The gate is scoped instead of silenced. It compares against the previous
 release **tag** (`--baseline-rev`, resolved with `git describe`), not the
-published crate, and it checks only the crates listed in `GUARDED` in
+published crate, and it checks only the crates listed in `GUARDED`, the env of
+the `cargo semver-checks (guarded crates)` step of the `rust build` job in
 `.github/workflows/quality.yml`:
 
 | Crate             | Guarded | Why                                                                                                         |
@@ -52,7 +53,7 @@ published crate, and it checks only the crates listed in `GUARDED` in
 
 The guarded crates are checked at `--release-type patch` — the strict reading.
 On those crates a change to a public item is surfaced rather than passing
-unremarked: the job goes red, and the pull request either keeps the API or says
+unremarked: the check goes red, and the pull request either keeps the API or says
 in its description that moving it was the point.
 
 The unguarded three are unguarded because their public items exist purely so the
@@ -107,7 +108,7 @@ endings:
 
 - **Keep the old name as a deprecated shim.** Leave the `pub` item in place,
   mark it ``#[deprecated(note = "use `<new name>`")]``, and have it delegate to
-  the new one. The symbol is still in the API, the job stays green, and every
+  the new one. The symbol is still in the API, the check stays green, and every
   in-tree caller moves to the new name in the same pull request. This is what
   `rolter_proxy::Forwarder::forward_bearer` is: #1446 renamed it to
   `forward_mcp`, which left the job red on every pull request until #1473 put
@@ -152,7 +153,7 @@ signature change or a visibility change on any guarded crate still fails — and
 the next crate to deprecate something adds its own line rather than inheriting a
 workspace-wide exemption it never asked for.
 
-## At 1.0 — the job stays advisory
+## At 1.0 — the check stays advisory
 
 An earlier version of this page planned to promote the job at 1.0: drop
 `continue-on-error`, add it to `ci-ok`'s `needs:`, and revisit `GUARDED`
@@ -163,10 +164,12 @@ internal implementation detail, said so in its `Cargo.toml` description, its
 `//!` docs and the README, and a gate enforcing a promise the ADR disclaims
 would be worse than either choice alone.
 
-So the job is permanently advisory:
+So the check is permanently advisory:
 
-- `continue-on-error: true` stays, and `semver-checks` never joins `ci-ok`'s
-  `needs:`. A red run is a _review signal_ — "this pull request moved a public
+- Its three steps (the install, the baseline tag and the check) keep
+  `continue-on-error: true` and run last in `rust build`, whose report turns a
+  failure into a warning, never an error, so the check can never turn `ci-ok`
+  red. A red run is a _review signal_ — "this pull request moved a public
   item in a crate both binaries share" — and is often the correct outcome, as it
   is for the behaviour-preserving refactors in #1041 and #1042.
 - `GUARDED` keeps its four crates for the same reason: those are where an
@@ -180,5 +183,5 @@ So the job is permanently advisory:
   shared helper changed shape. rolter's version is driven by commit types and
   nothing else.
 
-The job is green on a clean tree, and a red run means a guarded crate's API
+The check is green on a clean tree, and a red run means a guarded crate's API
 moved. That is information, not a verdict.

@@ -151,8 +151,9 @@ It is deliberately trivial, and two things about it are load-bearing:
   than adding a second red check beside `ci-ok`. `skipped` is not `success`, so
   the guard reads it correctly either way.
 - **It never re-derives `quality`'s verdict.** `needs.quality.result` is
-  computed by Actions, which already accounts for the `continue-on-error` jobs
-  inside `quality.yml` (`coverage`, `semver-checks`) and for `coverage` being
+  computed by Actions, which already accounts for what `continue-on-error`
+  covers inside `quality.yml` (the `coverage` job, the `semver-checks` steps of
+  `rust build`) and for `coverage` being
   skipped on every event but `pull_request`. Any hand-rolled scan of job
   conclusions would get those wrong.
 

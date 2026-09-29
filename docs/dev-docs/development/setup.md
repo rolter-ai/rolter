@@ -121,7 +121,7 @@ prek run --all-files --hook-stage pre-push
 The clippy line above only builds the _default_ feature set, so it cannot see a
 lint that fires under one feature combination alone — `dead_code` on a helper
 whose only caller is `#[cfg(feature = "otlp")]`, for instance. CI closes that
-gap in the `feature matrix` job, which runs `cargo hack` with
+gap in the `rust lint` job, whose `cargo hack (each feature)` step runs `cargo hack` with
 `RUSTFLAGS=-D warnings`. Reproduce a failure from it with:
 
 ```bash

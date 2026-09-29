@@ -8,9 +8,12 @@ name: quality
 # supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
-# reviewer: many independent checks. the ones that only read the tree share the
-# `static checks` job, one named step per concern plus a report step that names
-# whichever failed; the ones that build or boot something keep a job each.
+# reviewer: many independent checks. they share a handful of jobs by what they
+# need: `static checks` for the ones that only read the tree, `rust lint` for
+# the rust checks that link nothing, `rust build` for the ones that link or boot
+# a binary. each runs one named step per concern plus a report step that names
+# whichever failed. nextest, the image smoke, the ui checks and coverage run
+# as jobs of their own.
 # ci.yml aggregates every job here (plus pr-title) into a single `ci-ok` check
 # for branch protection. coverage runs as informational (continue-on-error) on
 # pull requests only; the informational checks that need a full build and gate
@@ -39,34 +42,421 @@ permissions:
 # faster linking on the linux runner: ./.github/actions/wild-linker restores the
 # wild binary from the actions cache and writes ~/.cargo/config.toml to use it
 # for *-unknown-linux-{gnu,musl}. only the jobs that actually link install it —
-# clippy, cargo hack and rustdoc emit metadata and never invoke the linker.
+# `rust lint` does not, since clippy, cargo hack and rustdoc emit metadata and
+# never invoke the linker. a job that installs it sets no job-level RUSTFLAGS,
+# which would replace the `--ld-path` rustflags the action writes.
 
 jobs:
-  # ── rust: format + lint ─────────────────────────────────────────────────────
-  fmt-clippy:
-    name: fmt / clippy
+  # ── rust lint: every rust check that links nothing ──────────────────────────
+  # fmt, clippy, rustdoc and `cargo check` only emit metadata, so this job skips
+  # the wild linker. until #2025 they were three jobs (`fmt / clippy`,
+  # `feature matrix`, `cargo doc (warnings = errors)`), each restoring its own
+  # target dir and waiting for its own runner. they share one now, under the
+  # rules of `static checks`: one named step per former check, every check step
+  # under `!cancelled()` so one red step never hides the next, each guarded on
+  # the setup it reads, and a `report` step that names whichever failed and
+  # fails the job when one was skipped
+  rust-lint:
+    name: rust lint
     runs-on: ubuntu-latest
+    # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
+    # requests no longer cache for each other. a hung step fails the gate in
+    # half an hour instead of GitHub's 360-minute default
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        id: toolchain
+        if: ${{ !cancelled() }}
         with:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !cancelled() }}
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: install cargo-hack
+        id: cargo-hack
+        if: ${{ !cancelled() }}
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-hack
+
+      # ── fmt / clippy ──────────────────────────────────────────────────────
       - name: fmt
+        id: fmt
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --all --check
       - name: clippy (default features)
+        id: clippy
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
       # rolter-control as well as rolter-store: most of the postgres-gated code
       # (crud, sso, scim, the policy modules) lives in control, and linting only
       # the store left all of it unchecked under the feature it is written for
       - name: clippy (postgres feature)
+        id: clippy-postgres
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings
+
+      # ── cargo doc (warnings = errors) ─────────────────────────────────────
+      # broken intra-doc links / invalid rustdoc are common agent mistakes.
+      # RUSTDOCFLAGS sits on the step: rust-cache hashes the job's RUST* env
+      # into its key, and the flag only concerns this step
+      - name: cargo doc (warnings = errors)
+        id: doc
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --all-features
+
+      # ── feature matrix ────────────────────────────────────────────────────
+      # agents frequently break builds behind a cargo feature; check each in
+      # turn. `cargo check` without RUSTFLAGS only fails on hard errors, so a
+      # lint that fires in exactly one feature combination — `dead_code` on an
+      # item reachable only under `--no-default-features`, say — passed this
+      # gate silently while clippy never saw it, since clippy only builds
+      # default features (#1399). RUSTFLAGS is capped to `allow` for registry
+      # dependencies, so this denies warnings in workspace crates only.
+      #
+      # both steps set RUSTFLAGS on the step and build into target/hack: a
+      # different RUSTFLAGS invalidates every unit cargo has built, so sharing
+      # target/ with the clippy steps would recompile the whole dependency tree
+      # twice per run
+      - name: cargo hack (each feature)
+        id: hack
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.cargo-hack.outcome == 'success' }}
+        env:
+          RUSTFLAGS: "-D warnings"
+          CARGO_TARGET_DIR: target/hack
+        run: cargo hack check --each-feature --workspace --all-targets
+      # --each-feature only ever turns on a package's *own* features, so it
+      # never builds a dependent against a dependency feature it does not
+      # itself enable. that gap let `rolter` stop compiling whenever
+      # `rolter-control/postgres` was on without `rolter/postgres` (#1295).
+      - name: cross-crate feature combination (dependency postgres only)
+        id: cross-crate
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        env:
+          RUSTFLAGS: "-D warnings"
+          CARGO_TARGET_DIR: target/hack
+        run: cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres
+
+      # the verdict for the whole job. every step here must run on every event,
+      # so a skip counts as a failure (#1562). outcomes arrive through env,
+      # never inline in the script (zizmor's template-injection rule); a step
+      # id that does not exist yields an empty outcome, which also fails
+      - name: report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_TOOLCHAIN: ${{ steps.toolchain.outcome }}
+          OUTCOME_CARGO_HACK: ${{ steps.cargo-hack.outcome }}
+          OUTCOME_FMT: ${{ steps.fmt.outcome }}
+          OUTCOME_CLIPPY: ${{ steps.clippy.outcome }}
+          OUTCOME_CLIPPY_POSTGRES: ${{ steps.clippy-postgres.outcome }}
+          OUTCOME_DOC: ${{ steps.doc.outcome }}
+          OUTCOME_HACK: ${{ steps.hack.outcome }}
+          OUTCOME_CROSS_CRATE: ${{ steps.cross-crate.outcome }}
+        run: |
+          set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY}"
+          failed=0
+
+          {
+            echo "### rust lint"
+            echo
+            echo "| former job | step | outcome | reproduce locally |"
+            echo "| --- | --- | --- | --- |"
+          } >> "${summary}"
+
+          # row <former job> <step> <outcome> <command>
+          row() {
+            local job="$1" step="$2" outcome="$3" repro="$4" shown
+            shown="${outcome:-no outcome}"
+            if [ "${outcome}" = "skipped" ]; then
+              shown="**skipped, but must run**"
+              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
+              failed=1
+            elif [ "${outcome}" != "success" ]; then
+              shown="**${outcome:-no outcome}**"
+              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
+              failed=1
+            fi
+            # a literal | would end the table cell early
+            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
+          }
+
+          setup="nothing to run locally; re-run the job"
+          row "rust lint" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
+          row "rust lint" "rust toolchain" "${OUTCOME_TOOLCHAIN}" "${setup}"
+          row "feature matrix" "install cargo-hack" "${OUTCOME_CARGO_HACK}" "${setup}"
+          row "fmt / clippy" "fmt" "${OUTCOME_FMT}" "cargo fmt --all --check"
+          row "fmt / clippy" "clippy (default features)" "${OUTCOME_CLIPPY}" \
+            "cargo clippy --workspace --all-targets -- -D warnings"
+          row "fmt / clippy" "clippy (postgres feature)" "${OUTCOME_CLIPPY_POSTGRES}" \
+            "cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings"
+          row "cargo doc (warnings = errors)" "cargo doc (warnings = errors)" "${OUTCOME_DOC}" \
+            'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features'
+          row "feature matrix" "cargo hack (each feature)" "${OUTCOME_HACK}" \
+            'RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets'
+          row "feature matrix" "cross-crate feature combination (dependency postgres only)" "${OUTCOME_CROSS_CRATE}" \
+            'RUSTFLAGS="-D warnings" cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres'
+
+          echo >> "${summary}"
+          if [ "${failed}" -ne 0 ]; then
+            echo "one or more rust lint checks did not pass; each has an error annotation naming its former job" >> "${summary}"
+            exit 1
+          fi
+          echo "every rust lint check passed" >> "${summary}"
+
+  # ── rust build: everything that links, then the advisory semver check ──────
+  # the publish verify build, the gateway smoke build and probe, and last the
+  # semver check, which used to be `package (publish verify)`,
+  # `gateway smoke (fake-llm)` and `semver-checks (advisory)` (#2025). same
+  # step rules as `rust lint`, except that the semver steps are advisory: each
+  # is `continue-on-error`, its install included, and the report turns their
+  # failure into a warning, never an error (ADR-0032, ADR-0034)
+  rust-build:
+    name: rust build
+    runs-on: ubuntu-latest
+    # about 3.5 min warm; the three builds can take 20 cold, and the semver
+    # step carries a limit of its own
+    timeout-minutes: 45
+    # no job-level RUSTFLAGS here, ever: the variable replaces every `rustflags`
+    # entry in cargo's config, the wild-linker action's `--ld-path` included,
+    # so the links would quietly fall back to the system linker. a flag one
+    # step needs goes on that step
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
+        with:
+          persist-credentials: false
+          # the semver check's --baseline-rev needs the tag history, which a
+          # shallow clone omits
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        id: toolchain
+        if: ${{ !cancelled() }}
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/wild-linker
+        id: wild
+        if: ${{ !cancelled() }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !cancelled() }}
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        id: uv
+        if: ${{ !cancelled() }}
+
+      # ── package (publish verify) ──────────────────────────────────────────
+      # `cargo publish` builds each crate from its packaged tarball in
+      # isolation, so a file referenced outside the crate directory (e.g.
+      # include_str!("../../x")) or a path dependency not carried in the
+      # package compiles fine in-tree but 404s at publish time.
+      # `cargo package --workspace` reproduces that isolated verify build for
+      # every publishable crate, so packaging breakage fails here on the PR
+      # instead of mid-release after some crates have already published to
+      # crates.io (ROL-233). the PyPI side gets the same early check:
+      # `maturin sdist` from the repo root parses pyproject.toml and
+      # [tool.maturin], resolves manifest-path, bindings, readme and license,
+      # and packages the path dependencies, in seconds and without compiling.
+      # release.yml's build-wheels is the first real wheel build, and it runs
+      # after crates.io has published and the tag is pushed (#2025)
+      - name: cargo package (verifies each crate in isolation)
+        id: package
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
+        run: cargo package --workspace --locked
+      - name: maturin sdist (validates the PyPI packaging)
+        id: sdist
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
+
+      # ── gateway smoke (fake-llm) ──────────────────────────────────────────
+      # boots the real binary and exercises the built-in fake-llm (no upstream
+      # or secrets needed), catching wiring regressions no unit test sees.
+      - name: build gateway
+        id: smoke-build
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
+        run: cargo build -p rolter-gateway
+      - name: boot + probe
+        id: smoke-probe
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          # no config file: the gateway starts open with the built-in fake-llm
+          ./target/debug/rolter-gateway --config /nonexistent.toml &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          # wait for the listener
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4000/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "== /healthz =="
+          curl -fsS http://127.0.0.1:4000/healthz
+          echo "== /v1/models =="
+          curl -fsS http://127.0.0.1:4000/v1/models
+          echo "== fake-llm chat (non-streaming) =="
+          curl -fsS http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","messages":[{"role":"user","content":"hi"}]}' \
+            | tee /tmp/resp.json
+          grep -q '"choices"' /tmp/resp.json
+          echo "== fake-llm chat (streaming) =="
+          # write to a file rather than piping into grep -q: grep exits on the
+          # first match and closes the pipe, so curl fails writing the rest of
+          # the SSE stream (exit 23) and `set -o pipefail` fails the step
+          curl -fsS -N --max-time 30 http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
+            -o /tmp/stream.txt
+          cat /tmp/stream.txt
+          grep -q 'data:' /tmp/stream.txt
+
+      # ── semver-checks (advisory) ──────────────────────────────────────────
+      # notice when a shared crate's rust API moved. scoped deliberately: the
+      # baseline is the previous release *tag*, not the published crate, and
+      # only the crates listed in GUARDED are checked. this is a review signal,
+      # never a gate: ADR-0032 (#922) decides that no rolter crate offers a
+      # stable rust API at 1.0, so every step here stays `continue-on-error`
+      # and the report only ever warns about it — a gate enforcing a promise
+      # the ADR disclaims would be worse than either choice alone. what each
+      # surface actually promises is in
+      # docs/dev-docs/development/api-stability.md (#1217). the steps come
+      # last so a slow or red semver run never delays a blocking verdict
+      - name: install cargo-semver-checks
+        id: semver-install
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-semver-checks
+      - name: resolve baseline tag
+        id: baseline
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          if [ -z "$tag" ]; then
+            echo "::warning title=semver-checks (advisory)::no release tag found; nothing to diff against"
+            echo "no release tag found; nothing to diff against" >> "$GITHUB_STEP_SUMMARY"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      # --release-type patch is the strict reading: on the guarded crates a
+      # breaking change must be a deliberate act, not a side effect
+      - name: cargo semver-checks (guarded crates)
+        id: semver
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' && steps.semver-install.outcome == 'success' && steps.baseline.outputs.tag != '' }}
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          # crates whose rust API is checked for patch-level compatibility
+          # against the last release tag. keep in sync with
+          # docs/dev-docs/development/api-stability.md
+          GUARDED: -p rolter-auth -p rolter-balancer -p rolter-gateway -p rolter-proxy
+          BASELINE: ${{ steps.baseline.outputs.tag }}
+        run: |
+          # shellcheck disable=SC2086 # GUARDED is a deliberate word-split list
+          cargo semver-checks $GUARDED --baseline-rev "$BASELINE" --release-type patch
+
+      # the verdict for the whole job: every blocking step must run on every
+      # event, so a skip there is a failure (#1562), while a semver step that
+      # did not pass only warns. outcomes arrive through env, as in `rust lint`
+      - name: report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_TOOLCHAIN: ${{ steps.toolchain.outcome }}
+          OUTCOME_WILD: ${{ steps.wild.outcome }}
+          OUTCOME_UV: ${{ steps.uv.outcome }}
+          OUTCOME_PACKAGE: ${{ steps.package.outcome }}
+          OUTCOME_SDIST: ${{ steps.sdist.outcome }}
+          OUTCOME_SMOKE_BUILD: ${{ steps.smoke-build.outcome }}
+          OUTCOME_SMOKE_PROBE: ${{ steps.smoke-probe.outcome }}
+          OUTCOME_SEMVER_INSTALL: ${{ steps.semver-install.outcome }}
+          OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
+          OUTCOME_SEMVER: ${{ steps.semver.outcome }}
+          SEMVER_BASELINE: ${{ steps.baseline.outputs.tag }}
+        run: |
+          set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY}"
+          failed=0
+
+          {
+            echo "### rust build"
+            echo
+            echo "| former job | step | outcome | reproduce locally |"
+            echo "| --- | --- | --- | --- |"
+          } >> "${summary}"
+
+          # row <former job> <step> <outcome> <command>: a blocking step
+          row() {
+            local job="$1" step="$2" outcome="$3" repro="$4" shown
+            shown="${outcome:-no outcome}"
+            if [ "${outcome}" = "skipped" ]; then
+              shown="**skipped, but must run**"
+              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
+              failed=1
+            elif [ "${outcome}" != "success" ]; then
+              shown="**${outcome:-no outcome}**"
+              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
+              failed=1
+            fi
+            # a literal | would end the table cell early
+            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
+          }
+
+          # advisory <former job> <step> <outcome> <command>: a semver step,
+          # which warns and never fails the job (ADR-0032). the check itself is
+          # skipped honestly when there is no release tag to diff against
+          advisory() {
+            local job="$1" step="$2" outcome="$3" repro="$4" shown
+            shown="${outcome:-no outcome}"
+            if [ "${outcome}" = "skipped" ] && [ "${step}" = "cargo semver-checks (guarded crates)" ] \
+              && [ "${OUTCOME_BASELINE}" = "success" ] && [ -z "${SEMVER_BASELINE}" ]; then
+              shown="skipped (no release tag to diff against)"
+            elif [ "${outcome}" != "success" ]; then
+              shown="${outcome:-no outcome} (advisory)"
+              echo "::warning title=${job}::${step} did not pass (outcome: ${outcome:-none}). advisory only, it never fails the gate (ADR-0032). reproduce locally with: ${repro}"
+            fi
+            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
+          }
+
+          setup="nothing to run locally; re-run the job"
+          row "rust build" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
+          row "rust build" "rust toolchain" "${OUTCOME_TOOLCHAIN}" "${setup}"
+          row "rust build" "wild linker" "${OUTCOME_WILD}" "${setup}"
+          row "package (publish verify)" "set up uv" "${OUTCOME_UV}" "${setup}"
+          row "package (publish verify)" "cargo package (verifies each crate in isolation)" "${OUTCOME_PACKAGE}" \
+            "cargo package --workspace --locked"
+          row "package (publish verify)" "maturin sdist (validates the PyPI packaging)" "${OUTCOME_SDIST}" \
+            "uvx maturin@1.15.0 sdist --out target/sdist"
+          row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
+          row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
+            "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
+          advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
+            "cargo install cargo-semver-checks --locked"
+          advisory "semver-checks (advisory)" "resolve baseline tag" "${OUTCOME_BASELINE}" \
+            "git describe --tags --abbrev=0 --match 'v[0-9]*'"
+          advisory "semver-checks (advisory)" "cargo semver-checks (guarded crates)" "${OUTCOME_SEMVER}" \
+            "cargo semver-checks <GUARDED from quality.yml> --baseline-rev ${SEMVER_BASELINE:-<last v* tag>} --release-type patch"
+
+          echo >> "${summary}"
+          if [ "${failed}" -ne 0 ]; then
+            echo "one or more rust build checks did not pass; each has an error annotation naming its former job" >> "${summary}"
+            exit 1
+          fi
+          echo "every blocking rust build check passed; semver-checks only ever warns" >> "${summary}"
 
   # ── rust: tests ─────────────────────────────────────────────────────────────
   # nextest for the unit/integration tests (per-test isolation, faster) plus an
@@ -147,61 +537,6 @@ jobs:
         run: cargo nextest run --workspace --all-features
       - name: doc tests
         run: cargo test --doc --workspace --all-features
-
-  # ── rust: non-default feature builds ────────────────────────────────────────
-  # agents frequently break builds behind a cargo feature; check each in turn.
-  feature-matrix:
-    name: feature matrix
-    runs-on: ubuntu-latest
-    # `cargo check` without this only fails on hard errors, so a lint that fires
-    # in exactly one feature combination — `dead_code` on an item reachable only
-    # under `--no-default-features`, say — passed this gate silently while the
-    # clippy job above never saw it, since that job only builds default features
-    # (#1399). RUSTFLAGS is capped to `allow` for registry dependencies, so this
-    # denies warnings in workspace crates only.
-    env:
-      RUSTFLAGS: "-D warnings"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
-        with:
-          tool: cargo-hack
-      - name: cargo hack (each feature)
-        run: cargo hack check --each-feature --workspace --all-targets
-      # --each-feature only ever turns on a package's *own* features, so it
-      # never builds a dependent against a dependency feature it does not
-      # itself enable. that gap let `rolter` stop compiling whenever
-      # `rolter-control/postgres` was on without `rolter/postgres` (#1295).
-      - name: cross-crate feature combination (dependency postgres only)
-        run: cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres
-
-  # ── rust: doc warnings ──────────────────────────────────────────────────────
-  # broken intra-doc links / invalid rustdoc are common agent mistakes.
-  docs:
-    name: cargo doc (warnings = errors)
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: "-D warnings"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: cargo doc
-        run: cargo doc --workspace --no-deps --all-features
 
   # ── static checks: everything that reads the tree and builds nothing ────────
   # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
@@ -521,7 +856,7 @@ jobs:
       # inline metadata (#1901); run as part of the repo-root project, uv
       # would build the rolter maturin wheel first, about 3.5 minutes per job
       # (#2025). that build was the gate's only pass over pyproject.toml, which
-      # the package job now checks on purpose
+      # rust build's package step now checks on purpose
       - name: helm chart (render defaults)
         id: helm-render-defaults
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
@@ -810,58 +1145,6 @@ jobs:
           done
           bun run test-storybook --url http://127.0.0.1:6006
 
-  # ── smoke: run the gateway and hit it end-to-end ────────────────────────────
-  # boots the real binary and exercises the built-in fake-llm (no upstream or
-  # secrets needed), catching wiring regressions no unit test sees.
-  smoke:
-    name: gateway smoke (fake-llm)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: build gateway
-        run: cargo build -p rolter-gateway
-      - name: boot + probe
-        run: |
-          set -euo pipefail
-          # no config file: the gateway starts open with the built-in fake-llm
-          ./target/debug/rolter-gateway --config /nonexistent.toml &
-          pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
-          # wait for the listener
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4000/healthz >/dev/null 2>&1; then break; fi
-            sleep 1
-          done
-          echo "== /healthz =="
-          curl -fsS http://127.0.0.1:4000/healthz
-          echo "== /v1/models =="
-          curl -fsS http://127.0.0.1:4000/v1/models
-          echo "== fake-llm chat (non-streaming) =="
-          curl -fsS http://127.0.0.1:4000/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"fake-llm","messages":[{"role":"user","content":"hi"}]}' \
-            | tee /tmp/resp.json
-          grep -q '"choices"' /tmp/resp.json
-          echo "== fake-llm chat (streaming) =="
-          # write to a file rather than piping into grep -q: grep exits on the
-          # first match and closes the pipe, so curl fails writing the rest of
-          # the SSE stream (exit 23) and `set -o pipefail` fails the step
-          curl -fsS -N --max-time 30 http://127.0.0.1:4000/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
-            -o /tmp/stream.txt
-          cat /tmp/stream.txt
-          grep -q 'data:' /tmp/stream.txt
-
   # ── image smoke: the single image through published ports ───────────────────
   # runs the image the quickstart documents (default command, ports published
   # with `-p`) and curls both planes from the host, plus the refusal with no
@@ -881,39 +1164,6 @@ jobs:
         run: docker build -f docker/Dockerfile --target runtime -t rolter:image-smoke .
       - name: run it with published ports and curl both planes
         run: bash docker/smoke/image-smoke.sh rolter:image-smoke
-
-  # ── packaging: catch crate-publish breakage before a release ────────────────
-  # `cargo publish` builds each crate from its packaged tarball in isolation, so a
-  # file referenced outside the crate directory (e.g. include_str!("../../x")) or a
-  # path dependency not carried in the package compiles fine in-tree but 404s at
-  # publish time. `cargo package --workspace` reproduces that isolated verify build
-  # for every publishable crate, so packaging breakage fails here on the PR instead
-  # of mid-release after some crates have already published to crates.io (ROL-233).
-  # the PyPI side gets the same early check: `maturin sdist` from the repo root
-  # parses pyproject.toml and [tool.maturin], resolves manifest-path, bindings,
-  # readme and license, and packages the path dependencies, in seconds and
-  # without compiling. release.yml's build-wheels is the first real wheel build,
-  # and it runs after crates.io has published and the tag is pushed (#2025)
-  package:
-    name: package (publish verify)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: ./.github/actions/wild-linker
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: cargo package (verifies each crate in isolation)
-        run: cargo package --workspace --locked
-      - name: maturin sdist (validates the PyPI packaging)
-        if: ${{ !cancelled() }}
-        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
 
   # ── informational checks ────────────────────────────────────────────────────
   # non-blocking for now (continue-on-error); promote to required once their
@@ -1000,55 +1250,3 @@ jobs:
             lcov.info
             coverage.json
           if-no-files-found: error
-
-  # ── semver: notice when a shared crate's rust API moved ─────────────────────
-  # scoped deliberately. the baseline is the previous release *tag*, not the
-  # published crate, and only the crates listed in GUARDED are checked. this is
-  # a review signal, never a gate: ADR-0032 (#922) decides that no rolter crate
-  # offers a stable rust API at 1.0, so `continue-on-error` stays on and this
-  # job never joins ci-ok's needs — a gate enforcing a promise the ADR disclaims
-  # would be worse than either choice alone. what each surface actually promises
-  # is in docs/dev-docs/development/api-stability.md (#1217).
-  semver-checks:
-    name: semver-checks (advisory)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    env:
-      # crates whose rust API is checked for patch-level compatibility against
-      # the last release tag. keep in sync with docs/dev-docs/development/api-stability.md
-      GUARDED: -p rolter-auth -p rolter-balancer -p rolter-gateway -p rolter-proxy
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # --baseline-rev needs the tag history, which a shallow clone omits
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
-        with:
-          tool: cargo-semver-checks
-      - name: resolve baseline tag
-        id: baseline
-        run: |
-          tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
-          if [ -z "$tag" ]; then
-            echo "no release tag found; nothing to diff against" >> "$GITHUB_STEP_SUMMARY"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-          else
-            echo "baseline: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          fi
-      # --release-type patch is the strict reading: on the guarded crates a
-      # breaking change must be a deliberate act, not a side effect
-      - name: cargo semver-checks (guarded crates)
-        if: steps.baseline.outputs.tag != ''
-        env:
-          BASELINE: ${{ steps.baseline.outputs.tag }}
-        run: |
-          # shellcheck disable=SC2086 # GUARDED is a deliberate word-split list
-          cargo semver-checks $GUARDED --baseline-rev "$BASELINE" --release-type patch
