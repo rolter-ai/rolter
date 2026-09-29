@@ -4,7 +4,14 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetActions,
+  SheetBody,
+  SheetError,
+  SheetFooter,
+  SheetHeader,
+} from "@/components/ui/sheet";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 // shared shell for a create/edit form (#584): every editor sheet in the
@@ -93,7 +100,7 @@ export function EditorSheet({
       <SheetBody>{children}</SheetBody>
       <SheetFooter>
         <SheetError message={errorMessage} />
-        <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
+        <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {cancelLabel ?? t("common.cancel")}
           </Button>
@@ -101,7 +108,7 @@ export function EditorSheet({
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
             {saveLabel}
           </Button>
-        </div>
+        </SheetActions>
       </SheetFooter>
       {prompt}
     </Sheet>

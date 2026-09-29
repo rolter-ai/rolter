@@ -6,6 +6,8 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ProviderSheet } from "./ProviderSheet";
 import { Toaster } from "./ui/toaster";
 import type { ProviderRow, ProviderTestResult } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import { answerDiscardPrompt, discardPrompt } from "@/pages/story-harness";
 
@@ -138,6 +140,31 @@ export const Reachable: Story = {
     // the probed URL is always shown: a doubled /v1 is the most common cause of
     // a failure and is invisible without it
     await expect(canvas.getByText("https://api.openai.com/v1/models")).toBeVisible();
+  },
+};
+
+/**
+ * The edit footer on a phone, in Russian (#2003). Three buttons on one line
+ * that could not wrap pushed "Проверить подключение" 151px past the left
+ * edge; the test now sits above the Cancel/Save pair, and all three can be
+ * pressed.
+ */
+export const FooterFitsAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={stub(async () => json(result()))} />,
+  play: async () => {
+    const canvas = screen();
+    const test = await canvas.findByRole("button", { name: ru.providerSheet.testConnection });
+    const cancel = canvas.getByRole("button", { name: ru.common.cancel });
+    const save = canvas.getByRole("button", { name: ru.providerSheet.cta.save });
+    for (const button of [test, cancel, save]) await expectInViewport(button);
+    await expect(test.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      save.getBoundingClientRect().top,
+    );
+    // and it still works from there
+    await userEvent.click(test);
+    await waitFor(() => expect(canvas.getByRole("status")).toBeVisible());
   },
 };
 

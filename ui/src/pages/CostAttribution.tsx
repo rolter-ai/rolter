@@ -15,7 +15,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Sheet, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
   createBusinessUnit,
   createCustomer,
@@ -204,14 +204,14 @@ function Editor({
         {error && <p className="text-xs text-[color:var(--status-danger-text)]">{error}</p>}
       </SheetBody>
       <SheetFooter>
-        <div className="flex justify-end gap-2 px-[22px] py-3.5">
+        <SheetActions>
           <Button variant="outline" onClick={onClose}>
             {t("common.cancel")}
           </Button>
           <Button disabled={!form.name.trim() || !!slugError || pending} onClick={onSubmit}>
             {form.id ? t("common.save") : t("common.create")}
           </Button>
-        </div>
+        </SheetActions>
       </SheetFooter>
     </>
   );

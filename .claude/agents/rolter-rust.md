@@ -89,7 +89,7 @@ which failure was pre-existing.
 - Conventional Commits. Types: `feat fix perf refactor docs test build ci chore
 revert`. Scopes are a **fixed allowlist** — `gateway balancer proxy core store
 auth control ui docs infra ci deps release e2e` — and anything else fails the
-  `pr-title` check. There is no `mcp`, `deployment` or `security` scope; use the
+  `pr-title` step of `ci-ok`. There is no `mcp`, `deployment` or `security` scope; use the
   crate the change lives in, or no scope.
 - PR title is one valid Conventional Commit line with the issue in brackets:
   `feat(gateway): built-in fake-llm default model [#98]`.

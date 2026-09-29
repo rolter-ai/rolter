@@ -9,7 +9,14 @@ import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetActions,
+  SheetBody,
+  SheetError,
+  SheetFooter,
+  SheetHeader,
+} from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import {
   createProviderGroup,
@@ -383,7 +390,7 @@ export function ProviderGroupSheet({
 
       <SheetFooter>
         <SheetError message={save.isError ? (save.error as Error).message : undefined} />
-        <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
+        <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}
           </Button>
@@ -396,7 +403,7 @@ export function ProviderGroupSheet({
           >
             {cta}
           </Button>
-        </div>
+        </SheetActions>
       </SheetFooter>
       {prompt}
     </Sheet>

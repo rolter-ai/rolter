@@ -133,3 +133,36 @@ export function SheetFooter({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+/**
+ * The button row inside a `SheetFooter`: Cancel, then the primary action.
+ *
+ * `start` holds whatever is not part of that pair and goes before it — a
+ * connection test that pins itself left with `mr-auto`, or the reason the
+ * primary action is refused.
+ *
+ * Every sheet used to lay this row out by hand as a single line that could not
+ * wrap, and below `sm` the sheet is the whole phone screen: a translated label
+ * beside Cancel ran past the edge, where a fixed panel cannot be scrolled to
+ * (#2003). So below `sm` the row is a column. `start` comes first, and the
+ * pair takes the bottom line to itself with the primary action last and
+ * stretched across the width left over, which is also where a thumb lands.
+ * From `sm` up it is one row again, and wraps rather than overflowing if a
+ * locale is long enough to need it.
+ */
+export function SheetActions({
+  start,
+  children,
+}: {
+  start?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5 px-[22px] py-3.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+      {start}
+      <div className="flex items-center justify-end gap-2.5 max-sm:[&>:last-child]:flex-1">
+        {children}
+      </div>
+    </div>
+  );
+}

@@ -98,10 +98,11 @@ while [ "$#" -gt 0 ]; do
       fi
       shift 3
       ;;
-    # the commit-message half of the same problem (#1562). quality.yml's job
-    # read base/head out of `github.event.pull_request`, so on a dispatched run
-    # it was skipped outright — and a skipped job inside a reusable workflow
-    # does not fail it, so `ci-ok` went green having never read the commits.
+    # the commit-message half of the same problem (#1562), run by a step of
+    # ci.yml's `ci-ok` job on a dispatched build. quality.yml's job reads
+    # base/head out of `github.event.pull_request`, so on a dispatched run it
+    # is skipped outright — and a skipped job inside a reusable workflow does
+    # not fail it, so `ci-ok` used to go green having never read the commits.
     # that is the path the release pr takes by design (#1025) and the
     # documented recovery for a stranded sha (#1522), so it is the wrong place
     # to have no verdict. resolve the same pr by head ref and take the range

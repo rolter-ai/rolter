@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -474,7 +475,7 @@ function PluginDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.plugins.dialogDescription")}</DialogDescription>
       </DialogHeader>
-      <div className="max-h-[65vh] space-y-4 overflow-y-auto pr-1">
+      <DialogBody className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.plugins.fieldName")} htmlFor="plugin-name">
             <Input
@@ -604,7 +605,7 @@ function PluginDialog({
             {localError ?? (mutation.error as Error).message}
           </p>
         )}
-      </div>
+      </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("pages.plugins.cancel")}

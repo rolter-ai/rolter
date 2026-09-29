@@ -17,6 +17,8 @@ import {
   type FetchStub,
 } from "@/pages/story-harness";
 import type { EffectiveModelDto, ProviderRow, RouteRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectInViewport, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const PROVIDERS: ProviderRow[] = [
   {
@@ -212,6 +214,69 @@ export const Add: Story = {
     await expect(dialog.getAllByText(/Pick the upstream provider/).length).toBeGreaterThan(1);
     // "duplicate from" is offered only where there is something to duplicate
     await expect(dialog.getByLabelText("Duplicate from")).toBeVisible();
+  },
+};
+
+/**
+ * The footer on a phone, in the longer of the two catalogs (#2003).
+ *
+ * The sheet is the whole screen below `sm` and cannot be scrolled sideways, so
+ * a button past the right edge cannot be pressed at all. The blocking reason
+ * used to sit beside Cancel and the primary action and squeeze them past the
+ * gutter. Now the pair takes the bottom line to itself with the primary action
+ * last and widest, and the reason stays what the button says it waits for —
+ * the summary above the buttons already shows it, so it is not printed twice.
+ */
+export const AddOnAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await expect(
+      await dialog.findByRole("heading", { name: ru.modelSheet.titleAdd }),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByLabelText(ru.modelSheet.fields.provider)).toHaveValue("openai-prod"),
+    );
+    const save = dialog.getByRole("button", { name: ru.modelSheet.ctaAdd });
+    const cancel = dialog.getByRole("button", { name: ru.common.cancel });
+    // greyed out in place (#1265), still naming why
+    await expect(save).toBeDisabled();
+    await expect(save).toHaveAccessibleDescription(ru.modelSheet.errors.upstream);
+    await expectInViewport(save);
+    await expectInViewport(cancel);
+    // on the sheet, not only on the screen: level with the header's close
+    // button rather than pushed into the gutter by the reason beside it
+    const close = dialog.getByRole("button", { name: ru.common.close });
+    const [saveBox, cancelBox] = [save.getBoundingClientRect(), cancel.getBoundingClientRect()];
+    await expect(saveBox.right).toBeLessThanOrEqual(close.getBoundingClientRect().right);
+    // one line, primary last and taking the room Cancel leaves
+    await expect(saveBox.top).toBe(cancelBox.top);
+    await expect(saveBox.left).toBeGreaterThan(cancelBox.right);
+    await expect(saveBox.width).toBeGreaterThan(cancelBox.width);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The edit variant's longer "Сохранить модель", with nothing blocking it. */
+export const EditOnAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Stage mode="edit" route={ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await expect(
+      await dialog.findByRole("heading", { name: ru.modelSheet.titleEdit }),
+    ).toBeVisible();
+    const save = dialog.getByRole("button", { name: ru.modelSheet.ctaSave });
+    await waitFor(() => expect(save).toBeEnabled());
+    await expectInViewport(save);
+    await expectInViewport(dialog.getByRole("button", { name: ru.common.cancel }));
+    await expect(save.getBoundingClientRect().right).toBeLessThanOrEqual(
+      dialog.getByRole("button", { name: ru.common.close }).getBoundingClientRect().right,
+    );
+    await expectNoHorizontalOverflow();
   },
 };
 

@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog as BaseDialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -1121,7 +1122,7 @@ function ServerDialog({
           </DialogTitle>
           <DialogDescription>{t("pages.mcpCatalog.dialog.lead")}</DialogDescription>
         </DialogHeader>
-        <div className="grid max-h-[70vh] gap-4 overflow-y-auto py-4 pr-1">
+        <DialogBody className="grid gap-4 py-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="mcp-name">
               <Input
@@ -1259,7 +1260,7 @@ function ServerDialog({
             onChange={(patch) => setOverrides((current) => ({ ...current, ...patch }))}
           />
           {error && <SaveError error={error} />}
-        </div>
+        </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
             {t("common.cancel")}

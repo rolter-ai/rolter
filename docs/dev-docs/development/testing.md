@@ -465,7 +465,7 @@ Policy (ROL-246):
 
 ## CI
 
-`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, the UI lint/build, and a Conventional Commit PR-title check on every push/PR.
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
 
 ### The rustdoc gate is the one CI check nothing local reproduces
 
@@ -862,6 +862,32 @@ its target, so it still "works" on an inert element, while a real one passes
 through it as if it had `pointer-events: none`. Where a story needs to know that
 a real pointer lands on a scrim, it asks `document.elementFromPoint(x, y)`,
 which does honour inert. `ui/src/lib/modal-a11y.stories.tsx` has both shapes.
+
+#### A fixed overlay is measured by its box (#2003)
+
+`expectNoHorizontalOverflow` compares the document's scroll width with the
+window's, which is the right question for a screen and the wrong one for a
+dialog or a sheet. Both are `position: fixed`, so they add nothing to the
+document's scroll width, and the page behind them has its scrolling locked. A
+Save button past the edge of a full-screen sheet measures clean while nobody can
+press it.
+
+So an overlay story measures the control itself with `expectInViewport(el)`
+from `ui/src/lib/story-viewport.ts`: the whole box has to be inside the window.
+The helper first waits for every animation that ends, because a sheet slides in
+from the right edge for 240 ms and a box read the moment the panel appears is
+wherever the slide has got to. Looping animations such as spinners are skipped.
+
+On the screen is not always the same as on the sheet. A footer that overflows
+toward the right can still end a few pixels inside a 375 px window while it
+sits in the sheet's gutter. `ModelSheet`'s phone stories therefore also compare
+the primary action's right edge with the header's close button.
+
+The widths and heights these stories run at come from the same module, spread
+at story level: `atMobile` (375×812), `atTablet` (768×1024) and `atShort`
+(640×360, a 1280×720 screen at 200 % zoom, the size WCAG 1.4.10 asks content to
+reflow at). A story that also needs the Russian catalog merges the two globals:
+`globals: { ...atMobile.globals, locale: "ru" }`.
 
 #### How long a story waits (#1279)
 

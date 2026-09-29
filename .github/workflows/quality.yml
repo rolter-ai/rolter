@@ -242,7 +242,7 @@ jobs:
   # a commit-msg prek hook catches this locally, but `--no-verify` still
   # bypasses it — this is the backstop for the commit messages the pr
   # introduces, so a url added by an amend or a --no-verify push is still
-  # caught. the pr *body* is checked by the `session-urls` job in ci.yml
+  # caught. the pr *body* is checked by a step of the `ci-ok` job in ci.yml
   # instead, not here: a body edit skips this whole workflow, so a check that
   # lives here can never see one. see #1406.
   session-urls:
