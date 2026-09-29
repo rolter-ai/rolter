@@ -23,6 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
+import { GatedButton } from "@/components/GatedButton";
 import { ListSummary, PageBody } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
@@ -51,6 +52,7 @@ import {
   type OwnedKeyRow,
   type ProviderRow,
 } from "@/lib/api";
+import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -106,6 +108,10 @@ export default function Account() {
   // nothing. the reason is said once above the grid rather than per card (#1270)
   const usageUnavailable = !!usage.error;
   const selfServiceUnavailable = isOpenModeNoSession(keys.error);
+  // minting is `my_virtual_key:create`, the member role at the project, the
+  // same pair the Playground's mint asks (#2061). the buttons gate themselves;
+  // this is for the empty state's copy, which only an explicit "no" changes
+  const mintRefused = useCan()("my_virtual_key", "create") === false;
 
   // the provider allow-list needs the org's providers, which a plain member may
   // not be allowed to read. `retry: false` and an empty list on failure, so the
@@ -134,7 +140,9 @@ export default function Account() {
         <ListSummary data={keys.data}>
           {(rows) => t("account.keys.summary", { count: rows.length })}
         </ListSummary>
-        <Button
+        <GatedButton
+          gate="my_virtual_key:create"
+          control="account-key-mint"
           className="ml-auto"
           onClick={() => setMintOpen(true)}
           // minting posts to /me/*, which 401s for the same reason the list
@@ -145,7 +153,7 @@ export default function Account() {
         >
           <Plus className="h-4 w-4" />
           {t("account.keys.generate")}
-        </Button>
+        </GatedButton>
       </div>
 
       {/* the content below is a card grid, so the placeholder holding its
@@ -171,11 +179,25 @@ export default function Account() {
           icon={<KeyRound />}
           title={t("account.keys.emptyTitle")}
           // without a project the mint dialog has nowhere to post, so the
-          // placeholder says what to do instead of offering a dead button
-          description={scope.projectId ? t("account.keys.empty") : t("account.keys.selectProject")}
+          // placeholder says what to do instead of offering a dead button. a
+          // role that cannot mint is told who can and whom to ask, rather than
+          // invited to make a key the button beside it refuses (#2064)
+          description={
+            !scope.projectId
+              ? t("account.keys.selectProject")
+              : mintRefused
+                ? t("account.keys.emptyRefused")
+                : t("account.keys.empty")
+          }
           actions={
             scope.projectId && !selfServiceUnavailable ? (
-              <Button onClick={() => setMintOpen(true)}>{t("account.keys.generate")}</Button>
+              <GatedButton
+                gate="my_virtual_key:create"
+                control="account-key-mint-empty"
+                onClick={() => setMintOpen(true)}
+              >
+                {t("account.keys.generate")}
+              </GatedButton>
             ) : undefined
           }
         />
