@@ -404,7 +404,7 @@
     "budgets": "Budgets & Limits",
     "routing-rules": "Routing Rules",
     "complexity-router": "Complexity Router",
-    "circuit-breaker": "Circuit Breaker",
+    "circuit-breaker": "Provider Health",
     "pricing-overrides": "Pricing Overrides",
     "model-settings": "Model Settings",
     "mcp": "MCP Gateway",
@@ -2024,7 +2024,6 @@
       "unreadPolicies_other": "{{count}} routes' policies could not be read"
     },
     "health": {
-      "closed": "closed",
       "emptyAction": "Open the playground",
       "emptyBody": "Uptime, MTTR and error-budget burn are computed from real traffic. Send a request through the gateway and the first rollup lands here.",
       "emptyTitle": "No health events recorded yet",
@@ -2037,10 +2036,12 @@
       "incidents": "Incidents",
       "mttr": "MTTR",
       "noEvents": "No events in window.",
-      "subtitle": "Circuit breakers, uptime and error-budget burn per provider — last 7 days, SLA target {{sla}}",
+      "slaAtRisk": "SLA at risk",
+      "slaBreaching": "below SLA",
+      "slaWithin": "within SLA",
+      "subtitle": "Last 7 days against a {{sla}} SLA. SLA at risk means the 7 days still meet it, but the last two hours failed more often than it allows.",
       "targets_one": "{{count}} target",
       "targets_other": "{{count}} targets",
-      "tripped": "tripped",
       "uptimeMeta": "uptime · {{events}} events",
       "bucketTitle": "{{bucket}}: {{ok}} ok, {{errors}} error, {{timeouts}} timeout"
     },
@@ -2909,8 +2910,8 @@
       "subtitle": "Route by prompt complexity tier to balance cost and quality."
     },
     "circuit-breaker": {
-      "title": "Circuit Breaker",
-      "subtitle": "Automatic failover when a primary endpoint degrades."
+      "title": "Provider Health",
+      "subtitle": "Uptime and error-budget burn per provider and target, measured against the SLA."
     },
     "pricing-overrides": {
       "title": "Pricing Overrides",
