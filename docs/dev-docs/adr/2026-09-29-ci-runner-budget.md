@@ -104,7 +104,10 @@ The macOS check and compose smoke move unchanged. None of these jobs carries
 `continue-on-error`, since nothing gates on `extended.yml`. A `report failure`
 job opens or comments on one tracking issue when any of them fails. It holds
 `issues: write` at job level with no checkout, because zizmor 1.26.1 rates the
-same permission at workflow level as high and would fail the gate.
+same permission at workflow level as high and would fail the gate. A small
+`bun pin` job runs there too: every `setup-bun` step reads `.bun-version`, which
+no dependabot ecosystem raises, so the job fails once a newer bun is released
+and the tracking issue asks for the bump (#1922).
 
 Coverage stays on pull requests because `testing.md` asks an author to edit the
 coverage baseline in the same PR that moves it, and that rule needs a per-PR

@@ -5,7 +5,8 @@ name: extended
 # master. they used to run on every push inside quality.yml as
 # continue-on-error jobs, where each one took a slot from the 20-job runner pool
 # (the macOS one from the 5-slot macOS pool) for a verdict nothing read. they
-# run here nightly and on demand instead (ADR-0034, #2025).
+# run here nightly and on demand instead (ADR-0034, #2025). `bun pin` rides
+# along: a ten-second check that .bun-version still names the latest bun (#1922).
 #
 # nothing gates on this workflow, so no job here carries continue-on-error: a
 # failure has to reach `needs.*.result` as `failure` for `report failure` to
@@ -170,6 +171,37 @@ jobs:
             coverage.json
           if-no-files-found: error
 
+  # ── bun pin: .bun-version keeps up with bun releases ───────────────────────
+  # every setup-bun step in the repo reads .bun-version (#1922), and nothing
+  # else raises it: dependabot's bun ecosystem bumps ui/'s dependencies, never
+  # the bun that installs them. this fails once a newer bun release is out, so
+  # `report failure` opens the tracking issue and someone raises the pin on a
+  # PR, where the frozen `bun install` in quality.yml proves the new bun still
+  # reads bun.lock
+  bun-pin:
+    name: bun pin
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .bun-version
+          sparse-checkout-cone-mode: false
+      - name: .bun-version names the latest bun release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pinned="$(tr -d '[:space:]' < .bun-version)"
+          latest="$(gh api repos/oven-sh/bun/releases/latest --jq .tag_name)"
+          latest="${latest#bun-v}"
+          if [ "${pinned}" != "${latest}" ]; then
+            echo "::error title=bun pin::bun ${latest} is out and .bun-version pins ${pinned}. raise .bun-version and check that cd ui && bun install --frozen-lockfile still passes"
+            exit 1
+          fi
+          echo "bun ${pinned} is the latest release" >> "${GITHUB_STEP_SUMMARY}"
+
   # ── report failure: one tracking issue for the whole workflow ──────────────
   # opens an issue titled after this workflow the first time a job fails, and
   # comments on it while it stays open, so a red night is seen rather than
@@ -180,7 +212,7 @@ jobs:
   # url, ref and results reach the script through env, never inline in run:
   report-failure:
     name: report failure
-    needs: [cross-platform, compose-smoke, msrv, coverage]
+    needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -198,6 +230,7 @@ jobs:
           COMPOSE_SMOKE: ${{ needs.compose-smoke.result }}
           MSRV: ${{ needs.msrv.result }}
           COVERAGE: ${{ needs.coverage.result }}
+          BUN_PIN: ${{ needs.bun-pin.result }}
         run: |
           set -euo pipefail
           title="extended.yml: nightly checks failing"
@@ -209,7 +242,8 @@ jobs:
             "| macos check | $MACOS |" \
             "| compose smoke | $COMPOSE_SMOKE |" \
             "| msrv build | $MSRV |" \
-            "| coverage | $COVERAGE |")"
+            "| coverage | $COVERAGE |" \
+            "| bun pin | $BUN_PIN |")"
           number="$(gh issue list --state open --label ci --limit 200 --json number,title \
             | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')"
           if [ -n "$number" ]; then
