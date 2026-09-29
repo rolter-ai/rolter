@@ -50,7 +50,9 @@ Choose the failure policy deliberately:
 
 The **Evaluation URL** starts empty and is required. The address shown in the empty field is an example, not a default, so a provider cannot be saved pointing at a host nobody typed.
 
-Activating a provider asks for confirmation. The **Activate provider** switch names the provider it would pause, and saving with it on opens a dialog that names that provider again, or says none is active, and states what the failure policy then does to every request: a fail-closed provider refuses a request with `guardrail_blocked` when it times out or errors, and a fail-open one lets it go upstream unchecked. When a config-file webhook is enabled, the dialog also says the new provider is ignored until that webhook is turned off. Cancelling returns to the form with nothing saved. Saving a provider that is already active does not ask again.
+Activating a provider asks for confirmation. The **Activate provider** switch names the provider it would pause, and saving with it on opens a dialog that names that provider again, or says none is active, and states what the failure policy then does to every request: a fail-closed provider refuses a request with `guardrail_blocked` when it times out or errors, and a fail-open one lets it go upstream unchecked. When a config-file webhook is enabled, the dialog also says the new provider is ignored until that webhook is turned off. Cancelling returns to the form with nothing saved. Saving a provider that is already active, with the switch left on, does not ask again.
+
+Pausing the active provider asks too. Saving it with **Activate provider** turned off opens a dialog that names it and says no external guardrail checks requests afterwards, since no other provider takes its place. When a config-file webhook is enabled, the dialog says that webhook stays in force instead, and pausing changes nothing for traffic.
 
 The dashboard cannot send a test request to a provider yet, so check that the service answers before you activate a fail-closed provider.
 

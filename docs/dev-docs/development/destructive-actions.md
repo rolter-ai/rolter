@@ -83,6 +83,14 @@ fields intact. The confirmation is mounted beside that dialog rather than
 inside it: the dialog remounts as it closes, and a confirmation inside it would
 unmount before it could report `save_confirmed`.
 
+Switching the active provider off is the mirror case and goes through the same
+confirmation (#2271). It names the provider and says no external guardrail
+checks requests afterwards, with `tone="danger"`, or that the config-file
+webhook stays in force, with `tone="default"`. It reports under
+`guardrail-provider-pause`. The screen keeps which of the two it raised after
+the dialog closes: the landing is reported on the closing edge, and a key that
+flipped back to the activation's there would file the pause under it.
+
 A publish that changes which prompt reaches live traffic takes `default` as
 well, and its confirmation says who the change will refuse. Publishing or
 rolling back a prompt template version (`MakeLiveDialog` in
