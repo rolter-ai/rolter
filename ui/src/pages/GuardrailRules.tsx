@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowRight,
+  ChevronRight,
   Loader2,
   Lock,
   Plus,
@@ -37,6 +38,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
 import { Switch } from "@/components/ui/switch";
+import { Tag } from "@/components/ui/tag";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createGuardrailRule,
@@ -54,6 +56,7 @@ import {
   type RowState,
 } from "@/lib/guardrail-policy";
 import { defaultToken, replacementToken, ruleBody, withSource } from "@/lib/guardrail-replacement";
+import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -250,6 +253,10 @@ function GuardrailRulesScreen() {
   const open = editing !== undefined;
   const rules = shown?.rows ?? [];
   const fileRules = resolution?.fileRules ?? [];
+  // the routes that switch an effective rule off, by its name. A row credited
+  // with that rule shows them; an overridden row does not run, so the file
+  // rule's card carries them, and a paused row is in no policy to be off in
+  const offRoutes = (name: string) => resolution?.offRoutes.get(name) ?? [];
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -365,6 +372,9 @@ function GuardrailRulesScreen() {
                           rule={rule}
                           streaming={state?.state === "overridden" ? undefined : streaming}
                         />
+                        {(state?.state === "enforced" || state?.state === "off") && (
+                          <OffRoutes routes={offRoutes(rule.name)} />
+                        )}
                         {state?.state === "overridden" && (
                           <FileRuleNote
                             i18nKey="pages.guardrailRules.overriddenDetail"
@@ -436,7 +446,12 @@ function GuardrailRulesScreen() {
                     enabled
                     status={policy.on ? undefined : notEnforced}
                     badges={<RuleBadges rule={rule} />}
-                    details={<RuleDetails rule={rule} streaming={streaming} />}
+                    details={
+                      <>
+                        <RuleDetails rule={rule} streaming={streaming} />
+                        <OffRoutes routes={offRoutes(rule.name)} />
+                      </>
+                    }
                     actions={
                       <p className="flex items-center gap-1.5 text-xs text-[color:var(--text-subtle)]">
                         <Lock className="h-3.5 w-3.5" aria-hidden />
@@ -768,6 +783,72 @@ function FileRuleNote({
         />
       </span>
     </p>
+  );
+}
+
+/** how many route names a card lists before it folds them behind a disclosure */
+const INLINE_ROUTES = 3;
+
+/**
+ * The routes whose `advanced.guardrails.disable` switches the rule off (#2283).
+ *
+ * The card's status stays what it was: the rule still runs everywhere else, so
+ * this is a line under it rather than a different badge. A few names are
+ * listed in the open; more fold behind a disclosure that keeps the count.
+ */
+function OffRoutes({ routes }: { routes: string[] }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const summaryId = React.useId();
+  if (routes.length === 0) return null;
+  const count = routes.length;
+  const summary = t("pages.guardrailRules.offRoutes.summary", { count, value: fmt.number(count) });
+  const icon = <ShieldOff className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />;
+  const body = (
+    <>
+      <ul aria-labelledby={summaryId} className="flex flex-wrap gap-1">
+        {routes.map((route) => (
+          <li key={route} className="min-w-0 max-w-full">
+            <Tag className="max-w-full" title={route}>
+              <span className="truncate">{route}</span>
+            </Tag>
+          </li>
+        ))}
+      </ul>
+      <p>
+        <Trans
+          i18nKey="pages.guardrailRules.offRoutes.source"
+          count={count}
+          components={[<code key="key" className="font-mono" />]}
+        />
+      </p>
+    </>
+  );
+  if (count <= INLINE_ROUTES) {
+    return (
+      <div className="mt-1 flex items-start gap-1.5">
+        <span className="text-[color:var(--status-warning-text)]">{icon}</span>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p id={summaryId} className="text-[color:var(--status-warning-text)]">
+            {summary}
+          </p>
+          {body}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details className="group mt-1">
+      <summary className="flex w-fit cursor-pointer list-none items-start gap-1.5 rounded-sm text-[color:var(--status-warning-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        {icon}
+        <span id={summaryId}>{summary}</span>
+        <ChevronRight
+          className="mt-px h-3.5 w-3.5 flex-none group-open:rotate-90 motion-safe:transition-transform"
+          aria-hidden
+        />
+      </summary>
+      <div className="mt-1.5 space-y-1.5 pl-5">{body}</div>
+    </details>
   );
 }
 

@@ -22,6 +22,8 @@ import {
 } from "./story-harness";
 import type { GuardrailRuleInput, GuardrailRuleRow } from "@/lib/api";
 import type { EffectiveRule } from "@/lib/guardrail-policy";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atShort, expectInViewport } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
@@ -68,26 +70,40 @@ const asEffective = (row: GuardrailRuleRow): EffectiveRule => ({
   include_system: row.include_system,
 });
 
+/** a route's `advanced.guardrails`, as `RouteGuardrails` serializes it */
+type RouteGuardrails = { disable?: string[]; enable?: string[] };
+
+/** a route as the config document lists it, with a guardrail override */
+const route = (model: string, guardrails: RouteGuardrails) => ({
+  model,
+  strategy: "round_robin",
+  targets: [{ provider: "openai", model, weight: 1 }],
+  advanced: { capabilities: [], guardrails },
+});
+
 /**
  * `GET /api/v1/config` as the store builds it: the config file's rules first,
  * then the enabled rows whose names the file does not take, with
- * `guardrails.enabled` set from the flag (#2157).
+ * `guardrails.enabled` set from the flag (#2157). `routes` carry the per-route
+ * overrides (#2283).
  */
 function effectiveConfig({
   rows = RULES,
   file = [],
   on = true,
   streaming = "reject",
+  routes = [],
 }: {
   rows?: GuardrailRuleRow[];
   file?: EffectiveRule[];
   on?: boolean;
   streaming?: "reject" | "passthrough";
+  routes?: ReturnType<typeof route>[];
 } = {}) {
   const taken = new Set(file.map((rule) => rule.name));
   return {
     providers: [],
-    routes: [],
+    routes,
     virtual_keys: [],
     feature_flags: { guardrails: on },
     guardrails: {
@@ -175,6 +191,8 @@ export const Loaded: Story = {
       canvas.queryByRole("region", { name: /switched off|Could not confirm/ }),
     ).toBeNull();
     await expect(canvas.queryByRole("heading", { name: "Config-file rules" })).toBeNull();
+    // no route overrides a rule, so no card names one
+    await expect(canvasElement).not.toHaveTextContent(/Off for traffic/);
   },
 };
 export const Loading: Story = {
@@ -757,6 +775,7 @@ export const ShowsARowTheConfigFileOverrides: Story = {
             effectiveConfig({
               rows: [RULES[0], PAUSED_INJECTION],
               file: [FILE_EMAIL, FILE_INJECTION],
+              routes: [route("support-bot", { disable: ["Redact customer email"] })],
             }),
           ),
       )}
@@ -769,6 +788,8 @@ export const ShowsARowTheConfigFileOverrides: Story = {
       "Not running. The config file also defines Redact customer email",
     );
     await expect(within(overridden).queryByText("enforced", { exact: true })).toBeNull();
+    // the override names a rule, and the rule under that name is the file's
+    await expect(overridden).not.toHaveTextContent(/Off for traffic/);
 
     const paused = await ruleCard(canvasElement, /20 · Block override attempts/);
     await expectStatus(paused, "paused");
@@ -780,6 +801,7 @@ export const ShowsARowTheConfigFileOverrides: Story = {
     const file = await ruleCard(canvasElement, /^Redact customer email$/, 3);
     await expectStatus(file, "enforced");
     await expect(within(file).getByText("block")).toBeVisible();
+    await expect(file).toHaveTextContent("Off for traffic on 1 route");
 
     await userEvent.click(
       within(canvasElement).getByRole("button", { name: "Edit rule Redact customer email" }),
@@ -909,6 +931,138 @@ export const SaysWhenTheEffectivePolicyIsUnreadable: Story = {
       ).toBeNull(),
     );
     await expectStatus(await ruleCard(canvasElement, /Redact customer email/), "enforced");
+  },
+};
+
+/**
+ * The routes that switch rules off, beside a rule each route runs (#2283).
+ *
+ * A route's `advanced.guardrails.disable` turns a rule off for that route's
+ * traffic, and no screen said so: a card read enforced while the one route
+ * serving customers skipped it. `support-bot` switches off the email rule and
+ * `internal-search` the config-file AWS rule; `claude-sonnet` disables the
+ * injection rule but enables it too, and `enable` wins; `gpt-4o` names a rule
+ * that no longer exists, which the config validator reports and this screen
+ * leaves alone.
+ */
+const OFF_ON_ONE_ROUTE = withPolicy(
+  async () => json(RULES),
+  () =>
+    json(
+      effectiveConfig({
+        file: [FILE_AWS],
+        routes: [
+          route("support-bot", { disable: ["Redact customer email"] }),
+          route("internal-search", { disable: ["Block AWS access keys"] }),
+          route("claude-sonnet", {
+            disable: ["Block override attempts"],
+            enable: ["Block override attempts"],
+          }),
+          route("gpt-4o", { disable: ["Deleted rule"] }),
+        ],
+      }),
+    ),
+);
+
+/** the list of route names under a card's exception line, by that line's text */
+const offRouteNames = (card: HTMLElement, summary: string) =>
+  Array.from(
+    within(card).getByRole("list", { name: summary }).querySelectorAll("li"),
+    (item) => item.textContent,
+  );
+
+export const ShowsTheRoutesARuleIsOffOn: Story = {
+  render: () => <Harness fetchStub={OFF_ON_ONE_ROUTE} />,
+  play: async ({ canvasElement }) => {
+    const email = await ruleCard(canvasElement, /Redact customer email/);
+    // an exception is extra: the rule still runs on every other route
+    await expectStatus(email, "enforced");
+    await expect(await within(email).findByText("Off for traffic on 1 route")).toBeVisible();
+    await expect(offRouteNames(email, "Off for traffic on 1 route")).toEqual(["support-bot"]);
+    await expect(email).toHaveTextContent("Set in the route's advanced.guardrails.disable.");
+
+    // the config-file rule's card names its route the same way
+    const aws = await ruleCard(canvasElement, /Block AWS access keys/, 3);
+    await expectStatus(aws, "enforced");
+    await expect(offRouteNames(aws, "Off for traffic on 1 route")).toEqual(["internal-search"]);
+
+    // enable wins a conflict, so the injection rule runs on claude-sonnet
+    const injection = await ruleCard(canvasElement, /Block override attempts/);
+    await expectStatus(injection, "enforced");
+    await expect(injection).not.toHaveTextContent(/Off for traffic/);
+
+    // an override naming a missing rule shows nowhere
+    await expect(canvasElement).not.toHaveTextContent(/gpt-4o|Deleted rule/);
+  },
+};
+
+/** The same card in Russian, whose count takes a different form per number. */
+export const ShowsTheRoutesARuleIsOffOnInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={OFF_ON_ONE_ROUTE} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.guardrailRules.offRoutes;
+    const summary = copy.summary_one.replace("{{value}}", "1");
+    const email = await ruleCard(canvasElement, /Redact customer email/);
+    // the locale decorator switches language from an effect, after first paint
+    await waitFor(() => expect(within(email).getByText(summary)).toBeVisible());
+    await expectStatus(email, ru.guardrailPanel.enforced);
+    await expect(offRouteNames(email, summary)).toEqual(["support-bot"]);
+    await expect(email).toHaveTextContent(copy.source_one.replace(/<\/?0>/g, ""));
+    await expect(email).not.toHaveTextContent(en.pages.guardrailRules.offRoutes.summary_one);
+  },
+};
+
+// eight routes that switch the email rule off, listed out of order
+const MANY_ROUTES = [
+  "support-bot",
+  "billing-assistant",
+  "internal-search",
+  "code-review",
+  "sales-copilot",
+  "hr-helpdesk",
+  "legal-drafts",
+  "analytics-sql",
+];
+
+/**
+ * A rule switched off on more routes than a card lists in the open: the count
+ * stays on the card and the names fold behind a disclosure, sorted (#2283).
+ */
+export const FoldsManyRoutesBehindADisclosure: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(
+        async () => json(RULES),
+        () =>
+          json(
+            effectiveConfig({
+              routes: MANY_ROUTES.map((model) =>
+                route(model, { disable: ["Redact customer email"] }),
+              ),
+            }),
+          ),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const email = await ruleCard(canvasElement, /Redact customer email/);
+    await expectStatus(email, "enforced");
+    const label = "Off for traffic on 8 routes";
+    const summary = (await within(email).findByText(label)).closest("summary");
+    await expect(summary).not.toBeNull();
+    const list = within(email).getByRole("list", { hidden: true, name: label });
+    await expect(list).not.toBeVisible();
+
+    await userEvent.click(summary!);
+    await waitFor(() => expect(list).toBeVisible());
+    await expect(offRouteNames(email, label)).toEqual([...MANY_ROUTES].sort());
+    await expect(email).toHaveTextContent("Set in each route's advanced.guardrails.disable.");
+
+    // and folds again, the count still on the card
+    await userEvent.click(summary!);
+    await waitFor(() => expect(list).not.toBeVisible());
+    await expect(summary).toBeVisible();
   },
 };
 

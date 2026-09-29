@@ -55,6 +55,22 @@ Rules defined in the config file are listed under **Config-file rules**, read-on
 
 The effective configuration does not say where each rule came from, so the screen infers it from names. A rule the configuration carries is a config-file rule when no card has its name, when the card with its name is paused, or when it differs from that card in any field. A config-file rule identical in every field to an enabled card cannot be told apart from it and is shown as that card. Enforcement is the same either way, but deleting or pausing the card would leave the file's copy running. [#2249](https://github.com/rolter-ai/rolter/issues/2249) tracks reporting the source directly.
 
+### Turning a rule off for one route
+
+A route can switch a rule off for its own traffic. Name the rule in the route's `advanced.guardrails.disable` list. Every other route keeps running it, and a rule added later reaches every route that does not name it. A rule the route lists under `advanced.guardrails.enable` runs there even if `disable` names it too.
+
+```toml
+[[routes]]
+model = "internal-support-bot"
+
+[routes.advanced.guardrails]
+disable = ["Redact customer email"]
+```
+
+Rules are matched by their exact name. For a config-file route, set the lists in `rolter.toml` as above. For a route created in the dashboard, send them in the `advanced` object of `PUT /api/v1/routes/{id}/advanced`; the model sheet keeps them when it saves, but has no field for them yet ([#2307](https://github.com/rolter-ai/rolter/issues/2307)). A name that no rule has fails config validation, so a typo in `disable` cannot read as "this rule is off here" while the rule keeps running. Take a rule out of every route's lists before you pause, rename or delete it: until [#2306](https://github.com/rolter-ai/rolter/issues/2306) is fixed, a route that still names it stops config changes from reaching gateways.
+
+**Guardrails → Rules** shows each exception on the rule's card, for dashboard and config-file rules alike. The card keeps its status, since the rule still runs on every other route, and adds a line such as **Off for traffic on 2 routes** with the route names under it. Past three routes the names fold behind that line; select it to list them. The routes are read from the same effective configuration as the rest of the screen. A paused card lists no routes, since its rule is not in the policy. Neither does a card the config file overrides: the override names a rule, and the rule under that name is the file's, so its card lists the routes. An override that names a rule the policy no longer has appears on no card.
+
 ## External providers
 
 Register any number of vendor-neutral HTTP services, but activate only one at a time. Activating a provider atomically deactivates the previous provider because each gateway has one external guardrail webhook contract.

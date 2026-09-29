@@ -16,6 +16,21 @@ export interface EffectiveRule {
 }
 
 /**
+ * One route's `advanced.guardrails` override, as `RouteGuardrails` in
+ * `crates/rolter-core/src/guardrails.rs` serializes it. Both lists are left
+ * out when empty. Config-file routes and database routes carry it alike, the
+ * latter through the `advanced` JSON column.
+ */
+export interface RouteOverride {
+  /** the route's public model name */
+  model: string;
+  /** rules that do not apply on this route */
+  disable: string[];
+  /** rules that apply on this route, winning a conflict with `disable` */
+  enable: string[];
+}
+
+/**
  * The guardrail policy the control plane hands every gateway, after the config
  * file and the dashboard's rules are merged (`MergedConfigStore::load` in
  * `crates/rolter-store/src/lib.rs`).
@@ -26,6 +41,8 @@ export interface EffectivePolicy {
   streaming: "reject" | "passthrough";
   /** config-file rules first, in file order, then the dashboard's enabled rows */
   rules: EffectiveRule[];
+  /** the routes that override the rule set, in config order */
+  routes: RouteOverride[];
 }
 
 /** What one dashboard row's card says about it. */
@@ -54,6 +71,12 @@ export interface PolicyResolution {
   rows: Map<string, RowState>;
   /** effective rules no dashboard row accounts for, so the config file's */
   fileRules: EffectiveRule[];
+  /**
+   * The routes that switch each effective rule off, keyed by rule name and
+   * sorted. A rule every route runs has no entry, and so does a name an
+   * override gives that no effective rule has.
+   */
+  offRoutes: Map<string, string[]>;
 }
 
 const STAGES = new Set(["pre_call", "post_call"]);
@@ -87,6 +110,27 @@ function readRule(value: unknown): EffectiveRule | null {
   return value as unknown as EffectiveRule;
 }
 
+const isStrings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * A route's override, `undefined` for a route that sets none, or `null` for a
+ * shape this screen does not recognise.
+ */
+function readRoute(value: unknown): RouteOverride | undefined | null {
+  if (!isObject(value) || typeof value.model !== "string") return null;
+  if (value.advanced === undefined) return undefined;
+  if (!isObject(value.advanced)) return null;
+  const section = value.advanced.guardrails;
+  if (section === undefined) return undefined;
+  if (!isObject(section)) return null;
+  const disable = section.disable ?? [];
+  const enable = section.enable ?? [];
+  if (!isStrings(disable) || !isStrings(enable)) return null;
+  if (disable.length === 0 && enable.length === 0) return undefined;
+  return { model: value.model, disable, enable };
+}
+
 /**
  * Read the effective guardrail policy out of the config document, or `null`
  * when it cannot be trusted. The answer feeds a security status, so a shape
@@ -115,11 +159,54 @@ export function readEffectivePolicy(config: unknown): EffectivePolicy | null {
     if (!rule) return null;
     rules.push(rule);
   }
+  // an override switches a rule off, so a route list that cannot be read would
+  // leave every card claiming more coverage than the gateway gives
+  const rawRoutes = config.routes ?? [];
+  if (!Array.isArray(rawRoutes)) return null;
+  const routes: RouteOverride[] = [];
+  for (const item of rawRoutes) {
+    const route = readRoute(item);
+    if (route === null) return null;
+    if (route) routes.push(route);
+  }
   return {
     on: flags.guardrails,
     streaming: section.streaming_post_call as EffectivePolicy["streaming"],
     rules,
+    routes,
   };
+}
+
+/**
+ * Whether `route` switches the rule named `name` off, as
+ * `RouteGuardrails::allows` decides it: `enable` wins a conflict, so a route
+ * naming the rule in both lists runs it.
+ *
+ * The gateway compares the override's names with the rule's name trimmed
+ * (`CompiledRule::from_config`), so an override has to name it that way too.
+ */
+export function switchesOff(route: RouteOverride, name: string): boolean {
+  const rule = name.trim();
+  if (route.enable.includes(rule)) return false;
+  return route.disable.includes(rule);
+}
+
+/**
+ * The routes that switch each effective rule off, keyed by rule name. Only the
+ * policy's own rules are looked up, so an override naming a rule that no
+ * longer exists shows nowhere; the config validator reports that one.
+ */
+function offRoutesFor(policy: EffectivePolicy): Map<string, string[]> {
+  const off = new Map<string, string[]>();
+  for (const rule of policy.rules) {
+    // a set: the document is not validated, so a duplicate route model the
+    // snapshot would refuse can still be listed twice here
+    const models = new Set(
+      policy.routes.filter((route) => switchesOff(route, rule.name)).map((route) => route.model),
+    );
+    if (models.size > 0) off.set(rule.name, [...models].sort());
+  }
+  return off;
 }
 
 /**
@@ -158,7 +245,7 @@ export function resolvePolicy(
     for (const row of rows) {
       states.set(row.id, row.enabled ? { state: "unknown" } : { state: "paused", clash: null });
     }
-    return { policy, rows: states, fileRules: [] };
+    return { policy, rows: states, fileRules: [], offRoutes: new Map() };
   }
   const byName = new Map(policy.rules.map((rule) => [rule.name, rule]));
   const credited = new Set<string>();
@@ -181,5 +268,6 @@ export function resolvePolicy(
     policy,
     rows: states,
     fileRules: policy.rules.filter((rule) => !credited.has(rule.name)),
+    offRoutes: offRoutesFor(policy),
   };
 }
