@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { STRATEGIES } from "@/lib/api";
 import {
+  strategyDocsPage,
   strategyHintKey,
   strategyOptions,
   strategyTone,
@@ -63,6 +64,20 @@ describe("strategyHintKey", () => {
   it("says nothing about a strategy that needs no caveat", () => {
     expect(strategyHintKey("round_robin")).toBeNull();
     expect(strategyHintKey("cheapest")).toBeNull();
+  });
+});
+
+describe("strategyDocsPage", () => {
+  // the telemetry caveat is the one that sends an operator somewhere else to
+  // finish the job, so it is the one that links the page explaining it (#2137)
+  it("points the telemetry strategies at the cache-aware routing page", () => {
+    expect(strategyDocsPage("precise_cache_aware")).toBe("cacheAwareRouting");
+    expect(strategyDocsPage("lmcache_aware")).toBe("cacheAwareRouting");
+  });
+
+  it("links nothing for a caveat the hint already finishes", () => {
+    expect(strategyDocsPage("adaptive")).toBeNull();
+    expect(strategyDocsPage("round_robin")).toBeNull();
   });
 });
 

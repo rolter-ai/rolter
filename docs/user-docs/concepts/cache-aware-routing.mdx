@@ -143,3 +143,7 @@ strategy = "precise_cache_aware"
 ```
 
 `lmcache_aware` polls `[providers.lmcache]` HTTP endpoints for `{ "occupancy": 0..1, "cache_available": bool }` and prefers available targets with more free cache capacity. Failed and stale controllers are neutral, preserving normal routing.
+
+<Warning>
+  The telemetry source is set per provider in `rolter.toml`, as `[providers.kv_events]` or `[providers.lmcache]`. A provider added in the dashboard cannot carry either one yet. The dashboard still lets you pick `precise_cache_aware` or `lmcache_aware` for a route or provider group, but when every target is a dashboard provider the strategy has no telemetry to read and always routes to the least-loaded target. To use either strategy, define the providers in `rolter.toml`. The strategy pickers show this caveat under the two strategies and link back to this page when your deployment has a [documentation host](/deployment/documentation-links) configured.
+</Warning>
