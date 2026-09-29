@@ -5,12 +5,19 @@ import { useNavigate } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { acceptInvitation, previewInvitation, type InvitationPreview } from "@/lib/api";
+import {
+  acceptInvitation,
+  isInvitationSignInRequired,
+  previewInvitation,
+  type InvitationPreview,
+  type InvitationSignInRequired,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 
-// the invitee has no account yet, so this screen renders outside the signed-in
-// shell. the token in the url is the only credential it has.
+// the invitee may have no account yet, so this screen renders outside the
+// signed-in shell. the token in the url is the only credential it has, and it
+// only ever signs in an account the invitation itself creates (#1935)
 export default function AcceptInvite({ token }: { token: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -20,6 +27,11 @@ export default function AcceptInvite({ token }: { token: string }) {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [pending, setPending] = useState(false);
+  // accepted, but the invitee has to sign in for a session: an existing
+  // account, or a new one its org requires a second factor from
+  const [signInReason, setSignInRequired] = useState<InvitationSignInRequired["reason"] | null>(
+    null,
+  );
   // outside the shell, so the page names the tab itself (#2002); the org is
   // only known once the preview answers, and a dead link never names one
   useDocumentTitle(
@@ -44,7 +56,12 @@ export default function AcceptInvite({ token }: { token: string }) {
     setPending(true);
     setError(null);
     try {
-      const res = await acceptInvitation(token, pw);
+      // an existing account keeps its own password, so none is sent for it
+      const res = await acceptInvitation(token, invite?.has_account ? undefined : pw);
+      if (isInvitationSignInRequired(res)) {
+        setSignInRequired(res.reason);
+        return;
+      }
       signIn(res.user.email, res.token);
       // land on the dashboard rather than back on a spent link. this has to
       // go through the router: a bare history.replaceState changed the url bar
@@ -59,7 +76,7 @@ export default function AcceptInvite({ token }: { token: string }) {
   };
 
   const mismatch = confirm.length > 0 && confirm !== pw;
-  const ready = pw.length >= 8 && !mismatch && !pending;
+  const ready = invite?.has_account ? !pending : pw.length >= 8 && !mismatch && !pending;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
@@ -83,72 +100,111 @@ export default function AcceptInvite({ token }: { token: string }) {
                 <h1 className="text-xl font-semibold">
                   {t("pages.acceptInvite.title", { org: invite.org_name })}
                 </h1>
-                <p className="text-sm text-muted-foreground">
-                  <Trans
-                    i18nKey="pages.acceptInvite.intro"
-                    values={{ email: invite.email, role: invite.role }}
-                    components={{ strong: <strong /> }}
-                  />
-                </p>
+                {signInReason != null ? (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    {t(
+                      signInReason === "existing_account"
+                        ? "pages.acceptInvite.doneExisting"
+                        : "pages.acceptInvite.doneSecondFactor",
+                      { role: invite.role, org: invite.org_name },
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    <Trans
+                      i18nKey={
+                        invite.has_account
+                          ? "pages.acceptInvite.existingIntro"
+                          : "pages.acceptInvite.intro"
+                      }
+                      values={{ email: invite.email, role: invite.role }}
+                      components={{ strong: <strong /> }}
+                    />
+                  </p>
+                )}
               </div>
-              <form
-                className="flex flex-col gap-4"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void submit();
-                }}
-              >
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">{t("pages.acceptInvite.password")}</span>
-                  <Input
-                    type="password"
-                    name="new-password"
-                    required
-                    minLength={8}
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                    autoComplete="new-password"
-                  />
-                </label>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">{t("pages.acceptInvite.confirm")}</span>
-                  <Input
-                    type="password"
-                    name="confirm-password"
-                    required
-                    aria-invalid={mismatch || undefined}
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                    autoComplete="new-password"
-                  />
-                </label>
-                {mismatch && (
-                  <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                    {t("pages.acceptInvite.mismatch")}
-                  </p>
-                )}
-                {error != null && (
-                  <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                    {error}
-                  </p>
-                )}
+              {signInReason != null ? (
+                // the invitation is spent; what is left is the ordinary sign-in,
+                // which the shell shows at any path once there is no session
                 <Button
-                  type="submit"
-                  disabled={!ready}
+                  type="button"
+                  onClick={() => navigate("/", { replace: true })}
                   className="w-full bg-brand-folk text-white hover:bg-brand-press"
                 >
-                  {pending ? (
+                  {t("pages.acceptInvite.toSignIn")} <ArrowRight className="h-4 w-4" />
+                </Button>
+              ) : (
+                <form
+                  className="flex flex-col gap-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void submit();
+                  }}
+                >
+                  {!invite.has_account && (
                     <>
-                      {t("pages.acceptInvite.creating")}{" "}
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    </>
-                  ) : (
-                    <>
-                      {t("pages.acceptInvite.accept")} <ArrowRight className="h-4 w-4" />
+                      <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="text-muted-foreground">
+                          {t("pages.acceptInvite.password")}
+                        </span>
+                        <Input
+                          type="password"
+                          name="new-password"
+                          required
+                          minLength={8}
+                          value={pw}
+                          onChange={(e) => setPw(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1.5 text-sm">
+                        <span className="text-muted-foreground">
+                          {t("pages.acceptInvite.confirm")}
+                        </span>
+                        <Input
+                          type="password"
+                          name="confirm-password"
+                          required
+                          aria-invalid={mismatch || undefined}
+                          value={confirm}
+                          onChange={(e) => setConfirm(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </label>
                     </>
                   )}
-                </Button>
-              </form>
+                  {mismatch && (
+                    <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                      {t("pages.acceptInvite.mismatch")}
+                    </p>
+                  )}
+                  {error != null && (
+                    <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                      {error}
+                    </p>
+                  )}
+                  <Button
+                    type="submit"
+                    disabled={!ready}
+                    className="w-full bg-brand-folk text-white hover:bg-brand-press"
+                  >
+                    {pending ? (
+                      <>
+                        {t(
+                          invite.has_account
+                            ? "pages.acceptInvite.accepting"
+                            : "pages.acceptInvite.creating",
+                        )}{" "}
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      </>
+                    ) : (
+                      <>
+                        {t("pages.acceptInvite.accept")} <ArrowRight className="h-4 w-4" />
+                      </>
+                    )}
+                  </Button>
+                </form>
+              )}
             </>
           )}
         </div>
