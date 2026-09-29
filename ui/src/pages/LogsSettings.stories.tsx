@@ -94,6 +94,91 @@ export const TheCaptureSwitchStatesWhatItDoesNotStore: Story = {
   },
 };
 
+/**
+ * #2088: lowering the sample rate shrinks every figure read from the log.
+ *
+ * The gateway drops an unsampled row before it reaches ClickHouse, and nothing
+ * that reads the log scales the rest back up, so at 25 % the Dashboard shows
+ * about a quarter of the real spend. The story starts at 100 %, where there is
+ * nothing to warn about, sets 25 % and asserts the warning states the share
+ * before anything is saved, and that the field carries it as its description.
+ */
+export const SettingARateBelowFullWarnsWithTheShare: Story = {
+  render: () => <Harness fetchStub={async () => json({ ...BASE, sample_rate: 1 })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await expect(rate).toHaveValue("100");
+    await expect(canvas.queryByText(/The log keeps/)).toBeNull();
+
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "25");
+    await waitFor(() =>
+      expect(canvas.getByText("The log keeps about 1 in 4 requests.")).toBeVisible(),
+    );
+    await expect(
+      canvas.getByText(/read from it come to about 25% of the real figures/),
+    ).toBeVisible();
+    await expect(rate).toHaveAccessibleDescription(/about 1 in 4 requests/);
+  },
+};
+
+// a saved rate below 100 % warns on load, not only while it is being edited
+export const ASavedRateBelowFullWarnsOnLoad: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByLabelText("Sample rate percent")).toHaveValue("25");
+    await expect(await canvas.findByText("The log keeps about 1 in 4 requests.")).toBeVisible();
+  },
+};
+
+// at 100 % every request is logged, so there is no warning, and the hint still
+// says what a lower rate would change and what it would not
+export const FullSampleRateShowsNoWarning: Story = {
+  render: () => <Harness fetchStub={async () => json({ ...BASE, sample_rate: 1 })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByLabelText("Sample rate percent")).toHaveValue("100");
+    await expect(canvas.queryByText(/The log keeps/)).toBeNull();
+    await expect(
+      canvas.getByText(/Dashboard, LLM Logs, Business Units and Customers/),
+    ).toBeVisible();
+    await expect(
+      canvas.getByText(/budgets, rate limits and \/metrics still count every request/),
+    ).toBeVisible();
+  },
+};
+
+// 0 % logs nothing at all, which is its own sentence rather than "1 in infinity"
+export const ZeroSampleRateSaysNothingIsLogged: Story = {
+  render: () => <Harness fetchStub={async () => json({ ...BASE, sample_rate: 1 })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "0");
+    await waitFor(() => expect(canvas.getByText("The log keeps no requests.")).toBeVisible());
+    await expect(canvas.getByText(/get no new requests, spend or tokens/)).toBeVisible();
+  },
+};
+
+// a cleared field is not 0 %: `Number("")` would have saved a policy that logs
+// nothing, so save is refused and no share is claimed for an empty value
+export const AClearedSampleRateCannotBeSaved: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await waitFor(() =>
+      expect(canvas.getByText("Sample rate must be between 0 and 100 percent.")).toBeVisible(),
+    );
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.queryByText(/The log keeps/)).toBeNull();
+  },
+};
+
 // payload capture off: the capture-scoped fields dim and disable, since they
 // only narrow a capture that is not happening
 export const CaptureDisabled: Story = {

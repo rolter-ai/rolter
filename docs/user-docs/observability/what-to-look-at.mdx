@@ -49,8 +49,11 @@ Read the waterfall top-down and ask which stage is wide:
 
 ### p95 latency by model, from the request log
 
-Traces are sampled; the request log is not. For "is this actually getting
-worse", use the log.
+Traces are sampled, and the request log is complete while its
+[`sample_rate`](/observability/log-settings#sampling) is `1`, the default. For
+"is this actually getting worse", use the log. Below `1` the percentiles and
+the error share below are estimates from the logged requests, and `requests`
+counts only those.
 
 ```sql
 SELECT
