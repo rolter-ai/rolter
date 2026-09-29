@@ -470,7 +470,7 @@ Policy (ROL-246):
 
 ## CI
 
-`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix (`cargo hack`), `cargo doc` (warnings as errors), the publish verify build, the gateway smoke, cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
 
 ### The static checks job
 
@@ -516,6 +516,40 @@ line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
 
+### The rust lint and rust build jobs
+
+The Rust checks outside nextest run as steps of two jobs, split by whether they
+link. `rust lint` holds fmt, clippy (default features and `postgres`),
+`cargo doc` with warnings as errors, `cargo hack` over each feature and the
+cross-crate feature combination. None of them invokes the linker, so the job
+skips the wild linker. `rust build` holds the publish verify build
+(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, and
+last the three advisory `semver-checks` steps. Until #2025 these were six jobs:
+`fmt / clippy`, `feature matrix`, `cargo doc (warnings = errors)`,
+`package (publish verify)`, `gateway smoke (fake-llm)` and
+`semver-checks (advisory)`.
+
+They follow the rules of the static checks job above: every check step runs
+under `!cancelled()` and is guarded on the setup it reads, and a `report` step
+titles each failure with the former job's name and the command that reproduces
+it. Every blocking step must run on every event, so a skip fails the job. Two
+things differ:
+
+- The flags that used to be job env are step env now. `RUSTDOCFLAGS` sits on
+  the `cargo doc` step. `RUSTFLAGS=-D warnings` sits on the two `cargo hack`
+  steps, which build into `target/hack`, because a different `RUSTFLAGS` would
+  otherwise rebuild the clippy steps' dependency tree on every run.
+  `rust build` sets no `RUSTFLAGS` at all: the variable replaces every
+  `rustflags` entry in cargo's config, the wild linker's `--ld-path` included.
+- The semver steps are `continue-on-error`, the install and the baseline tag
+  lookup included, and the semver check has a 20-minute step limit. The report
+  turns their failure into a warning. `ci-ok` never goes red over the semver
+  check, as [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
+  requires; see [API stability](api-stability.md).
+
+`rust lint` times out after 30 minutes and `rust build` after 45, so a hung
+build fails the gate well before GitHub's 360-minute default.
+
 ### The Rust cache is saved from `master` only
 
 Every `Swatinem/rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml`
@@ -556,7 +590,7 @@ gh cache list -R rolter-ai/rolter --sort size_in_bytes --limit 50
 
 ### The rustdoc gate is the one CI check nothing local reproduces
 
-`cargo doc (warnings = errors)` is the gate that most often turns a
+`cargo doc (warnings = errors)`, a step of `rust lint`, is the gate that most often turns a
 locally-clean branch red, because `cargo fmt`, `cargo clippy` and
 `cargo nextest` are all silent about it. Run it before pushing:
 

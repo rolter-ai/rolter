@@ -43,8 +43,8 @@ missing platform fails the release rather than reaching a user.
 
 Those builds run only after crates.io has published and the tag is pushed, so a
 packaging mistake found there leaves a release with no wheel. The
-`package (publish verify)` job in `quality.yml` catches most of them on the PR:
-it runs `maturin sdist` from the repo root, which parses `pyproject.toml` and
+`rust build` job in `quality.yml` catches most of them on the PR: its
+`maturin sdist` step, run from the repo root, parses `pyproject.toml` and
 `[tool.maturin]`, resolves `manifest-path`, the bindings, the readme and the
 license, and packages the workspace path dependencies. It takes seconds because
 it compiles nothing, so a failure that appears only when maturin compiles a
