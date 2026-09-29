@@ -17,7 +17,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 workflow="$root/.github/workflows/project-automation.yml"
-step_name="add item to project and seed default Status and Priority"
+step_name="add item to project and seed its default fields"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -149,7 +149,11 @@ case $call in
       {id:"F:Status",name:"Status",options:([
         "Backlog","Todo","In Progress","In Review","Done"] | map({id:("O:Status:"+.),name:.}))},
       {id:"F:Priority",name:"Priority",options:([
-        "Urgent","High","Medium","Low"] | map({id:("O:Priority:"+.),name:.}))}
+        "Urgent","High","Medium","Low"] | map({id:("O:Priority:"+.),name:.}))},
+      {id:"F:Area",name:"Area",options:([
+        "gateway","control","ui","ci","infra"] | map({id:("O:Area:"+.),name:.}))},
+      {id:"F:Effort",name:"Effort",options:([
+        "XS","S","M","L","XL"] | map({id:("O:Effort:"+.),name:.}))}
     ]}}}}' ;;
   read)
     jq -c '{data:{node:{fieldValues:{nodes:([{}] + [to_entries[]
@@ -181,17 +185,19 @@ start_case() {
   echo "4999 1003600 5000" >"$case_dir/rate_limit"
 }
 
-# run_step [is_pr] [token]: runs the step against $case_dir, capturing its
-# exit code and output
+# run_step [is_pr] [token] [area] [effort]: runs the step against $case_dir,
+# capturing its exit code and output. area and effort are the seeds a dispatch
+# may ask for
 run_step() {
-  local is_pr=${1:-false} token=${2-fake-token} rc=0
+  local is_pr=${1:-false} token=${2-fake-token} area=${3:-} effort=${4:-} rc=0
   (
     cd "$case_dir"
     env -i \
       PATH="$bin:$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" FAKE="$case_dir" \
       GH_TOKEN="$token" PROJECT_ID=PVT_test CONTENT_ID=I_test \
       CONTENT_URL=https://github.com/rolter-ai/rolter/issues/1 \
-      IS_PR="$is_pr" RETRY_WINDOW=900 GITHUB_RUN_ID=42 \
+      IS_PR="$is_pr" SEED_AREA="$area" SEED_EFFORT="$effort" \
+      RETRY_WINDOW=900 GITHUB_RUN_ID=42 \
       bash --noprofile --norc -eo pipefail "$work/step.sh"
   ) >"$case_dir/out" 2>&1 || rc=$?
   echo "$rc" >"$case_dir/rc"
@@ -241,6 +247,29 @@ start_case "pr, happy path"
 run_step true
 expect_rc 0
 expect_board '{"Status":"In Review"}'
+finish_case
+
+# #2201: a dispatch for an issue a workflow token opened seeds Area and Effort
+# on top of the defaults
+start_case "dispatch seeds area and effort"
+run_step false fake-token ci XS
+expect_rc 0
+expect_board '{"Status":"Todo","Priority":"Medium","Area":"ci","Effort":"XS"}'
+expect_writes "Status=Todo Priority=Medium Area=ci Effort=XS"
+finish_case
+
+start_case "dispatch keeps an area already set"
+echo '{"Area":"infra"}' >"$case_dir/board"
+run_step false fake-token ci XS
+expect_rc 0
+expect_board '{"Status":"Todo","Priority":"Medium","Area":"infra","Effort":"XS"}'
+expect_output "Area is already 'infra'; leaving it alone"
+finish_case
+
+start_case "dispatch naming an area the board lacks fails"
+run_step false fake-token nowhere
+expect_rc 1
+expect_output "board field 'Area' has no option named 'nowhere'"
 finish_case
 
 start_case "triage already applied is kept"

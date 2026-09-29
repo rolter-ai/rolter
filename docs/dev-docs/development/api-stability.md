@@ -34,11 +34,10 @@ surface that has not been declared stable yet.
 
 ## What the check covers now
 
-The gate is scoped instead of silenced. It compares against the previous
-release **tag** (`--baseline-rev`, resolved with `git describe`), not the
-published crate, and it checks only the crates listed in `GUARDED`, the env of
-the `cargo semver-checks (guarded crates)` step of the `rust build` job in
-`.github/workflows/quality.yml`:
+The gate is scoped instead of silenced. It compares each change against the
+**commit it lands on**, not against the published crate, and it checks only the
+crates listed in `GUARDED`, the env of the `cargo semver-checks (guarded crates)`
+step of the `rust build` job in `.github/workflows/quality.yml`:
 
 | Crate             | Guarded | Why                                                                                                         |
 | ----------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
@@ -68,6 +67,40 @@ because an unintended change to its API is likely enough to be an unintended
 change in _behaviour_ that a second look is worth the noise, and off it when it
 is not. Adding or removing one is that judgement, made in the same pull request,
 with a line in the table saying why.
+
+### Why the baseline is the change's own base
+
+Until #2204 the baseline was the previous release tag. That removed the first
+cause above and kept the second: a deliberate break stayed red on every later
+run until the next release. From #1863 on, every pull request failed over two
+`RouteContext` fields that none of them had touched (#1969), so a red run once
+again said nothing about the change it was reported on.
+
+The `resolve baseline` step now picks the commit the change lands on:
+
+| Run                            | Baseline                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| pull request                   | the base branch tip, the first parent of the test merge GitHub checks out |
+| merge queue                    | the queue entry's `base_sha`                                              |
+| push to `master`               | the tip the push replaced (`github.event.before`)                         |
+| dispatch (e.g. the release PR) | `git merge-base HEAD origin/master`                                       |
+
+A red run therefore means this change moved a guarded crate's API. A change
+that touches nothing under `crates/`, `Cargo.toml` or `Cargo.lock` has nothing
+to diff, so the check is skipped and the report says why. Nothing compares
+against the last release any more; release-plz does not run the tool either
+(see below), because rolter's version follows commit types alone.
+
+The baseline is checked out as a git worktree under the runner's temp
+directory and reaches the tool as `--baseline-root`. `--baseline-rev` would
+copy the whole tree into `target/semver-checks/`, which rust-cache walks when it
+prunes the target directory, and it reports every `tests/` directory in that
+copy as an `ENOENT` error. To reproduce a run locally, where no cache walks
+`target/`, `--baseline-rev` is fine:
+
+```bash
+cargo semver-checks -p rolter-balancer --baseline-rev "$(git merge-base HEAD origin/master)" --release-type patch
+```
 
 ## What this does _not_ cover
 
@@ -118,9 +151,9 @@ endings:
   that red is the record.
 
 What is not an option is renaming quietly. The job is `continue-on-error`, so
-nothing blocks the merge — the failure just becomes permanent background noise
-on every later pull request, which is how a review signal stops being read at
-all. Do not add a `since` to the `#[deprecated]` unless the release that
+nothing blocks the merge, and it diffs against the commit the change lands on,
+so the red shows on that one pull request and never again. Left unexplained, it
+reads as noise and the move goes unrecorded. Do not add a `since` to the `#[deprecated]` unless the release that
 deprecates it is already known; release-plz picks the version from commit types,
 so a guessed one is wrong as often as not.
 
@@ -166,7 +199,7 @@ would be worse than either choice alone.
 
 So the check is permanently advisory:
 
-- Its three steps (the install, the baseline tag and the check) keep
+- Its three steps (the install, the baseline and the check) keep
   `continue-on-error: true` and run last in `rust build`, whose report turns a
   failure into a warning, never an error, so the check can never turn `ci-ok`
   red. A red run is a _review signal_ — "this pull request moved a public
