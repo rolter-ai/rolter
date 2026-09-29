@@ -2,12 +2,41 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { CopyAsCodeButton } from "./CodeSnippetDialog";
+import type { ClientSettingsDto } from "@/lib/api";
+import { expectGateAnswered, Harness, json, recording, routes } from "@/pages/story-harness";
+
+const SAVED: ClientSettingsDto = {
+  public_base_url: "https://gateway.example.com",
+  forwarded_headers: [],
+  injected_headers: {},
+  request_id_header: "x-request-id",
+  updated_at: "2026-08-05T12:00:00Z",
+  always_propagated: ["traceparent", "tracestate", "b3"],
+  reserved: ["authorization"],
+};
+
+/** a deployment with a public base URL saved on Client Settings */
+const withSavedBaseUrl = () =>
+  recording(async (input) =>
+    String(input).includes("/api/v1/client-settings") ? json(SAVED) : json([]),
+  );
+
+/** a stub that answers nothing in particular; no default story reads client settings */
+const noSettings = routes([]);
 
 const meta = {
   title: "Overlays/CodeSnippetDialog",
   component: CopyAsCodeButton,
   parameters: { layout: "centered" },
   args: { request: { model: "llama-3.1-8b", prompt: "hello there" } },
+  // no role, so no capability provider and no client-settings read: the
+  // snippet falls back to the dashboard's /gw proxy, as it does for a caller
+  // whose gate has not answered yet
+  render: (args) => (
+    <Harness fetchStub={noSettings}>
+      <CopyAsCodeButton {...args} />
+    </Harness>
+  ),
 } satisfies Meta<typeof CopyAsCodeButton>;
 
 export default meta;
@@ -115,6 +144,60 @@ export const NeverInlinesTheKey: Story = {
       await waitFor(() => expect(dialog.textContent ?? "").toContain("ROLTER_API_KEY"));
       await expect(dialog.textContent ?? "").not.toContain("sk-rolter-");
     }
+  },
+};
+
+const asSuperadmin = withSavedBaseUrl();
+
+/**
+ * A superadmin, who may read client settings, gets the saved public base URL
+ * in every language, and no comment calling it the dashboard's proxy (#2218).
+ */
+export const UsesTheSavedBaseUrl: Story = {
+  render: (args) => (
+    <Harness fetchStub={asSuperadmin.stub} role="superadmin">
+      <CopyAsCodeButton {...args} />
+    </Harness>
+  ),
+  play: async () => {
+    const dialog = await open();
+    const canvas = within(dialog);
+    await waitFor(() =>
+      expect(dialog).toHaveTextContent(
+        /curl https:\/\/gateway\.example\.com\/v1\/chat\/completions/,
+      ),
+    );
+    for (const lang of ["Python", "JavaScript"]) {
+      await userEvent.click(canvas.getByRole("tab", { name: lang }));
+      await waitFor(() =>
+        expect(dialog).toHaveTextContent(/"https:\/\/gateway\.example\.com\/v1"/),
+      );
+      await expect(dialog.textContent ?? "").not.toContain("/gw/");
+      await expect(dialog.textContent ?? "").not.toContain("in production");
+    }
+    await asSuperadmin.expectSent("GET", "/api/v1/client-settings");
+  },
+};
+
+const asAdmin = withSavedBaseUrl();
+
+/**
+ * Client settings are superadmin-only, so an org admin never asks for them —
+ * the 403 would say nothing the gate did not — and gets the `/gw` proxy with
+ * the comment saying so, even on a deployment that saved a public base URL.
+ */
+export const AnAdminKeepsTheProxy: Story = {
+  render: (args) => (
+    <Harness fetchStub={asAdmin.stub} role="admin">
+      <CopyAsCodeButton {...args} />
+    </Harness>
+  ),
+  play: async () => {
+    await expectGateAnswered();
+    const dialog = await open();
+    await waitFor(() => expect(dialog).toHaveTextContent(/curl .*\/gw\/v1\/chat\/completions/));
+    await expect(dialog).toHaveTextContent(/in production/);
+    asAdmin.expectNotSent("GET", "/api/v1/client-settings");
   },
 };
 

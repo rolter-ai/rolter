@@ -12,9 +12,15 @@ Edit them from **Settings → Client Settings** in the dashboard, or through the
 
 ## Base URL
 
-The address clients point their SDK at. Set it when the gateway sits behind a load balancer or a custom domain, so the connection snippet in the dashboard matches what a caller can actually reach.
+The address clients point their SDK at: the gateway's own root, such as `https://gateway.example.com`. Set it when the gateway sits behind a load balancer or on a custom domain. The dashboard builds every connection snippet from it (the request on the **Getting started** card, the Playground's **Copy as code** and the example request on this screen), so what you copy is what a caller can reach.
 
-Leave it empty and the dashboard falls back to its own origin. This value is advisory: the gateway never reads it, and setting it does not change what the gateway listens on.
+Enter it without `/v1`, since the snippets add the path themselves. A trailing `/v1`, the way the OpenAI SDKs write their base URL, is dropped rather than doubled.
+
+Leave it empty and the snippets go through the dashboard's own `/gw` proxy, for example `https://rolter.example.com:4001/gw/v1/chat/completions`. The proxy answers every OpenAI-compatible call, so an empty field is fine for trying Rolter out, but each call then passes through the control plane on its way to the gateway. For production, give clients the gateway's own address.
+
+Only a superadmin can read client settings, so the snippets other roles see are built on the `/gw` proxy even when a base URL is saved.
+
+This value is advisory: the gateway never reads it, and setting it does not change what the gateway listens on.
 
 ---
 

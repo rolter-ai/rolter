@@ -4,8 +4,11 @@
 // that route into an application, and the useful output of a successful
 // Playground call is therefore *the code that reproduces it* — not the reply.
 //
-// Everything here is a pure function over the request the Playground just sent,
-// so the snippets are unit-testable and cannot drift from each other.
+// Everything here is a pure function over the request the Playground just sent
+// and the gateway address to send it to, so the snippets are unit-testable and
+// cannot drift from each other.
+
+import type { GatewayBase } from "@/lib/gateway";
 
 /** The request the Playground issued, in OpenAI terms. */
 export interface SnippetRequest {
@@ -22,16 +25,19 @@ export type SnippetLang = "curl" | "python" | "javascript";
 export const SNIPPET_LANGS: SnippetLang[] = ["curl", "python", "javascript"];
 
 /**
- * Base URL to put in a snippet.
+ * The comment a snippet carries above its base URL when that URL is the
+ * dashboard's `/gw` proxy (#2218).
  *
- * The dashboard reaches the gateway through its own `/gw` reverse proxy, and
- * that path is a working OpenAI-compatible surface — so the snippet runs as-is
- * from anywhere the dashboard is reachable. It is still the dashboard's port,
- * not the gateway's, which is why every snippet says so in a comment: in
- * production you point a client at the gateway directly.
+ * The proxy is a working OpenAI-compatible surface, so the snippet runs as-is
+ * from anywhere the dashboard is reachable, but it is the control plane's
+ * port rather than the gateway's, and a snippet pasted into an application
+ * should say so. A base URL the operator saved on Client Settings is the
+ * gateway's own address, so there is nothing to warn about and no line.
  */
-export function snippetBaseUrl(origin: string): string {
-  return `${origin.replace(/\/$/, "")}/gw/v1`;
+function proxyNote(base: GatewayBase, comment: string, name: string): string {
+  return base.configured
+    ? ""
+    : `${comment} ${name} is the dashboard's gateway proxy; in production point this at the gateway itself\n`;
 }
 
 /**
@@ -47,20 +53,19 @@ const KEY_ENV = "ROLTER_API_KEY";
 /** JSON-encode for embedding inside a source literal. */
 const j = (v: unknown) => JSON.stringify(v);
 
-function curl(req: SnippetRequest, base: string): string {
+function curl(req: SnippetRequest, base: GatewayBase): string {
   const body = {
     model: req.model,
     messages: [{ role: "user", content: req.prompt }],
     ...(req.stream ? { stream: true } : {}),
   };
-  return `# base url is the dashboard's gateway proxy; in production point this at the gateway itself
-curl ${base}/chat/completions \\
+  return `${proxyNote(base, "#", "base url")}curl ${base.url}/v1/chat/completions \\
   -H "Authorization: Bearer $${KEY_ENV}" \\
   -H "Content-Type: application/json" \\
   -d '${JSON.stringify(body)}'`;
 }
 
-function python(req: SnippetRequest, base: string): string {
+function python(req: SnippetRequest, base: GatewayBase): string {
   const call = req.stream
     ? `stream = client.chat.completions.create(
     model=${j(req.model)},
@@ -79,16 +84,15 @@ print(response.choices[0].message.content)`;
 import os
 from openai import OpenAI
 
-# base_url is the dashboard's gateway proxy; in production point this at the gateway itself
-client = OpenAI(
-    base_url=${j(base)},
+${proxyNote(base, "#", "base_url")}client = OpenAI(
+    base_url=${j(`${base.url}/v1`)},
     api_key=os.environ[${j(KEY_ENV)}],
 )
 
 ${call}`;
 }
 
-function javascript(req: SnippetRequest, base: string): string {
+function javascript(req: SnippetRequest, base: GatewayBase): string {
   const call = req.stream
     ? `const stream = await client.chat.completions.create({
   model: ${j(req.model)},
@@ -107,18 +111,20 @@ console.log(response.choices[0].message.content);`;
   return `// npm install openai
 import OpenAI from "openai";
 
-// baseURL is the dashboard's gateway proxy; in production point this at the gateway itself
-const client = new OpenAI({
-  baseURL: ${j(base)},
+${proxyNote(base, "//", "baseURL")}const client = new OpenAI({
+  baseURL: ${j(`${base.url}/v1`)},
   apiKey: process.env.${KEY_ENV},
 });
 
 ${call}`;
 }
 
-/** Render one request as runnable client code. */
-export function renderSnippet(lang: SnippetLang, req: SnippetRequest, origin: string): string {
-  const base = snippetBaseUrl(origin);
+/**
+ * Render one request as runnable client code, addressed to `base` — the
+ * value `useGatewayBase()` returns, so it is the same address every other
+ * snippet in the dashboard hands out.
+ */
+export function renderSnippet(lang: SnippetLang, req: SnippetRequest, base: GatewayBase): string {
   switch (lang) {
     case "curl":
       return curl(req, base);
