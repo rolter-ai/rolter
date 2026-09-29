@@ -8,11 +8,13 @@ name: quality
 # supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
-# reviewer: many independent checks. jobs are split so a failure points at one
-# concern. ci.yml aggregates every job here (plus pr-title) into a single
-# `ci-ok` check for branch protection. some newer/heavier checks run as
-# informational (continue-on-error) until their baseline is trusted, then get
-# promoted to blocking — see ROL-124.
+# reviewer: many independent checks. the ones that only read the tree share the
+# `static checks` job, one named step per concern plus a report step that names
+# whichever failed; the ones that build or boot something keep a job each.
+# ci.yml aggregates every job here (plus pr-title) into a single `ci-ok` check
+# for branch protection. some newer/heavier checks run as informational
+# (continue-on-error) until their baseline is trusted, then get promoted to
+# blocking — see ROL-124.
 on:
   # takes no secrets: every job here scans the checked-out source with pinned
   # public tooling, so the gate behaves identically on dependabot and fork PRs,
@@ -179,41 +181,72 @@ jobs:
       - name: cargo doc
         run: cargo doc --workspace --no-deps --all-features
 
-  # ── supply chain: advisories / bans / licenses / sources ────────────────────
-  supply-chain:
-    name: cargo-deny
+  # ── static checks: everything that reads the tree and builds nothing ────────
+  # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
+  # waited a median 86-200 s for a runner: a pr push started 36 jobs at once
+  # against the org's 20 concurrent slots, so 16 queued even on an idle org
+  # (#2025). they share one runner now, and a failure still names its concern:
+  #
+  # - one named step per former job (two for gitleaks, three for the release
+  #   handoff, five for the helm chart), keeping that job's command, env and
+  #   event guard
+  # - every step runs under `!cancelled()` rather than the default `success()`,
+  #   so one red step never hides the ones after it. `always()` would also keep
+  #   a superseded run holding its runner after ci.yml cancelled it
+  # - a step that reads a tool installed here is also guarded on that install,
+  #   so a failed download shows up as a skip the report names, not as a
+  #   confusing `command not found` under the check's name
+  # - the `report` step lists every step's outcome in the job summary, emits
+  #   one `::error` per failed step titled with the former job's name and the
+  #   command that reproduces it locally, and fails the job when a step that
+  #   must run on this event was skipped: a skipped step reads as a pass, and
+  #   that is how `ci-ok` once went green without reading a commit message
+  #   (#1562)
+  #
+  # a check added here needs its step, an `OUTCOME_*` line and a `row` in the
+  # report, or it runs without the report ever vouching for it
+  static:
+    name: static checks
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: cargo-deny (advisories, bans, licenses, sources)
-        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
-        with:
-          tool: cargo-deny@0.20.2
-      - name: cargo deny check
-        run: cargo deny --all-features --config .config/deny.toml check
-
-  # ── supply chain: secret scanning ───────────────────────────────────────────
-  # agents must never leak a provider key; fail the build if one is committed.
-  # runs the gitleaks CLI, not gitleaks-action: the action gates org-owned repos
-  # behind a license key, and license secrets are invisible to dependabot runs
-  # (separate secret store) and to fork PRs (no secrets at all), so every such
-  # PR failed this job and therefore ci-ok. the CLI is free and unrestricted.
-  # the image digest is v8.30.1, the same version prek.toml pins for the staged
-  # hook, so local and CI scan with one binary and one policy. see #734.
-  gitleaks:
-    name: gitleaks
-    runs-on: ubuntu-latest
+    # about 90 s of work. without a timeout a hung step would hold the runner,
+    # and every sibling's verdict with it, for GitHub's 360-minute default
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # `shell: bash` for pipefail: without it a failing `helm template` on the
+    # left of a pipe into the manifest checker is masked by the checker exiting
+    # 0 on empty input. every other step is a single command or sets its own
+    # options, so the stricter shell changes nothing there
+    defaults:
+      run:
+        shell: bash
     env:
+      # v8.30.1, the same version prek.toml pins for the staged hook, so local
+      # and CI scan with one binary and one policy. see #734
       GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
         with:
           persist-credentials: false
+          # gitleaks' history pass, the session-url commit range and the
+          # migrations diff all walk real history
           fetch-depth: 0
+
+      # ── supply chain: secret scanning ─────────────────────────────────────
+      # agents must never leak a provider key; fail the build if one is
+      # committed. runs the gitleaks CLI, not gitleaks-action: the action gates
+      # org-owned repos behind a license key, and license secrets are invisible
+      # to dependabot runs (separate secret store) and to fork PRs (no secrets
+      # at all), so every such PR failed this check and therefore ci-ok. the
+      # CLI is free and unrestricted.
+      #
+      # both passes run before any setup step, so `dir .` sees exactly the
+      # checkout and never a tool some later step unpacked into the workspace.
       # working tree: everything the commit actually ships
       - name: gitleaks (working tree)
+        id: gitleaks-tree
+        if: ${{ !cancelled() }}
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo "$GITLEAKS_IMAGE" \
             dir . --config .github/config/gitleaks.toml --redact --exit-code 1
@@ -223,7 +256,8 @@ jobs:
       # batched ahead of this one included. the payload names both ends, so
       # this needs no token and quality.yml stays secret-free (#734, #1722)
       - name: gitleaks (branch history)
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        id: gitleaks-history
+        if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -238,43 +272,51 @@ jobs:
             git . --config .github/config/gitleaks.toml --redact --exit-code 1 \
             --log-opts "$BASE_SHA..$HEAD_SHA"
 
-  # ── hygiene: no agent session urls in commits or the pr body ────────────────
-  # a commit-msg prek hook catches this locally, but `--no-verify` still
-  # bypasses it — this is the backstop for the commit messages the pr
-  # introduces, so a url added by an amend or a --no-verify push is still
-  # caught. the pr *body* is checked by a step of the `ci-ok` job in ci.yml
-  # instead, not here: a body edit skips this whole workflow, so a check that
-  # lives here can never see one. see #1406.
-  session-urls:
-    name: no agent session urls (commits)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ── tools, installed once for every step below ────────────────────────
+      # taiki-e checks each download against the sha256 in its manifest, and
+      # the versions are pinned here: cargo-deny at the version the gate has
+      # always run, cargo-machete at the release bnjbvr/cargo-machete resolved
+      # on every run through an unauthenticated `releases/latest` call, which
+      # also unpacked its tarball into the workspace
+      - name: install taplo, cargo-deny and cargo-machete
+        id: tools
+        if: ${{ !cancelled() }}
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
-          persist-credentials: false
-          # the commit range below diffs against the pr base, which needs real history
-          fetch-depth: 0
-      - name: check commit messages
+          tool: taplo,cargo-deny@0.20.2,cargo-machete@0.9.2
+      - name: set up uv
+        id: uv
+        if: ${{ !cancelled() }}
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: set up helm
+        id: helm
+        if: ${{ !cancelled() }}
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+
+      # ── hygiene: no agent session urls in commits ─────────────────────────
+      # a commit-msg prek hook catches this locally, but `--no-verify` still
+      # bypasses it — this is the backstop for the commit messages the pr
+      # introduces, so a url added by an amend or a --no-verify push is still
+      # caught. the pr *body* is checked by a step of the `ci-ok` job in ci.yml
+      # instead, not here: a body edit skips this whole workflow, so a check that
+      # lives here can never see one. see #1406.
+      - name: no agent session urls (commits)
+        id: session-urls
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/check-agent-session-urls.sh --commit-range "${BASE_SHA}..${HEAD_SHA}"
 
-  # ── storage: migrations are append-only ─────────────────────────────────────
-  # sqlx checksums every applied migration, so editing a shipped file breaks
-  # every existing deployment on its next upgrade — and nothing else catches it,
-  # because CI databases always start empty. see #710 / #724.
-  migrations-immutable:
-    name: migrations append-only
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # the check diffs against origin/master, so it needs real history
-          fetch-depth: 0
-      - name: check migrations are append-only
+      # ── storage: migrations are append-only ───────────────────────────────
+      # sqlx checksums every applied migration, so editing a shipped file breaks
+      # every existing deployment on its next upgrade — and nothing else catches
+      # it, because CI databases always start empty. see #710 / #724.
+      - name: migrations append-only
+        id: migrations
+        if: ${{ !cancelled() }}
         env:
           CI: "true"
           # on a merge-queue run the checkout is a synthetic ref and
@@ -285,145 +327,67 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
-  # ── release handoff: release-plz must still dispatch release.yml ────────────
-  # a token-created tag does not fire `push: tags`, so the dispatch in
-  # release-plz.yml is the only thing that starts wheel/pypi publishing. losing
-  # it fails silently — releases keep shipping, just without a wheel (#903).
-  # the checker reads the workflows as parsed yaml (#1723); `uv run --script`
-  # installs the pyyaml pinned in its inline metadata, nothing else. it also
-  # asserts the crates.io publish still waits on `release-gate` (#2025)
-  release-handoff:
-    name: release handoff wired
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: check the release handoff is wired
-        run: uv run --script scripts/check-release-handoff.py
-      # a check that can no longer fail is worse than none: it reads as coverage
-      - name: every check still fails on a broken fixture
-        run: uv run --script scripts/check-release-handoff.py --self-test
-      # release-plz.yml's `release-gate` only waits on a release push to master,
-      # so a regression in its scripts would first show as a release published
-      # ungated or never published. this runs both against a fake gh, curl,
-      # cargo and clock. it reads nothing the steps above produce
-      - name: release gate scripts against a fake gh
+      # ── spelling: docs / comments / identifiers ───────────────────────────
+      # false positives are pinned in .github/config/typos.toml with an
+      # explaining comment each.
+      - name: typos
+        id: typos
         if: ${{ !cancelled() }}
-        run: bash scripts/test-release-gate.sh
+        uses: ./.github/actions/typos
+        with:
+          version: "1.50.0"
+          config: .github/config/typos.toml
 
-  # ── board automation: the add-to-board retry policy ─────────────────────────
-  # project-automation.yml decides which GitHub API failures to wait out and
-  # which to report, and it only runs on master when an issue or PR is opened,
-  # where a regression shows up as items quietly missing from the board. this
-  # runs that step against a fake gh, a fake clock and a fake board (#1718)
-  project-automation:
-    name: board automation retry policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: run the add-to-board step against a fake gh
-        run: bash scripts/test-project-automation.sh
+      # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ─────────────
+      # blocking: the whole tree is taplo-formatted, so any drift is a real diff.
+      - name: taplo fmt
+        id: taplo
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: taplo fmt --check --diff
 
-  # ── helm chart: lint and render ─────────────────────────────────────────────
-  # the chart carries the same pre-boot validation the CLI does (#854), and a
-  # chart is the one deployment path with no compiler behind it: a template that
-  # renders to malformed YAML fails at `helm install`, on someone's cluster,
-  # rather than here. render every branch the preflight initContainer has.
-  helm-chart:
-    name: helm chart
-    runs-on: ubuntu-latest
-    # `shell: bash` for pipefail: without it a failing `helm template` on the
-    # left of the pipe is masked by the checker exiting 0 on empty input
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.4
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      # appVersion is what an operator reads to know which rolter a release
-      # deploys. nothing updated it, so it drifted three releases behind the
-      # workspace before anyone noticed (#1140)
-      - name: chart appVersion tracks the workspace version
-        run: python3 scripts/sync-chart-appversion.py
-      - name: lint
-        run: helm lint charts/rolter
-      # every render is parsed with a strict YAML loader rather than discarded:
-      # helm's own loader tolerates a duplicate mapping key, kubectl's
-      # server-side apply and the GitOps controllers do not, and a duplicate
-      # `env:` sat in both deployment templates unnoticed until #1090.
-      # `uv run --script` installs only the pyyaml pinned in the checker's
-      # inline metadata (#1901); run as part of the repo-root project, uv
-      # would build the rolter maturin wheel first, about 3.5 minutes per job
-      # (#2025). that build was the gate's only pass over pyproject.toml, which
-      # the package job now checks on purpose
-      - name: render defaults
-        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
-      - name: render with preflight disabled
-        run: |
-          helm template ci charts/rolter --set preflight.enabled=false \
-            | uv run --script scripts/check-rendered-manifests.py
-      - name: render with every preflight option on
-        run: |
-          helm template ci charts/rolter \
-            --set preflight.connect=true \
-            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
-            --set 'secretEnv[0].name=ROLTER_KEK' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
-            | uv run --script scripts/check-rendered-manifests.py
+      # ── supply chain: advisories / bans / licenses / sources ──────────────
+      - name: cargo-deny
+        id: cargo-deny
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: cargo deny --all-features --config .config/deny.toml check
 
-  # ── workflow lint: validate the CI yaml itself ──────────────────────────────
-  # agents edit workflows too; catch syntax and shell smells early.
-  actionlint:
-    name: actionlint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      # ── unused dependencies ───────────────────────────────────────────────
+      - name: unused deps
+        id: machete
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: cargo-machete
+
+      # ── workflow lint: validate the CI yaml itself ────────────────────────
+      # agents edit workflows too; catch syntax and shell smells early.
       - name: actionlint
+        id: actionlint
+        if: ${{ !cancelled() }}
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
-  # ── workflow security: zizmor static analysis ───────────────────────────────
-  # catches workflow security smells (unpinned actions, template injection in
-  # run:, over-broad GITHUB_TOKEN). a **merge gate** since #1456: the baseline
-  # was clean at `medium`, and an informational job that nobody has to fix is
-  # one everybody learns to scroll past — a regression to 34 findings went
-  # unnoticed for exactly that reason (#1325), and an unreachable action pin
-  # (#1227) rode along on every PR for weeks as accepted noise. blocking is
-  # what makes a clean baseline stay clean.
-  #
-  # threshold is `--min-severity=medium --persona=regular`, the setting the
-  # baseline was proven clean against. the four `# zizmor: ignore[...]`
-  # suppressions in the tree were each re-read in #1456 and each still carries
-  # the reason it was added; see docs/dev-docs/development/testing.md.
-  zizmor:
-    name: zizmor
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # ── workflow security: zizmor static analysis ─────────────────────────
+      # catches workflow security smells (unpinned actions, template injection
+      # in run:, over-broad GITHUB_TOKEN). a **merge gate** since #1456: the
+      # baseline was clean at `medium`, and an informational job that nobody
+      # has to fix is one everybody learns to scroll past — a regression to 34
+      # findings went unnoticed for exactly that reason (#1325), and an
+      # unreachable action pin (#1227) rode along on every PR for weeks as
+      # accepted noise. blocking is what makes a clean baseline stay clean.
+      #
+      # threshold is `--min-severity=medium --persona=regular`, the setting the
+      # baseline was proven clean against. the four `# zizmor: ignore[...]`
+      # suppressions in the tree were each re-read in #1456 and each still
+      # carries the reason it was added; see docs/dev-docs/development/testing.md.
+      # the token reaches this step alone, through its env
       - name: zizmor
+        id: zizmor
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         # three of the audits (impostor-commit, known-vulnerable-actions,
         # stale-action-refs) call the github api, and one 401/5xx there aborts
         # the *whole* run with `fatal: no audit was performed` — a red check on
         # a PR that touched no workflow, indistinguishable from a real finding
-        # now that this job blocks (#1509). so retry, but only that failure.
+        # now that this step blocks (#1509). so retry, but only that failure.
         #
         # zizmor separates the two cases in its exit code: 0 is clean and 11-14
         # are "audit completed, highest severity informational..high", while a
@@ -461,6 +425,213 @@ jobs:
             attempt=$((attempt + 1))
             sleep $((attempt * 5))
           done
+
+      # ── release handoff: release-plz must still dispatch release.yml ──────
+      # a token-created tag does not fire `push: tags`, so the dispatch in
+      # release-plz.yml is the only thing that starts wheel/pypi publishing.
+      # losing it fails silently — releases keep shipping, just without a wheel
+      # (#903). the checker reads the workflows as parsed yaml (#1723); `uv run
+      # --script` installs the pyyaml pinned in its inline metadata, nothing
+      # else. it also asserts the crates.io publish still waits on
+      # `release-gate` (#2025)
+      - name: release handoff wired
+        id: release-handoff
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uv run --script scripts/check-release-handoff.py
+      # a check that can no longer fail is worse than none: it reads as coverage
+      - name: release handoff wired (self-test)
+        id: release-handoff-self-test
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uv run --script scripts/check-release-handoff.py --self-test
+      # release-plz.yml's `release-gate` only waits on a release push to master,
+      # so a regression in its scripts would first show as a release published
+      # ungated or never published. this runs both against a fake gh, curl,
+      # cargo and clock. it reads nothing the steps above produce
+      - name: release gate scripts against a fake gh
+        id: release-gate
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-release-gate.sh
+
+      # ── board automation: the add-to-board retry policy ───────────────────
+      # project-automation.yml decides which GitHub API failures to wait out and
+      # which to report, and it only runs on master when an issue or PR is
+      # opened, where a regression shows up as items quietly missing from the
+      # board. this runs that step against a fake gh, a fake clock and a fake
+      # board (#1718)
+      - name: board automation retry policy
+        id: project-automation
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-project-automation.sh
+
+      # ── helm chart: lint and render ───────────────────────────────────────
+      # the chart carries the same pre-boot validation the CLI does (#854), and
+      # a chart is the one deployment path with no compiler behind it: a
+      # template that renders to malformed YAML fails at `helm install`, on
+      # someone's cluster, rather than here. render every branch the preflight
+      # initContainer has.
+      #
+      # appVersion is what an operator reads to know which rolter a release
+      # deploys. nothing updated it, so it drifted three releases behind the
+      # workspace before anyone noticed (#1140)
+      - name: helm chart (appVersion tracks the workspace version)
+        id: chart-appversion
+        if: ${{ !cancelled() }}
+        run: python3 scripts/sync-chart-appversion.py
+      - name: helm chart (lint)
+        id: helm-lint
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' }}
+        run: helm lint charts/rolter
+      # every render is parsed with a strict YAML loader rather than discarded:
+      # helm's own loader tolerates a duplicate mapping key, kubectl's
+      # server-side apply and the GitOps controllers do not, and a duplicate
+      # `env:` sat in both deployment templates unnoticed until #1090.
+      # `uv run --script` installs only the pyyaml pinned in the checker's
+      # inline metadata (#1901); run as part of the repo-root project, uv
+      # would build the rolter maturin wheel first, about 3.5 minutes per job
+      # (#2025). that build was the gate's only pass over pyproject.toml, which
+      # the package job now checks on purpose
+      - name: helm chart (render defaults)
+        id: helm-render-defaults
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+      - name: helm chart (render with preflight disabled)
+        id: helm-render-no-preflight
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: |
+          helm template ci charts/rolter --set preflight.enabled=false \
+            | uv run --script scripts/check-rendered-manifests.py
+      - name: helm chart (render with every preflight option on)
+        id: helm-render-all-preflight
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: |
+          helm template ci charts/rolter \
+            --set preflight.connect=true \
+            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
+            --set 'secretEnv[0].name=ROLTER_KEK' \
+            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
+            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
+            | uv run --script scripts/check-rendered-manifests.py
+
+      # the verdict for the whole job, and the one place that knows which step
+      # must run on which event. outcomes arrive through env, never inline in
+      # the script (zizmor's template-injection rule). a step id that does not
+      # exist yields an empty outcome, which counts as a failure rather than a
+      # pass
+      - name: report
+        if: ${{ !cancelled() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_GITLEAKS_TREE: ${{ steps.gitleaks-tree.outcome }}
+          OUTCOME_GITLEAKS_HISTORY: ${{ steps.gitleaks-history.outcome }}
+          OUTCOME_TOOLS: ${{ steps.tools.outcome }}
+          OUTCOME_UV: ${{ steps.uv.outcome }}
+          OUTCOME_HELM: ${{ steps.helm.outcome }}
+          OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
+          OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_TYPOS: ${{ steps.typos.outcome }}
+          OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
+          OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
+          OUTCOME_MACHETE: ${{ steps.machete.outcome }}
+          OUTCOME_ACTIONLINT: ${{ steps.actionlint.outcome }}
+          OUTCOME_ZIZMOR: ${{ steps.zizmor.outcome }}
+          OUTCOME_RELEASE_HANDOFF: ${{ steps.release-handoff.outcome }}
+          OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
+          OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
+          OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
+          OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
+          OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
+          OUTCOME_HELM_RENDER_DEFAULTS: ${{ steps.helm-render-defaults.outcome }}
+          OUTCOME_HELM_RENDER_NO_PREFLIGHT: ${{ steps.helm-render-no-preflight.outcome }}
+          OUTCOME_HELM_RENDER_ALL_PREFLIGHT: ${{ steps.helm-render-all-preflight.outcome }}
+        run: |
+          set -euo pipefail
+          summary="${GITHUB_STEP_SUMMARY}"
+          failed=0
+
+          # the event guards below mirror the steps' `if:` conditions. a step
+          # outside its event is skipped honestly; inside it, a skip is a
+          # failure, whether a setup step failed or a guard was edited wrong
+          on_pr=no
+          on_pr_or_queue=no
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            on_pr=yes
+          fi
+          if [ "${EVENT_NAME}" = "pull_request" ] || [ "${EVENT_NAME}" = "merge_group" ]; then
+            on_pr_or_queue=yes
+          fi
+
+          {
+            echo "### static checks on \`${EVENT_NAME}\`"
+            echo
+            echo "| former job | step | outcome | reproduce locally |"
+            echo "| --- | --- | --- | --- |"
+          } >> "${summary}"
+
+          # row <former job> <step> <outcome> <must run on this event: yes|no> <command>
+          row() {
+            local job="$1" step="$2" outcome="$3" required="$4" repro="$5" shown
+            shown="${outcome:-no outcome}"
+            if [ "${outcome}" = "skipped" ] && [ "${required}" = "no" ]; then
+              shown="skipped (does not run on ${EVENT_NAME})"
+            elif [ "${outcome}" = "skipped" ]; then
+              shown="**skipped, but must run on ${EVENT_NAME}**"
+              echo "::error title=${job}::${step} was skipped on a ${EVENT_NAME} run, where it must run. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
+              failed=1
+            elif [ "${outcome}" != "success" ]; then
+              shown="**${outcome:-no outcome}**"
+              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
+              failed=1
+            fi
+            # a literal | would end the table cell early
+            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
+          }
+
+          setup="nothing to run locally; re-run the job"
+          row "static checks" "checkout" "${OUTCOME_CHECKOUT}" yes "${setup}"
+          row "gitleaks" "gitleaks (working tree)" "${OUTCOME_GITLEAKS_TREE}" yes \
+            "gitleaks dir . --config .github/config/gitleaks.toml --redact"
+          row "gitleaks" "gitleaks (branch history)" "${OUTCOME_GITLEAKS_HISTORY}" "${on_pr_or_queue}" \
+            "gitleaks git . --config .github/config/gitleaks.toml --redact --log-opts origin/master..HEAD"
+          row "static checks" "install taplo, cargo-deny and cargo-machete" "${OUTCOME_TOOLS}" yes "${setup}"
+          row "static checks" "set up uv" "${OUTCOME_UV}" yes "${setup}"
+          row "static checks" "set up helm" "${OUTCOME_HELM}" yes "${setup}"
+          row "no agent session urls (commits)" "no agent session urls (commits)" "${OUTCOME_SESSION_URLS}" "${on_pr}" \
+            "bash scripts/check-agent-session-urls.sh --commit-range origin/master..HEAD"
+          row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
+            "prek run migrations-immutable --all-files"
+          row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
+          row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
+          row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
+            "cargo deny --all-features --config .config/deny.toml check"
+          row "unused deps" "unused deps" "${OUTCOME_MACHETE}" yes "cargo machete"
+          row "actionlint" "actionlint" "${OUTCOME_ACTIONLINT}" yes "prek run actionlint --all-files"
+          row "zizmor" "zizmor" "${OUTCOME_ZIZMOR}" yes \
+            "uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
+          row "release handoff wired" "release handoff wired" "${OUTCOME_RELEASE_HANDOFF}" yes \
+            "prek run release-handoff --all-files"
+          row "release handoff wired" "release handoff wired (self-test)" "${OUTCOME_RELEASE_HANDOFF_SELF_TEST}" yes \
+            "prek run release-handoff-self-test --all-files"
+          row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
+            "prek run release-gate --all-files"
+          row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
+            "prek run project-automation --all-files"
+          row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
+            "prek run chart-appversion --all-files"
+          row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"
+          row "helm chart" "helm chart (render defaults)" "${OUTCOME_HELM_RENDER_DEFAULTS}" yes \
+            "helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py"
+          row "helm chart" "helm chart (render with preflight disabled)" "${OUTCOME_HELM_RENDER_NO_PREFLIGHT}" yes \
+            "helm template ci charts/rolter --set preflight.enabled=false | uv run --script scripts/check-rendered-manifests.py"
+          row "helm chart" "helm chart (render with every preflight option on)" "${OUTCOME_HELM_RENDER_ALL_PREFLIGHT}" yes \
+            "the helm template command of this step in quality.yml, piped to uv run --script scripts/check-rendered-manifests.py"
+
+          echo >> "${summary}"
+          if [ "${failed}" -ne 0 ]; then
+            echo "one or more static checks did not pass; each has an error annotation naming its former job" >> "${summary}"
+            exit 1
+          fi
+          echo "every static check that applies to \`${EVENT_NAME}\` passed" >> "${summary}"
 
   # ── ui: typecheck + production build ────────────────────────────────────────
   ui:
@@ -724,30 +895,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
 
-  # ── spelling: docs / comments / identifiers ─────────────────────────────────
-  # false positives are pinned in .github/config/typos.toml with an explaining comment each.
-  typos:
-    name: typos
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/typos
-        with:
-          version: "1.50.0"
-          config: .github/config/typos.toml
-
-  # ── unused dependencies ─────────────────────────────────────────────────────
-  machete:
-    name: unused deps
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: bnjbvr/cargo-machete@ac30a525c0a8d163a92d727b3ff079ee3f6ecb08 # v0.9.2
-
   # ── informational checks ────────────────────────────────────────────────────
   # non-blocking for now (continue-on-error); promote to required once their
   # baseline is understood. see the required-checks policy in ROL-124.
@@ -822,21 +969,6 @@ jobs:
             lcov.info
             coverage.json
           if-no-files-found: error
-
-  # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
-  # blocking: the whole tree is taplo-formatted, so any drift is a real diff.
-  taplo:
-    name: taplo fmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
-        with:
-          tool: taplo
-      - name: taplo fmt --check
-        run: taplo fmt --check --diff
 
   # ── MSRV: build on the pinned minimum supported rust version ─────────────────
   # agents can silently adopt newer-than-declared language features; this catches

@@ -7,8 +7,8 @@
 # whether there is anything to publish at all. both run only on a push to
 # master, and only a release push exercises the wait, so a regression would
 # show up as a release that publishes unverified or never publishes (#2025).
-# this is the test. it runs in quality.yml's `release handoff wired` job and as
-# a prek hook.
+# this is the test. it runs as a step of quality.yml's `static checks` job and
+# as a prek hook.
 #
 # bash 3.2 compatible, so it runs on a stock mac too.
 set -euo pipefail
