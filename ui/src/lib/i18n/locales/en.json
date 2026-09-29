@@ -2054,6 +2054,7 @@
       "actionFilterAria": "Filter by action",
       "targetFilterAria": "Filter by target type",
       "actorFilterAria": "Filter by actor",
+      "timeRangeAria": "Time range filter",
       "anyActor": "Any actor",
       "actorPlaceholder": "Actor user id (full UUID)…",
       "detail": "Entry detail",

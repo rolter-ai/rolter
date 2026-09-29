@@ -68,6 +68,11 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
     await expect(canvas.getByText("route.delete")).toBeVisible();
+
+    const group = canvas.getByRole("radiogroup", { name: "Time range filter" });
+    await expect(group).toBeInTheDocument();
+    const allRadio = canvas.getByRole("radio", { name: "All" });
+    await expect(allRadio).toHaveAttribute("aria-checked", "true");
   },
 };
 
