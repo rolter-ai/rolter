@@ -174,7 +174,7 @@ jobs:
   # ones after it, and a superseded run spends nothing on checks nobody will
   # read. only the verdict step runs under `always()`: in a cancelled run every
   # other step skips, and a verdict that skipped with them would leave this
-  # job — the one required check — green over nothing
+  # job, the one required check, green over nothing
   ci-ok:
     name: ci-ok
     if: always()

@@ -53,8 +53,10 @@ These three checks used to be jobs of their own, `pr-title`, `session-urls` and
 `dispatch-commit-urls`, each holding a runner for a few seconds of work and
 often queueing minutes to get one (#2025). As steps they cost no extra runner,
 and a title or body edit starts one job instead of three. The price is when
-title feedback arrives. On a push, `pr-title` now runs only after `quality` and
-`codeql` finish, about eight minutes in, rather than seconds after the push.
+title feedback arrives. On a run a commit started (`opened`, `synchronize`,
+`reopened`), `pr-title` now runs only after `quality` and `codeql` finish,
+about eight minutes in, rather than within seconds. An `edited` run skips
+both, so a title fix made after the gate is still checked within seconds.
 The action fetches the title live rather than reading it from the payload, so
 a title fixed while the gate is still running is the one that step validates.
 
