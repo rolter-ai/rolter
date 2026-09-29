@@ -2,6 +2,10 @@ name: labeler
 
 # path-based auto-labeling for PRs. maps changed files to area labels via
 # .github/labeler.yml so triage does not depend on the author remembering.
+#
+# synchronize stays in the trigger: every rule in .github/labeler.yml is a
+# changed-files match, so a push that first touches ui/ has to be able to add
+# ui-dashboard. sync-labels is off, so a push never removes a label
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
