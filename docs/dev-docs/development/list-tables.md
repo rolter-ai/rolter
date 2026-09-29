@@ -52,6 +52,16 @@ the header and the rows. It tells the header apart by type, which means the
   `common.rowActions` by default; a table whose buttons take more than one
   column passes `label` so each has its own name (Auth Sessions has
   `colRenew` and `colRevoke`).
+- **A row that opens something holds a control for it.** A `ListRow` is a
+  `row`, which takes no focus, so an `onClick` on it is a mouse shortcut and
+  nothing more: without a button inside it, Tab walks past every row (WCAG
+  2.1.1). MCP Logs is the model (#2022). Its last column is a
+  `ListActionsHeader` labelled `analytics.details`, and each row's chevron
+  button is named after the event (tool, server and time, since a tool repeats
+  down the page). The button stops propagation so the row's own click does not
+  fire a second time, and its story opens the drawer from the keyboard and
+  asserts, in `waitFor`, that focus moves into the drawer and back to the
+  button on close.
 - **Loading and empty go in a `ListStateRow`.** A skeleton's `role="status"` or
   an empty state's heading and button placed straight in the body is content no
   row owns, which a screen reader reads outside the table and axe fails as
