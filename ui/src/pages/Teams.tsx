@@ -18,7 +18,7 @@ import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-// teams from the design prototype: card per team with member count, the
+// teams: card per team with member count, the
 // team-scoped budget (when one exists), and the team admin
 export default function Teams() {
   const { t } = useTranslation();

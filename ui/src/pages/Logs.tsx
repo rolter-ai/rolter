@@ -83,7 +83,7 @@ const TH =
   "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-2.5 text-left text-xs font-medium text-muted-foreground";
 const TD = "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono text-xs";
 
-// LLM logs from the design prototype: collapsible filter rail, full-height
+// LLM logs: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
 // the raw request/response payloads. `pollMs` is only ever set by a story, so
 // a play can watch several polling intervals pass inside the test-runner's

@@ -41,7 +41,7 @@ const TARGET_BARS = [
   "var(--status-success)",
 ];
 
-// routing rules from the design prototype: one card per route with its
+// routing rules: one card per route with its
 // strategy pill, per-target weight bars, and edit/delete actions
 export default function RoutingRules() {
   const { t } = useTranslation();

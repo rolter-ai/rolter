@@ -44,8 +44,7 @@ import {
 import type * as React from "react";
 import { useTranslation } from "react-i18next";
 
-// the control-plane IA, mirrored 1:1 from the design prototype's nav
-// (cp-data.js NAV). key doubles as the route path segment: /<key>.
+// the control-plane IA. key doubles as the route path segment: /<key>.
 export interface NavDef {
   /* doubles as the route path segment (/<key>) and the catalog key for the
      sidebar label (`nav.<key>`) and screen header (`screens.<key>.*`) */

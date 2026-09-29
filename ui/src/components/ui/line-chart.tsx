@@ -29,9 +29,8 @@ interface LineChartProps {
 // the first three of the shared categorical sequence (#1245)
 const DEFAULT_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
 
-/// small dependency-free SVG line chart — ported from the design system's
-/// components/charts/LineChart.jsx, driven by the same CSS custom properties
-/// (--border-subtle, --text-secondary, --font-mono) already defined in
+/// small dependency-free SVG line chart, driven by the same CSS custom
+/// properties (--border-subtle, --text-secondary, --font-mono) already defined in
 /// ui/src/index.css so it matches the rest of the dashboard without pulling
 /// in a charting library
 export function LineChart({

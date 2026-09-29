@@ -6,9 +6,9 @@ import { useGate, type Capability } from "@/lib/can";
 import { useRefusedClick } from "@/lib/ux-react";
 import { cn } from "@/lib/utils";
 
-// shared building blocks for the control-plane screens ported from the design
-// prototype: page body padding, toolbar search, status dots, mono pills, and
-// the css-grid list table with sortable headers.
+// shared building blocks for the control-plane screens: page body padding,
+// toolbar search, status dots, mono pills, and the css-grid list table with
+// sortable headers.
 
 export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("flex flex-col gap-4 p-[22px]", className)} {...props} />;
@@ -81,7 +81,7 @@ export function Pill({
   );
 }
 
-// the bordered list-table container from the prototype: css-grid header row
+// the bordered list-table container: css-grid header row
 // over css-grid data rows, columns supplied per screen.
 //
 // the columns have a width below which they stop being readable, so the table

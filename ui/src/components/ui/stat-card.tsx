@@ -8,8 +8,7 @@ export type StatTrend = "up" | "down" | "flat";
 /** what that move means to whoever reads the tile */
 export type StatTone = "good" | "bad" | "neutral";
 
-// metric tile: label, big mono value, optional unit + delta. mirrors the
-// Rolter Design System display/StatCard.
+// metric tile: label, big mono value, optional unit + delta
 //
 // direction and meaning are two props (#1974). an error rate or a latency that
 // goes up is bad news, so the arrow cannot pick the colour on its own

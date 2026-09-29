@@ -1,5 +1,4 @@
 // tiny inline trend for tables and stat tiles — no axes.
-// ported from the Rolter Design System components/charts/Sparkline.jsx
 export interface SparklineProps extends Omit<React.SVGProps<SVGSVGElement>, "values"> {
   values: number[];
   width?: number;

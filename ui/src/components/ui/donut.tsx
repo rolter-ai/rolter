@@ -1,5 +1,4 @@
-// proportional share (provider traffic, cost by model) via SVG arcs.
-// ported from the Rolter Design System components/charts/Donut.jsx
+// proportional share (provider traffic, cost by model) via SVG arcs
 import { useTranslation } from "react-i18next";
 
 import { useFormat } from "@/lib/i18n/format";

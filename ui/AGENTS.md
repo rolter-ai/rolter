@@ -4,27 +4,25 @@ Dashboard-specific guidance, loaded when working under `ui/`. The repository-wid
 
 ## Dashboard design
 
-Before building or reshaping any dashboard screen, run the design skill:
-
-```
-/frontend-design:frontend-design rolter
-```
-
-It sets the aesthetic direction — palette, typography, layout — so a screen is a
-deliberate call for rolter rather than shadcn defaults. It composes with the
-existing rolter design system (DesignSync / the Claude Design project), which
-supplies the tokens and primitives the dashboard already ships: run the skill
-first, then build against the tokens. Never hard-code a hex or font the tokens
+The product and visual record lives at the repository root: `PRODUCT.md` (who
+the dashboard is for, the constraints) and `DESIGN.md` (the tokens and rules,
+derived from `ui/src/index.css`). Read both before building or reshaping a
+screen, and build against the tokens. Never hard-code a hex or font the tokens
 already carry.
 
-The product and visual record for design agents lives at the repository root:
-`PRODUCT.md` (who the dashboard is for, the constraints) and `DESIGN.md` (the
-tokens and rules, derived from `ui/src/index.css`). The impeccable skill loads
-both before UI work, and its detector hook checks each edit to a UI file. Review
-a screen with `/impeccable critique <screen>` and `/impeccable audit <screen>`,
+The design skill is [impeccable](https://github.com/pbakaus/impeccable),
+declared for the project in `.claude/settings.json`. It loads both files before
+UI work, and its detector hook checks each edit to a UI file. Plan a new screen
+with `/impeccable shape <screen>`, review one with `/impeccable critique <screen>`
+and `/impeccable audit <screen>`, finish it with `/impeccable polish <screen>`,
 and refresh `DESIGN.md` with `/impeccable document` when a token or primitive
 changes. Setup and triage rules are in
 `docs/dev-docs/development/impeccable.md`.
+
+The repository declares only generic, open-source skills like this one. Skills
+native to one vendor's product (Anthropic's `frontend-design` plugin, Claude
+Design and its DesignSync) stay out of the repository and its instructions;
+install them for yourself if you want them.
 
 When working on dashboard UI, consult the project MCP server
 (`rolter-storybook` in `.mcp.json`) before writing components:

@@ -2,7 +2,8 @@
 @config "../tailwind.config.js";
 
 /* ==========================================================================
-   Rolter Design System — dark-only control-plane theme.
+   rolter dashboard theme — dark-only; DESIGN.md at the repository root
+   records its tokens and rules.
    shadcn HSL contract mapped onto the design zinc ramp; raw design tokens
    (red вышивка accent, status hues, surfaces, type scale) exposed alongside.
    ========================================================================== */

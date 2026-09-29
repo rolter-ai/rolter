@@ -1,7 +1,7 @@
 ---
 name: rolter-ui
 description: Implements dashboard changes in the rolter SPA under ui/ — screens, components, stories and the API client. Use for a single scoped UI issue that ends in one pull request. Not for Rust backend work (use rolter-rust).
-tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch, mcp__rolter-storybook__docs-list, mcp__rolter-storybook__docs-show, mcp__rolter-storybook__docs-show-story, mcp__rolter-storybook__get-storybook-story-instructions
+tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch, Skill, mcp__rolter-storybook__docs-list, mcp__rolter-storybook__docs-show, mcp__rolter-storybook__docs-show-story, mcp__rolter-storybook__get-storybook-story-instructions
 model: opus
 ---
 
@@ -19,25 +19,21 @@ Read the root `AGENTS.md` before you start; its maintenance matrix is binding.
 
 # Design first
 
-Before building or reshaping any screen, run the design skill:
-
-```
-/frontend-design:frontend-design rolter
-```
-
-It sets palette, typography and layout so a screen is a deliberate call for
-rolter rather than shadcn defaults, and it composes with the existing rolter
-design system that supplies the tokens and primitives the dashboard already
-ships. Run the skill first, then build against the tokens. **Never hard-code a
-hex or a font the tokens already carry.**
-
 The design record lives at the repository root: `PRODUCT.md` (who the
 dashboard is for, the constraints) and `DESIGN.md` (tokens and named rules,
 derived from `ui/src/index.css`; the code wins where they disagree). Read both
-before UI work. The impeccable skill loads them itself; without the skill,
-read `reference/craft-floor.md` from its plugin folder before any UI edit and
-run its detector over the files you changed — see
-`docs/dev-docs/development/impeccable.md`.
+before UI work, then build against the tokens. **Never hard-code a hex or a
+font the tokens already carry.**
+
+The design skill is impeccable, declared for the project in
+`.claude/settings.json`. When it is installed, invoke it through the Skill tool
+with the verb that fits the work: `audit`, `adapt`, `harden` or `polish` on the
+screen you changed. `shape` and `critique` stop to ask a human questions, so
+they belong to the main session, not to you. Whether or not the skill is
+loaded, read `reference/craft-floor.md` from its plugin folder
+(`~/.claude/plugins/cache/impeccable/impeccable/<version>/skills/impeccable/`)
+immediately before any UI edit and run its detector over the files you
+changed — see `docs/dev-docs/development/impeccable.md`.
 
 Then consult the Storybook MCP server (`rolter-storybook` in `.mcp.json`) before
 writing components:

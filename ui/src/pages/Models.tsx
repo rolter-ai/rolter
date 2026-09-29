@@ -81,7 +81,7 @@ interface CatalogRow {
   weight: string;
 }
 
-// model catalog from the design prototype: search + origin chips over a
+// model catalog: search + origin chips over a
 // sortable grid table with modality/origin pills, the param-lock tooltip, and
 // the unified add/edit/view model sheet
 export default function Models() {
