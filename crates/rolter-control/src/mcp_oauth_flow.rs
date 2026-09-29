@@ -39,6 +39,8 @@
 use std::collections::HashSet;
 
 use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
@@ -674,6 +676,162 @@ struct ConsentCompleted {
     has_refresh_token: bool,
 }
 
+/// The dashboard route a browser lands on once the callback is over (#2166):
+/// Auth Sessions, which reads the outcome from its query string. The screen is
+/// `AuthSessions` in `ui/src/pages/McpOAuth.tsx`; the route and the parameters
+/// below are the contract between the two.
+const CONSENT_RESULT_PATH: &str = "/auth-sessions";
+
+/// Why a consent callback did not complete, as the stable `reason` a browser is
+/// redirected to the dashboard with (#2166).
+///
+/// The dashboard translates each code into its own words, so a code is part of
+/// the contract with it: never rename one, and add a translation for every new
+/// one. Nothing the authorization server said reaches the dashboard, only the
+/// family it falls in — RFC 9207 §2.4 forbids displaying an error whose issuer
+/// did not check out, and echoing an upstream description into our own page
+/// would put a third party's words on it either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsentFailure {
+    /// the authorization server answered `error=access_denied`: the user, or
+    /// its policy, declined
+    AccessDenied,
+    /// the authorization server answered with any other `error`
+    AuthorizationFailed,
+    /// no `state`, no `code`, or a state that is unknown, expired or already
+    /// redeemed — a replayed callback lands here
+    StateInvalid,
+    /// the RFC 9207 issuer check failed, so the response was discarded unread
+    IssuerMismatch,
+    /// the token endpoint refused the code or could not be reached
+    TokenExchangeFailed,
+    /// the deployment cannot finish a consent: no KEK, or no resource or
+    /// OAuth client that resolves for the server
+    NotConfigured,
+    /// anything else, a database error most likely
+    InternalError,
+}
+
+impl ConsentFailure {
+    /// The code the dashboard is sent.
+    const fn code(self) -> &'static str {
+        match self {
+            Self::AccessDenied => "access_denied",
+            Self::AuthorizationFailed => "authorization_failed",
+            Self::StateInvalid => "state_invalid",
+            Self::IssuerMismatch => "issuer_mismatch",
+            Self::TokenExchangeFailed => "token_exchange_failed",
+            Self::NotConfigured => "not_configured",
+            Self::InternalError => "internal_error",
+        }
+    }
+}
+
+/// A callback that did not complete: the family it failed in, for a browser;
+/// the error a JSON caller has always been given; and the server, once the
+/// login state has named one.
+#[derive(Debug)]
+struct CallbackFailure {
+    reason: ConsentFailure,
+    server_id: Option<Uuid>,
+    error: ApiError,
+}
+
+/// `map_err` for one step of [`complete_consent`].
+fn failed<E: Into<ApiError>>(
+    reason: ConsentFailure,
+    server_id: Option<Uuid>,
+) -> impl FnOnce(E) -> CallbackFailure {
+    move |error| CallbackFailure {
+        reason,
+        server_id,
+        error: error.into(),
+    }
+}
+
+/// Whether the request is a browser navigation — the authorization server's
+/// redirect arriving in a tab — rather than a client that reads the JSON body.
+///
+/// Every browser asks for `text/html` on a top-level navigation. `reqwest`,
+/// `curl` and `fetch` send `*/*` or nothing at all, so they keep the JSON
+/// answer this endpoint has always given. An explicit `q=0` refuses the type.
+fn prefers_html(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|range| {
+            let mut parts = range.split(';');
+            let media = parts.next().unwrap_or_default().trim();
+            let refused = parts.any(|param| {
+                param
+                    .trim()
+                    .strip_prefix("q=")
+                    .and_then(|q| q.trim().parse::<f32>().ok())
+                    .is_some_and(|q| q <= 0.0)
+            });
+            media.eq_ignore_ascii_case("text/html") && !refused
+        })
+}
+
+/// Where a browser is sent once the callback is over. Only identifiers the
+/// caller can already list go in the query string — the session and server
+/// ids, or a failure code — never an authorization code, a token, the `state`,
+/// or anything the authorization server said.
+fn consent_result_url(base: &str, outcome: &Result<ConsentCompleted, CallbackFailure>) -> String {
+    match outcome {
+        Ok(done) => format!(
+            "{base}{CONSENT_RESULT_PATH}?consent=completed&session={}&server={}",
+            done.session_id, done.server_id
+        ),
+        Err(failure) => {
+            let mut url = format!(
+                "{base}{CONSENT_RESULT_PATH}?consent=failed&reason={}",
+                failure.reason.code()
+            );
+            if let Some(server) = failure.server_id {
+                url.push_str(&format!("&server={server}"));
+            }
+            url
+        }
+    }
+}
+
+/// The OAuth redirect target.
+///
+/// A browser — the authorization server sending the user back — is answered
+/// with a `303` to the dashboard, which says what happened in its own words
+/// (#2166); it used to be left on a raw JSON body in a stray tab. Any other
+/// caller gets the JSON it always did: [`ConsentCompleted`] on success, the
+/// usual error body on a failure. The response varies on `Accept` either way.
+async fn callback(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
+    let outcome = complete_consent(&state, query).await;
+    if let Err(failure) = &outcome {
+        // a browser only learns the family, so the detail an operator needs
+        // to act on is kept here
+        tracing::info!(
+            reason = failure.reason.code(),
+            server = ?failure.server_id,
+            error = ?failure.error,
+            "mcp oauth consent callback did not complete"
+        );
+    }
+    let response = if prefers_html(&headers) {
+        Redirect::to(&consent_result_url(public_base_url(&state), &outcome)).into_response()
+    } else {
+        match outcome {
+            Ok(done) => Json(done).into_response(),
+            Err(failure) => failure.error.into_response(),
+        }
+    };
+    ([(header::VARY, "accept")], response).into_response()
+}
+
 /// Redeem the authorization code and store the grant plus its first session.
 ///
 /// The order of the checks here is itself the specification: the login state is
@@ -681,18 +839,21 @@ struct ConsentCompleted {
 /// read, because a response whose issuer does not check out may not be acted on
 /// or displayed — not its code, and not its `error`, `error_description` or
 /// `error_uri` either.
-async fn callback(
-    State(state): State<ControlState>,
-    Query(query): Query<CallbackQuery>,
-) -> ApiResult<Json<ConsentCompleted>> {
+async fn complete_consent(
+    state: &ControlState,
+    query: CallbackQuery,
+) -> Result<ConsentCompleted, CallbackFailure> {
+    use ConsentFailure::*;
     // without a state there is no recorded issuer, so nothing about this
     // response can be validated — including whether its error is really from
     // the server this flow was started against
     let Some(csrf_state) = query.state else {
-        return Err(invalid("callback requires 'state'"));
+        return Err(failed(StateInvalid, None)(invalid(
+            "callback requires 'state'",
+        )));
     };
-    let kek = kek()?;
-    let repo = McpOAuthRepo(pool(&state));
+    let kek = kek().map_err(failed(NotConfigured, None))?;
+    let repo = McpOAuthRepo(pool(state));
     let login = repo
         .consume_login(
             &kek,
@@ -700,10 +861,19 @@ async fn callback(
             Utc::now(),
             Duration::seconds(LOGIN_STATE_TTL_SECS),
         )
-        .await?
-        .ok_or_else(|| invalid("unknown, expired or already-redeemed consent state"))?;
+        .await
+        .map_err(failed(InternalError, None))?
+        .ok_or_else(|| {
+            failed(StateInvalid, None)(invalid(
+                "unknown, expired or already-redeemed consent state",
+            ))
+        })?;
+    let server_id = Some(login.server_id);
 
-    let server = McpServerRepo(pool(&state)).get(login.server_id).await?;
+    let server = McpServerRepo(pool(state))
+        .get(login.server_id)
+        .await
+        .map_err(failed(InternalError, server_id))?;
     // RFC 9207 §2.4, before the code goes anywhere near a token endpoint
     if let Err(rejection) = mcp_oauth_discovery::validate_issuer(
         login.expected_issuer.as_deref(),
@@ -711,7 +881,7 @@ async fn callback(
         query.iss.as_deref(),
     ) {
         log_audit_system(
-            &state,
+            state,
             server.org_id,
             "mcp_oauth_grant.issuer_rejected",
             "mcp_server",
@@ -726,21 +896,30 @@ async fn callback(
             }),
         )
         .await;
-        return Err(invalid(rejection.to_string()));
+        return Err(failed(IssuerMismatch, server_id)(invalid(
+            rejection.to_string(),
+        )));
     }
     if let Some(error) = query.error {
         // the authorization server's own words, but only its words: a
         // description is echoed, nothing of ours is added to it
+        let reason = if error == "access_denied" {
+            AccessDenied
+        } else {
+            AuthorizationFailed
+        };
         let detail = query
             .error_description
             .map(|d| format!(": {d}"))
             .unwrap_or_default();
-        return Err(invalid(format!(
+        return Err(failed(reason, server_id)(invalid(format!(
             "authorization server refused consent ({error}){detail}"
-        )));
+        ))));
     }
     let Some(code) = query.code else {
-        return Err(invalid("callback requires both 'code' and 'state'"));
+        return Err(failed(StateInvalid, server_id)(invalid(
+            "callback requires both 'code' and 'state'",
+        )));
     };
 
     // the resource and the token endpoint recorded when the browser left, so
@@ -751,16 +930,19 @@ async fn callback(
         Some(recorded) => ResourceUri::parse(recorded),
         None => ResourceUri::parse(&server.url),
     }
-    .map_err(|e| invalid(e.to_string()))?;
+    .map_err(|e| failed(NotConfigured, server_id)(invalid(e.to_string())))?;
     // never probes: whatever this resolves, the recorded endpoint wins. it is
     // consulted for the client id, and for the token endpoint of a login row
     // written before #1347 recorded one
-    let client = resolve_client(&state, &server, &resource, false).await?;
+    let client = resolve_client(state, &server, &resource, false)
+        .await
+        .map_err(failed(NotConfigured, server_id))?;
     let token_url = login.token_url.clone().unwrap_or(client.token_url);
     let client_id = client.client_id;
-    let secret = McpServerRepo(pool(&state))
+    let secret = McpServerRepo(pool(state))
         .client_secret(&kek, server.id)
-        .await?;
+        .await
+        .map_err(failed(InternalError, server_id))?;
 
     let form = vec![
         ("grant_type", "authorization_code".to_string()),
@@ -769,15 +951,16 @@ async fn callback(
         ("client_id", client_id),
         ("code_verifier", login.code_verifier.clone()),
     ];
-    let tokens = post_token(&state, &token_url, form, secret.as_deref(), &resource)
+    let tokens = post_token(state, &token_url, form, secret.as_deref(), &resource)
         .await
-        .map_err(|e| e.into_api())?;
+        .map_err(|e| failed(TokenExchangeFailed, server_id)(e.into_api()))?;
 
     // what the server actually granted, which may be less than was asked for
     let granted = tokens.granted_scopes(&login.scopes);
     let grant = repo
         .upsert_grant(server.id, login.user_id, &granted)
-        .await?;
+        .await
+        .map_err(failed(InternalError, server_id))?;
     let now = Utc::now();
     let session = repo
         .store_session(
@@ -791,9 +974,10 @@ async fn callback(
                 refresh_expires_at: tokens.refresh_expires_at(now),
             },
         )
-        .await?;
+        .await
+        .map_err(failed(InternalError, server_id))?;
     log_audit_system(
-        &state,
+        state,
         server.org_id,
         "mcp_oauth_grant.consent",
         "mcp_oauth_grant",
@@ -806,14 +990,14 @@ async fn callback(
         }),
     )
     .await;
-    Ok(Json(ConsentCompleted {
+    Ok(ConsentCompleted {
         grant_id: grant.id,
         session_id: session.id,
         server_id: server.id,
         scopes: session.scopes.clone(),
         expires_at: session.expires_at,
         has_refresh_token: session.has_refresh_token,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +1598,116 @@ mod tests {
         assert!(!seals_client_secret(Some("")));
         // the only shape that seals
         assert!(seals_client_secret(Some("s3cret")));
+    }
+
+    fn accepting(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, value.parse().expect("header value"));
+        headers
+    }
+
+    /// #2166: the authorization server's redirect arrives as a browser
+    /// navigation and is sent to the dashboard; a client reading JSON is not.
+    #[test]
+    fn only_a_browser_navigation_is_redirected() {
+        for browser in [
+            // chromium and firefox, as they navigate
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,\
+             */*;q=0.8",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "TEXT/HTML",
+        ] {
+            assert!(prefers_html(&accepting(browser)), "{browser}");
+        }
+        for client in [
+            "*/*",
+            "application/json",
+            "application/json, text/plain, */*",
+            "text/html;q=0, application/json",
+        ] {
+            assert!(!prefers_html(&accepting(client)), "{client}");
+        }
+        // no header at all is `reqwest` or `curl`, and they keep the json
+        assert!(!prefers_html(&HeaderMap::new()));
+    }
+
+    fn done() -> ConsentCompleted {
+        ConsentCompleted {
+            grant_id: Uuid::from_u128(1),
+            session_id: Uuid::from_u128(2),
+            server_id: Uuid::from_u128(3),
+            scopes: s(&["tools:read"]),
+            expires_at: Utc::now(),
+            has_refresh_token: true,
+        }
+    }
+
+    #[test]
+    fn a_completed_consent_lands_on_auth_sessions_with_its_ids() {
+        assert_eq!(
+            consent_result_url("https://rolter.example.com", &Ok(done())),
+            "https://rolter.example.com/auth-sessions?consent=completed\
+             &session=00000000-0000-0000-0000-000000000002\
+             &server=00000000-0000-0000-0000-000000000003"
+        );
+    }
+
+    /// A failure names its family and, once the login state resolved one, the
+    /// server; the upstream's own words never reach the url.
+    #[test]
+    fn a_failed_consent_lands_with_its_reason_and_nothing_upstream_said() {
+        let refused = Err(failed(
+            ConsentFailure::AccessDenied,
+            Some(Uuid::from_u128(3)),
+        )(invalid(
+            "authorization server refused consent (access_denied): go-here-instead",
+        )));
+        let url = consent_result_url("https://rolter.example.com", &refused);
+        assert_eq!(
+            url,
+            "https://rolter.example.com/auth-sessions?consent=failed&reason=access_denied\
+             &server=00000000-0000-0000-0000-000000000003"
+        );
+        assert!(!url.contains("go-here-instead"));
+
+        // before the state resolves there is no server to name
+        let replayed = Err(failed(ConsentFailure::StateInvalid, None)(invalid(
+            "unknown, expired or already-redeemed consent state",
+        )));
+        assert_eq!(
+            consent_result_url("https://rolter.example.com", &replayed),
+            "https://rolter.example.com/auth-sessions?consent=failed&reason=state_invalid"
+        );
+    }
+
+    /// The dashboard translates each code, so they are published values:
+    /// renaming one strands its translation. `ui/src/lib/mcp-consent.test.ts`
+    /// holds the dashboard's list to this one.
+    #[test]
+    fn the_failure_codes_are_stable() {
+        use ConsentFailure::*;
+        let codes = [
+            AccessDenied,
+            AuthorizationFailed,
+            StateInvalid,
+            IssuerMismatch,
+            TokenExchangeFailed,
+            NotConfigured,
+            InternalError,
+        ]
+        .map(ConsentFailure::code);
+        assert_eq!(
+            codes,
+            [
+                "access_denied",
+                "authorization_failed",
+                "state_invalid",
+                "issuer_mismatch",
+                "token_exchange_failed",
+                "not_configured",
+                "internal_error",
+            ]
+        );
     }
 
     fn s(items: &[&str]) -> Vec<String> {

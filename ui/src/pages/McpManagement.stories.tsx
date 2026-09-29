@@ -26,9 +26,13 @@ import { Toaster } from "@/components/ui/toaster";
 import type {
   McpGatewaySettingsRow,
   McpLibraryItem,
+  McpOAuthGrantRow,
+  McpOAuthSessionRow,
   McpServerRow,
   McpToolGroupRow,
 } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
+import { CONSENT_CHANNEL, type ConsentAnnouncement } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -226,13 +230,25 @@ const urlOf = (input: RequestInfo | URL) =>
 function routed(
   over: Partial<
     Record<
-      "servers" | "library" | "groups" | "settings" | "oauthClient" | "authorize" | "auth",
+      | "servers"
+      | "library"
+      | "groups"
+      | "settings"
+      | "oauthClient"
+      | "authorize"
+      | "auth"
+      | "grants"
+      | "sessions",
       FetchStub
     >
   > = {},
 ): FetchStub {
   return async (input, init) => {
     const url = urlOf(input);
+    // the catalog reads both to mark the servers the caller is connected to
+    // (#2166); nobody has consented to anything unless a story says so
+    if (url.includes("/mcp/grants")) return over.grants?.(input, init) ?? json([]);
+    if (url.includes("/mcp/sessions")) return over.sessions?.(input, init) ?? json([]);
     if (url.includes("/mcp/library")) return over.library?.(input, init) ?? json(LIBRARY);
     if (url.includes("/mcp/tool-groups")) return over.groups?.(input, init) ?? json(GROUPS);
     if (url.includes("/mcp/settings")) return over.settings?.(input, init) ?? json(SETTINGS);
@@ -564,10 +580,106 @@ export const CatalogConnectStartsConsent: Story = {
       // the toast fades in, so it is momentarily transparent: waitFor rather
       // than a bare assertion, which would read opacity 0 on the first frame
       await waitFor(() => expect(canvas.getByText("Consent started for Linear")).toBeVisible());
-      await expect(canvas.getByText(/appears on Auth Sessions/)).toBeVisible();
+      await expect(canvas.getByText(/this card shows Connected/)).toBeVisible();
     } finally {
       window.open = original;
     }
+  },
+};
+
+// the consent finishes in another tab: the one the authorization server sends
+// the user back to, which lands on Auth Sessions and announces the new session
+// (#2166). the card that started it has to say so without a reload, and only
+// for the account that consented
+const ME = { id: "user-ada", email: "ada@acme.dev", is_superadmin: false };
+const LINEAR_GRANT: McpOAuthGrantRow = {
+  id: "grant-linear",
+  server_id: CONNECTABLE.id,
+  user_id: ME.id,
+  scopes: ["read"],
+  granted_at: "2026-09-30T10:00:00Z",
+  revoked_at: null,
+  revoked_by: null,
+  active: true,
+};
+const LINEAR_SESSION: McpOAuthSessionRow = {
+  id: "sess-linear",
+  grant_id: LINEAR_GRANT.id,
+  scopes: ["read"],
+  expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+  refresh_expires_at: null,
+  revoked_at: null,
+  created_at: "2026-09-30T10:00:00Z",
+  last_used_at: null,
+  has_refresh_token: true,
+};
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedIn({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", ME.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(ME));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+let consented = false;
+const consents = routed({
+  servers: async () => json([CONNECTABLE, SERVERS[0]]),
+  // a colleague's consent to GitHub, which an admin's listing carries too:
+  // it must not mark the card for this account
+  grants: async () =>
+    json([
+      { ...LINEAR_GRANT, id: "grant-bo", server_id: SERVERS[0].id, user_id: "user-bo" },
+      ...(consented ? [LINEAR_GRANT] : []),
+    ]),
+  sessions: async () =>
+    json([
+      { ...LINEAR_SESSION, id: "sess-bo", grant_id: "grant-bo" },
+      ...(consented ? [LINEAR_SESSION] : []),
+    ]),
+});
+export const CatalogReflectsANewSession: Story = {
+  render: () => {
+    consented = false;
+    return (
+      <SignedIn>
+        <Harness fetchStub={consents}>
+          <McpCatalog />
+        </Harness>
+      </SignedIn>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = (name: string) => {
+      const article = canvas.getByRole("heading", { name }).closest("article");
+      if (!article) throw new Error(`no card for ${name}`);
+      return within(article);
+    };
+    await canvas.findByRole("heading", { name: "Linear" });
+    await expect(card("Linear").queryByText("Connected")).toBeNull();
+
+    // what Auth Sessions posts in the other tab once the consent lands
+    consented = true;
+    const other = new BroadcastChannel(CONSENT_CHANNEL);
+    const message: ConsentAnnouncement = {
+      kind: "mcp-consent-completed",
+      session: LINEAR_SESSION.id,
+      server: CONNECTABLE.id,
+    };
+    other.postMessage(message);
+    other.close();
+
+    await waitFor(() => expect(card("Linear").getByText("Connected")).toBeVisible());
+    await expect(card("GitHub").queryByText("Connected")).toBeNull();
   },
 };
 

@@ -45,9 +45,11 @@ import {
   createMcpToolGroup,
   deleteMcpServer,
   deleteMcpToolGroup,
+  fetchMcpGrants,
   fetchMcpLibrary,
   fetchMcpOAuthClient,
   fetchMcpServers,
+  fetchMcpSessions,
   fetchMcpSettings,
   fetchMcpToolGroups,
   MCP_AUTH_KINDS,
@@ -70,7 +72,9 @@ import {
   type McpToolRef,
   type McpTransportOverridesPatch,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
+import { connectedServers, useConsentAnnouncements } from "@/lib/mcp-consent";
 import {
   authDraft,
   authDraftValid,
@@ -557,6 +561,34 @@ export function McpCatalog() {
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
   useErrorState(!!query.error, "mcp-servers");
+
+  // which servers the signed-in account is connected to (#2166). both reads
+  // are best-effort: a caller who may not list them sees the cards without
+  // the mark rather than an error, since the registry is what this screen is
+  const auth = useOptionalAuth();
+  const grants = useQuery({
+    queryKey: ["mcp-grants", orgId],
+    queryFn: () => fetchMcpGrants(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const sessions = useQuery({
+    queryKey: ["mcp-sessions", orgId],
+    queryFn: () => fetchMcpSessions(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const connected = React.useMemo(
+    () => connectedServers(grants.data, sessions.data, auth?.user?.id, Date.now()),
+    [grants.data, sessions.data, auth?.user?.id],
+  );
+  // Connect finishes in the tab the authorization server sends the user back
+  // to, never in this one. that tab announces the new session, and the cards
+  // re-read who is connected rather than waiting for a reload
+  useConsentAnnouncements(() => {
+    void client.invalidateQueries({ queryKey: ["mcp-grants", orgId] });
+    void client.invalidateQueries({ queryKey: ["mcp-sessions", orgId] });
+  });
   const [editing, setEditing] = React.useState<McpServerRow | null | undefined>(undefined);
   const [deleting, setDeleting] = React.useState<McpServerRow | null>(null);
   // the OAuth client lives behind its own endpoint, keyed by server id, so it
@@ -680,6 +712,11 @@ export function McpCatalog() {
                     <Badge tone={server.source === "library" ? "accent" : "neutral"}>
                       {server.source}
                     </Badge>
+                    {connected.has(server.id) && (
+                      <Badge tone="success" dot>
+                        {t("pages.mcpCatalog.connect.connected")}
+                      </Badge>
+                    )}
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
                     {server.url}

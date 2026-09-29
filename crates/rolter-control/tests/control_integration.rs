@@ -9576,6 +9576,248 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
     assert_eq!(legacy.status(), 200, "{}", legacy.text().await.unwrap());
 }
 
+/// #2166: the authorization server sends the user's browser back to the
+/// callback, and a browser is redirected to the dashboard rather than left on
+/// a JSON body. Every outcome lands on Auth Sessions with non-secret
+/// identifiers only — the session and server ids, or a failure code — and a
+/// client that does not ask for HTML still gets the JSON the other tests read.
+#[tokio::test]
+async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::new();
+    // what a browser does, minus following the redirect: the Location is the
+    // assertion
+    let browser = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (authz, stub) = stub_authz::serve_stub().await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "LandOrg", "slug": "land-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(b"correct horse battery staple")
+        .unwrap()
+        .to_string();
+    let user_id: uuid::Uuid =
+        sqlx::query_scalar("insert into users (email, password_hash) values ($1, $2) returning id")
+            .bind("lin@example.com")
+            .bind(&hash)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'member')")
+        .bind(user_id)
+        .bind(uuid::Uuid::parse_str(&org_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let login: Value = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "lin@example.com", "password": "correct horse battery staple"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = login["token"].as_str().unwrap().to_string();
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Land", "slug": "land", "url": "https://mcp.example.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let server_id = server["id"].as_str().unwrap().to_string();
+    let registered = client
+        .put(format!(
+            "{base}/api/v1/mcp-servers/{server_id}/oauth-client"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "authorize_url": format!("{authz}/authorize"),
+            "token_url": format!("{authz}/token"),
+            "client_id": "rolter",
+            "default_scopes": ["tools:read"],
+            "discovery": "manual"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registered.status(), 200);
+
+    // a fresh login state per case: each callback consumes the one it names
+    let start = || async {
+        let started: Value = client
+            .post(format!(
+                "{base}/api/v1/mcp-servers/{server_id}/oauth/authorize"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        url_param(started["authorization_url"].as_str().unwrap(), "state")
+    };
+    // the Accept header a browser navigates with
+    let navigate = |query: String| {
+        let request = browser
+            .get(format!("{base}/auth/mcp/callback?{query}"))
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            );
+        let landing = format!("{base}/auth-sessions?consent=");
+        async move {
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), 303, "a browser is sent onwards");
+            let location = response.headers()[reqwest::header::LOCATION]
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                location.starts_with(&landing),
+                "a browser lands on Auth Sessions: {location}"
+            );
+            location
+        }
+    };
+
+    // -- success ------------------------------------------------------------
+    let state = start().await;
+    stub.answer(
+        200,
+        json!({
+            "access_token": "access-land",
+            "refresh_token": "refresh-land",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        }),
+    );
+    let landed = navigate(format!("code=code-land&state={state}")).await;
+    let sessions: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/sessions"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = sessions[0]["id"].as_str().unwrap();
+    assert_eq!(
+        landed,
+        format!("{base}/auth-sessions?consent=completed&session={session_id}&server={server_id}")
+    );
+    // names the kind of value, never the value, so a failure cannot print one
+    for (what, secret) in [
+        ("authorization code", "code-land"),
+        ("access token", "access-land"),
+        ("refresh token", "refresh-land"),
+        ("state", state.as_str()),
+    ] {
+        assert!(
+            !landed.contains(secret),
+            "the {what} leaked into the landing url"
+        );
+    }
+
+    // -- a replay, and a callback with no state at all ----------------------
+    let replayed = navigate(format!("code=code-land&state={state}")).await;
+    assert_eq!(
+        replayed,
+        format!("{base}/auth-sessions?consent=failed&reason=state_invalid"),
+        "before the state resolves there is no server to name"
+    );
+    let stateless = navigate("code=code-land".to_string()).await;
+    assert!(stateless.ends_with("consent=failed&reason=state_invalid"));
+
+    // -- the authorization server says no -----------------------------------
+    let denied = navigate(format!(
+        "error=access_denied&error_description=go-here-instead&state={}",
+        start().await
+    ))
+    .await;
+    assert_eq!(
+        denied,
+        format!("{base}/auth-sessions?consent=failed&reason=access_denied&server={server_id}")
+    );
+    assert!(
+        !denied.contains("go-here-instead"),
+        "the upstream's words stay upstream: {denied}"
+    );
+    let broken = navigate(format!("error=server_error&state={}", start().await)).await;
+    assert!(broken.contains("reason=authorization_failed&server="));
+
+    // -- an issuer nothing was pinned to check against ----------------------
+    let calls = stub.calls();
+    let mismatched = navigate(format!(
+        "code=code-iss&state={}&iss=https%3A%2F%2Fevil.example.com",
+        start().await
+    ))
+    .await;
+    assert!(mismatched.contains("reason=issuer_mismatch&server="));
+    assert_eq!(
+        stub.calls(),
+        calls,
+        "the code never reached a token endpoint"
+    );
+
+    // -- the token endpoint refuses the code --------------------------------
+    stub.answer(400, json!({"error": "invalid_grant"}));
+    let exchange = navigate(format!("code=code-bad&state={}", start().await)).await;
+    assert!(exchange.contains("reason=token_exchange_failed&server="));
+
+    // -- and a client that does not ask for html keeps the json -------------
+    let state = start().await;
+    let json_refusal = browser
+        .get(format!(
+            "{base}/auth/mcp/callback?error=access_denied&state={state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_refusal.status(), 400);
+    assert_eq!(json_refusal.headers()[reqwest::header::VARY], "accept");
+    let body: Value = json_refusal.json().await.unwrap();
+    assert!(body["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("access_denied")));
+
+    // exactly one consent happened in all of that
+    let grants: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/mcp/grants"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants.as_array().map(Vec::len), Some(1), "{grants}");
+}
+
 /// The `oauth_discovered_*` cache of one server, plus whether
 /// `oauth_discovered_at` is set — read as a boolean so the tuple needs no
 /// timestamp type.

@@ -106,10 +106,12 @@ presents to the server's authorization server. The dashboard does this on
   </Step>
   <Step title="Connect">
     **Connect** on the server card starts consent and opens the authorization
-    server in a new tab. Finish the approval there; the resulting session shows
-    up on **Auth Sessions**. The action stays disabled until a client ID is
-    registered — and, for a server set to manual discovery, until both
-    endpoints are too — because until then there is nowhere to send the user.
+    server in a new tab. Finish the approval there. That tab then lands on
+    **Auth Sessions**, which says whether the connection worked, and the card
+    you started from shows **Connected** without a reload. The action stays
+    disabled until a client ID is registered — and, for a server set to manual
+    discovery, until both endpoints are too — because until then there is
+    nowhere to send the user.
   </Step>
 </Steps>
 
@@ -118,6 +120,33 @@ presents to the server's authorization server. The dashboard does this on
   with no user identity is refused, since the grant would belong to nobody and
   no one could see or revoke it.
 </Note>
+
+## Where consent ends
+
+When the authorization server sends you back, the tab lands on **Auth
+Sessions**. On success it names the server and highlights the new session. On a
+failure it says what went wrong in the dashboard's own words and links back to
+the MCP Catalog. The authorization server's own error text is never shown: a
+response whose issuer did not check out may not be displayed at all, and the
+rest is summarised rather than echoed onto the page.
+
+| Reason                  | What happened                                                                      | What to do                                          |
+| ----------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `access_denied`         | The authorization server says consent was declined                                 | Connect again and approve the requested access      |
+| `authorization_failed`  | It answered with some other error                                                  | Check the server's OAuth client, then connect again |
+| `state_invalid`         | The approval link expired, was already used, or arrived incomplete                 | Connect again to get a new link                     |
+| `issuer_mismatch`       | The response did not come from the authorization server Rolter sent you to         | Pin or correct the issuer, then connect again       |
+| `token_exchange_failed` | Consent was given, but the token endpoint refused the code or could not be reached | Check the client ID and secret                      |
+| `not_configured`        | The control plane has no `ROLTER_KEK`, or no OAuth client resolves for the server  | Ask an operator to fix the deployment               |
+| `internal_error`        | The control plane failed while storing the consent                                 | Try again; the control plane log names the cause    |
+
+The control plane logs every failure with the full detail and the server it
+concerns, so the reason on screen is a starting point rather than all there is.
+
+**Connected** on a catalog card means you hold a live session on that server:
+an active grant of yours with a session under it that is neither revoked nor
+expired. An org admin sees the mark for their own sessions only, even though
+Auth Sessions lists everyone's.
 
 The same registration over the API, for a server whose authorization server is
 discoverable:
@@ -240,9 +269,10 @@ what you see when something goes wrong:
 Connect calls `POST /api/v1/mcp-servers/{id}/oauth/authorize`, which answers
 with the authorization URL rather than a redirect — the caller is a `fetch`
 from the dashboard, which cannot usefully follow a cross-origin `302`. After
-the user approves, the browser returns to `/auth/mcp/callback` and Rolter
-writes the grant and its first session together. A replayed callback finds
-nothing to consume and fails.
+the user approves, the browser returns to `/auth/mcp/callback`, Rolter writes
+the grant and its first session together, and the browser is sent on to
+**Auth Sessions** (see [Where consent ends](#where-consent-ends)). A replayed
+callback finds nothing to consume and fails.
 
 ## Sessions renew themselves
 
