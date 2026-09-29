@@ -516,6 +516,44 @@ line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
 
+### The Rust cache is saved from `master` only
+
+Every `Swatinem/rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml`
+sets `save-if: ${{ github.ref == 'refs/heads/master' }}`. A pull request run
+restores the cache its job last saved on `master` and writes nothing back, and
+so do a release-PR dispatch, a merge-queue run and a `workflow_dispatch` on a
+branch. Only the `master` push run and the nightly `extended.yml` run, which
+GitHub starts on `master`, save.
+
+A cache belongs to the ref that saved it. One saved on `master` is visible to
+every pull request; one saved on `refs/pull/<n>/merge` is visible to that pull
+request alone. Every PR and the release-PR branch used to save its own copy of
+each Rust job's target directory, roughly 0.1-0.9 GB apiece. On 09-29 the cache
+held 40 entries and about 14.4 GB against the repository's 10 GB limit, two
+thirds of it on PR and release-PR refs, and GitHub evicts the least recently
+used entries until the total fits, `master`'s included
+([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)).
+
+The cost lands on the PR that changes `Cargo.lock` or the toolchain. A lockfile
+change misses `master`'s exact key, so rust-cache restores the entry saved for
+the old lockfile and the job rebuilds what changed, on every push until the PR
+merges. A toolchain change alters the key's environment hash and starts cold.
+The first `master` push after the merge saves the new cache. The
+`nextest / doctests` job carries a 30-minute timeout with that in mind: warm
+runs take 6-10 minutes, so a cold build fits inside the limit, and a hung test
+no longer holds the gate for GitHub's 360-minute default.
+
+A new `rust-cache` step takes the same `save-if` line. Two workflows go without
+it. `engine-integration.yml` runs only on path-filtered pull requests and on
+dispatch, never on a `master` push, so a master-only save would leave it cold
+forever. `gemini-interactions-smoke.yml` runs on its weekly schedule, which
+already runs on `master`. To see what the cache holds:
+
+```bash
+gh api repos/rolter-ai/rolter/actions/cache/usage
+gh cache list -R rolter-ai/rolter --sort size_in_bytes --limit 50
+```
+
 ### The rustdoc gate is the one CI check nothing local reproduces
 
 `cargo doc (warnings = errors)` is the gate that most often turns a

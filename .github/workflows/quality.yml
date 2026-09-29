@@ -28,6 +28,14 @@ on:
 permissions:
   contents: read
 
+# rust caches: every Swatinem/rust-cache step saves only on refs/heads/master
+# (`save-if`). pull requests, release-pr dispatches and merge-queue runs restore
+# master's caches and write none. every pr ref and the release-pr branch used to
+# save its own copy of each job's target dir, which only that ref could restore,
+# and those copies pushed the actions cache past its 10 GB limit and evicted
+# master's (ADR-0034). the same rule holds in ci.yml and extended.yml;
+# engine-integration.yml is exempt because it never runs on a master push
+
 # faster linking on the linux runner: ./.github/actions/wild-linker restores the
 # wild binary from the actions cache and writes ~/.cargo/config.toml to use it
 # for *-unknown-linux-{gnu,musl}. only the jobs that actually link install it —
@@ -47,6 +55,8 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy (default features)
@@ -64,6 +74,11 @@ jobs:
   test:
     name: nextest / doctests
     runs-on: ubuntu-latest
+    # warm runs take 6-10 min. the limit leaves room for a cold build after a
+    # Cargo.lock bump, which pull requests no longer cache for each other, while
+    # a hung test fails the gate in half an hour instead of GitHub's 360-minute
+    # default
+    timeout-minutes: 30
     # a real postgres so the store + control-plane integration tests actually
     # run (they self-skip when ROLTER_TEST_DATABASE_URL is unset) rather than
     # passing as silent no-ops
@@ -123,6 +138,8 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: nextest
@@ -152,6 +169,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-hack
@@ -179,6 +198,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: cargo doc
         run: cargo doc --workspace --no-deps --all-features
 
@@ -804,6 +825,8 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: build gateway
         run: cargo build -p rolter-gateway
       - name: boot + probe
@@ -883,6 +906,8 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: cargo package (verifies each crate in isolation)
         run: cargo package --workspace --locked
@@ -954,6 +979,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-llvm-cov
@@ -1001,6 +1027,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-semver-checks
