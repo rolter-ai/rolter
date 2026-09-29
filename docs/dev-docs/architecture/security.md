@@ -226,6 +226,30 @@ to the co-hosted control plane. The bind is a flag on that command, not an
 image-wide variable, so a `rolter-gateway` or `rolter-control` run from the
 image keeps its own default.
 
+## What the open config view strips (#1938)
+
+`GET /api/v1/config` answers without a session, for the dashboard's config
+screen. It serializes the same `GatewayConfig` the store loads for the gateway's
+`/internal/snapshot`, and on a Postgres store holding `ROLTER_KEK` that load has
+already unsealed every sealed secret. So `redact_config_for_dashboard`
+(`crates/rolter-control/src/lib.rs`) removes each secret by name before the
+document leaves the control plane:
+
+| What                                          | Treatment                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------- |
+| provider and provider-default keys            | `api_key` and every `api_keys[].key` blanked                                |
+| provider egress proxies                       | `user:password@` stripped from the URL                                      |
+| static virtual keys                           | the key replaced with `[redacted]`                                          |
+| database virtual-key records                  | the list cleared: each names its org, team, project and creator             |
+| MCP OAuth sessions                            | the list cleared: they carry per-user access tokens                         |
+| static MCP servers                            | the list cleared: each carries its bearer or header credential, URL and org |
+| the `tenancy` of providers, routes and groups | cleared (#1844)                                                             |
+| the ClickHouse URL                            | `user:password@` stripped                                                   |
+
+`dashboard_config_carries_no_secrets` seeds one of each and fails if any
+survives, so a new secret-bearing field belongs in that test as well as in the
+function. Whether the redacted topology may stay public at all is #1840.
+
 ## Who reads the request log (#1820)
 
 `/api/v1/analytics/*` (the request log, usage, spend and attribution rollups)

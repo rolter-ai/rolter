@@ -12495,6 +12495,37 @@ async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
         "the credential must not be recoverable from the stored bytes"
     );
 
+    // the store unseals it for the gateway's snapshot, and the same load feeds
+    // the anonymous config view, which must not pass it on (#1938)
+    let snapshot = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        snapshot.contains(TOKEN),
+        "the gateway needs the unsealed credential to reach the server"
+    );
+    let config_view = client
+        .get(format!("{base}/api/v1/config"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config_view.contains(TOKEN),
+        "the config view handed out a static mcp credential"
+    );
+    assert!(
+        !config_view.contains("mcp.example.com"),
+        "the config view lists a tenant's mcp servers"
+    );
+
     // renaming nothing but the kind keeps the stored credential: an operator
     // cannot read it back, so requiring a re-type would make it unchangeable
     let to_header: Value = client
