@@ -1014,6 +1014,31 @@ at story level: `atMobile` (375×812), `atTablet` (768×1024) and `atShort`
 reflow at). A story that also needs the Russian catalog merges the two globals:
 `globals: { ...atMobile.globals, locale: "ru" }`.
 
+#### Stories are drawn in the fonts the app ships (#2051)
+
+Geist and Geist Mono are vendored through fontsource, and the one place that
+imports the packages is `ui/src/lib/fonts.ts`. Both `ui/src/main.tsx` and
+`.storybook/preview.ts` import that module. Until #2051 the preview imported
+only `index.css`, so every story fell through to the browser's fallbacks: a
+Courier-like mono, and in `ru` a serif for the "мс" unit in mono cells, because
+that fallback has no Cyrillic. Overflow and truncation stories measured those
+metrics, and screen reviews judged type the product never ships.
+
+The faces are `font-display: swap`, so a face is fetched only when text first
+asks for it and the fallback is drawn until it arrives. The preview's
+`beforeAll` therefore loads every face of `--font-sans` and `--font-mono`
+before the first story renders, and a story that measures text sees Geist's
+metrics from its first paint.
+
+Two checks keep it that way. `Behaviour/Fonts` (`ui/src/lib/fonts.stories.tsx`)
+asserts in `en` and `ru` that each character of a sans sentence and a mono
+latency has a loaded Geist face covering it and is measured differently from
+the fallback, which fails when the preview loses the import. `ui/src/lib/fonts.test.ts`
+fails when either entry stops importing `lib/fonts.ts`, when any other file
+imports a fontsource package directly, or when a package's family is not the
+first one the tokens name. A new face goes into `lib/fonts.ts`, never into
+`main.tsx`.
+
 #### How long a story waits (#1279)
 
 `.storybook/preview.ts` calls `configure({ asyncUtilTimeout: 5000 })`, which
