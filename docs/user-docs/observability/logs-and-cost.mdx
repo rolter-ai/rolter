@@ -240,6 +240,24 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
   Percent-encode the `+` of a positive offset as `%2B`. A query string decodes a bare `+` to a space, so `since=2026-07-01T00:00:00+02:00` arrives as `2026-07-01T00:00:00 02:00` and is refused, with a message that says so.
 </Warning>
 
+## Filtering LLM Logs
+
+**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
+
+- **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
+- **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
+- **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
+
+**Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
+
+The filters are part of the page's address, so a reload keeps them and a copied link opens the same view. Whoever opens it still sees only the rows their own role allows. The parameters use the API's names:
+
+```text
+/logs?status=error&model=gpt-4o&business_unit=<unit-id>
+```
+
+A link can outlive what it names. A status value the API does not know is ignored, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address.
+
 ## Paging the invocation log
 
 `GET /api/v1/analytics/invocations` returns one page of requests plus the cursor that resumes it:
