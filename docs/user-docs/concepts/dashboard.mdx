@@ -140,11 +140,15 @@ Every role sees the same pill. It reports the gateway the control plane forwards
 
 Open the target count to see each target: its provider, the model id sent upstream, and its weight. Only `weighted`, `pipeline` and `adaptive` read weights, so only those routes show each weight as a share of traffic. Under any other strategy the list says the weights do not split traffic. Where the health rollups are available (they need ClickHouse), each target also shows its uptime over the last 7 days against a 99% SLA, the row names how many targets are below it, and a target nothing has observed yet says **no health data**.
 
+**Models → Routing Rules** shows each route as a card and follows the same rule: a share and a bar per target only under `weighted`, `pipeline` and `adaptive`, and a note that the weights do not split traffic under any other strategy. The cards do not show target health; Model Catalog and the Health screen do.
+
 **+ Add model** takes the name clients will send, the strategy, and one or more targets. **+ Add route** on Routing Rules opens the same sheet, so a route is created the same way from either screen. Editing a model shows every target and saves only the lines you changed. The strategy is fixed once the model exists, for now ([#2208](https://github.com/rolter-ai/rolter/issues/2208)).
 
 ## When part of a screen fails to load
 
 Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.
+
+Routing Rules reads each route's targets separately as well. A card whose targets are still on the way shows placeholders where they will be. A card whose read failed shows the reason and a **Try again** button in their place. Neither says **No targets yet** or counts zero targets. The route count at the top of the screen appears once the route list has answered, so a slow or refused load is never reported as an empty project.
 
 Reading a route's complexity policy takes the same permission as reading the route itself, so a read-only account sees every policy it can see routes for; changing one still takes an admin. An account that may not read the route at all is told it does not have access rather than being shown the route as unconfigured.
 

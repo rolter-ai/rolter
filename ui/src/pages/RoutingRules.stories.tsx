@@ -8,6 +8,8 @@ import {
   cancelConfirmation,
   confirmDestructive,
   expectRefused,
+  expectInStatusRegion,
+  expectLoadError,
   expectSkeleton,
   expectToast,
   json,
@@ -93,6 +95,37 @@ const TARGETS: Record<string, RouteTargetRow[]> = {
     },
   ],
   "route-2": [],
+  // the same 80/20 weights as route-1, on a strategy that never reads them
+  "route-3": [
+    {
+      id: "rt-3",
+      route_id: "route-3",
+      provider_id: "prov-1",
+      upstream_model: "qwen-coder-32b",
+      weight: 80,
+      created_at: "2026-05-03T00:00:00Z",
+    },
+    {
+      id: "rt-4",
+      route_id: "route-3",
+      provider_id: "prov-2",
+      upstream_model: null,
+      weight: 20,
+      created_at: "2026-05-03T00:00:00Z",
+    },
+  ],
+};
+
+const CACHE_AWARE: RouteRow = {
+  id: "route-3",
+  project_id: "project-1",
+  model: "qwen-coder",
+  strategy: "cache_aware",
+  enabled: true,
+  params: {},
+  param_policy: {},
+  advanced: {},
+  created_at: "2026-05-03T00:00:00Z",
 };
 
 const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
@@ -128,9 +161,15 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    // weights are rendered as shares of the route's total, so 80/100 is 80%
-    await waitFor(() => expect(canvas.getByText("80%")).toBeInTheDocument());
+    // gpt-4o is `weighted`, so its weights are shares of the route's total and
+    // 80/100 is 80%
+    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(targets.getByText("80%")).toBeInTheDocument();
+    await expect(targets.getByText("20%")).toBeInTheDocument();
+    await expect(targets.getAllByTestId("target-share")).toHaveLength(2);
     await expect(canvas.getByText("disabled")).toBeInTheDocument();
+    // the count arrives with the list it counts
+    await expect(canvas.getByText(/^2 routes/)).toBeInTheDocument();
   },
 };
 
@@ -191,6 +230,9 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    // no count before there is anything to count: "0 routes" here stated an
+    // empty project while the list was still out (#2133)
+    await expect(within(canvasElement).queryByText(/routes? ·/)).toBeNull();
   },
 };
 
@@ -213,6 +255,106 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+    // a refusal is not an empty project: no zero count, no "No routes yet"
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(/routes? ·/)).toBeNull();
+    await expect(canvas.queryByText(/No routes yet/)).toBeNull();
+  },
+};
+
+// --------------------------------------------------- per-route target reads (#2133)
+
+/**
+ * A target read still in flight holds a skeleton in its card. Folded into an
+ * empty list it read "No targets yet." and "0 targets" about targets nobody
+ * had seen; claude-sonnet really has none, so that copy appears exactly once.
+ */
+export const TargetsLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (String(input).includes("/routes/route-1/targets"))
+          return new Promise<Response>(() => {});
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expectInStatusRegion(canvasElement, "route-targets-loading");
+    await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
+    await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
+    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
+  },
+};
+
+// the first read of gpt-4o's targets fails and the retry succeeds; reset on
+// every render so a remount starts from the failure again
+let targetsDown = true;
+const targetsFail = scoped(async (input, init) => {
+  if (targetsDown && String(input).includes("/routes/route-1/targets")) {
+    return json({ error: { message: "route_targets: connection refused" } }, 500);
+  }
+  return answer(ROUTES)(input, init);
+});
+
+/**
+ * A failed target read says so in its card, with the control plane's own words
+ * and a retry that re-reads that route alone — never "No targets yet.".
+ */
+export const TargetsFail: Story = {
+  render: () => {
+    targetsDown = true;
+    return (
+      <Harness fetchStub={targetsFail}>
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /this route's targets/);
+    await expect(canvas.getByText(/connection refused/)).toBeInTheDocument();
+    await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
+    await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
+    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
+
+    targetsDown = false;
+    await userEvent.click(canvas.getByRole("button", { name: /Try again/ }));
+    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(targets.getByText("80%")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await expect(canvas.getByText("2 targets")).toBeInTheDocument();
+  },
+};
+
+/**
+ * `cache_aware` builds its balancer from the target count and never reads a
+ * weight, so the same 80/20 split that `weighted` honours draws no share and
+ * no bar there; the card says the weights are unused instead.
+ */
+export const CacheAwareDrawsNoShare: Story = {
+  render: () => (
+    <Harness fetchStub={answer([ROUTES[0], CACHE_AWARE])}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cacheAware = within(await canvas.findByRole("list", { name: "Targets of qwen-coder" }));
+    await expect(cacheAware.getByText("qwen-coder-32b")).toBeInTheDocument();
+    await expect(cacheAware.getByText("azure-west")).toBeInTheDocument();
+    await expect(cacheAware.queryByText(/%/)).toBeNull();
+    await expect(cacheAware.queryAllByTestId("target-share")).toHaveLength(0);
+    await expect(canvas.getByText(/does not read weights/)).toHaveTextContent(/cache_aware/);
+
+    // the weighted route beside it still draws its split
+    const weighted = within(canvas.getByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(weighted.getByText("80%")).toBeInTheDocument();
+    await expect(weighted.getAllByTestId("target-share")).toHaveLength(2);
   },
 };
 
