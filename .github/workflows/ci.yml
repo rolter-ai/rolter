@@ -15,8 +15,9 @@ on:
   # admin bypass to merge (#1025). `workflow_dispatch` is the documented
   # exception: it always creates a run, even from the `GITHUB_TOKEN`, and the
   # check-runs it produces attach to the head commit of the ref it runs on,
-  # which is the release PR's head. `release-plz.yml` dispatches it — see
-  # `dispatch-release-pr-ci` there.
+  # which is the release PR's head. `release-plz.yml` dispatches it while the
+  # release PR carries the `release:ready` label (`dispatch-release-pr-ci`
+  # there), and `release-pr-ready.yml` dispatches it when that label is added.
   workflow_dispatch:
   # the merge queue builds a synthetic branch holding master plus every pr
   # ahead of this one in the queue, and asks for the same required check
