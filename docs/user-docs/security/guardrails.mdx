@@ -29,9 +29,13 @@ Choose the failure policy deliberately:
 
 Rolter stores only an environment variable name for bearer or shared-secret authentication. Put the secret value in every gateway's environment; it is never returned by the control-plane API.
 
+Only the **Before upstream** stage (`pre_call`) is enforced today. The gateway does not run the **Before response** stage (`post_call`) yet, so the dashboard does not let you pick it. A provider already saved at that stage is marked **not enforcing** on its card and in the banner. Activating one pauses the active provider and puts nothing in its place.
+
+The banner at the top of **Guardrails → Providers** reports the webhook the control plane hands to gateways, read from the effective configuration (`GET /api/v1/config`), not which registry row is switched on. It is green only when requests go to a guardrail service before they go upstream, and it names that service: a registry provider, or the config-file webhook by its URL. It says so when no webhook is on, and it shows the status as unknown when the effective configuration cannot be read or contradicts the registry.
+
 ## Hot reload and config files
 
-Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled.
+Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden.
 
 ## API endpoints
 
