@@ -59,6 +59,8 @@ about eight minutes in, rather than within seconds. An `edited` run skips
 both, so a title fix made after the gate is still checked within seconds.
 The action fetches the title live rather than reading it from the payload, so
 a title fixed while the gate is still running is the one that step validates.
+The body step does the same on a pull request (see
+[The `pull_request` path reads the live body](#the-pull_request-path-reads-the-live-body)).
 
 ## Why the fast path exists
 
@@ -344,9 +346,9 @@ remote-connection url — a `claude.ai/code/session…` link, or any agent's own
 request body. It runs as the `no-agent-session-urls` prek hook, as
 `session-urls` in `quality.yml` over every commit the PR introduces, and as two
 steps of `ci-ok` in `ci.yml`: _no agent session urls (pr body)_ over the PR
-body, and _no agent session urls (commits, dispatch/queue)_ over the commit
-range on a dispatched or merge-queue run, where the `quality.yml` job cannot
-see one. The links are ephemeral and sometimes private, and a merged commit
+body, read live from the API, and _no agent session urls (commits,
+dispatch/queue)_ over the commit range on a dispatched or merge-queue run, where
+the `quality.yml` job cannot see one. The links are ephemeral and sometimes private, and a merged commit
 message can only be corrected with a history rewrite, so the rule has no
 exceptions.
 
@@ -367,9 +369,10 @@ The convention, for a human or an agent opening a PR:
    `gh api -X PATCH repos/rolter-ai/rolter/pulls/<n> -f body=@body.md`), not
    another pass through the authoring tool. The footer is appended on the
    creation path only, so a direct `PATCH` does not re-trigger it and the edit
-   sticks. **Wait for the `opened` run to finish before you strip** — stripping
-   immediately makes the `edited` run race the gate and costs a second edit; see
-   _Recovering a sha whose `opened` run saw a dirty body_ below.
+   sticks. Strip it as soon as you see it: `ci-ok` reads the live body after
+   the gate, so the run that opened the PR goes green on its own once the line
+   is gone. See [Stripping an injected footer](#stripping-an-injected-footer)
+   below for the red `edited` run you may see first.
 3. For a commit message, the equivalent is an amend or rebase that drops the
    trailer before the push — `quality.yml` re-checks every commit in the range,
    so a `--no-verify` push does not get through.
@@ -407,8 +410,9 @@ head ref:
   the trigger exists.
 - **no open PR has this ref** → nothing to check, and the step says so with a
   `::notice::` and succeeds.
-- **the API listing fails** → the step fails. A flaking query must never resolve
-  to green; the same rule `ci-ok`'s own run listing follows.
+- **the API listing still fails after three attempts** → the step fails. A
+  flaking query must never resolve to green; the same rule `ci-ok`'s own run
+  listing follows.
 
 That resolution lives in `scripts/check-agent-session-urls.sh --pr-for-ref`
 rather than inline in the workflow, so it can be exercised without a CI run:
@@ -436,8 +440,8 @@ inside a reusable workflow does not fail it, so `quality` still reported
 `success` and `ci-ok` went green having never read a commit message (#1562).
 
 That is the wrong place to have no verdict twice over: the release PR **only**
-ever gets a dispatched run, and dispatching is the documented recovery below
-for a head sha whose `opened` event froze a dirty body. A commit message is
+ever gets a dispatched run, and before `gate-ok` a dispatch was how a head sha
+whose `opened` run failed its body check got unstuck (#1522). A commit message is
 also the half that cannot be fixed after the fact — correcting a merged one
 takes a history rewrite.
 
@@ -477,42 +481,100 @@ updates](testing.md#ui-security-updates)). `ci-ok` emits a `::warning::` naming
 that the title went unvalidated rather than letting a silent skip imply
 otherwise.
 
-### Recovering a sha whose `opened` run saw a dirty body
+### The `pull_request` path reads the live body
 
-On a `pull_request` run the _no agent session urls (pr body)_ step reads
-`${{ github.event.pull_request.body }}` — the snapshot the webhook froze, not
-the PR's live body. So if a session URL is present when the `opened` event
-fires, _that run's_ body check fails permanently: no later `PATCH` can change
-what an already-delivered payload contained.
+On a `pull_request` run the _no agent session urls (pr body)_ step reads the
+body from the API (`GET /repos/{owner}/{repo}/pulls/{n}`) through
+`scripts/check-agent-session-urls.sh --pr-number`. It does not read
+`${{ github.event.pull_request.body }}`. The PR number is the only field it
+takes from the payload, and that never changes.
 
-That used to strand the head sha. The `opened` run is the only one that runs the
-heavy gate, and the `edited` fast path — which _does_ re-read the live body, and
-passes once the footer is stripped — could not report green because it found no
-**successful run** to point at. The only ways out were a new commit or a
-manually dispatched run, neither of them documented, and the latter only working
-by accident (#1522).
+The payload's copy of the body is frozen when the event fires, and the step
+runs only after `quality` and `codeql`, minutes later. Reading that copy left a
+hole (#2035). Say a session URL lands in the body while a `synchronize` run is
+still running the gate:
 
-`gate-ok` closes this. The `opened` run still ends `failure`, but it records a
-passing `gate-ok`, and that is what the fast path looks for. So the #1518
-workaround is now sufficient on its own — **provided the strip lands after the
-opening gate has finished**:
+1. The edit starts an `edited` run. Its body step fails on the new body, and its
+   fast path declines anyway because the gate has not finished. That `ci-ok` is
+   red.
+2. The `synchronize` run finishes the gate. Its body step checks the payload,
+   which predates the edit, and passes. That `ci-ok` is green.
+3. The green one is the newer `ci-ok` check-run on the head sha, so it is the
+   one branch protection reads. The PR is mergeable with the URL in its body.
+
+The repository's squash message is currently the commit list
+(`squash_merge_commit_message: COMMIT_MESSAGES`), so a merge today does not copy
+the body onto `master`. What leaks is the PR body itself, and the rule covers the
+body as firmly as a commit message. #1327 is the
+mirror image of this: there an `edited` run reported green before the gate had
+run, here a gate run reported green over an edit it never saw.
+
+A live read closes it. The gate run's body step now reads the body after the
+gate, so it sees any edit made while the gate ran. An edit made after that
+starts an `edited` run, and that run's newer `ci-ok` reads the edited body.
+
+Two objections kept the payload until #2025, and neither holds any more:
+
+- **The read would race the strip.** While the check was a job of its own it ran
+  seconds after the PR was created, so a live read would usually have seen an
+  injected footer before anyone could remove it. As a step of `ci-ok` it runs
+  after the gate, and a strip made in the first minutes is already in place.
+- **A fork's read-only token might not be allowed to read the PR.** It is.
+  `pr-title` already fetches the same PR with the same token on every
+  `pull_request` run (`pulls.get` in `amannn/action-semantic-pull-request`,
+  which re-reads the PR because the payload can be stale), and `ci-ok` holds
+  `pull-requests: read`. Dependabot PRs, whose token is read-only just as a
+  fork's is, pass that step today.
+
+The read gets three attempts, five seconds apart, and then fails the step. A
+response that is not the requested PR, such as another number or something that
+is not JSON, fails it too. Every lookup in the script goes through the same
+helper, so the dispatch and merge-queue listings follow the same rule.
+
+`scripts/test-agent-session-urls.sh` covers this. It extracts the step's `run:`
+block from `ci.yml` and runs it against a fake `gh` and a fake `sleep`. A clean
+payload body with a dirty live body must fail, a flaking API must be retried, an
+API that stays down must fail, and the dispatch and merge-queue branches resolve
+their PR through the same fake. It also fails if the step's `env:` names
+`github.event.pull_request.body` again. It runs as the _pr body lookups against a
+fake gh_ step of the `session-urls` job in `quality.yml` and as the
+`agent-session-urls` prek hook:
+
+```bash
+bash scripts/test-agent-session-urls.sh
+```
+
+### Stripping an injected footer
+
+Since the live read, the quickest way to green is to strip the footer as soon as
+you see it:
 
 1. Read the PR body back after creating the PR.
-2. If a session URL is there, **wait for the `opened` run to complete**, then
-   strip that line with a direct `PATCH /repos/{owner}/{repo}/pulls/{n}`.
-3. The `edited` run re-checks the live body, finds the `opened` run's passing
-   `gate-ok`, and `ci-ok` goes green. No new commit, no dispatch.
+2. If a session URL is there, strip that line with a direct
+   `PATCH /repos/{owner}/{repo}/pulls/{n}`. There is nothing to wait for.
+3. The `edited` run the strip starts usually ends red with _gate still
+   running_, since it cannot vouch for a gate that has not finished. Leave it.
+   When the opening run's gate finishes, its body step reads the stripped body,
+   and its `ci-ok`, the newer check-run, goes green.
 
-Step 2 says _wait_ for a reason, and it is the step people get wrong. The
-obvious thing to do — and what the first version of this section told you to do
-— is to strip the footer the moment the PR exists. The `edited` run then starts
-while the gate is still running, `gate-ok` has not run yet, and `ci-ok` declines
-on the _unfinished gate_ branch. The PR is red again and a **second** edit is
-needed once the gate finishes.
+If the strip lands after the opening run's body step has already read the dirty
+body, that run ends `failure`. Its gate still recorded a passing `gate-ok`,
+though, and the `edited` run the strip starts finds it and goes green. No new
+commit, no dispatch.
 
-This is not the guard misbehaving; it is the guard working exactly as #1511
-describes. But it costs a cycle every time, so the order matters. Seen on #1565,
-the first PR opened after `gate-ok` landed (#1566):
+That second case used to strand the head sha. The `opened` run was the only one
+that ran the heavy gate, and the `edited` fast path found no **successful run**
+to point at. The only ways out were a new commit or a manually dispatched run,
+neither of them documented, and the latter only working by accident (#1522).
+`gate-ok` closed that: the fast path looks for a passing gate, not a passing
+run.
+
+Before the live read, the order was the other way round. The body step read the
+payload frozen at `opened`, so a footer present at that moment failed the
+opening run whatever happened next, and the advice was to wait for that run to
+finish before stripping. Stripping early made the `edited` run decline on the
+_unfinished gate_ branch and cost a second edit. Seen on #1565, the first PR
+opened after `gate-ok` landed (#1566):
 
 | Run         | Event    | Started  | Outcome                                                                                   |
 | ----------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
@@ -520,24 +582,22 @@ the first PR opened after `gate-ok` landed (#1566):
 | 35249064201 | `edited` | 16:50:35 | `ci-ok` red — _gate still running_, the strip was too early                               |
 | 35249935368 | `edited` | 16:59:31 | `ci-ok` **green** off the same `gate-ok`, no new commit                                   |
 
-The third run is what the second would have been, had the strip waited.
+Today the first run's body step would run after its gate, well after the
+16:50:35 strip, and that run would have gone green by itself.
 
 Which red you are looking at is written in the message, and the two mean
 opposite things:
 
-| `ci-ok` says                                                  | Means                                                    | Do                                         |
-| ------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------ |
-| `gate still running on <sha>`                                 | the strip was early, or the gate simply has not finished | wait for the gate, then edit the body once |
-| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran    | fix the commit; no amount of editing helps |
+| `ci-ok` says                                                  | Means                                                 | Do                                                                                                   |
+| ------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `gate still running on <sha>`                                 | a title or body edit landed before the gate finished  | nothing; the gate run writes a newer `ci-ok` when it finishes, after reading the title and body live |
+| `no completed ci run on <sha> recorded a passing gate-ok job` | the gate actually failed, was cancelled, or never ran | fix the commit; no amount of editing helps                                                           |
 
-**Reading the live body was considered and not done.** While the check was a
-job of its own it ran seconds after the PR was created, so a live read would
-have raced the `PATCH` and usually still seen the dirty body. It would also
-make every `pull_request` run depend on an API call that a fork's read-only
-token may not be able to make. The frozen snapshot is fine once a failed body
-check no longer condemns the sha. Since the check became a step of `ci-ok`, it
-runs after `quality` and `codeql`, minutes after the PR opens, so the first
-objection no longer holds; a live read is planned as a follow-up under #2025.
+One timing still costs a second edit: a strip that lands in the few seconds
+between the gate run's body read and the end of its `ci-ok`. The gate run fails
+on the body it read, and the `edited` run declines because the gate run is
+still in progress. One more edit after the gate run finishes goes green off its
+`gate-ok`.
 
 ## Why not a separate `pr-title` workflow
 
