@@ -189,6 +189,7 @@ See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/K
   - `disable` (string[], default `[]`) — rules that do not apply on this route
   - `enable` (string[], default `[]`) — rules that apply on this route; wins over `disable` on a conflict
   - a name matching no configured rule fails validation rather than being ignored — a typo in `disable` would otherwise read as "this rule is off here" while the rule kept running
+  - the dashboard's Guardrail Rules screen names, on each rule's card, the routes whose override switches it off, read from `GET /api/v1/config` (`offRoutes` in `ui/src/lib/guardrail-policy.ts` mirrors `RouteGuardrails::allows`)
 
 ### `[[virtual_keys]]`
 

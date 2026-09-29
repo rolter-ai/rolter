@@ -1721,6 +1721,12 @@
       "overriddenDetail": "Not running. The config file also defines <0>{{name}}</0>, and a config-file rule wins a name clash, so that rule runs instead.",
       "pausedClashDetail": "The config file also defines <0>{{name}}</0>, so this rule would not run if resumed.",
       "nameClash": "The config file already defines a rule with this name, so this one would not run.",
+      "offRoutes": {
+        "summary_one": "Off for traffic on {{value}} route",
+        "summary_other": "Off for traffic on {{value}} routes",
+        "source_one": "Set in the route's <0>advanced.guardrails.disable</0>.",
+        "source_other": "Set in each route's <0>advanced.guardrails.disable</0>."
+      },
       "flagOff": {
         "title": "Guardrails are switched off",
         "body": "The Guardrails feature flag is off, so no rule inspects traffic, whether it is listed here or in the config file. The rules stay stored and run again once the flag is on.",
