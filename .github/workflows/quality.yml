@@ -12,9 +12,10 @@ name: quality
 # `static checks` job, one named step per concern plus a report step that names
 # whichever failed; the ones that build or boot something keep a job each.
 # ci.yml aggregates every job here (plus pr-title) into a single `ci-ok` check
-# for branch protection. some newer/heavier checks run as informational
-# (continue-on-error) until their baseline is trusted, then get promoted to
-# blocking — see ROL-124.
+# for branch protection. coverage runs as informational (continue-on-error) on
+# pull requests only; the informational checks that need a full build and gate
+# nothing (macOS, compose smoke, msrv, master coverage) run nightly in
+# extended.yml instead of taking a runner on every push (ADR-0034).
 on:
   # takes no secrets: every job here scans the checked-out source with pinned
   # public tooling, so the gate behaves identically on dependabot and fork PRs,
@@ -825,32 +826,13 @@ jobs:
           cat /tmp/stream.txt
           grep -q 'data:' /tmp/stream.txt
 
-  # ── full-stack smoke: the production-shaped docker compose topology ──────────
-  # boots postgres, redis, clickhouse, gateway and control together via
-  # docker-compose.yml + the CI overlay, then exercises the gateway (fake-llm)
-  # and the control snapshot path. catches wiring/env/compose regressions the
-  # single-binary smoke above cannot see (e.g. a misnamed ROLTER_DATABASE_URL).
-  # informational until the ~image-build cost and flake profile are trusted;
-  # promote by dropping continue-on-error. see ROL-245.
-  compose-smoke:
-    name: compose smoke (informational)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: full-stack compose smoke
-        run: bash docker/smoke/smoke.sh
-
   # ── image smoke: the single image through published ports ───────────────────
   # runs the image the quickstart documents (default command, ports published
   # with `-p`) and curls both planes from the host, plus the refusal with no
   # admin token and no acknowledgement. `rolter --version` and every in-process
   # test pass on an image whose planes bind the container's loopback, which a
   # published port never reaches (#1891); only this sees it. blocking, unlike
-  # compose-smoke: it needs no secrets and no compose stack
+  # extended.yml's compose smoke: it needs no secrets and no compose stack
   image-smoke:
     name: image smoke (published ports)
     runs-on: ubuntu-latest
@@ -905,8 +887,16 @@ jobs:
   # .github/coverage-baseline.txt (new code cannot drop below baseline − tolerance),
   # and uploads the lcov report as a CI artifact. it does not block until the
   # baseline is trusted — promote by dropping continue-on-error here.
+  #
+  # pull_request only: testing.md asks for the baseline edit in the PR that
+  # moves coverage, so a PR needs the number, while push, dispatch and queue
+  # runs would spend a full instrumented build on a verdict nobody reads.
+  # extended.yml runs the same job on master nightly with the same
+  # `shared-key: coverage`, which saves the cache this job restores; keep the
+  # two in step
   coverage:
     name: coverage (informational)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
@@ -949,6 +939,8 @@ jobs:
           components: llvm-tools-preview
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: coverage
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-llvm-cov
@@ -969,43 +961,6 @@ jobs:
             lcov.info
             coverage.json
           if-no-files-found: error
-
-  # ── MSRV: build on the pinned minimum supported rust version ─────────────────
-  # agents can silently adopt newer-than-declared language features; this catches
-  # it against `rust-version` in Cargo.toml. informational until the baseline is
-  # green on the pinned toolchain.
-  msrv:
-    name: msrv build (informational)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: 1.82.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: cargo check (msrv)
-        run: cargo check --workspace --all-features
-
-  # ── cross-platform: check the workspace builds off linux ────────────────────
-  # linux is covered by every job above; macOS catches os-specific breakage.
-  # informational for now (adds runner minutes); promote if it earns its keep.
-  cross-platform:
-    name: macos check (informational)
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: cargo check (macos)
-        run: cargo check --workspace --all-features
 
   # ── semver: notice when a shared crate's rust API moved ─────────────────────
   # scoped deliberately. the baseline is the previous release *tag*, not the

@@ -98,8 +98,9 @@ The informational jobs that needed a full build move to a new `extended.yml`
 that runs nightly and on `workflow_dispatch`. Coverage runs there on `master`
 with the same `shared-key: coverage` as the PR job, so it seeds the cache that
 PR coverage restores and gives a daily number for `master`. msrv runs as
-`cargo +1.82.0 check`, so the toolchain file can no longer override it. The
-macOS check and compose smoke move unchanged. None of these jobs carries
+`cargo +<rust-version> check`, with the version read from `Cargo.toml`, so the
+toolchain file can no longer override it and the job follows the declaration.
+The macOS check and compose smoke move unchanged. None of these jobs carries
 `continue-on-error`, since nothing gates on `extended.yml`. A `report failure`
 job opens or comments on one tracking issue when any of them fails. It holds
 `issues: write` at job level with no checkout, because zizmor 1.26.1 rates the

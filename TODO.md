@@ -137,8 +137,8 @@ Full-featured hostable web control panel, not a read-only dashboard.
 
 ## Cross-cutting / tech debt
 
-- [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke` in `quality.yml`)
-- [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml`, `.github/scripts/coverage-ratchet.sh`)
+- [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke`, nightly in `extended.yml`)
+- [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml` on PRs and nightly on `master` in `extended.yml`, `.github/scripts/coverage-ratchet.sh`)
 - [x] Document and enforce the `ci-ok` branch-protection policy (#448 — `docs/dev-docs/development/testing.md`)
 - [x] Publish `rolter` to PyPI (`rolter` 0.0.11 is live; `uv tool install rolter`). All crates publish to crates.io at the same version through release-plz.
 - [x] Integration tests for the gateway (mock upstream) + streaming assertions
