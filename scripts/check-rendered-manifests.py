@@ -16,10 +16,10 @@ Reads a multi-document manifest on stdin.
 
     helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
 
-`--script` installs the pyyaml pinned above and nothing else. The repo root's
-pyproject.toml is the rolter maturin wheel, and a `uv run` that treats it as
-the project builds that wheel before the script starts, minutes of work the
-check never uses (#1901).
+`--script` installs the pyyaml pinned above (#1901) and nothing else. The repo
+root's pyproject.toml is the rolter maturin wheel, and a `uv run` that treats
+it as the project builds that wheel before the script starts, minutes of work
+the check never uses (#2025).
 """
 
 import sys

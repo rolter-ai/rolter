@@ -350,8 +350,9 @@ jobs:
       # server-side apply and the GitOps controllers do not, and a duplicate
       # `env:` sat in both deployment templates unnoticed until #1090.
       # `uv run --script` installs only the pyyaml pinned in the checker's
-      # inline metadata; run as part of the repo-root project, uv would build
-      # the rolter maturin wheel first, about 3.5 minutes per job (#1901)
+      # inline metadata (#1901); run as part of the repo-root project, uv
+      # would build the rolter maturin wheel first, about 3.5 minutes per job
+      # (#2025)
       - name: render defaults
         run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
       - name: render with preflight disabled
