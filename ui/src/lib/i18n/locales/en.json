@@ -3364,6 +3364,7 @@
       "selectProject": "Select a project in the sidebar to mint a virtual key",
       "emptyTitle": "No virtual keys yet",
       "empty": "You haven't minted a virtual key yet. Create one to start calling the gateway.",
+      "emptyRefused": "Your role in this project cannot mint keys. Members mint their own here, so ask an admin of this project to make you a member.",
       "card": {
         "unnamed": "unnamed key",
         "disabled": "disabled",

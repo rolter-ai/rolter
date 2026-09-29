@@ -4,11 +4,14 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Account from "./Account";
 import {
   Harness,
+  NEEDS_MEMBER,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectAllowed,
   expectClosesWithoutPrompting,
   expectLoadError,
+  expectRefused,
   json,
   pending,
   pickOption,
@@ -270,6 +273,73 @@ export const Empty: Story = {
       const placeholder = within(within(canvasElement).getByTestId("own-keys-empty"));
       expect(placeholder.getByRole("button", { name: "Generate virtual key" })).toBeEnabled();
     });
+  },
+};
+
+/** Both places the screen offers a mint: the toolbar, and the empty state repeating it. */
+const GENERATE = "Generate virtual key";
+
+/**
+ * Minting takes `my_virtual_key:create`, the member role at the project, and a
+ * viewer does not hold it (#2064). The button used to open the whole sheet and
+ * leave the refusal to a raw server line at the end of it. Both Generate
+ * buttons now refuse up front and name the role, the way the Playground's mint
+ * does (#2061), and the placeholder says who mints keys here and whom to ask
+ * instead of inviting a mint the button beside it refuses.
+ */
+export const RefusedToAViewer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={account(() => json([]))} role="viewer">
+      <UxScreenProvider screen="api-keys">
+        <Account />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, /No virtual keys yet/);
+    // every match is refused, and there are two of them to match: a gate on
+    // the toolbar alone would leave the placeholder's copy of it live
+    await expectRefused(canvasElement, GENERATE, NEEDS_MEMBER);
+    await expect(canvas.getAllByRole("button", { name: GENERATE })).toHaveLength(2);
+
+    const placeholder = within(canvas.getByTestId("own-keys-empty"));
+    await expect(placeholder.getByText(/cannot mint keys/)).toBeVisible();
+    await expect(placeholder.getByText(/ask an admin of this project/)).toBeVisible();
+    await expect(placeholder.queryByText(/Create one to start calling the gateway/)).toBeNull();
+
+    // a reach for it is recorded, and no sheet opens behind the refusal
+    await userEvent.click(placeholder.getByRole("button", { name: GENERATE }), {
+      pointerEventsCheck: 0,
+    });
+    await expectUxEvent("refused_click", "account-key-mint-empty:my_virtual_key:create");
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+/** A member holds the pair, so both buttons stay live and the placeholder invites a mint. */
+export const AllowedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={account(() => json([]))} role="member">
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, /No virtual keys yet/);
+    await expectAllowed(canvasElement, GENERATE);
+    await expect(canvas.getAllByRole("button", { name: GENERATE })).toHaveLength(2);
+
+    const placeholder = within(canvas.getByTestId("own-keys-empty"));
+    await expect(placeholder.getByText(/Create one to start calling the gateway/)).toBeVisible();
+    await expect(placeholder.queryByText(/cannot mint keys/)).toBeNull();
+
+    // the placeholder's copy of the action opens the same sheet the toolbar's does
+    await userEvent.click(placeholder.getByRole("button", { name: GENERATE }));
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog", { name: "New virtual key" })).toBeVisible(),
+    );
   },
 };
 

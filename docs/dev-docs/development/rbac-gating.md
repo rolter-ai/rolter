@@ -104,6 +104,12 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   **Renew key** is a `GatedButton` on the same pair. The screen reads
   `useCan()` for the automatic mint only, since that is behaviour rather than
   a control; an unanswered gate still mints, and the `403` stays the backstop.
+- **Minting your own key.** **Generate virtual key** on the account screen,
+  in the toolbar and again in the empty state, is a `GatedButton` on
+  `my_virtual_key:create`, the pair the Playground's mint asks. The empty
+  state reads `useCan()` for its copy only: on an explicit `false` it says
+  that members mint their own keys and to ask an admin of the project, beside
+  the refused button, instead of inviting a mint the button refuses (#2064).
 - **Links into a gated screen.** A link the caller cannot follow is a 403
   with an extra click. The LLM Logs payload drawer links to the log settings
   unless `logging_settings:read` is an explicit `false`, the rail's own rule
