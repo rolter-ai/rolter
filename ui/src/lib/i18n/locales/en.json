@@ -1164,9 +1164,49 @@
         "fieldThreshold": "Threshold",
         "fieldWindow": "Window (seconds)",
         "windowRange": "From {{min}} to {{max}} seconds.",
+        "thresholdRange": {
+          "percent": "From 0 to 100%.",
+          "nonNegative": "0 or more."
+        },
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
         "namePlaceholder": "high error rate"
+      },
+      "signals": {
+        "error_rate": {
+          "label": "Error rate",
+          "description": "Share of requests in the window that ended in a 5xx status."
+        },
+        "p95_latency_ms": {
+          "label": "p95 latency",
+          "description": "95th-percentile request latency over the window, in milliseconds."
+        },
+        "spend_velocity": {
+          "label": "Spend rate",
+          "description": "Spend over the window, scaled to {{currency}} per hour."
+        },
+        "request_volume": {
+          "label": "Request volume",
+          "description": "Number of requests in the window: a count, not a rate."
+        },
+        "provider_health_flaps": {
+          "label": "Provider health failures",
+          "description": "Provider health events in the window that were not ok, from probes and request results alike."
+        }
+      },
+      "units": {
+        "field": {
+          "percent": "Threshold (%)",
+          "milliseconds": "Threshold (ms)",
+          "currencyPerHour": "Threshold ({{currency}} per hour)",
+          "requests": "Threshold (requests per window)",
+          "healthFailures": "Threshold (failed health events per window)"
+        },
+        "perHour": "{{amount}}/h",
+        "requestsIn_one": "{{value}} request in {{window}}",
+        "requestsIn_other": "{{value}} requests in {{window}}",
+        "healthFailuresIn_one": "{{value}} failed health event in {{window}}",
+        "healthFailuresIn_other": "{{value}} failed health events in {{window}}"
       },
       "history": {
         "emptyTitle": "No alert transitions yet",

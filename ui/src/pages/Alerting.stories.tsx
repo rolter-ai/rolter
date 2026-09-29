@@ -25,6 +25,7 @@ import {
   answerDiscardPrompt,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const CHANNELS: AlertChannelRow[] = [
@@ -98,6 +99,37 @@ const RULES: AlertRuleRow[] = [
     created_at: "2026-05-03T00:00:00Z",
     updated_at: "2026-08-11T12:00:00Z",
   },
+  // the two counts: requests and failed health events in the window, not rates
+  {
+    id: "rule-4",
+    name: "traffic surge",
+    signal: "request_volume",
+    threshold: 1000,
+    window_secs: 300,
+    channel_id: "chan-1",
+    enabled: true,
+    state: "ok",
+    last_value: 340,
+    last_evaluated_at: "2026-08-11T12:00:00Z",
+    last_error: null,
+    created_at: "2026-05-04T00:00:00Z",
+    updated_at: "2026-08-11T12:00:00Z",
+  },
+  {
+    id: "rule-5",
+    name: "provider trouble",
+    signal: "provider_health_flaps",
+    threshold: 10,
+    window_secs: 300,
+    channel_id: "chan-1",
+    enabled: true,
+    state: "ok",
+    last_value: 1,
+    last_evaluated_at: "2026-08-11T12:00:00Z",
+    last_error: null,
+    created_at: "2026-05-05T00:00:00Z",
+    updated_at: "2026-08-11T12:00:00Z",
+  },
 ];
 
 const HISTORY: AlertNotificationRow[] = [
@@ -134,7 +166,14 @@ const loaded = routes([
   ["/alert-channels", () => CHANNELS],
   ["/alert-rules", () => RULES],
   ["/alert-notifications", () => HISTORY],
+  // a deployment that settles in euros, so a spend figure printed in dollars
+  // is caught rather than matching the fallback
+  ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
 ]);
+
+/** the value under a rule card's figure label, read as the `dd` its `dt` names */
+const stat = (card: HTMLElement, label: string) =>
+  within(card).getByText(label, { selector: "dt" }).nextElementSibling;
 const empty = routes([
   ["/alert-channels", () => []],
   ["/alert-rules", () => []],
@@ -322,6 +361,153 @@ export const RulesLoaded: Story = {
   },
 };
 
+// every figure on a card used to be a bare number: `THRESHOLD 0.05`, `WINDOW
+// 300s`, and no way to tell a spend per hour from a count per window (#2125)
+export const RuleCardsReadInTheSignalsUnit: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cards: [string, string, RegExp, RegExp, RegExp][] = [
+      // name, signal, threshold, last value, window
+      ["high error rate", "Error rate", /^5%$/, /^11%$/, /^5m$/],
+      ["slow p95", "p95 latency", /^2,000 ms$/, /^840 ms$/, /^10m$/],
+      ["spend spike", "Spend rate", /^€50\.00\/h$/, /^€12\.50\/h$/, /^1h$/],
+      ["traffic surge", "Request volume", /^1,000 requests in 5m$/, /^340 requests in 5m$/, /^5m$/],
+      [
+        "provider trouble",
+        "Provider health failures",
+        /^10 failed health events in 5m$/,
+        /^1 failed health event in 5m$/,
+        /^5m$/,
+      ],
+    ];
+    for (const [name, signal, threshold, last, window] of cards) {
+      const card = await canvas.findByRole("article", { name });
+      await expect(stat(card, "Signal")).toHaveTextContent(signal);
+      // the spend waits on the settlement currency, which is its own request
+      await waitFor(() => expect(stat(card, "Threshold")).toHaveTextContent(threshold));
+      await expect(stat(card, "Last value")).toHaveTextContent(last);
+      await expect(stat(card, "Window")).toHaveTextContent(window);
+    }
+  },
+};
+
+// the counts are declined, and the numbers take the locale's grouping
+export const RuleCardsReadInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { statThreshold, statLastValue } = ru.pages.alerting.rules;
+    const traffic = await canvas.findByRole("article", { name: "traffic surge" });
+    await waitFor(() =>
+      expect(stat(traffic, statThreshold)).toHaveTextContent(/^1\s000 запросов за 5\sмин$/),
+    );
+    await expect(stat(traffic, statLastValue)).toHaveTextContent(/^340 запросов за 5\sмин$/);
+    const health = canvas.getByRole("article", { name: "provider trouble" });
+    await expect(stat(health, statLastValue)).toHaveTextContent(/^1 отказ за 5\sмин$/);
+    const errors = canvas.getByRole("article", { name: "high error rate" });
+    await expect(stat(errors, statThreshold)).toHaveTextContent(/^5\s%$/);
+  },
+};
+
+// the form asked for a bare threshold whatever the signal, and started every
+// one from 0.05 (#2125)
+export const TheThresholdFollowsTheSignal: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = within(sheet());
+    await expect(await form.findByLabelText("Threshold (%)")).toHaveValue(5);
+    await expect(form.getByText("From 0 to 100%.")).toBeVisible();
+    await expect(
+      form.getByText("Share of requests in the window that ended in a 5xx status."),
+    ).toBeVisible();
+
+    const signals: [RegExp, string, number, RegExp][] = [
+      // option, threshold label, default, description
+      [/^p95 latency/, "Threshold (ms)", 8000, /^95th-percentile request latency/],
+      [/^Spend rate/, "Threshold (EUR per hour)", 50, /scaled to EUR per hour\.$/],
+      [/^Request volume/, "Threshold (requests per window)", 1000, /a count, not a rate\.$/],
+      [
+        /^Provider health failures/,
+        "Threshold (failed health events per window)",
+        10,
+        /^Provider health events in the window that were not ok/,
+      ],
+    ];
+    for (const [option, label, value, description] of signals) {
+      await pickOption(form.getByLabelText("Signal"), option);
+      await expect(await form.findByLabelText(label)).toHaveValue(value);
+      await expect(form.getByText(description)).toBeVisible();
+    }
+    // back on the percentage, the threshold is the percentage default again
+    // rather than the 10 health events it held a moment ago
+    await pickOption(form.getByLabelText("Signal"), /^Error rate/);
+    await expect(await form.findByLabelText("Threshold (%)")).toHaveValue(5);
+  },
+};
+
+// the operator types 5 meaning 5 %, the API stores the fraction the query
+// returns, and the card reads the stored 0.05 back as 5 % (#2125)
+const percentCreates = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return loaded(input, init);
+  }),
+);
+
+export const ThePercentThresholdRoundTrips: Story = {
+  render: () => (
+    <Harness fetchStub={percentCreates.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const errors = await canvas.findByRole("article", { name: "high error rate" });
+    await expect(stat(errors, "Threshold")).toHaveTextContent(/^5%$/);
+
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "error spike");
+    const threshold = within(form).getByLabelText("Threshold (%)");
+    const create = within(form).getByRole("button", { name: "Create" });
+    await expect(threshold).toHaveAttribute("max", "100");
+
+    // the fraction never passes 1, so over 100 % is a rule that never fires
+    await userEvent.clear(threshold);
+    await userEvent.type(threshold, "101");
+    await waitFor(() => expect(threshold).toHaveAttribute("aria-invalid", "true"));
+    await expect(create).toBeDisabled();
+    percentCreates.expectNotSent("POST", "/alert-rules");
+
+    await userEvent.clear(threshold);
+    await userEvent.type(threshold, "5");
+    await waitFor(() => expect(threshold).not.toHaveAttribute("aria-invalid"));
+    await userEvent.click(create);
+    const body = await percentCreates.expectSentBody<{ signal: string; threshold: number }>(
+      "POST",
+      "/alert-rules",
+    );
+    await expect(body.signal).toBe("error_rate");
+    await expect(body.threshold).toBe(0.05);
+    await expectSheetClosed();
+  },
+};
+
 export const RulesLoading: Story = {
   render: () => (
     <Harness fetchStub={pending}>
@@ -377,7 +563,7 @@ export const CreatesARule: Story = {
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "spend spike");
-    await pickOption(within(form).getByLabelText("Signal"), "spend_velocity");
+    await pickOption(within(form).getByLabelText("Signal"), /^Spend rate/);
     await userEvent.click(within(form).getByRole("button", { name: "Create" }));
     await expectSheetClosed();
   },
