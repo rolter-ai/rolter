@@ -40,7 +40,18 @@ nothing moves when the data arrives:
 
 For a list inside a `ListTable`, put the skeleton _inside_ the table, under the
 header. The column headers are real information — they say what a row will
-carry — and taking them away to show a placeholder loses that.
+carry — and taking them away to show a placeholder loses that. Inside the table
+it goes in a `ListStateRow`, and so does the empty state: a `role="status"` or
+a button placed straight in the table body belongs to no row, which breaks the
+table for a screen reader (see [list tables](list-tables.md)):
+
+```tsx
+{keys.isLoading && (
+  <ListStateRow>
+    <ListSkeleton rows={4} className="p-3" />
+  </ListStateRow>
+)}
+```
 
 Every shape wraps itself in one `role="status"` region labelled with
 `common.loading`, so a screen reader hears one announcement rather than one per
@@ -49,6 +60,14 @@ name. `story-harness.tsx` exports `expectSkeleton` for exactly that.
 
 **A screen must not render its content shape while a request is in flight.**
 That is the `Logs` bug: an empty table and a loading table looked the same.
+
+**An empty state needs a successful answer.** Gate it on `isSuccess`, not on
+`!isLoading && !error`. The two differ exactly when react-query parks a retry:
+in a hidden tab, or with the browser offline, a failed first attempt leaves the
+query `pending` but not fetching, so it is neither loading nor failed. In that
+window LLM Logs said "Nothing logged yet" about a load that had failed (#1984).
+For the same reason the skeleton keys on `isPending`, which covers the parked
+retry, rather than `isLoading`, which does not.
 
 ### Empty: what it is, and what to do about it
 
@@ -76,8 +95,10 @@ Two rules the wording depends on:
 - **A deployment answer is not an empty state.** A control plane with no
   ClickHouse has not "served nothing yet" — it was never asked to record
   anything, and no amount of traffic will fill the screen. That is a
-  `noAnalytics` [load error](error-states.md), not an `EmptyState`; the
-  Dashboard rendered it as the latter until #1236.
+  `noAnalytics` state, not an `EmptyState`; the Dashboard rendered it as the
+  latter until #1236. Nor is it an outage: LLM Logs shows it as an
+  informational panel rather than a red alert (#1984), and the other screens
+  follow in #1976 and #2016 (see [error states](error-states.md)).
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.

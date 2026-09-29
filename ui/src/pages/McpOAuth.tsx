@@ -6,7 +6,17 @@ import { Trans, useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
-import { ListHeader, ListRow, ListTable, PageBody, Pill, RowIconButton } from "@/components/screen";
+import {
+  ListActionsHeader,
+  ListCell,
+  ListHeader,
+  ListHeaderCell,
+  ListRow,
+  ListTable,
+  PageBody,
+  Pill,
+  RowIconButton,
+} from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -236,15 +246,15 @@ export function OAuthGrants() {
               description={t("pages.mcpOAuth.grantsEmptyBody")}
             />
           ) : (
-            <ListTable minWidth={980}>
+            <ListTable label={t("screens.oauth-grants.title")} minWidth={980}>
               <ListHeader grid={GRANT_GRID}>
-                <span>{t("pages.mcpOAuth.server")}</span>
-                <span>{t("pages.mcpOAuth.owner")}</span>
-                <span>{t("pages.mcpOAuth.scopes")}</span>
-                <span>{t("pages.mcpOAuth.granted")}</span>
-                <span>{t("pages.mcpOAuth.sessions.header")}</span>
-                <span>{t("pages.mcpOAuth.state")}</span>
-                <span />
+                <ListHeaderCell>{t("pages.mcpOAuth.server")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.owner")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.scopes")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.granted")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.sessions.header")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.state")}</ListHeaderCell>
+                <ListActionsHeader />
               </ListHeader>
               {rows.map((g) => {
                 const live = liveByGrant.get(g.id) ?? 0;
@@ -253,43 +263,49 @@ export function OAuthGrants() {
                 const owner = ownerLabel(users.data, g.user_id);
                 return (
                   <ListRow key={g.id} grid={GRANT_GRID}>
-                    <span className="truncate font-mono text-xs font-semibold">
+                    <ListCell className="truncate font-mono text-xs font-semibold">
                       {serverLabel(servers.data, g.server_id)}
-                    </span>
-                    <span className="truncate text-xs text-[color:var(--text-secondary)]">
+                    </ListCell>
+                    <ListCell className="truncate text-xs text-[color:var(--text-secondary)]">
                       {ownerLabel(users.data, g.user_id)}
-                    </span>
-                    <Scopes scopes={g.scopes} />
-                    <span
+                    </ListCell>
+                    <ListCell className="grid">
+                      <Scopes scopes={g.scopes} />
+                    </ListCell>
+                    <ListCell
                       className="font-mono text-xs text-[color:var(--text-secondary)]"
                       title={g.granted_at}
                     >
                       {fmt.dateTime(g.granted_at)}
-                    </span>
-                    <span className="text-xs text-[color:var(--text-secondary)]">
+                    </ListCell>
+                    <ListCell className="text-xs text-[color:var(--text-secondary)]">
                       {sessionsKnown ? t("pages.mcpOAuth.liveShort", { count: live }) : "—"}
-                    </span>
-                    <Badge tone={g.active ? "success" : "neutral"} dot={g.active}>
-                      {g.active ? "ACTIVE" : "REVOKED"}
-                    </Badge>
-                    <RowIconButton
-                      control="oauth-grant-revoke"
-                      danger
-                      title={
-                        g.active
-                          ? t("pages.mcpOAuth.grants.revokeTitle")
-                          : t("pages.mcpOAuth.alreadyRevoked")
-                      }
-                      gate="mcp_oauth_grant:delete"
-                      aria-label={t("pages.mcpOAuth.grants.revokeAria", {
-                        owner,
-                        server: serverLabel(servers.data, g.server_id),
-                      })}
-                      disabled={!g.active || revoke.isPending}
-                      onClick={() => setConfirming(g)}
-                    >
-                      <ShieldOff className="h-3.5 w-3.5" />
-                    </RowIconButton>
+                    </ListCell>
+                    <ListCell className="grid">
+                      <Badge tone={g.active ? "success" : "neutral"} dot={g.active}>
+                        {g.active ? "ACTIVE" : "REVOKED"}
+                      </Badge>
+                    </ListCell>
+                    <ListCell className="grid">
+                      <RowIconButton
+                        control="oauth-grant-revoke"
+                        danger
+                        title={
+                          g.active
+                            ? t("pages.mcpOAuth.grants.revokeTitle")
+                            : t("pages.mcpOAuth.alreadyRevoked")
+                        }
+                        gate="mcp_oauth_grant:delete"
+                        aria-label={t("pages.mcpOAuth.grants.revokeAria", {
+                          owner,
+                          server: serverLabel(servers.data, g.server_id),
+                        })}
+                        disabled={!g.active || revoke.isPending}
+                        onClick={() => setConfirming(g)}
+                      >
+                        <ShieldOff className="h-3.5 w-3.5" />
+                      </RowIconButton>
+                    </ListCell>
                   </ListRow>
                 );
               })}
@@ -446,16 +462,17 @@ export function AuthSessions() {
               description={t("pages.mcpOAuth.sessionsEmptyBody")}
             />
           ) : (
-            <ListTable minWidth={1024}>
+            <ListTable label={t("screens.auth-sessions.title")} minWidth={1024}>
               <ListHeader grid={SESSION_GRID}>
-                <span>{t("pages.mcpOAuth.server")}</span>
-                <span>{t("pages.mcpOAuth.owner")}</span>
-                <span>{t("pages.mcpOAuth.scopes")}</span>
-                <span>{t("pages.mcpOAuth.lastUsed")}</span>
-                <span>{t("pages.mcpOAuth.expires")}</span>
-                <span>{t("pages.mcpOAuth.state")}</span>
-                <span />
-                <span />
+                <ListHeaderCell>{t("pages.mcpOAuth.server")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.owner")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.scopes")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.lastUsed")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.expires")}</ListHeaderCell>
+                <ListHeaderCell>{t("pages.mcpOAuth.state")}</ListHeaderCell>
+                {/* renew and revoke are a column each, so each gets a name */}
+                <ListActionsHeader label={t("pages.mcpOAuth.sessions.colRenew")} />
+                <ListActionsHeader label={t("pages.mcpOAuth.sessions.colRevoke")} />
               </ListHeader>
               {rows.map((s) => {
                 const grant = grantById.get(s.grant_id);
@@ -466,23 +483,27 @@ export function AuthSessions() {
                 const owner = grant ? ownerLabel(users.data, grant.user_id) : "—";
                 return (
                   <ListRow key={s.id} grid={SESSION_GRID}>
-                    <span className="truncate font-mono text-xs font-semibold">{server}</span>
-                    <span className="truncate text-xs text-[color:var(--text-secondary)]">
+                    <ListCell className="truncate font-mono text-xs font-semibold">
+                      {server}
+                    </ListCell>
+                    <ListCell className="truncate text-xs text-[color:var(--text-secondary)]">
                       {grant ? ownerLabel(users.data, grant.user_id) : "—"}
-                    </span>
-                    <Scopes scopes={s.scopes} />
-                    <span className="text-xs text-[color:var(--text-secondary)]">
+                    </ListCell>
+                    <ListCell className="grid">
+                      <Scopes scopes={s.scopes} />
+                    </ListCell>
+                    <ListCell className="text-xs text-[color:var(--text-secondary)]">
                       {s.last_used_at
                         ? fmt.relative(s.last_used_at, now)
                         : t("pages.mcpOAuth.never")}
-                    </span>
-                    <span
+                    </ListCell>
+                    <ListCell
                       className="font-mono text-xs text-[color:var(--text-secondary)]"
                       title={s.expires_at}
                     >
                       {fmt.dateTime(s.expires_at)}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    </ListCell>
+                    <ListCell className="flex flex-wrap items-center gap-1.5">
                       <Badge
                         tone={
                           state === "active"
@@ -498,54 +519,58 @@ export function AuthSessions() {
                       {/* renewability is reported as a flag; the refresh token
                           itself is never part of the payload */}
                       {s.has_refresh_token && <Badge tone="info">RENEWABLE</Badge>}
-                    </div>
+                    </ListCell>
                     {/* renewal is only possible where a refresh token was
                         stored, and a revoked session has nothing to renew */}
-                    <RowIconButton
-                      gate="mcp_oauth_session:update"
-                      control="oauth-session-refresh"
-                      title={t("pages.mcpOAuth.refresh.action", { server })}
-                      aria-label={t("pages.mcpOAuth.sessions.refreshAria", {
-                        owner,
-                        server,
-                      })}
-                      disabled={
-                        !s.has_refresh_token ||
-                        state === "revoked" ||
-                        (refresh.isPending && refresh.variables === s.id)
-                      }
-                      onClick={() => refresh.mutate(s.id)}
-                    >
-                      {refresh.isPending && refresh.variables === s.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      )}
-                    </RowIconButton>
-                    <RowIconButton
-                      control="oauth-session-revoke"
-                      danger
-                      title={
-                        state === "revoked"
-                          ? t("pages.mcpOAuth.alreadyRevoked")
-                          : t("pages.mcpOAuth.sessions.revokeTitle")
-                      }
-                      gate="mcp_oauth_session:delete"
-                      aria-label={t("pages.mcpOAuth.sessions.revokeAria", {
-                        owner,
-                        server,
-                      })}
-                      disabled={
-                        state === "revoked" || (revoke.isPending && revoke.variables === s.id)
-                      }
-                      onClick={() => startRevoke(s, server)}
-                    >
-                      {revoke.isPending && revoke.variables === s.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <ShieldOff className="h-3.5 w-3.5" />
-                      )}
-                    </RowIconButton>
+                    <ListCell className="grid">
+                      <RowIconButton
+                        gate="mcp_oauth_session:update"
+                        control="oauth-session-refresh"
+                        title={t("pages.mcpOAuth.refresh.action", { server })}
+                        aria-label={t("pages.mcpOAuth.sessions.refreshAria", {
+                          owner,
+                          server,
+                        })}
+                        disabled={
+                          !s.has_refresh_token ||
+                          state === "revoked" ||
+                          (refresh.isPending && refresh.variables === s.id)
+                        }
+                        onClick={() => refresh.mutate(s.id)}
+                      >
+                        {refresh.isPending && refresh.variables === s.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                      </RowIconButton>
+                    </ListCell>
+                    <ListCell className="grid">
+                      <RowIconButton
+                        control="oauth-session-revoke"
+                        danger
+                        title={
+                          state === "revoked"
+                            ? t("pages.mcpOAuth.alreadyRevoked")
+                            : t("pages.mcpOAuth.sessions.revokeTitle")
+                        }
+                        gate="mcp_oauth_session:delete"
+                        aria-label={t("pages.mcpOAuth.sessions.revokeAria", {
+                          owner,
+                          server,
+                        })}
+                        disabled={
+                          state === "revoked" || (revoke.isPending && revoke.variables === s.id)
+                        }
+                        onClick={() => startRevoke(s, server)}
+                      >
+                        {revoke.isPending && revoke.variables === s.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <ShieldOff className="h-3.5 w-3.5" />
+                        )}
+                      </RowIconButton>
+                    </ListCell>
                   </ListRow>
                 );
               })}

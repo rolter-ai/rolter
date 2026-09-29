@@ -268,6 +268,36 @@ export const MobileDrawer: Story = {
 };
 
 /**
+ * The drawer is a modal like any sheet (#1998): the screen beside it is inert
+ * while it is up, yet its scrim still takes a real click, and closing hands
+ * focus back to the hamburger that opened it.
+ */
+export const MobileDrawerLeavesTheScreenInert: Story = {
+  ...atMobile,
+  render: (args) => <Shell {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Open navigation" });
+    await userEvent.click(trigger);
+    const drawer = await canvas.findByRole("dialog", { name: /navigation/i });
+    await expect(trigger.closest("[inert]")).not.toBeNull();
+    await expect(drawer.closest("[inert]")).toBeNull();
+
+    // inert hit-tests as `pointer-events: none`; the scrim shares the drawer's
+    // fixed layer, so what a real pointer lands on beside the drawer is still it
+    const scrim = drawer.previousElementSibling as HTMLElement;
+    const view = canvasElement.ownerDocument.defaultView as Window;
+    await expect(
+      canvasElement.ownerDocument.elementFromPoint(view.innerWidth - 10, view.innerHeight / 2),
+    ).toBe(scrim);
+    await userEvent.click(scrim);
+    await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await expect(trigger.closest("[inert]")).toBeNull();
+  },
+};
+
+/**
  * Between `md` and `lg` the rail is on screen but folded to icons, and the
  * splitter is gone: dragging a 52px strip wider is not the affordance that
  * width needs.

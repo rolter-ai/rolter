@@ -11,6 +11,7 @@ import {
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
+  expectListTable,
   expectSkeleton,
   expectUxEvent,
   json,
@@ -72,6 +73,7 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("frontier")).toBeVisible());
     await expect(canvas.getByText("openai-prod ·3")).toBeVisible();
+    await expectListTable(canvasElement, "Provider Groups");
   },
 };
 

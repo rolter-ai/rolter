@@ -87,16 +87,36 @@ export function Pill({
 // the columns have a width below which they stop being readable, so the table
 // scrolls sideways inside its own border rather than squeezing them or letting
 // the page scroll under the whole shell (#1203). `minWidth` is that floor; it
-// lands on the rows through a child selector because the header and the rows
+// lands on the header and body rowgroups through a child selector because they
 // are siblings, not one element the caller could size.
+//
+// the css grid only draws the columns, so the roles are what make it a table
+// to a screen reader (#2000): this is `role="table"` over two rowgroups, and a
+// row's children are cells — `SortLabel`, `ListHeaderCell` or
+// `ListActionsHeader` in the header, `ListCell` in the body. a bare span in a
+// row is a generic node that is read with no column header, so it has no place
+// there. `label` names the table, and since the table is also the focusable
+// scroller, it is what focus announces.
+//
+// `ListHeader` is its own rowgroup; every other child — the rows, a loading or
+// empty `ListStateRow` — is put in the body rowgroup here, the way a browser
+// puts a `<tbody>` round rows written straight into a `<table>`, so no caller
+// can leave it out. the header has to be a direct child to be told apart
 export function ListTable({
+  label,
   className,
   minWidth = 760,
   style,
+  children,
   ...props
-}: React.HTMLAttributes<HTMLDivElement> & { minWidth?: number }) {
+}: React.HTMLAttributes<HTMLDivElement> & { label: string; minWidth?: number }) {
+  const parts = React.Children.toArray(children);
+  const isHeader = (part: React.ReactNode) =>
+    React.isValidElement(part) && part.type === ListHeader;
   return (
     <div
+      role="table"
+      aria-label={label}
       // a scroll container has to be reachable from the keyboard, or the part
       // of the row past the right edge is mouse-only (#1181)
       tabIndex={0}
@@ -112,31 +132,46 @@ export function ListTable({
       )}
       style={{ "--rl-list-min-w": `${minWidth}px`, ...style } as React.CSSProperties}
       {...props}
-    />
+    >
+      {parts.filter(isHeader)}
+      <div role="rowgroup">{parts.filter((part) => !isHeader(part))}</div>
+    </div>
+  );
+}
+
+// the header band: a rowgroup around the one row of column headers. the
+// caller's `className` lands on the band, since the band is what a caller
+// positions — McpLogs pins it with `sticky top-0`, and a sticky row inside a
+// rowgroup of its own height would have nowhere to stick
+export function ListHeader({
+  grid,
+  className,
+  children,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement> & { grid: string }) {
+  return (
+    <div
+      role="rowgroup"
+      className={cn(
+        "border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]",
+        className,
+      )}
+      {...props}
+    >
+      <div
+        role="row"
+        className="grid items-center gap-3 px-4 py-[9px]"
+        style={{ gridTemplateColumns: grid }}
+      >
+        {children}
+      </div>
+    </div>
   );
 }
 
 // the caller's `style` is merged over the grid template rather than replacing
 // it: spreading props after `style` let a row's `style={{ opacity }}` drop the
 // template, which stacked every cell of the Keys and Users lists into one column
-export function ListHeader({
-  grid,
-  className,
-  style,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement> & { grid: string }) {
-  return (
-    <div
-      className={cn(
-        "grid items-center gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-4 py-[9px] text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]",
-        className,
-      )}
-      style={{ gridTemplateColumns: grid, ...style }}
-      {...props}
-    />
-  );
-}
-
 export function ListRow({
   grid,
   className,
@@ -145,6 +180,7 @@ export function ListRow({
 }: React.HTMLAttributes<HTMLDivElement> & { grid: string }) {
   return (
     <div
+      role="row"
       className={cn(
         "grid items-center gap-3 border-b border-[color:var(--border-subtle)] px-4 py-[11px] last:border-b-0",
         className,
@@ -152,6 +188,45 @@ export function ListRow({
       style={{ gridTemplateColumns: grid, ...style }}
       {...props}
     />
+  );
+}
+
+// a header cell and a body cell. each takes the place of the span or div a row
+// used to hold, classes and all, so the cell is the grid item and nothing
+// moves. a cell that wraps a component instead (a Pill, a Badge, a combobox)
+// passes `grid`: the component is then laid out exactly as it was when it sat
+// in the row's grid itself, stretched across its column
+export function ListHeaderCell(props: React.HTMLAttributes<HTMLDivElement>) {
+  return <div role="columnheader" {...props} />;
+}
+
+export function ListCell(props: React.HTMLAttributes<HTMLDivElement>) {
+  return <div role="cell" {...props} />;
+}
+
+// the header over a row's buttons shows no text, but a column header with no
+// name is announced as an empty column (axe `empty-table-header`), so it says
+// what the column holds to a screen reader. a table whose buttons take more
+// than one column passes `label` so each column has its own name
+export function ListActionsHeader({ label }: { label?: string }) {
+  const { t } = useTranslation();
+  return (
+    <ListHeaderCell>
+      <span className="sr-only">{label ?? t("common.rowActions")}</span>
+    </ListHeaderCell>
+  );
+}
+
+// what the body shows in place of rows — the loading skeleton, the empty
+// state — as one row holding one cell the width of the table. a skeleton's
+// `role="status"` or an empty state's button placed straight in the rowgroup
+// is content no row owns, which a screen reader reads outside the table and
+// axe fails as `aria-required-children`
+export function ListStateRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div role="row">
+      <div role="cell">{children}</div>
+    </div>
   );
 }
 
@@ -193,6 +268,13 @@ export function useSort<K extends string>() {
   return { sort, cycle, apply };
 }
 
+// a sortable column header, cell and button in one. the sort state is
+// `aria-sort` on the header, where a screen reader announces it with the
+// column, and a sortable column with no sort applied says `none`. the button's
+// name is the column's label, already translated by the caller: an
+// `aria-label` such as "sort by name" would become the header's name too, and
+// that is read before every cell of the column. the arrow draws the same state
+// for the eye and is hidden, so it is not read as an unlabelled image (#2000)
 export function SortLabel({
   label,
   col,
@@ -207,20 +289,30 @@ export function SortLabel({
   justify?: "flex-start" | "flex-end";
 }) {
   const active = sort.col === col && sort.dir != null;
+  const ariaSort = !active ? "none" : sort.dir === "asc" ? "ascending" : "descending";
   return (
-    <button
-      type="button"
-      onClick={() => onCycle(col)}
-      className={cn(
-        "flex select-none items-center gap-[3px] uppercase tracking-[0.07em] transition-colors hover:text-[color:var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        active ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-subtle)]",
-      )}
-      style={{ justifyContent: justify }}
-    >
-      {label}
-      {active &&
-        (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)}
-    </button>
+    <div role="columnheader" aria-sort={ariaSort}>
+      <button
+        type="button"
+        onClick={() => onCycle(col)}
+        className={cn(
+          // `w-full`: the button used to be the grid item and stretched across
+          // the column; inside the header cell it has to ask, or `justify`
+          // has no width to push the label to the right edge in
+          "flex w-full select-none items-center gap-[3px] uppercase tracking-[0.07em] transition-colors hover:text-[color:var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          active ? "text-[color:var(--text-secondary)]" : "text-[color:var(--text-subtle)]",
+        )}
+        style={{ justifyContent: justify }}
+      >
+        {label}
+        {active &&
+          (sort.dir === "asc" ? (
+            <ArrowUp aria-hidden="true" className="h-3 w-3" />
+          ) : (
+            <ArrowDown aria-hidden="true" className="h-3 w-3" />
+          ))}
+      </button>
+    </div>
   );
 }
 

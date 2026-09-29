@@ -116,6 +116,8 @@ A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the
 
 The refresh button in every screen header re-reads everything on the screen. Screens that stream (LLM Logs, MCP Logs, Adaptive Routing) update on their own and show when they last did.
 
+LLM Logs says **Streaming** only after a read that succeeded. While the first page loads, its toolbar says it is loading, and when a read fails it gives the time of the failure instead. If the very first read fails, the screen stops refreshing and keeps the error on screen until you press **Try again**. If a later refresh fails while rows are already showing, the rows stay, and the toolbar reads _Refresh failed at 15:34:56, retrying_ until a refresh succeeds or you pause the stream.
+
 ## When part of a screen fails to load
 
 Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.
@@ -160,3 +162,7 @@ Replies are never treated as markup. HTML tags in a reply show as the characters
 | 1024 px and up | The full rail, collapsible, and resizable by dragging its right edge. The width you choose is remembered.                                   |
 
 Tables that are wider than the screen scroll inside their own frame, and forms that open as side sheets take the full width on a phone. The screen area below the header is a scroll region you can Tab to, so a long screen can be read with the keyboard alone.
+
+## With a screen reader
+
+The list screens (Virtual Keys, Users, Model Providers, Provider Groups, the Model Catalog, Alert History, MCP Logs, OAuth Grants and Auth Sessions) are tables to a screen reader, named after the screen, so table navigation works and each cell is read with its column header. A column you can sort says whether it is sorted ascending, descending or not at all. The column of row buttons has no visible heading and is announced as **Row actions**; on Auth Sessions the two button columns are **Renew** and **Revoke**.

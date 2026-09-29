@@ -42,7 +42,7 @@ const [target, setTarget] = React.useState<ChannelRow | null>(null);
 />
 ```
 
-Four properties are load-bearing:
+Five properties are load-bearing:
 
 - **The title names the thing.** "Delete channel ops-slack?", never "Are you
   sure?". A confirmation that could be about anything is a click-through, and a
@@ -63,6 +63,11 @@ Four properties are load-bearing:
   button still close the dialog: neither the fetch nor the control plane times
   a request out, so a delete stuck behind a row lock would otherwise hold the
   operator in a full-page modal until a reload.
+- **Focus stays in the dialog while it is busy.** Disabling the button that was
+  just pressed makes the browser drop focus onto `<body>`, outside the panel
+  whose Tab trap listens for the next key. `useModalA11y` hands focus back to
+  the panel, and keeps everything outside the topmost modal `inert` while it is
+  up, so a Tab has nothing behind the scrim to land on (#1998).
 
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
@@ -175,7 +180,8 @@ land on it, and the rules are:
 - **A save in flight refuses dismissal outright.** The request is already on the
   wire and nothing here can call it back, so a sheet that vanished would leave
   the operator unable to tell whether the mutation landed. Cancel and the close
-  button are disabled while `locked` rather than silently no-opping.
+  button are disabled while `locked` rather than silently no-opping, and focus
+  stays inside the sheet the same way it does in a busy confirmation.
 
 Stories answer the prompt through `answerDiscardPrompt(true | false)` in
 `story-harness.tsx`, which finds it by its accessible name — the sheet is still

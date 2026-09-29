@@ -6,6 +6,7 @@ import {
   expectEmptyState,
   expectForbidden,
   expectLoadError,
+  expectListTable,
   expectSkeleton,
   Harness,
   json,
@@ -70,6 +71,7 @@ export const Loaded: Story = {
     expect(canvas.getByText("410 ms")).toBeInTheDocument();
     expect(canvas.getByText("980 ms")).toBeInTheDocument();
     expect(canvas.getAllByText("320 ms").length).toBeGreaterThan(0);
+    await expectListTable(canvasElement, "MCP Logs");
   },
 };
 

@@ -38,8 +38,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
+  ListActionsHeader,
+  ListCell,
   ListHeader,
+  ListHeaderCell,
   ListRow,
+  ListStateRow,
   ListTable,
   PageBody,
   RowIconButton,
@@ -245,19 +249,23 @@ export default function Keys() {
         </p>
       )}
 
-      <ListTable>
+      <ListTable label={t("screens.virtual-keys.title")}>
         <ListHeader grid={GRID}>
-          <span>{t("pages.virtualKeys.colName")}</span>
-          <span>{t("pages.virtualKeys.colKey")}</span>
-          <span>{t("pages.virtualKeys.colModels")}</span>
+          <ListHeaderCell>{t("pages.virtualKeys.colName")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.virtualKeys.colKey")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.virtualKeys.colModels")}</ListHeaderCell>
           {/* attribution sits next to the models allow-list because both
               answer "what does this key touch", and neither is the secret */}
-          <span>{t("pages.virtualKeys.colAttribution")}</span>
-          <span>{t("pages.virtualKeys.colCache")}</span>
-          <span>{t("pages.virtualKeys.colStatus")}</span>
-          <span />
+          <ListHeaderCell>{t("pages.virtualKeys.colAttribution")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.virtualKeys.colCache")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.virtualKeys.colStatus")}</ListHeaderCell>
+          <ListActionsHeader />
         </ListHeader>
-        {keys.isLoading && <ListSkeleton rows={4} className="p-3" />}
+        {keys.isLoading && (
+          <ListStateRow>
+            <ListSkeleton rows={4} className="p-3" />
+          </ListStateRow>
+        )}
         {rows.map((key) => (
           <ListRow
             key={key.id}
@@ -267,7 +275,7 @@ export default function Keys() {
             // and takes every one of them under 4.5:1 (#1181)
             className={key.disabled ? "bg-[color:var(--surface-subtle)]/60" : undefined}
           >
-            <div className="min-w-0">
+            <ListCell className="min-w-0">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate text-sm font-semibold">
                   {key.name ?? t("pages.virtualKeys.unnamed")}
@@ -287,8 +295,8 @@ export default function Keys() {
                   ? t("pages.virtualKeys.expiresOn", { date: fmt.date(key.expires_at) })
                   : t("pages.virtualKeys.noExpiry")}
               </div>
-            </div>
-            <div className="flex min-w-0 items-center gap-0.5">
+            </ListCell>
+            <ListCell className="flex min-w-0 items-center gap-0.5">
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
                 {key.key_prefix}…
               </code>
@@ -297,8 +305,8 @@ export default function Keys() {
                 label={t("pages.virtualKeys.copyPrefix")}
                 className="h-6 px-1"
               />
-            </div>
-            <div className="flex min-w-0 flex-wrap gap-1 overflow-hidden">
+            </ListCell>
+            <ListCell className="flex min-w-0 flex-wrap gap-1 overflow-hidden">
               {key.models.length ? (
                 key.models.slice(0, 3).map((model) => <Tag key={model}>{model}</Tag>)
               ) : (
@@ -309,40 +317,48 @@ export default function Keys() {
                   +{key.models.length - 3}
                 </span>
               )}
-            </div>
-            <AttributionBadges
-              unit={unitName(key.business_unit_id)}
-              customer={customerName(key.customer_id)}
-            />
-            <GatedCombobox
-              gate="virtual_key:update"
-              control="key-cache"
-              aria-label={t("pages.virtualKeys.cacheAria", {
-                name: key.name ?? key.key_prefix,
-              })}
-              className="h-8 text-xs"
-              value={cacheMode(key.cache_enabled)}
-              disabled={setCache.isPending}
-              onChange={(picked) => setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })}
-              options={[
-                { value: "inherit", label: t("pages.virtualKeys.cacheModes.inherit") },
-                { value: "off", label: t("pages.virtualKeys.cacheModes.off") },
-                { value: "on", label: t("pages.virtualKeys.cacheModes.on") },
-              ]}
-            />
-            <GatedSwitch
-              gate="virtual_key:update"
-              control="key-toggle"
-              checked={!key.disabled}
-              disabled={toggleDisabled.isPending}
-              aria-label={t("pages.virtualKeys.toggleAria", {
-                name: key.name ?? key.key_prefix,
-              })}
-              onCheckedChange={(enabled) =>
-                toggleDisabled.mutate({ id: key.id, disabled: !enabled })
-              }
-            />
-            <div className="flex items-center justify-self-end">
+            </ListCell>
+            <ListCell className="grid min-w-0">
+              <AttributionBadges
+                unit={unitName(key.business_unit_id)}
+                customer={customerName(key.customer_id)}
+              />
+            </ListCell>
+            <ListCell className="grid">
+              <GatedCombobox
+                gate="virtual_key:update"
+                control="key-cache"
+                aria-label={t("pages.virtualKeys.cacheAria", {
+                  name: key.name ?? key.key_prefix,
+                })}
+                className="h-8 text-xs"
+                value={cacheMode(key.cache_enabled)}
+                disabled={setCache.isPending}
+                onChange={(picked) =>
+                  setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })
+                }
+                options={[
+                  { value: "inherit", label: t("pages.virtualKeys.cacheModes.inherit") },
+                  { value: "off", label: t("pages.virtualKeys.cacheModes.off") },
+                  { value: "on", label: t("pages.virtualKeys.cacheModes.on") },
+                ]}
+              />
+            </ListCell>
+            <ListCell className="grid">
+              <GatedSwitch
+                gate="virtual_key:update"
+                control="key-toggle"
+                checked={!key.disabled}
+                disabled={toggleDisabled.isPending}
+                aria-label={t("pages.virtualKeys.toggleAria", {
+                  name: key.name ?? key.key_prefix,
+                })}
+                onCheckedChange={(enabled) =>
+                  toggleDisabled.mutate({ id: key.id, disabled: !enabled })
+                }
+              />
+            </ListCell>
+            <ListCell className="flex items-center justify-self-end">
               <RowIconButton
                 gate="virtual_key:update"
                 control="key-edit"
@@ -363,34 +379,38 @@ export default function Keys() {
                 })}
                 onClick={() => setDeleteTarget(key)}
               />
-            </div>
+            </ListCell>
           </ListRow>
         ))}
         {!keys.isLoading && rows.length === 0 && (
-          <EmptyState
-            uxTarget="virtual-keys"
-            icon={<Key />}
-            title={search ? t("pages.virtualKeys.noMatchTitle") : t("pages.virtualKeys.emptyTitle")}
-            description={
-              search ? t("pages.virtualKeys.noMatchBody") : t("pages.virtualKeys.emptyBody")
-            }
-            actions={
-              search ? (
-                <Button variant="outline" onClick={() => setSearch("")}>
-                  {t("common.clearSearch")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="virtual_key:create"
-                  control="key-new-empty"
-                  disabled={scopeBlocked || !scope.projectId}
-                  onClick={() => setAddOpen(true)}
-                >
-                  {t("pages.virtualKeys.emptyAction")}
-                </GatedButton>
-              )
-            }
-          />
+          <ListStateRow>
+            <EmptyState
+              uxTarget="virtual-keys"
+              icon={<Key />}
+              title={
+                search ? t("pages.virtualKeys.noMatchTitle") : t("pages.virtualKeys.emptyTitle")
+              }
+              description={
+                search ? t("pages.virtualKeys.noMatchBody") : t("pages.virtualKeys.emptyBody")
+              }
+              actions={
+                search ? (
+                  <Button variant="outline" onClick={() => setSearch("")}>
+                    {t("common.clearSearch")}
+                  </Button>
+                ) : (
+                  <GatedButton
+                    gate="virtual_key:create"
+                    control="key-new-empty"
+                    disabled={scopeBlocked || !scope.projectId}
+                    onClick={() => setAddOpen(true)}
+                  >
+                    {t("pages.virtualKeys.emptyAction")}
+                  </GatedButton>
+                )
+              }
+            />
+          </ListStateRow>
         )}
       </ListTable>
       <div className="flex items-center justify-between px-0.5 text-xs text-muted-foreground">
