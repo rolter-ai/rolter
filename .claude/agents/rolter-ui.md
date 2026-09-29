@@ -104,7 +104,7 @@ lint/typecheck script, run it too.
 
 - Conventional Commits with a **fixed scope allowlist** — `gateway balancer
 proxy core store auth control ui docs infra ci deps release e2e`. Dashboard
-  work is `ui`. Anything outside the list fails the `pr-title` check.
+  work is `ui`. Anything outside the list fails the `pr-title` step of `ci-ok`.
 - PR title is one valid Conventional Commit line with the issue in brackets:
   `feat(ui): build the adaptive routing settings screen [#750]`.
 - Every commit carries exactly one co-author trailer:

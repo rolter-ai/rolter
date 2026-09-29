@@ -201,11 +201,11 @@ It deliberately does **not** read the branch from the action's `prs` output:
 that output is populated only on the run that _creates_ the PR, while the branch
 is force-pushed on every later master commit and needs re-gating each time.
 
-One check is genuinely absent on a dispatched run: `pr-title` is
-`if: github.event_name == 'pull_request'`, so it is skipped, and `ci-ok`
-tolerates a skipped `pr-title` the same way it does on a push build. That is
-acceptable here because release-plz writes the release PR title itself and it is
-already a valid Conventional Commit line.
+One check is genuinely absent on a dispatched run: `ci-ok`'s `pr-title` step
+runs only on `pull_request`, so it is skipped, and the verdict tolerates that
+skip with a `::warning::` saying the title went unvalidated. That is acceptable
+here because release-plz writes the release PR title itself and it is already a
+valid Conventional Commit line.
 
 ### Why the explicit dispatch
 
