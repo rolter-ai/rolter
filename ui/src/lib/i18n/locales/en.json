@@ -1684,7 +1684,12 @@
         "activateFailOpen": "Every request then waits for {{name}} before it goes upstream. It fails open: when {{name}} times out or errors, the request goes upstream unchecked.",
         "activatePostCall": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it and its failure policy never applies.",
         "activateFileWins": "The config-file webhook stays in force while it is enabled, so {{name}} is ignored until that webhook is turned off.",
-        "activateConfirm": "Save and activate"
+        "activateConfirm": "Save and activate",
+        "pauseTitle": "Pause {{name}}?",
+        "pauseUnchecked": "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.",
+        "pauseFileStays": "The config-file webhook stays in force while it is enabled. It already overrides {{name}}, so pausing it changes nothing for requests.",
+        "pauseUnknown": "The effective configuration did not confirm which webhook is in force, so this screen cannot say whether a config-file webhook checks requests afterwards. If none is enabled, no external guardrail does.",
+        "pauseConfirm": "Save and pause"
       },
       "deleteAria": "Delete provider {{name}}",
       "editAria": "Edit provider {{name}}",

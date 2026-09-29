@@ -134,16 +134,37 @@ function GuardrailProvidersScreen() {
   // `undefined` while the registry has not loaded: "none is active" would be a
   // guess, and the confirmation below must not guess
   const active = query.data ? (providers.find((provider) => provider.enabled) ?? null) : undefined;
+  // an enabled config-file webhook wins over the registry, whichever row is on
+  const fileInForce =
+    (enforcement?.state === "enforced" || enforcement?.state === "inert") &&
+    enforcement.provider === null;
 
-  // switching a provider on hands it every request, so the save that does it
-  // goes through a confirmation naming what it replaces and what a failure
-  // then does to traffic (#2163). saving a provider that is already on is not
-  // a hand-over and saves directly
-  const [activating, setActivating] = React.useState<GuardrailProviderInput | null>(null);
+  // switching a provider on hands it every request (#2163), and switching the
+  // active one off leaves them to nothing (#2271), so both saves go through a
+  // confirmation naming the provider and what traffic goes through afterwards.
+  // a save that leaves the switch where it was is not a hand-over and saves
+  // directly
+  const [handingOver, setHandingOver] = React.useState<GuardrailProviderInput | null>(null);
+  // not cleared as the confirmation closes: the landing is reported on the
+  // closing edge, and a UX stream key that flipped to the activation's there
+  // would file the pause under it
+  const [pausing, setPausing] = React.useState(false);
   const requestSave = (body: GuardrailProviderInput) => {
-    if (body.enabled && !editing?.enabled) setActivating(body);
-    else save.mutate(body);
+    if (body.enabled === Boolean(editing?.enabled)) {
+      save.mutate(body);
+      return;
+    }
+    setPausing(!body.enabled);
+    setHandingOver(body);
   };
+  // what requests go through once the active row is paused. no other row
+  // takes its place, so only an enabled config-file webhook still checks
+  // them, and an unreadable effective config cannot say whether one is
+  const pauseConsequence = fileInForce
+    ? t("pages.guardrailProviders.confirm.pauseFileStays", { name: handingOver?.name })
+    : enforcement === null || enforcement.state === "unknown"
+      ? t("pages.guardrailProviders.confirm.pauseUnknown")
+      : t("pages.guardrailProviders.confirm.pauseUnchecked");
 
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
@@ -316,35 +337,45 @@ function GuardrailProvidersScreen() {
           outside that dialog, whose key changes as it closes, so it sees the
           save land */}
       <ConfirmDialog
-        name="guardrail-provider-activate"
-        open={!!activating}
+        name={pausing ? "guardrail-provider-pause" : "guardrail-provider-activate"}
+        open={!!handingOver}
         onOpenChange={(open) => {
           if (open) return;
-          setActivating(null);
+          setHandingOver(null);
           save.reset();
         }}
-        // a hand-over, not a removal: the provider it pauses can be switched
-        // back on
-        tone="default"
-        title={t("pages.guardrailProviders.confirm.activateTitle", { name: activating?.name })}
-        description={
-          activating && (
-            <ActivationConsequence
-              provider={activating}
-              replaces={active === undefined ? undefined : (active?.name ?? null)}
-              fileWins={
-                (enforcement?.state === "enforced" || enforcement?.state === "inert") &&
-                enforcement.provider === null
-              }
-            />
-          )
+        // activating is a hand-over, not a removal: the provider it pauses can
+        // be switched back on. a pause that leaves requests unchecked is as
+        // red as the delete, and one under the config-file webhook changes
+        // nothing for traffic
+        tone={pausing && !fileInForce ? "danger" : "default"}
+        title={
+          pausing
+            ? t("pages.guardrailProviders.confirm.pauseTitle", { name: handingOver?.name })
+            : t("pages.guardrailProviders.confirm.activateTitle", { name: handingOver?.name })
         }
-        confirmLabel={t("pages.guardrailProviders.confirm.activateConfirm")}
+        description={
+          handingOver &&
+          (pausing ? (
+            pauseConsequence
+          ) : (
+            <ActivationConsequence
+              provider={handingOver}
+              replaces={active === undefined ? undefined : (active?.name ?? null)}
+              fileWins={fileInForce}
+            />
+          ))
+        }
+        confirmLabel={
+          pausing
+            ? t("pages.guardrailProviders.confirm.pauseConfirm")
+            : t("pages.guardrailProviders.confirm.activateConfirm")
+        }
         pending={save.isPending}
         error={save.error}
         onConfirm={() => {
-          if (!activating) return;
-          save.mutate(activating, { onSuccess: () => setActivating(null) });
+          if (!handingOver) return;
+          save.mutate(handingOver, { onSuccess: () => setHandingOver(null) });
         }}
       />
     </div>

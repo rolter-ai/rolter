@@ -919,3 +919,163 @@ export const ActivationWhileTheRegistryIsUnreadable: Story = {
     await expect(confirm.queryByText(/No provider is active now/)).toBeNull();
   },
 };
+
+// #2271: switching the active provider off stops external checks for every
+// request, the same effect on traffic as deleting it, from a form that also
+// holds the timeout and the URL. The save that does it asks first, through the
+// confirmation activation uses
+
+/** open the active provider, switch it off and save, and return the form */
+async function pauseProductionGuard(canvasElement: HTMLElement) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", {
+      name: "Edit provider Production LLM Guard",
+    }),
+  );
+  const form = within(
+    await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+  );
+  await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+  await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+  return form;
+}
+
+/** the pause confirmation, found by the provider its title names */
+const pauseFor = async (name: string) =>
+  within(await within(document.body).findByRole("dialog", { name: `Pause ${name}?` }));
+
+const NOTHING_CHECKS =
+  "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.";
+
+/**
+ * Saving the active provider switched off names it and says nothing checks
+ * requests afterwards. A cancel returns to the form with the switch as it was
+ * left; a confirm saves it switched off, holds both buttons while the request
+ * is out, and once it lands the banner stops claiming enforcement.
+ */
+let pauses: Recorder;
+let providerPaused = false;
+let landPause: () => void = () => {};
+export const PausingTheActiveProviderAsksFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    providerPaused = false;
+    pauses = recording(
+      registry(
+        () => (providerPaused ? PROVIDERS.map((row) => ({ ...row, enabled: false })) : PROVIDERS),
+        () => (providerPaused ? NO_WEBHOOK : PRIMARY_WEBHOOK),
+        () =>
+          new Promise<Response>((resolve) => {
+            landPause = () => {
+              providerPaused = true;
+              resolve(json({ ...PROVIDERS[0], enabled: false }));
+            };
+          }),
+      ),
+    );
+    return <Harness fetchStub={pauses.stub} toasted reported />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const form = await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(confirm.getByText(NOTHING_CHECKS)).toBeVisible();
+    pauses.expectNotSent("PUT", "/guardrails/providers/provider-primary");
+
+    // a cancel is a way back to the form, not out of it
+    await userEvent.click(confirm.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        within(document.body).queryByRole("dialog", { name: "Pause Production LLM Guard?" }),
+      ).toBeNull(),
+    );
+    pauses.expectNotSent("PUT", "/guardrails/providers/provider-primary");
+    await expect(form.getByRole("switch", { name: "Activate provider" })).not.toBeChecked();
+    await expect((await expectUxEvent("form_abandon", "guardrail-provider-pause")).outcome).toBe(
+      "cancelled",
+    );
+
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+    const again = await pauseFor("Production LLM Guard");
+    await userEvent.click(again.getByRole("button", { name: "Save and pause" }));
+    const body = await pauses.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-primary",
+    );
+    await expect(body).toMatchObject({ name: "Production LLM Guard", enabled: false });
+    // the request is on the wire, so nothing looks like it could call it back
+    await waitFor(() => expect(again.getByRole("button", { name: "Cancel" })).toBeDisabled());
+
+    landPause();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Production LLM Guard updated/);
+    await expectUxEvent("save_confirmed", "guardrail-provider-pause");
+    await expect(
+      await canvas.findByRole("region", { name: "No external guardrail is enforcing" }),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * Under an enabled config-file webhook the active row is already overridden,
+ * so the confirmation says that webhook stays in force rather than that
+ * nothing checks requests.
+ */
+let pausesUnderFile: Recorder;
+export const PausingUnderAConfigFileWebhook: Story = {
+  render: () => {
+    pausesUnderFile = recording(
+      registry(PROVIDERS, FILE_WEBHOOK, async () => json({ ...PROVIDERS[0], enabled: false })),
+    );
+    return <Harness fetchStub={pausesUnderFile.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(
+      confirm.getByText(
+        "The config-file webhook stays in force while it is enabled. It already overrides Production LLM Guard, so pausing it changes nothing for requests.",
+      ),
+    ).toBeVisible();
+    await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
+
+    await userEvent.click(confirm.getByRole("button", { name: "Save and pause" }));
+    const body = await pausesUnderFile.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-primary",
+    );
+    await expect(body).toMatchObject({ enabled: false });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The effective config did not load, so the screen cannot tell whether a
+ * config-file webhook checks requests once the row is paused. It says so
+ * rather than claim nothing does.
+ */
+export const PausingWhileEnforcementIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input) =>
+        String(input).includes("/api/v1/config")
+          ? json({ error: { message: "config store unavailable" } }, 503)
+          : json(PROVIDERS)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("region", {
+      name: "External enforcement status unknown",
+    });
+    await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(
+      confirm.getByText(/cannot say whether a config-file webhook checks requests afterwards/),
+    ).toBeVisible();
+    await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
+  },
+};
