@@ -13,6 +13,7 @@ import {
   scoped,
 } from "./story-harness";
 import type { MttrRow, TimelineRow, UptimeRow } from "@/lib/api";
+import { resolveColorToken } from "@/lib/story-tokens";
 
 // two grains of the same provider. `openai-dead` is watched by probes (a
 // provider-grain row) *and* by real traffic through two models; before #1257
@@ -135,8 +136,10 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("sonnet@eu")).toBeVisible());
-    // the breached target is the one the operator has to act on, so it says so
-    await expect(canvas.getAllByText("tripped").length).toBeGreaterThan(0);
+    // #2113: a breach is named as the SLA verdict it is, never as a breaker
+    // state — nothing on this screen reads the gateway's breakers
+    await expect(canvas.getAllByText("below SLA").length).toBeGreaterThan(0);
+    await expect(canvas.queryByText(/tripped|closed/i)).toBeNull();
 
     // #1257: one card per provider, with its targets nested inside it — not
     // one card per (provider, target_id) pair
@@ -166,6 +169,123 @@ export const DerivedHeadline: Story = {
     await expect(within(card).getByText("rolled up from targets")).toBeVisible();
     await expect(within(card).getByText("uptime · 980 events")).toBeVisible();
     await expect(within(card).getByText("1 target")).toBeVisible();
+  },
+};
+
+// #2113: three SLA states, one per card. the timeline arrives in ClickHouse's
+// own wire format — a zone-less `2026-08-06 10:00:00` — and its newest two
+// hours (10:00 and 11:00) are what "recently" means here
+const hour = (h: number) => `2026-08-06 ${String(h).padStart(2, "0")}:00:00`;
+
+function strip(
+  provider: string,
+  target: string,
+  failures: Record<number, number>,
+  events = 100,
+): TimelineRow[] {
+  return Array.from({ length: 12 }, (_, h) => ({
+    bucket: hour(h),
+    provider,
+    target_id: target,
+    grain: provider === target ? ("provider" as const) : ("target" as const),
+    events,
+    ok: events - (failures[h] ?? 0),
+    errors: failures[h] ?? 0,
+    timeouts: 0,
+  }));
+}
+
+function uptimeRow(
+  provider: string,
+  target: string,
+  events: number,
+  failures: number,
+  sources: string[],
+): UptimeRow {
+  const failureRate = failures / events;
+  return {
+    provider,
+    target_id: target,
+    grain: provider === target ? "provider" : "target",
+    sources,
+    events,
+    ok: events - failures,
+    errors: failures,
+    timeouts: 0,
+    uptime: 1 - failureRate,
+    failure_rate: failureRate,
+    error_budget_burn: failureRate / 0.01,
+    sla_breached: failureRate > 0.01 ? 1 : 0,
+    last_event: "2026-08-06 11:59:30.000",
+  };
+}
+
+const SLA_UPTIME: UptimeRow[] = [
+  // 60 failures in 1200 probes: over the 1% the SLA allows, even though the
+  // last two hours were clean — the window's verdict stands
+  uptimeRow("groq", "groq", 1200, 60, ["probe"]),
+  // 6 failures in 1200 is inside the SLA, but all six landed in the last two
+  // hours: 3% there, three times what the SLA allows
+  uptimeRow("vllm-pool", "vllm-pool", 1200, 6, ["probe"]),
+  // one bad hour early in the window, then clean: inside the SLA, not at risk
+  uptimeRow("mistral", "mistral", 1200, 5, ["probe"]),
+  // no probes, so the card is rolled up from its targets and takes the worst
+  uptimeRow("anthropic", "sonnet@eu", 1200, 4, ["passive"]),
+  uptimeRow("anthropic", "haiku@eu", 1200, 0, ["passive"]),
+];
+
+const SLA_TIMELINE: TimelineRow[] = [
+  ...strip("groq", "groq", { 2: 30, 3: 30 }),
+  ...strip("vllm-pool", "vllm-pool", { 10: 3, 11: 3 }),
+  ...strip("mistral", "mistral", { 3: 5 }),
+  ...strip("anthropic", "sonnet@eu", { 11: 4 }),
+  ...strip("anthropic", "haiku@eu", {}),
+];
+
+export const SlaStates: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/health/uptime", () => ({ data: SLA_UPTIME })],
+        ["/health/mttr", () => ({ data: [] })],
+        ["/health/timeline", () => ({ data: SLA_TIMELINE })],
+      ])}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId(/^health-card-/)).toHaveLength(4));
+
+    // each pill names the state and takes the text half of its status pair
+    const expectPill = async (provider: string, label: string, token: `--${string}`) => {
+      const pill = within(canvas.getByTestId(`health-card-${provider}`)).getByTestId(
+        "health-sla-state",
+      );
+      await expect(pill).toHaveTextContent(label);
+      await expect(getComputedStyle(pill).color).toBe(resolveColorToken(token));
+    };
+    await expectPill("groq", "below SLA", "--status-danger-text");
+    await expectPill("vllm-pool", "SLA at risk", "--status-warning-text");
+    await expectPill("mistral", "within SLA", "--status-success-text");
+    await expectPill("anthropic", "SLA at risk", "--status-warning-text");
+
+    // an at-risk provider still holds the SLA over the window, so its uptime
+    // figure is not painted as a breach
+    const atRisk = canvas.getByTestId("health-card-vllm-pool");
+    await expect(getComputedStyle(within(atRisk).getByText("99.50%")).color).not.toBe(
+      resolveColorToken("--status-danger-text"),
+    );
+
+    // a target row's dot carries its state as text too
+    const sonnet = canvas.getByTestId("health-target-sonnet@eu");
+    await expect(within(sonnet).getByText("SLA at risk")).toBeInTheDocument();
+    const haiku = canvas.getByTestId("health-target-haiku@eu");
+    await expect(within(haiku).getByText("within SLA")).toBeInTheDocument();
+
+    // the line above the grid says what "at risk" means
+    await expect(canvas.getByText(/SLA at risk means/)).toBeVisible();
   },
 };
 

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   fetchHealthTimeline,
@@ -15,10 +16,87 @@ import {
   type UptimeRow,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
+import { HEALTH_SLA as SLA } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-const SLA = 0.99;
+/**
+ * How far back "recently" reaches: the newest hourly bucket the timeline holds
+ * and the one before it, so a state never hangs on the few minutes an hour has
+ * had so far.
+ */
+const RECENT_MS = 60 * 60 * 1000;
+
+/**
+ * Where a provider or target stands against the SLA. Every input comes from
+ * `provider_health_events`, not from the gateway's circuit breakers, which this
+ * screen never reads — so the states are named after the SLA, never after a
+ * breaker (#2113).
+ *
+ * - `breaching`: over the window, more requests failed than the SLA allows
+ * - `atRisk`: the window still meets the SLA, but the recent buckets failed
+ *   faster than it allows, so the error budget is burning at more than 1x
+ * - `within`: the window meets the SLA and the recent buckets do too
+ */
+type SlaState = "breaching" | "atRisk" | "within";
+
+/** the status fill for a state's dots and border */
+const SLA_FILL: Record<SlaState, string> = {
+  breaching: "var(--status-danger)",
+  atRisk: "var(--status-warning)",
+  within: "var(--status-success)",
+};
+
+const SLA_TONE = { breaching: "danger", atRisk: "warning", within: "success" } as const;
+
+function slaState(breached: boolean, recentBurn: number | undefined): SlaState {
+  if (breached) return "breaching";
+  return recentBurn !== undefined && recentBurn > 1 ? "atRisk" : "within";
+}
+
+const SLA_RANK: Record<SlaState, number> = { within: 0, atRisk: 1, breaching: 2 };
+
+/** the worst of several states, for a card rolled up from its targets */
+function worstState(states: SlaState[]): SlaState {
+  return states.reduce<SlaState>((a, b) => (SLA_RANK[b] > SLA_RANK[a] ? b : a), "within");
+}
+
+function useSlaLabel(): (state: SlaState) => string {
+  const { t } = useTranslation();
+  return (state) =>
+    state === "breaching"
+      ? t("pages.health.slaBreaching")
+      : state === "atRisk"
+        ? t("pages.health.slaAtRisk")
+        : t("pages.health.slaWithin");
+}
+
+/**
+ * A bucket's start in milliseconds. ClickHouse writes `2026-08-06 10:00:00`
+ * with no zone, in its own; every bucket shares that zone, so reading them all
+ * as UTC keeps the gaps between them right, which is all `recentBurn` compares.
+ */
+function bucketStart(bucket: string): number {
+  const iso = bucket.replace(" ", "T");
+  return Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
+}
+
+/**
+ * Failures over the buckets that start at or after `since`, as a multiple of
+ * what the SLA allows — the same formula as the rollup's `error_budget_burn`,
+ * over a shorter span. Undefined when nothing was observed in that span.
+ */
+function recentBurn(buckets: TimelineRow[], since: number): number | undefined {
+  let events = 0;
+  let failures = 0;
+  for (const b of buckets) {
+    // `!(>=)` rather than `<`, so an unparsable bucket is skipped too
+    if (!(bucketStart(b.bucket) >= since)) continue;
+    events += b.events;
+    failures += b.errors + b.timeouts;
+  }
+  return events === 0 ? undefined : failures / events / (1 - SLA);
+}
 
 function pct(fmt: Formatters, v: number): string {
   return fmt.percent(v, 2);
@@ -173,18 +251,12 @@ function Timeline({ buckets, className }: { buckets: TimelineRow[]; className?: 
   );
 }
 
-function StatusPill({ breached }: { breached: boolean }) {
-  const { t } = useTranslation();
+function SlaPill({ state }: { state: SlaState }) {
+  const label = useSlaLabel();
   return (
-    <span
-      className="ml-auto rounded-[6px] px-2 py-[3px] font-mono text-[0.6875rem] uppercase tracking-[0.05em]"
-      style={{
-        color: breached ? "var(--status-danger-text)" : "var(--status-success-text)",
-        background: breached ? "rgba(229,57,53,.14)" : "rgba(22,163,74,.14)",
-      }}
-    >
-      {breached ? t("pages.health.tripped") : t("pages.health.closed")}
-    </span>
+    <Badge tone={SLA_TONE[state]} className="ml-auto" data-testid="health-sla-state">
+      {label(state)}
+    </Badge>
   );
 }
 
@@ -204,26 +276,33 @@ function TargetRow({
   row,
   mttr,
   buckets,
+  state,
 }: {
   row: UptimeRow;
   mttr: MttrRow | undefined;
   buckets: TimelineRow[];
+  state: SlaState;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const breached = row.sla_breached === 1;
+  const label = useSlaLabel();
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2">
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2"
+      data-testid={`health-target-${row.target_id}`}
+    >
       <span
         className="h-1.5 w-1.5 flex-none rounded-full"
-        style={{ background: breached ? "var(--status-danger)" : "var(--status-success)" }}
+        style={{ background: SLA_FILL[state] }}
       />
+      {/* the dot is the row's only state marker, so its meaning is also text */}
+      <span className="sr-only">{label(state)}</span>
       <span className="min-w-0 flex-1 truncate font-mono text-xs">{row.target_id}</span>
       <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
       <span
         className={cn(
           "w-16 flex-none text-right font-mono text-xs",
-          breached && "text-[color:var(--status-danger-text)]",
+          state === "breaching" && "text-[color:var(--status-danger-text)]",
         )}
       >
         {pct(fmt, row.uptime)}
@@ -269,6 +348,14 @@ export default function Health() {
     timelineByTarget.set(k, list);
   }
   const groups = groupByProvider(uptime.data ?? []);
+  // "recently" counts back from the newest bucket the timeline holds, not from
+  // the browser's clock, which cannot know the zone the buckets were written
+  // in. while probes or traffic flow, that bucket is the current hour
+  const newest = (timeline.data ?? []).reduce((max, row) => {
+    const start = bucketStart(row.bucket);
+    return start > max ? start : max;
+  }, -Infinity);
+  const since = newest - RECENT_MS;
 
   return (
     <PageBody className="gap-[18px]">
@@ -327,23 +414,32 @@ export default function Health() {
                   (tgt) => timelineByTarget.get(key(group.provider, tgt.target_id)) ?? [],
                 ),
               );
+          const targetState = (row: UptimeRow) =>
+            slaState(
+              row.sla_breached === 1,
+              recentBurn(timelineByTarget.get(key(group.provider, row.target_id)) ?? [], since),
+            );
+          // a probed provider is judged on its own row, like its headline; a
+          // rolled-up card takes its worst target, as `headline` does for a breach
+          const state = group.overall
+            ? slaState(head.breached, recentBurn(headBuckets, since))
+            : worstState(group.targets.map(targetState));
           return (
             <div
               key={group.provider}
               data-testid={`health-card-${group.provider}`}
               className="flex flex-col gap-3.5 rounded-[10px] border bg-card p-4"
               style={{
-                borderColor: head.breached
-                  ? "color-mix(in srgb, var(--status-danger) 45%, transparent)"
-                  : "var(--border-default)",
+                borderColor:
+                  state === "within"
+                    ? "var(--border-default)"
+                    : `color-mix(in srgb, ${SLA_FILL[state]} 45%, transparent)`,
               }}
             >
-              <div className="flex items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                 <span
                   className="h-2 w-2 flex-none rounded-full"
-                  style={{
-                    background: head.breached ? "var(--status-danger)" : "var(--status-success)",
-                  }}
+                  style={{ background: SLA_FILL[state] }}
                 />
                 <span className="font-mono text-sm font-semibold">{group.provider}</span>
                 <span className="font-mono text-xs text-[color:var(--text-subtle)]">
@@ -353,14 +449,16 @@ export default function Health() {
                         sources: head.sources.join(", ") || "—",
                       })}
                 </span>
-                <StatusPill breached={head.breached} />
+                <SlaPill state={state} />
               </div>
               <div className="flex items-end gap-3">
                 <div className="flex flex-col gap-px">
                   <span
                     className={cn(
                       "font-mono text-2xl font-medium leading-none",
-                      head.breached && "text-[color:var(--status-danger-text)]",
+                      // the figure is the window's uptime, which an at-risk
+                      // provider still holds, so only a breach colours it
+                      state === "breaching" && "text-[color:var(--status-danger-text)]",
                     )}
                   >
                     {pct(fmt, head.uptime)}
@@ -396,6 +494,7 @@ export default function Health() {
                         row={row}
                         mttr={mttrByTarget.get(key(group.provider, row.target_id))}
                         buckets={timelineByTarget.get(key(group.provider, row.target_id)) ?? []}
+                        state={targetState(row)}
                       />
                     ))}
                   </div>

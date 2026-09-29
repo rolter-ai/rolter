@@ -42,7 +42,7 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
 Give a route two targets that serve the same model — two regions of one vendor, or two vendors. In the model sheet, **+ Add target** adds the second line. A transient failure on one (a 5xx, a timeout) is retried on the other before the client sees it, a target that keeps failing is put in cooldown, and a circuit breaker stops sending it traffic until it recovers.
 
 - Retries, backoff and timeouts: **Settings → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
-- Breaker state per target: **Models → Circuit Breaker**, and [Circuit breakers](/reliability/circuit-breakers).
+- Uptime and SLA state per provider and target: **Models → Provider Health**, and [Provider health in the dashboard](/reliability/health-checks#provider-health-in-the-dashboard). Breaker trips are counted in `/metrics`; see [Circuit breakers](/reliability/circuit-breakers).
 - Probe targets before a request fails: [Health checks](/reliability/health-checks).
 
 ## Several vendors
