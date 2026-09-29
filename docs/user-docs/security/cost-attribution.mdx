@@ -110,7 +110,28 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 
 Each row carries `id`, `requests`, `tokens`, `prompt_tokens`, `completion_tokens`, `cost_usd` and `errors`. The unattributed bucket comes back with an **empty** `id`.
 
-The **Business Units** and **Customers** screens read this over the last 24 hours — the same window the Dashboard reports — and show three figures above the roster: what the window cost in total, how much of it was attributed, and how much was not, with the unattributed share as a percentage. Each card then carries its own spend and request count; a unit with no traffic says so rather than printing a zero, because a zero claims a fact the window does not contain.
+The **Business Units** and **Customers** screens read this over a window you pick beside the **New** button, and show three figures above the roster: what the window cost in total, how much of it was attributed, and how much was not, with the unattributed share as a percentage. Each card then carries its own spend and request count; a unit with no traffic says so rather than printing a zero, because a zero claims a fact the window does not contain.
+
+| Window            | What it covers                                                                   |
+| ----------------- | -------------------------------------------------------------------------------- |
+| **Last 24 hours** | the 24 hours before the figures were read; the default, as on the Dashboard      |
+| **Last 7 days**   | the 7 × 24 hours before the figures were read                                    |
+| **Last 30 days**  | the 30 × 24 hours before the figures were read                                   |
+| **Month to date** | from midnight on the first of the current month up to now                        |
+| **Last month**    | the whole previous calendar month, from its first midnight to this month's first |
+
+The two month windows follow your browser's time zone, so "last month" is the month on your own calendar, whatever zone the control plane or ClickHouse runs in, and a chargeback run on the 3rd still covers the previous month in full. The total's caption gives the first and last date the figures cover, which is where to check that. The rolling windows are worked out again each time the figures are read, so a tab left open does not keep widening its "last 24 hours".
+
+The picked window is kept in the address as `?window=` (`24h`, `7d`, `30d`, `mtd` or `last-month`), so a reload or a shared link opens on the same window, and an unknown value falls back to the last 24 hours. It also carries from one screen to the other: pick **Last month** on **Business Units**, open **Customers**, and the customers are read over the same month.
+
+To reproduce a figure from a script, send the bounds the screen sends. For last month, read from a UTC+3 browser on any day of October 2026:
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  "https://control.example.com/api/v1/analytics/by-attribution?dimension=business_unit&include_unattributed=true&since=2026-08-31T21:00:00.000Z&until=2026-09-30T21:00:00.000Z"
+```
+
+The rolling windows and month to date send only `since`, so the control plane's clock closes the window.
 
 Amounts are rendered in the deployment's settlement currency, not a hardcoded `$`.
 
