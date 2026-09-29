@@ -352,7 +352,8 @@ jobs:
       # `uv run --script` installs only the pyyaml pinned in the checker's
       # inline metadata (#1901); run as part of the repo-root project, uv
       # would build the rolter maturin wheel first, about 3.5 minutes per job
-      # (#2025)
+      # (#2025). that build was the gate's only pass over pyproject.toml, which
+      # the package job now checks on purpose
       - name: render defaults
         run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
       - name: render with preflight disabled
@@ -688,6 +689,11 @@ jobs:
   # publish time. `cargo package --workspace` reproduces that isolated verify build
   # for every publishable crate, so packaging breakage fails here on the PR instead
   # of mid-release after some crates have already published to crates.io (ROL-233).
+  # the PyPI side gets the same early check: `maturin sdist` from the repo root
+  # parses pyproject.toml and [tool.maturin], resolves manifest-path, bindings,
+  # readme and license, and packages the path dependencies, in seconds and
+  # without compiling. release.yml's build-wheels is the first real wheel build,
+  # and it runs after crates.io has published and the tag is pushed (#2025)
   package:
     name: package (publish verify)
     runs-on: ubuntu-latest
@@ -700,8 +706,12 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: cargo package (verifies each crate in isolation)
         run: cargo package --workspace --locked
+      - name: maturin sdist (validates the PyPI packaging)
+        if: ${{ !cancelled() }}
+        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
 
   # ── spelling: docs / comments / identifiers ─────────────────────────────────
   # false positives are pinned in .github/config/typos.toml with an explaining comment each.
