@@ -57,6 +57,18 @@ Carol  →  viewer  at  team: platform
   The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it checks that the incoming virtual key exists, is active, and is allowed to access the requested model, and that the model belongs to the key's own organization. The one place the two meet is an access profile's [model and route policy](#model-and-route-policy), which does reach the gateway.
 </Note>
 
+The most specific grant wins even when it is the lower role: an org admin who is also a viewer on one project is a viewer there. Two grants at the same scope resolve to the higher of the two.
+
+### Managing roles on the Users screen
+
+**Governance → Users** lists everyone holding a role in the selected organization, and the **Roles** column shows each of their grants on its own line: the role, then the scope it applies at, with teams and projects named. A scope the dashboard cannot name (the team or project was deleted, your account cannot see it, or its list failed to load) is marked **Unresolved scope**. A grant that came from your identity provider is marked **from SSO** or **from SCIM**.
+
+- **Grant a role.** The **+** at the end of a person's row opens a sheet with two fields: **Scope** (the whole organization, any team, or any project in any team, picked by name) and **Role**. If the person already holds that role at that scope, the sheet says so and does not send it. `POST /api/v1/orgs/{org_id}/memberships`.
+- **Revoke a role.** The **×** button beside a grant asks first. The confirmation names the person, the role and the scope, and says what they lose. It works this out the same way the control plane resolves a role: either no other grant of theirs reaches that scope, or another grant takes over there, which can be a wider role than the one you revoked. It also tells you when this is their last role in the organization (they drop off the list, but the account is kept), when the grant came from SSO or SCIM (the identity provider grants it again at the next sign-in or sync unless you change the group mapping), and when it is your own role. `DELETE /api/v1/memberships/{id}`.
+- **Change a role.** The **⇄** button beside a grant opens a confirmation where you pick the new role. The control plane has no update for a membership, so rolter sends two requests: it grants the new role first, then revokes the old one. At one scope the higher role applies, so for that moment the person has exactly the old role or the new one, and never no role at all. If the second request fails, the dialog tells you they now hold both roles and which one applies, and offers to retry the revoke. The grant is not sent again.
+
+Each control is disabled for callers who do not hold admin at the scope the dashboard is showing, and its tooltip names the role it needs. The server still checks every request, against your role at the grant's own scope. When it refuses with `403`, the dialog stays open with the server's message and says that revoking at that scope takes admin there or above. If a grant is already gone, for example revoked in another tab or removed by SSO reconciliation, the revoke counts as done and the list refreshes.
+
 ## Who sees which request logs
 
 The request log, the usage and spend rollups and provider health are not only gated — each answer is filtered to the caller:

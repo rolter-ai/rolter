@@ -60,8 +60,8 @@ offered, even when the refusal is correct.
 
 ## T6 — someone leaves
 
-| #    | step                                             | where                                                    | expect                                                   | status                                                    |
-| ---- | ------------------------------------------------ | -------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
-| T6.1 | remove their membership                          | **Governance → Users**, the person's role at the project | they lose the project in the dashboard at once           | partial — #1850 (the lead cannot list the team's members) |
-| T6.2 | their personal keys stop working                 | the gateway                                              | a key they minted for themselves is refused              | bug — #1841                                               |
-| T6.3 | shared keys they minted as an admin keep working | the gateway                                              | the team's services do not go down because a person left | verified                                                  |
+| #    | step                                             | where                                                                 | expect                                                   | status                                                        |
+| ---- | ------------------------------------------------ | --------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- |
+| T6.1 | remove their membership                          | **Governance → Users**, the × beside the person's role at the project | they lose the project in the dashboard at once           | works — #1850 lists the team's members, #2053 adds the revoke |
+| T6.2 | their personal keys stop working                 | the gateway                                                           | a key they minted for themselves is refused              | bug — #1841                                                   |
+| T6.3 | shared keys they minted as an admin keep working | the gateway                                                           | the team's services do not go down because a person left | verified                                                      |

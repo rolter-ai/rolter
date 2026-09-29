@@ -1,12 +1,34 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Building2, Loader2, Pencil, Plus, Trash2, UsersRound } from "lucide-react";
+import type { TFunction } from "i18next";
+import {
+  ArrowLeftRight,
+  Ban,
+  Building2,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+  UsersRound,
+  X,
+} from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
+import {
+  ORG_TARGET,
+  orgScopeText,
+  OrgScopePicker,
+  OrgScopePill,
+  scopeTargetIds,
+  useOrgScope,
+  type OrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import {
   ListActionsHeader,
   ListCell,
@@ -21,6 +43,7 @@ import {
   SearchInput,
   Toolbar,
 } from "@/components/screen";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Segmented } from "@/components/ui/segmented";
@@ -34,23 +57,26 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
+  ApiError,
   createInvitation,
   createMembership,
+  deleteMembership,
   deleteUser,
   fetchMemberships,
   fetchUsers,
   inviteUser,
-  MEMBERSHIP_SCOPE_TYPES,
   ROLES,
   updateUser,
   type MembershipRow,
   type Role,
-  type TeamRow,
   type UserRow,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
+import { afterRevoke, grantScope, higherRole, membershipScope, sameScope } from "@/lib/role-grants";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -90,6 +116,10 @@ export default function Users() {
     enabled: !!orgId,
   });
 
+  // every team and project in the org by name, so a grant reads as the scope
+  // it is and never as the head of a uuid (#2053)
+  const orgScope = useOrgScope(orgId);
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["users", orgId] });
     queryClient.invalidateQueries({ queryKey: ["memberships", orgId] });
@@ -98,6 +128,8 @@ export default function Users() {
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
+  const [revokeTarget, setRevokeTarget] = React.useState<GrantTarget | null>(null);
+  const [changeTarget, setChangeTarget] = React.useState<GrantTarget | null>(null);
   const [search, setSearch] = React.useState("");
   const [statusTab, setStatusTab] = React.useState<"all" | "active" | "deactivated">("all");
 
@@ -160,7 +192,9 @@ export default function Users() {
     deactivated: t("pages.users.statusDeactivated"),
   };
 
-  const GRID = "1.7fr 1.4fr 110px 1fr 110px";
+  // the roles column holds one line per grant, each with its own two controls,
+  // so it takes the widest share and the table a floor that fits a grant line
+  const GRID = "1.5fr 2.2fr 110px 0.9fr 110px";
   // the categorical chip palette, one token per entry: a raw hex here is not
   // retunable and is contrast-checked by nobody, which is how the gold entry
   // reached white initials at 3.25:1 (#1181, #1245). the ratios are recorded
@@ -222,7 +256,7 @@ export default function Users() {
         />
       )}
 
-      <ListTable label={t("screens.gov-users.title")}>
+      <ListTable label={t("screens.gov-users.title")} minWidth={960}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.users.colUser")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colRoles")}</ListHeaderCell>
@@ -263,10 +297,15 @@ export default function Users() {
                   </div>
                 </div>
               </ListCell>
-              <ListCell className="min-w-0 truncate text-[11px] text-[color:var(--text-subtle)]">
-                {grants.length === 0
-                  ? t("pages.users.noRoles")
-                  : grants.map((g) => `${g.role}@${scopeLabel(g, scope.teams)}`).join(" · ")}
+              <ListCell className="min-w-0">
+                <RoleGrants
+                  user={user}
+                  grants={grants}
+                  read={memberships}
+                  orgScope={orgScope}
+                  onChange={(grant) => setChangeTarget({ grant, user })}
+                  onRevoke={(grant) => setRevokeTarget({ grant, user })}
+                />
               </ListCell>
               <ListCell>
                 <span
@@ -375,25 +414,36 @@ export default function Users() {
         <AddRoleDialog
           user={roleUser}
           orgId={orgId}
-          teams={scope.teams}
-          defaultProjectId={scope.projectId}
+          grants={byUser.get(roleUser.id) ?? []}
+          orgScope={orgScope}
           onOpenChange={(open) => !open && setRoleUser(null)}
+          onDone={invalidate}
+        />
+      )}
+      {/* both stay mounted and open on a target, so each sees its own
+          landing and reports it (docs/dev-docs/development/destructive-actions.md) */}
+      {orgId && (
+        <RevokeRoleDialog
+          target={revokeTarget}
+          grants={revokeTarget ? (byUser.get(revokeTarget.user.id) ?? []) : []}
+          orgId={orgId}
+          orgScope={orgScope}
+          onClose={() => setRevokeTarget(null)}
+          onDone={invalidate}
+        />
+      )}
+      {orgId && (
+        <ChangeRoleDialog
+          target={changeTarget}
+          grants={changeTarget ? (byUser.get(changeTarget.user.id) ?? []) : []}
+          orgId={orgId}
+          orgScope={orgScope}
+          onClose={() => setChangeTarget(null)}
           onDone={invalidate}
         />
       )}
     </PageBody>
   );
-}
-
-// render a membership's scope compactly, resolving team names where the scope
-// is a team in the current org; projects fall back to a short id
-function scopeLabel(m: MembershipRow, teams: TeamRow[]): string {
-  if (m.project_id) return `project:${m.project_id.slice(0, 8)}`;
-  if (m.team_id) {
-    const team = teams.find((t) => t.id === m.team_id);
-    return team ? `team:${team.name}` : `team:${m.team_id.slice(0, 8)}`;
-  }
-  return "org";
 }
 
 function InviteUserDialog({
@@ -448,7 +498,7 @@ function InviteUserDialog({
     onSuccess: (accept_url) => {
       onDone();
       toast.push({ tone: "success", title: t("toast.created", { what: email.trim() }) });
-      // the link is shown once and never recoverable, so the dialog stays open
+      // the link is target once and never recoverable, so the dialog stays open
       // until it has been copied somewhere
       if (accept_url) setLink(accept_url);
       else onOpenChange(false);
@@ -694,38 +744,45 @@ function EditUserDialog({
   );
 }
 
+/**
+ * Granting one more role (#2053).
+ *
+ * The scope is the shared `OrgScopePicker`: the org, every team in it and every
+ * project under those teams, by name. It used to ask for a pasted project uuid.
+ * A role the person already holds at the picked scope is refused before the
+ * round trip, since the control plane would store it twice.
+ */
 function AddRoleDialog({
   user,
   orgId,
-  teams,
-  defaultProjectId,
+  grants,
+  orgScope,
   onOpenChange,
   onDone,
 }: {
   user: UserRow;
   orgId: string;
-  teams: TeamRow[];
-  defaultProjectId?: string;
+  grants: MembershipRow[];
+  orgScope: OrgScope;
   onOpenChange: (open: boolean) => void;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [scopeType, setScopeType] = React.useState<(typeof MEMBERSHIP_SCOPE_TYPES)[number]>("org");
-  const [teamId, setTeamId] = React.useState<string>(teams[0]?.id ?? "");
-  const [projectId, setProjectId] = React.useState<string>(defaultProjectId ?? "");
+  const [target, setTarget] = React.useState<ScopeTarget>(ORG_TARGET);
   const [role, setRole] = React.useState<string>("member");
 
-  const scopeId = scopeType === "org" ? orgId : scopeType === "team" ? teamId : projectId;
+  const picked = scopeTargetIds(target);
+  const body = membershipScope(picked, orgId);
+  const pickedGrant = {
+    org_id: body.scope_type === "org" ? orgId : null,
+    team_id: picked.team_id ?? null,
+    project_id: picked.project_id ?? null,
+  };
+  const held = grants.some((grant) => grant.role === role && sameScope(grant, pickedGrant));
 
   const create = useMutation({
-    mutationFn: () =>
-      createMembership(orgId, {
-        user_id: user.id,
-        scope_type: scopeType,
-        scope_id: scopeId,
-        role,
-      }),
+    mutationFn: () => createMembership(orgId, { user_id: user.id, ...body, role }),
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
@@ -753,54 +810,467 @@ function AddRoleDialog({
       onOpenChange={onOpenChange}
       title={t("pages.users.grantTitle")}
       subtitle={t("pages.users.grantSubtitle", { email: user.email })}
-      dirty={
-        scopeType !== "org" ||
-        teamId !== (teams[0]?.id ?? "") ||
-        projectId !== (defaultProjectId ?? "") ||
-        role !== "member"
-      }
+      dirty={target !== ORG_TARGET || role !== "member"}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       saveLabel={t("pages.users.grantSave")}
-      canSave={Boolean(scopeId.trim())}
+      canSave={!held}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.users.scope")}>
-          <Combobox
-            value={scopeType}
-            onChange={(picked) => setScopeType(picked as (typeof MEMBERSHIP_SCOPE_TYPES)[number])}
-            options={MEMBERSHIP_SCOPE_TYPES.map((kind) => ({ value: kind, label: kind }))}
+          <OrgScopePicker
+            orgId={orgId}
+            value={target}
+            onChange={setTarget}
+            label={t("pages.users.scope")}
+            size="default"
+            className="w-full"
           />
         </Field>
-        {scopeType === "team" && (
-          <Field label={t("pages.users.team")}>
-            <Combobox
-              value={teamId}
-              onChange={setTeamId}
-              placeholder={teams.length === 0 ? t("pages.users.noTeams") : undefined}
-              options={teams.map((team) => ({ value: team.id, label: team.name }))}
-            />
-          </Field>
-        )}
-        {scopeType === "project" && (
-          <Field label={t("pages.users.projectId")} hint={t("pages.users.projectIdHint")}>
-            <Input
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              placeholder="00000000-0000-0000-0000-000000000000"
-              className="font-mono text-xs"
-            />
-          </Field>
-        )}
-        <Field label={t("pages.users.role")}>
+        <Field
+          label={t("pages.users.role")}
+          hint={
+            held
+              ? t("pages.users.alreadyHeld", {
+                  email: user.email,
+                  role: roleLabel(t, role),
+                  scope: scopePhrase(t, orgScope, pickedGrant),
+                })
+              : undefined
+          }
+        >
           <Combobox
             value={role}
             onChange={setRole}
-            options={ROLES.map((r) => ({ value: r, label: r }))}
+            options={ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
           />
         </Field>
       </div>
     </EditorSheet>
+  );
+}
+
+/** one grant on one person's row, which the revoke and change dialogs act on */
+interface GrantTarget {
+  grant: MembershipRow;
+  user: UserRow;
+}
+
+function roleLabel(t: TFunction, role: string): string {
+  return t(`shell.roles.${role}`, { defaultValue: role });
+}
+
+/**
+ * A grant's scope as it reads inside a sentence: "the Platform team", "the
+ * whole organization". The chip on the row names the scope alone; a sentence
+ * says which kind it is too, since a team and a project may share a name.
+ */
+function scopePhrase(
+  t: TFunction,
+  orgScope: OrgScope,
+  grant: Pick<MembershipRow, "team_id" | "project_id">,
+): string {
+  const resolved = orgScope.resolve(grant);
+  if (resolved.kind === "unresolved") return orgScopeText(t, orgScope, grant);
+  if (resolved.kind === "org") return t("pages.users.scopePhrase.org");
+  return t(grant.project_id ? "pages.users.scopePhrase.project" : "pages.users.scopePhrase.team", {
+    name: resolved.name,
+  });
+}
+
+/**
+ * The roles column: each grant on its own line, role then scope, with the two
+ * things an admin does to one: change it or revoke it (#2053).
+ *
+ * The grants are a read of their own, so a list still loading or one that
+ * failed is never drawn as "no roles" (#2211), and a team or project whose
+ * name is still coming is a placeholder rather than an "unresolved" warning
+ * that retracts itself a moment later.
+ */
+function RoleGrants({
+  user,
+  grants,
+  read,
+  orgScope,
+  onChange,
+  onRevoke,
+}: {
+  user: UserRow;
+  grants: MembershipRow[];
+  read: { data?: MembershipRow[]; isError: boolean };
+  orgScope: OrgScope;
+  onChange: (grant: MembershipRow) => void;
+  onRevoke: (grant: MembershipRow) => void;
+}) {
+  const { t } = useTranslation();
+  if (read.data === undefined) {
+    return read.isError ? (
+      <span className="text-xs text-[color:var(--text-subtle)]">
+        {t("pages.users.rolesUnread")}
+      </span>
+    ) : (
+      <Skeleton width={140} height={20} radius={6} />
+    );
+  }
+  if (grants.length === 0) {
+    return (
+      <span className="text-xs text-[color:var(--text-subtle)]">{t("pages.users.noRoles")}</span>
+    );
+  }
+  return (
+    <ul className="flex min-w-0 flex-col gap-1">
+      {grants.map((grant) => {
+        const names = {
+          role: roleLabel(t, grant.role),
+          scope: scopePhrase(t, orgScope, grant),
+          email: user.email,
+        };
+        const fromIdp = grant.source === "sso" || grant.source === "scim";
+        return (
+          <li key={grant.id} className="flex min-w-0 items-center gap-1.5">
+            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <Badge tone="neutral">{names.role}</Badge>
+              {orgScope.isLoading && grantScope(grant).type !== "org" ? (
+                <Skeleton width={72} height={20} radius={6} className="inline-block" />
+              ) : (
+                <OrgScopePill scope={orgScope} value={grant} />
+              )}
+              {fromIdp && (
+                <span className="text-[11px] text-[color:var(--text-subtle)]">
+                  {t(grant.source === "sso" ? "pages.users.viaSso" : "pages.users.viaScim")}
+                </span>
+              )}
+            </span>
+            {/* each control names the grant it acts on, so a screen reader
+                tabbing a row of several grants can tell them apart (#1214) */}
+            <RowIconButton
+              gate="membership:create"
+              control="user-role-change"
+              title={t("pages.users.changeRole", names)}
+              aria-label={t("pages.users.changeRole", names)}
+              onClick={() => onChange(grant)}
+            >
+              <ArrowLeftRight className="h-3.5 w-3.5" />
+            </RowIconButton>
+            {/* quiet until reached for: a row of several grants would
+                otherwise carry a red mark per grant beside the row's own */}
+            <RowIconButton
+              className="hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)]"
+              gate="membership:delete"
+              control="user-role-revoke"
+              title={t("pages.users.revokeRole", names)}
+              aria-label={t("pages.users.revokeRole", names)}
+              onClick={() => onRevoke(grant)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </RowIconButton>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** the project → team map `afterRevoke` walks, from the org-wide lists */
+function teamOfProject(orgScope: OrgScope): (projectId: string) => string | undefined {
+  return (projectId) =>
+    orgScope.byTeam.find((entry) => entry.projects.some((p) => p.id === projectId))?.team.id;
+}
+
+/**
+ * Revoking one grant (#2053).
+ *
+ * The body says what the person loses, worked out from their other grants the
+ * way the control plane resolves a role: nothing else reaches the scope, or
+ * which grant decides their role there once this one is gone. It also says
+ * when this is their last role in the org (they leave this list), when the
+ * grant came from the identity provider (it comes back), and when it is the
+ * caller's own.
+ *
+ * A 404 means the grant is already gone, revoked elsewhere or reconciled away
+ * by the IdP, so what the operator asked for holds and it lands as a success.
+ * A 403 keeps the dialog open with the control plane's message and a line on
+ * what revoking at that scope takes.
+ */
+function RevokeRoleDialog({
+  target,
+  grants,
+  orgId,
+  orgScope,
+  onClose,
+  onDone,
+}: {
+  target: GrantTarget | null;
+  grants: MembershipRow[];
+  orgId: string;
+  orgScope: OrgScope;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const self = useOptionalAuth()?.user?.id;
+
+  const revoke = useMutation({
+    mutationFn: async ({ grant }: GrantTarget) => {
+      try {
+        await deleteMembership(grant.id);
+        return "revoked" as const;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return "gone" as const;
+        throw error;
+      }
+    },
+    onSuccess: (outcome, { grant, user }) => {
+      onDone();
+      const names = {
+        role: roleLabel(t, grant.role),
+        scope: scopePhrase(t, orgScope, grant),
+        email: user.email,
+      };
+      toast.push({
+        tone: "success",
+        title: t(
+          outcome === "gone" ? "pages.users.toastAlreadyRevoked" : "pages.users.toastRevoked",
+          names,
+        ),
+      });
+      onClose();
+    },
+  });
+
+  const names = target && {
+    role: roleLabel(t, target.grant.role),
+    scope: scopePhrase(t, orgScope, target.grant),
+    email: target.user.email,
+  };
+
+  const body: string[] = [];
+  if (target && names) {
+    const after = afterRevoke(target.grant, grants, orgId, teamOfProject(orgScope));
+    if (after.kind === "unknown") {
+      body.push(t("pages.users.confirm.revokeUnknown", names));
+    } else if (after.kind === "none") {
+      body.push(t("pages.users.confirm.revokeNone", names));
+    } else if (sameScope(after.grant, target.grant) && after.grant.role === target.grant.role) {
+      body.push(t("pages.users.confirm.revokeDuplicate", names));
+    } else {
+      body.push(
+        t("pages.users.confirm.revokeFallback", {
+          ...names,
+          fallback: roleLabel(t, after.grant.role),
+          fallbackScope: scopePhrase(t, orgScope, after.grant),
+        }),
+      );
+    }
+    if (grants.length === 1) body.push(t("pages.users.confirm.revokeLast"));
+    if (target.grant.source === "sso") body.push(t("pages.users.confirm.revokeFromSso"));
+    if (target.grant.source === "scim") body.push(t("pages.users.confirm.revokeFromScim"));
+    if (self && self === target.user.id) body.push(t("pages.users.confirm.revokeSelf"));
+  }
+
+  const refused = revoke.error instanceof ApiError && revoke.error.status === 403;
+
+  return (
+    <ConfirmDialog
+      name="user-role-revoke"
+      open={!!target}
+      onOpenChange={(open) => {
+        if (open) return;
+        onClose();
+        // a refusal from one grant would otherwise greet the next one opened
+        revoke.reset();
+      }}
+      title={names ? t("pages.users.confirm.revokeTitle", names) : ""}
+      description={body.join(" ")}
+      confirmLabel={t("pages.users.confirm.revokeConfirm")}
+      pending={revoke.isPending}
+      error={revoke.error}
+      onConfirm={() => target && revoke.mutate(target)}
+    >
+      {/* the control plane's message stays verbatim below; this says what it
+          means for this grant, since a gate that allowed the click was
+          answering for the scope switcher's scope, not the grant's */}
+      {refused && names && (
+        <p className="text-xs text-muted-foreground">
+          {t("pages.users.confirm.revokeRefused", names)}
+        </p>
+      )}
+    </ConfirmDialog>
+  );
+}
+
+/**
+ * The revoke half of a role change failed after the grant half landed. The
+ * message is the control plane's own, so the dialog can print it verbatim.
+ */
+class RevokeAfterGrantFailed extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "RevokeAfterGrantFailed";
+  }
+}
+
+/**
+ * Changing the role of one grant in one confirmed step (#2053).
+ *
+ * The control plane has no update for a membership, so a change is a grant
+ * and a revoke, in that order: at one scope the higher of two roles applies,
+ * so the moment both exist grants nothing beyond the old role or the new one,
+ * while the other order would leave the person with no role at all in
+ * between. When the person already holds the picked role at that scope, the
+ * grant is skipped and only the revoke goes out.
+ *
+ * A grant that fails changes nothing and is reported as it is. A revoke that
+ * fails after the grant landed leaves the person holding both, and the dialog
+ * says exactly that, with the role that applies meanwhile, and turns its
+ * confirm into a retry of the revoke alone.
+ */
+function ChangeRoleDialog({
+  target,
+  grants,
+  orgId,
+  orgScope,
+  onClose,
+  onDone,
+}: {
+  target: GrantTarget | null;
+  grants: MembershipRow[];
+  orgId: string;
+  orgScope: OrgScope;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const self = useOptionalAuth()?.user?.id;
+  const [role, setRole] = React.useState("");
+  // the role whose grant landed while the revoke did not; set, the dialog is
+  // a retry of the revoke
+  const [granted, setGranted] = React.useState<string | null>(null);
+
+  const change = useMutation({
+    mutationFn: async (vars: { target: GrantTarget; role: string; grantFirst: boolean }) => {
+      const { grant, user } = vars.target;
+      if (vars.grantFirst) {
+        const scope = grantScope(grant);
+        await createMembership(orgId, {
+          user_id: user.id,
+          scope_type: scope.type,
+          scope_id: scope.id || orgId,
+          role: vars.role,
+        });
+      }
+      try {
+        await deleteMembership(grant.id);
+      } catch (error) {
+        // already gone is what the revoke was for
+        if (error instanceof ApiError && error.status === 404) return;
+        throw new RevokeAfterGrantFailed(error);
+      }
+    },
+    onError: (error, vars) => {
+      if (!(error instanceof RevokeAfterGrantFailed)) return;
+      setGranted(vars.role);
+      // the list shows both grants, which is the state the person is in
+      onDone();
+    },
+    onSuccess: (_void, vars) => {
+      onDone();
+      toast.push({
+        tone: "success",
+        title: t("toast.saved"),
+        detail: t("pages.users.toastChanged", {
+          email: vars.target.user.email,
+          role: roleLabel(t, vars.role),
+          scope: scopePhrase(t, orgScope, vars.target.grant),
+        }),
+      });
+      onClose();
+      clear();
+    },
+  });
+
+  const clear = () => {
+    setRole("");
+    setGranted(null);
+  };
+  const close = () => {
+    onClose();
+    clear();
+    change.reset();
+  };
+
+  const names = target && {
+    role: roleLabel(t, target.grant.role),
+    scope: scopePhrase(t, orgScope, target.grant),
+    email: target.user.email,
+  };
+
+  const body: string[] = [];
+  if (target && names) {
+    if (granted) {
+      body.push(
+        t("pages.users.confirm.changePartial", {
+          ...names,
+          next: roleLabel(t, granted),
+          applies: roleLabel(t, higherRole(target.grant.role, granted)),
+        }),
+      );
+    } else {
+      body.push(t("pages.users.confirm.changeBody", names));
+      if (target.grant.source === "sso") body.push(t("pages.users.confirm.changeFromSso", names));
+      if (target.grant.source === "scim") body.push(t("pages.users.confirm.changeFromScim", names));
+      if (self && self === target.user.id) body.push(t("pages.users.confirm.changeSelf"));
+    }
+  }
+
+  const confirm = () => {
+    if (!target) return;
+    if (granted) {
+      change.mutate({ target, role: granted, grantFirst: false });
+      return;
+    }
+    const held = grants.some(
+      (other) =>
+        other.id !== target.grant.id && sameScope(other, target.grant) && other.role === role,
+    );
+    change.mutate({ target, role, grantFirst: !held });
+  };
+
+  return (
+    <ConfirmDialog
+      name="user-role-change"
+      open={!!target}
+      onOpenChange={(open) => !open && close()}
+      title={names ? t("pages.users.confirm.changeTitle", names) : ""}
+      description={body.join(" ")}
+      confirmLabel={
+        granted && names
+          ? t("pages.users.confirm.changeRetry", names)
+          : t("pages.users.confirm.changeConfirm")
+      }
+      tone="default"
+      pending={change.isPending}
+      error={change.error}
+      confirmDisabled={!granted && !role}
+      onConfirm={confirm}
+    >
+      {!granted && target && (
+        <Field label={t("pages.users.newRole")}>
+          <Combobox
+            value={role}
+            onChange={setRole}
+            placeholder={t("pages.users.newRolePlaceholder")}
+            disabled={change.isPending}
+            options={ROLES.filter((r) => r !== target.grant.role).map((r) => ({
+              value: r,
+              label: roleLabel(t, r),
+            }))}
+          />
+        </Field>
+      )}
+    </ConfirmDialog>
   );
 }
