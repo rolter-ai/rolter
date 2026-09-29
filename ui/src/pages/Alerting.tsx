@@ -42,8 +42,24 @@ import {
   type AlertChannelRow,
   type AlertRuleRow,
 } from "@/lib/api";
+import {
+  ALERT_SIGNAL_SPECS,
+  defaultThresholdInput,
+  formatSignalValue,
+  fromFormValue,
+  isAlertSignal,
+  signalDescription,
+  signalLabel,
+  thresholdInputMax,
+  thresholdLabel,
+  thresholdRangeKey,
+  thresholdValid,
+  type AlertSignal,
+} from "@/lib/alert-signals";
+import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // `[label, tint]`: the label colour is the -text half of the hue, because a
@@ -73,6 +89,9 @@ const deliveryTone = (status: string) => DELIVERY_TONE[status] ?? DELIVERY_TONE.
 // the bounds `validate_rule` enforces on `window_secs`
 const WINDOW_MIN_SECS = 60;
 const WINDOW_MAX_SECS = 86_400;
+
+// the signal a new rule starts from
+const DEFAULT_SIGNAL: AlertSignal = ALERT_SIGNALS[0];
 
 // ---------------------------------------------------------------------------
 // channels: webhook destinations alerts are delivered to
@@ -333,6 +352,8 @@ function AddChannelDialog({
 function AlertRulesScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
+  // `spend_velocity` is spend in the settlement currency, not in dollars
+  const currency = useCurrencyCode();
   const queryClient = useQueryClient();
   const toast = useToast();
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
@@ -350,6 +371,9 @@ function AlertRulesScreen() {
   const channelName = (id: string | null) => channels.data?.find((c) => c.id === id)?.name ?? "—";
   // the evaluate action is fired by id, and the toast names the rule
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id;
+  // a threshold or reading in the rule's own unit, read over its own window
+  const reading = (r: AlertRuleRow, value: number) =>
+    formatSignalValue(r.signal, value, { fmt, t, currency, windowSecs: r.window_secs });
 
   const asInput = (r: AlertRuleRow) => ({
     name: r.name,
@@ -462,14 +486,18 @@ function AlertRulesScreen() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
         {(rules.data ?? []).map((r) => {
           const tone = stateTone(r.state);
+          const nameId = `alert-rule-${r.id}-name`;
           return (
-            <div
+            <article
               key={r.id}
+              aria-labelledby={nameId}
               className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
                 <StatusDot color={tone[0]} />
-                <span className="min-w-0 truncate font-mono text-sm font-semibold">{r.name}</span>
+                <span id={nameId} className="min-w-0 truncate font-mono text-sm font-semibold">
+                  {r.name}
+                </span>
                 <Pill color={tone[0]} tint={tone[1]}>
                   {r.state}
                 </Pill>
@@ -483,19 +511,25 @@ function AlertRulesScreen() {
                   onCheckedChange={() => toggle.mutate(r)}
                 />
               </div>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                <RuleStat label={t("pages.alerting.rules.statSignal")} value={r.signal} />
+              <dl className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                {/* a known signal reads as its name; an unknown one keeps its
+                    id, which is what the API and the docs call it */}
+                <RuleStat
+                  label={t("pages.alerting.rules.statSignal")}
+                  value={signalLabel(r.signal, t)}
+                  mono={!isAlertSignal(r.signal)}
+                />
                 <RuleStat
                   label={t("pages.alerting.rules.statThreshold")}
-                  value={String(r.threshold)}
+                  value={reading(r, r.threshold)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statWindow")}
-                  value={`${r.window_secs}s`}
+                  value={fmt.duration(r.window_secs)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statLastValue")}
-                  value={r.last_value === null ? "—" : String(r.last_value)}
+                  value={r.last_value === null ? "—" : reading(r, r.last_value)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statEvaluated")}
@@ -509,7 +543,7 @@ function AlertRulesScreen() {
                   label={t("pages.alerting.rules.statChannel")}
                   value={channelName(r.channel_id)}
                 />
-              </div>
+              </dl>
               {r.last_error && (
                 <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
               )}
@@ -541,7 +575,7 @@ function AlertRulesScreen() {
                   onClick={() => startDelete(r)}
                 />
               </div>
-            </div>
+            </article>
           );
         })}
       </div>
@@ -584,13 +618,22 @@ function AlertRulesScreen() {
   );
 }
 
-function RuleStat({ label, value }: { label: string; value: string }) {
+// a figure with its unit wraps rather than truncates: `10 failed health events
+// in 5m` cut to `10 failed hea…` is a number with its meaning cut off
+function RuleStat({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
-      <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+    <div className="min-w-0">
+      <dt className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
         {label}
-      </div>
-      <div className="truncate font-mono text-xs text-[color:var(--text-secondary)]">{value}</div>
+      </dt>
+      <dd
+        className={cn(
+          "break-words text-xs text-[color:var(--text-secondary)]",
+          mono && "font-mono",
+        )}
+      >
+        {value}
+      </dd>
     </div>
   );
 }
@@ -608,29 +651,39 @@ function AddRuleDialog({
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  const currency = useCurrencyCode();
   const [name, setName] = React.useState("");
-  const [signal, setSignal] = React.useState<string>(ALERT_SIGNALS[0]);
-  const [threshold, setThreshold] = React.useState("0.05");
+  const [signal, setSignal] = React.useState<AlertSignal>(DEFAULT_SIGNAL);
+  // typed in the signal's form unit: a percentage for `error_rate`
+  const [threshold, setThreshold] = React.useState(defaultThresholdInput(DEFAULT_SIGNAL));
   const [windowSecs, setWindowSecs] = React.useState("300");
   const [channelId, setChannelId] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
       setName("");
-      setSignal(ALERT_SIGNALS[0]);
-      setThreshold("0.05");
+      setSignal(DEFAULT_SIGNAL);
+      setThreshold(defaultThresholdInput(DEFAULT_SIGNAL));
       setWindowSecs("300");
       setChannelId(channels[0]?.id ?? "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // a threshold means something only in its signal's unit, so another signal
+  // starts from its own default rather than carrying 5 % over as 5 ms
+  const chooseSignal = (next: string) => {
+    if (!isAlertSignal(next)) return;
+    setSignal(next);
+    setThreshold(defaultThresholdInput(next));
+  };
+
   const create = useMutation({
     mutationFn: () =>
       createAlertRule({
         name,
         signal,
-        threshold: Number(threshold),
+        threshold: fromFormValue(signal, Number(threshold)),
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
         enabled: true,
@@ -662,13 +715,16 @@ function AddRuleDialog({
     min: WINDOW_MIN_SECS,
     max: WINDOW_MAX_SECS,
   });
+  const thresholdOk = thresholdValid(signal, threshold);
+  const thresholdRange = t(thresholdRangeKey(signal));
+  const thresholdMax = thresholdInputMax(signal);
 
   // the draft is seeded with defaults rather than blanks, so "dirty" is a diff
   // against the seed instead of a plain emptiness check
   const dirty =
     name !== "" ||
-    signal !== ALERT_SIGNALS[0] ||
-    threshold !== "0.05" ||
+    signal !== DEFAULT_SIGNAL ||
+    threshold !== defaultThresholdInput(signal) ||
     windowSecs !== "300" ||
     channelId !== (channels[0]?.id ?? "");
 
@@ -682,7 +738,7 @@ function AddRuleDialog({
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       saveLabel={t("common.create")}
-      canSave={Boolean(name.trim() && threshold.trim() && windowValid)}
+      canSave={Boolean(name.trim() && thresholdOk && windowValid)}
       saving={create.isPending}
       onSave={() => create.mutate()}
     >
@@ -694,37 +750,51 @@ function AddRuleDialog({
             placeholder={t("pages.alerting.rules.namePlaceholder")}
           />
         </Field>
-        <Field label={t("pages.alerting.rules.fieldSignal")}>
+        {/* the option's second line is the id the API and the docs use */}
+        <Field
+          label={t("pages.alerting.rules.fieldSignal")}
+          hint={signalDescription(signal, t, currency)}
+        >
           <Combobox
             value={signal}
-            onChange={setSignal}
-            options={ALERT_SIGNALS.map((s) => ({ value: s, label: s }))}
+            onChange={chooseSignal}
+            options={ALERT_SIGNALS.map((s) => ({
+              value: s,
+              label: signalLabel(s, t),
+              description: s,
+            }))}
           />
         </Field>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.alerting.rules.fieldThreshold")}>
-            <Input
-              type="number"
-              step="any"
-              value={threshold}
-              onChange={(e) => setThreshold(e.target.value)}
-            />
-          </Field>
-          <Field
-            label={t("pages.alerting.rules.fieldWindow")}
-            hint={windowValid ? windowRange : undefined}
-            error={windowValid ? undefined : windowRange}
-          >
-            <Input
-              type="number"
-              min={WINDOW_MIN_SECS}
-              max={WINDOW_MAX_SECS}
-              step={1}
-              value={windowSecs}
-              onChange={(e) => setWindowSecs(e.target.value)}
-            />
-          </Field>
-        </div>
+        {/* one per row: the label carries the unit, and the longest one would
+            wrap beside the window and push its input out of line */}
+        <Field
+          label={thresholdLabel(signal, t, currency)}
+          hint={thresholdOk && thresholdMax !== undefined ? thresholdRange : undefined}
+          error={thresholdOk ? undefined : thresholdRange}
+        >
+          <Input
+            type="number"
+            min={0}
+            max={thresholdMax}
+            step={ALERT_SIGNAL_SPECS[signal].step}
+            value={threshold}
+            onChange={(e) => setThreshold(e.target.value)}
+          />
+        </Field>
+        <Field
+          label={t("pages.alerting.rules.fieldWindow")}
+          hint={windowValid ? windowRange : undefined}
+          error={windowValid ? undefined : windowRange}
+        >
+          <Input
+            type="number"
+            min={WINDOW_MIN_SECS}
+            max={WINDOW_MAX_SECS}
+            step={1}
+            value={windowSecs}
+            onChange={(e) => setWindowSecs(e.target.value)}
+          />
+        </Field>
         <Field label={t("pages.alerting.rules.fieldChannel")}>
           <Combobox
             value={channelId}

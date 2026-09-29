@@ -1205,9 +1205,53 @@
         "fieldThreshold": "Порог",
         "fieldWindow": "Окно (секунды)",
         "windowRange": "От {{min}} до {{max}} секунд.",
+        "thresholdRange": {
+          "percent": "От 0 до 100 %.",
+          "nonNegative": "Не меньше 0."
+        },
         "fieldChannel": "Канал",
         "channelNone": "нет (только запись в историю)",
         "namePlaceholder": "высокая доля ошибок"
+      },
+      "signals": {
+        "error_rate": {
+          "label": "Доля ошибок",
+          "description": "Доля запросов за окно, завершившихся статусом 5xx."
+        },
+        "p95_latency_ms": {
+          "label": "Задержка p95",
+          "description": "95-й перцентиль задержки запросов за окно, в миллисекундах."
+        },
+        "spend_velocity": {
+          "label": "Скорость расходов",
+          "description": "Расходы за окно в пересчёте на {{currency}} в час."
+        },
+        "request_volume": {
+          "label": "Объём запросов",
+          "description": "Число запросов за окно: количество, а не скорость."
+        },
+        "provider_health_flaps": {
+          "label": "Отказы провайдеров",
+          "description": "События состояния провайдеров за окно с исходом не ok — и от проб, и от результатов запросов."
+        }
+      },
+      "units": {
+        "field": {
+          "percent": "Порог (%)",
+          "milliseconds": "Порог (мс)",
+          "currencyPerHour": "Порог ({{currency}} в час)",
+          "requests": "Порог (запросов за окно)",
+          "healthFailures": "Порог (отказов за окно)"
+        },
+        "perHour": "{{amount}}/ч",
+        "requestsIn_one": "{{value}} запрос за {{window}}",
+        "requestsIn_few": "{{value}} запроса за {{window}}",
+        "requestsIn_many": "{{value}} запросов за {{window}}",
+        "requestsIn_other": "{{value}} запроса за {{window}}",
+        "healthFailuresIn_one": "{{value}} отказ за {{window}}",
+        "healthFailuresIn_few": "{{value}} отказа за {{window}}",
+        "healthFailuresIn_many": "{{value}} отказов за {{window}}",
+        "healthFailuresIn_other": "{{value}} отказа за {{window}}"
       },
       "history": {
         "emptyTitle": "Смен состояния пока не было",
