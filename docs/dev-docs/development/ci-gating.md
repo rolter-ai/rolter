@@ -661,8 +661,8 @@ step, _detect rust changes_, diffs the merge commit against its first parent
 (the base) and looks for a `*.rs` file, a `Cargo.toml`, `Cargo.lock`,
 `rust-toolchain.toml` or anything under `.github/codeql/`. With none of those,
 the leg skips the toolchain setup, `cargo fetch`, `initialize codeql` and
-`analyze`, writes a notice saying so, and ends `success`. The other codeql legs
-are untouched.
+`analyze`, writes a notice saying so, and ends `success`. The other leg,
+`codeql (actions-js-python)`, always runs.
 
 This is the one diff-based skip in the gate ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)),
 and it cannot change a verdict: the codeql job never fails on alerts, so a
