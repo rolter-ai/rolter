@@ -19,6 +19,7 @@ import {
   type FetchStub,
   expectEmptyState,
   expectInStatusRegion,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
@@ -249,6 +250,7 @@ export const Loading: Story = {
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
     await expectInStatusRegion(canvasElement, "own-keys-loading");
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
   },
 };
 
@@ -280,6 +282,7 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/do not have access to your keys/i)).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
   },
 };
 

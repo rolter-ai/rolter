@@ -2370,6 +2370,7 @@
       "revokeAria": "Revoke provisioning token {{name}}",
       "lead_one": "{{count}} token · {{active}} active. Your identity provider presents one of these as a bearer token and drives <0>/scim/v2/Users</0> to create, update and deactivate accounts in this org.",
       "lead_other": "{{count}} tokens · {{active}} active. Your identity provider presents one of these as a bearer token and drives <0>/scim/v2/Users</0> to create, update and deactivate accounts in this org.",
+      "leadUnread": "Your identity provider presents one of these as a bearer token and drives <0>/scim/v2/Users</0> to create, update and deactivate accounts in this org.",
       "issueToken": "Issue token",
       "forbidden": "Provisioning tokens are visible to org admins only. Ask an admin to issue or revoke one for your identity provider.",
       "columns": {

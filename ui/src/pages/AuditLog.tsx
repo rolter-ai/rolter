@@ -331,6 +331,7 @@ export default function AuditLog() {
               columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
               data={rows as unknown as Record<string, unknown>[]}
               rowKey="id"
+              read={page}
               empty={
                 <EmptyState
                   uxTarget="audit-log"

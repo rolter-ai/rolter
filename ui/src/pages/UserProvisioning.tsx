@@ -16,7 +16,7 @@ import {
   type ScopeTarget,
 } from "@/components/OrgScopePicker";
 import { CopyButton } from "@/components/CopyButton";
-import { PageBody, RowIconButton } from "@/components/screen";
+import { ListSummary, PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
@@ -395,14 +395,26 @@ export default function UserProvisioning() {
   return (
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-muted-foreground">
-          <Trans
-            i18nKey="pages.userProvisioning.lead"
-            count={rows.length}
-            values={{ active }}
-            components={[<code key="path" className="font-mono text-xs" />]}
-          />
-        </span>
+        {/* the explanation stays when the list is unread; the count does not,
+            since "0 tokens" is not what a failed read found (#2211) */}
+        <ListSummary
+          data={tokens.data}
+          fallback={
+            <Trans
+              i18nKey="pages.userProvisioning.leadUnread"
+              components={[<code key="path" className="font-mono text-xs" />]}
+            />
+          }
+        >
+          {(all) => (
+            <Trans
+              i18nKey="pages.userProvisioning.lead"
+              count={all.length}
+              values={{ active }}
+              components={[<code key="path" className="font-mono text-xs" />]}
+            />
+          )}
+        </ListSummary>
         <div className="ml-auto">
           <GatedButton
             gate="scim_token:create"
@@ -437,6 +449,7 @@ export default function UserProvisioning() {
           columns={columns}
           data={rows as (ScimTokenRow & Record<string, unknown>)[]}
           rowKey="id"
+          read={tokens}
           empty={
             <EmptyState
               uxTarget="provisioning-list"

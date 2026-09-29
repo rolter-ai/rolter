@@ -12,10 +12,11 @@ import { UnservedConfigNotice } from "@/components/UnservedConfigNotice";
 import {
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
   ListTable,
   PageBody,
   SearchInput,
@@ -153,11 +154,9 @@ export default function Providers() {
           <ListHeaderCell>{t("pages.providers.colKeyEnv")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
-        {providers.isLoading && (
-          <ListStateRow>
-            <ListSkeleton rows={4} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={providers}>
+          <ListSkeleton rows={4} className="p-3" />
+        </ListLoadingRow>
         {rows.map((provider) => (
           <ListRow key={provider.id} grid={GRID}>
             <ListCell className="flex min-w-0 flex-col gap-1">
@@ -214,40 +213,38 @@ export default function Providers() {
             </ListCell>
           </ListRow>
         ))}
-        {!providers.isLoading && rows.length === 0 && (
-          <ListStateRow>
-            <EmptyState
-              uxTarget="providers"
-              icon={<Plug />}
-              title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
-              description={
-                filtering ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")
-              }
-              actions={
-                filtering ? (
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setSearch("");
-                      setLabelFilter("");
-                    }}
-                  >
-                    {t("common.clearSearch")}
-                  </Button>
-                ) : (
-                  <GatedButton
-                    gate="provider:create"
-                    control="provider-new-empty"
-                    disabled={scopeBlocked || !scope.orgId}
-                    onClick={() => setSheet({ mode: "add" })}
-                  >
-                    {t("pages.providers.add")}
-                  </GatedButton>
-                )
-              }
-            />
-          </ListStateRow>
-        )}
+        <ListEmptyRow read={providers} rows={rows.length}>
+          <EmptyState
+            uxTarget="providers"
+            icon={<Plug />}
+            title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
+            description={
+              filtering ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")
+            }
+            actions={
+              filtering ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSearch("");
+                    setLabelFilter("");
+                  }}
+                >
+                  {t("common.clearSearch")}
+                </Button>
+              ) : (
+                <GatedButton
+                  gate="provider:create"
+                  control="provider-new-empty"
+                  disabled={scopeBlocked || !scope.orgId}
+                  onClick={() => setSheet({ mode: "add" })}
+                >
+                  {t("pages.providers.add")}
+                </GatedButton>
+              )
+            }
+          />
+        </ListEmptyRow>
       </ListTable>
 
       {scope.orgId && labelling && (

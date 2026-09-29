@@ -7,10 +7,12 @@ import {
   HEALTH_COLOR,
   ListActionsHeader,
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
-  ListStateRow,
+  ListSummary,
   ListTable,
   PageBody,
   Pill,
@@ -21,6 +23,7 @@ import {
   useSort,
 } from "./screen";
 import { ListSkeleton } from "./LoadingState";
+import { ANSWERED, type ReadState } from "@/lib/read-state";
 import { expectAllowed, expectListTable, Harness, routes } from "@/pages/story-harness";
 
 // the grid every list screen is assembled from: a template shared by the
@@ -42,12 +45,17 @@ const ROWS: ProviderRow[] = [
 
 type Col = "name" | "latency";
 
+// the reads a list can be holding no rows under, besides one that answered
+const IN_FLIGHT: ReadState = { isPending: true, isSuccess: false, fetchStatus: "fetching" };
+const PARKED: ReadState = { isPending: true, isSuccess: false, fetchStatus: "paused" };
+const FAILED: ReadState = { isPending: false, isSuccess: false, fetchStatus: "idle" };
+
 function ProviderList({
   rows = ROWS,
-  loading = false,
+  read = ANSWERED,
 }: {
   rows?: ProviderRow[];
-  loading?: boolean;
+  read?: ReadState;
 }) {
   const { sort, cycle, apply } = useSort<Col>();
   const [query, setQuery] = React.useState("");
@@ -73,11 +81,9 @@ function ProviderList({
           />
           <ListActionsHeader />
         </ListHeader>
-        {loading && (
-          <ListStateRow>
-            <ListSkeleton rows={3} className="p-3" />
-          </ListStateRow>
-        )}
+        <ListLoadingRow read={read}>
+          <ListSkeleton rows={3} className="p-3" />
+        </ListLoadingRow>
         {sorted.map((row) => (
           <ListRow key={row.name} grid={GRID}>
             <ListCell className="flex items-center gap-2 font-mono text-xs">
@@ -102,11 +108,9 @@ function ProviderList({
             </ListCell>
           </ListRow>
         ))}
-        {!loading && sorted.length === 0 && (
-          <ListStateRow>
-            <p className="px-4 py-6 text-center text-sm text-muted-foreground">No providers yet</p>
-          </ListStateRow>
-        )}
+        <ListEmptyRow read={read} rows={sorted.length}>
+          <p className="px-4 py-6 text-center text-sm text-muted-foreground">No providers yet</p>
+        </ListEmptyRow>
       </ListTable>
     </PageBody>
   );
@@ -226,13 +230,82 @@ export const SortIsAnnouncedOnTheHeader: Story = {
  * row owns, which fails axe's `aria-required-children`.
  */
 export const LoadingRowKeepsTheTableWhole: Story = {
-  render: () => <ProviderList rows={[]} loading />,
+  render: () => <ProviderList rows={[]} read={IN_FLIGHT} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectListTable(canvasElement, "Providers");
     const status = canvas.getByRole("status");
     await expect(status.parentElement).toHaveAttribute("role", "cell");
     await expect(status.parentElement?.parentElement).toHaveAttribute("role", "row");
+  },
+};
+
+/**
+ * A retry react-query parked — the tab is hidden, the browser is offline — is
+ * still a read awaiting its answer, so it keeps the skeleton. `isLoading` is
+ * false in that window, which is how a parked read once said "nothing logged
+ * yet" (#1984).
+ */
+export const ParkedReadKeepsTheSkeleton: Story = {
+  render: () => <ProviderList rows={[]} read={PARKED} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("status")).toBeVisible();
+    await expect(canvas.queryByText("No providers yet")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A read that failed holds no rows, and that is not the same as a list with
+ * none in it (#2211). The empty row waits for a read that succeeded, so the
+ * body stays empty and the screen's `LoadError` is the only thing that speaks.
+ */
+export const NoEmptyRowUntilTheReadSucceeds: Story = {
+  render: () => <ProviderList rows={[]} read={FAILED} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectListTable(canvasElement, "Providers");
+    await expect(canvas.queryByText("No providers yet")).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("status")).not.toBeInTheDocument();
+    // the header row and nothing under it
+    await expect(canvas.getAllByRole("row")).toHaveLength(1);
+  },
+};
+
+/**
+ * The count beside a list renders only while the data it counts is held
+ * (#2211): no data, no "0 providers". A summary that also explains the screen
+ * keeps the explanation through its `fallback`.
+ */
+export const SummaryWaitsForTheData: Story = {
+  render: () => (
+    <PageBody>
+      <div data-testid="unread">
+        <ListSummary data={undefined as ProviderRow[] | undefined}>
+          {(rows) => `${rows.length} providers`}
+        </ListSummary>
+      </div>
+      <div data-testid="unread-with-fallback">
+        <ListSummary
+          data={undefined as ProviderRow[] | undefined}
+          fallback="upstreams the gateway routes to"
+        >
+          {(rows) => `${rows.length} providers · upstreams the gateway routes to`}
+        </ListSummary>
+      </div>
+      <div data-testid="held">
+        <ListSummary data={[] as ProviderRow[]}>{(rows) => `${rows.length} providers`}</ListSummary>
+      </div>
+    </PageBody>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("unread")).toBeEmptyDOMElement();
+    await expect(canvas.getByTestId("unread-with-fallback")).toHaveTextContent(
+      /^upstreams the gateway routes to$/,
+    );
+    // a list that answered with none is a real zero, and says so
+    await expect(canvas.getByTestId("held")).toHaveTextContent("0 providers");
   },
 };
 

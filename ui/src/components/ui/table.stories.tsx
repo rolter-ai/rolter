@@ -3,6 +3,7 @@ import { expect, within } from "storybook/test";
 
 import { EmptyState } from "./empty-state";
 import { Table, type TableColumn } from "./table";
+import { ANSWERED, type ReadState } from "@/lib/read-state";
 
 interface Row extends Record<string, unknown> {
   id: string;
@@ -90,6 +91,7 @@ export const Empty: Story = {
     <Table
       columns={COLUMNS}
       data={[]}
+      read={ANSWERED}
       empty={
         <EmptyState
           title="No traffic in this window"
@@ -103,6 +105,39 @@ export const Empty: Story = {
     await expect(canvas.getByText("No traffic in this window")).toBeVisible();
     // the columns survive the empty state — they say what a row would carry
     await expect(canvas.getByRole("columnheader", { name: "Provider" })).toBeVisible();
+  },
+};
+
+// the two reads that hold no rows without having answered "none"
+const FAILED: ReadState = { isPending: false, isSuccess: false, fetchStatus: "idle" };
+const IN_FLIGHT: ReadState = { isPending: true, isSuccess: false, fetchStatus: "fetching" };
+
+/**
+ * The placeholder waits for the read to succeed (#2211). A read that failed, or
+ * one still in flight, holds no rows either — and "No traffic in this window"
+ * under a load error states an outage as a quiet day. The screen's own
+ * `LoadError` or skeleton says what is going on; the table says nothing.
+ */
+export const NoPlaceholderUntilTheReadSucceeds: Story = {
+  render: () => (
+    <div className="flex flex-col gap-4">
+      {[FAILED, IN_FLIGHT].map((read, i) => (
+        <Table
+          key={i}
+          aria-label={i === 0 ? "Failed read" : "Read in flight"}
+          columns={COLUMNS}
+          data={[]}
+          read={read}
+          empty={<EmptyState title="No traffic in this window" />}
+        />
+      ))}
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText("No traffic in this window")).not.toBeInTheDocument();
+    // both tables keep their header row and add nothing under it
+    await expect(canvas.getAllByRole("row")).toHaveLength(2);
   },
 };
 

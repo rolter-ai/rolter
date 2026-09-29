@@ -46,12 +46,13 @@ a button placed straight in the table body belongs to no row, which breaks the
 table for a screen reader (see [list tables](list-tables.md)):
 
 ```tsx
-{keys.isLoading && (
-  <ListStateRow>
-    <ListSkeleton rows={4} className="p-3" />
-  </ListStateRow>
-)}
+<ListLoadingRow read={keys}>
+  <ListSkeleton rows={4} className="p-3" />
+</ListLoadingRow>
 ```
+
+`ListLoadingRow` and its sibling `ListEmptyRow` take the query itself and decide
+from it, for the reason the next rule gives.
 
 Every shape wraps itself in one `role="status"` region labelled with
 `common.loading`, so a screen reader hears one announcement rather than one per
@@ -67,7 +68,51 @@ in a hidden tab, or with the browser offline, a failed first attempt leaves the
 query `pending` but not fetching, so it is neither loading nor failed. In that
 window LLM Logs said "Nothing logged yet" about a load that had failed (#1984).
 For the same reason the skeleton keys on `isPending`, which covers the parked
-retry, rather than `isLoading`, which does not.
+retry, rather than `isLoading`, which does not. `isAwaiting` in
+`ui/src/lib/read-state.ts` is that test with one refinement: a query that is
+disabled (a screen with no org to read yet) is also `isPending`, forever, so it
+asks for `isPending` with a fetch that is running or parked. `isEmptyAnswer` is
+the empty-state half. The list-table rows, `Table` and the summary below are
+built on the two, so a screen hands over its query rather than restating them.
+
+### A read that has not answered holds no rows either
+
+The rule above came from one screen; the review for #2049 found seventeen
+others breaking it (#2211). A list screen derived its placeholder from the rows
+(`!query.isLoading && rows.length === 0`), and a failed read holds exactly as
+many rows as an empty one. So Providers, Users, Keys, Models, Provider Groups,
+User Provisioning and the Audit Log said "No X yet", often beside a create
+button, directly under the `LoadError` explaining that the list could not be
+read. On the evidence screen that is a false statement. An operator reads an
+outage or a permissions problem as "nothing configured", and may create a
+duplicate.
+
+Counts had the same fault in a smaller type: `data?.length ?? 0` printed
+"0 teams", "All 0" and "0 of 0 routes" while the read was in flight and again
+after it failed.
+
+The pieces that carry the rule:
+
+- **`ListEmptyRow` / `ListLoadingRow`** (`ui/src/components/screen.tsx`) —
+  `<ListEmptyRow read={query} rows={rows.length}>` renders its `EmptyState`
+  only on a successful answer. `rows` is what survived the screen's filters,
+  so a search that matched nothing still gets its no-match copy.
+- **`Table`** takes `read` beside `empty`, and the type will not accept one
+  without the other.
+- **`ListSummary`** is the count beside a list: `<ListSummary data={query.data}>`
+  hands its render function the data, so there is no `?? 0` left to write, and
+  renders nothing until the data is held. A summary that also explains the
+  screen passes a `fallback` with the explanation and no count, as User
+  Provisioning does for its SCIM lead. A failed refetch keeps the rows on
+  screen, so the count keys on the data rather than on `isSuccess` and stays
+  with them.
+- **Anything derived from the list waits too.** A card that reads "No spend in
+  this window" when its unit has no row in the rollup only says so once the
+  rollup succeeded (Cost Attribution, #2105); an Export CSV or a "collector
+  config" button that renders the list waits for a list that answered.
+
+A card-grid screen with no `ListTable` gates its `EmptyState` the same way:
+`query.isSuccess && query.data.length === 0`.
 
 ### Empty: what it is, and what to do about it
 
@@ -107,7 +152,8 @@ Two rules the wording depends on:
 
 `Table` takes an `empty` prop rendered in a full-width row, so the placeholder
 sits inside the table's border with the column headers above it rather than
-floating beneath a header row over nothing.
+floating beneath a header row over nothing. It comes with `read`, the query the
+rows came from, and renders only once that read succeeded.
 
 An empty result is never routed through `LoadError`; see
 [error states](error-states.md) for why.
@@ -124,3 +170,11 @@ Each touched screen's stories cover all three states with play assertions.
 `story-harness.tsx` supplies `expectSkeleton`, `expectEmptyState` (which checks
 the CTA is there) and `expectLoadError` / `expectForbidden`, so a story asserts
 the state rather than a sentence that is free to be reworded.
+
+The error and loading stories also call `expectNoFalseEmpty(canvasElement,
+/No teams yet/)`: no empty state with that title, and no count of zero anywhere
+on the screen. It asserts an absence, and absent is also what a screen looks
+like before it rendered, so it goes after `expectLoadError` or
+`expectSkeleton`. A story whose list renders after some other read has to wait
+for the list first: Cost Attribution's spend stories wait for the roster before
+asserting that no card claims "no spend".

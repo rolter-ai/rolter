@@ -9,6 +9,7 @@ import {
   confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
@@ -95,6 +96,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No model prices set/);
   },
 };
 
@@ -120,6 +122,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return model prices/i);
+    await expectNoFalseEmpty(canvasElement, /No model prices set/);
   },
 };
 
@@ -131,6 +134,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to model prices/);
+    await expectNoFalseEmpty(canvasElement, /No model prices set/);
   },
 };
 

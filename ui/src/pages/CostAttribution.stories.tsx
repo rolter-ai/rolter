@@ -6,7 +6,9 @@ import { BusinessUnits, Customers } from "./CostAttribution";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectInStatusRegion,
   expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSheetClosed,
   expectSkeleton,
@@ -187,6 +189,7 @@ export const BusinessUnitsLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No business units yet/);
   },
 };
 
@@ -217,6 +220,7 @@ export const BusinessUnitsForbidden: Story = {
     await waitFor(() =>
       expect(canvas.getByText(/You do not have access to business units/)).toBeVisible(),
     );
+    await expectNoFalseEmpty(canvasElement, /No business units yet/);
   },
 };
 
@@ -526,7 +530,14 @@ export const SpendLoading: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectSkeleton(canvasElement);
+    const canvas = within(canvasElement);
+    // the roster first: until the cards exist, "no card says no spend" is true
+    // of a screen that has not rendered them
+    await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
+    await expectInStatusRegion(canvasElement, "spend-loading");
+    // every card holds its figure's place rather than claiming no spend (#2105)
+    await expect(canvas.getAllByTestId("card-spend-loading")).toHaveLength(UNITS.length);
+    await expectNoFalseEmpty(canvasElement, /No spend in this window/);
   },
 };
 
@@ -551,6 +562,8 @@ export const SpendUnavailableKeepsTheRoster: Story = {
     await expectLoadError(canvasElement, /Analytics are not configured[\s\S]*attribution spend/);
     await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
     await expect(canvas.getByText("Platform Engineering")).toBeVisible();
+    await expect(canvas.queryAllByTestId("card-spend-loading")).toHaveLength(0);
+    await expectNoFalseEmpty(canvasElement, /No spend in this window/);
   },
 };
 
@@ -572,6 +585,12 @@ export const SpendFailed: Story = {
         canvas.getAllByRole("alert").some((a) => /attribution spend/.test(a.textContent ?? "")),
       ).toBe(true),
     );
+    // the strip's alert is the one place that says why; the cards say nothing
+    // about spend at all, neither a figure nor "no spend" (#2105)
+    await expect(canvas.getByText("Platform Engineering")).toBeVisible();
+    await expect(canvas.queryByText(fmt.currency(128.5, "USD"))).not.toBeInTheDocument();
+    await expect(canvas.queryAllByTestId("card-spend-loading")).toHaveLength(0);
+    await expectNoFalseEmpty(canvasElement, /No spend in this window/);
   },
 };
 

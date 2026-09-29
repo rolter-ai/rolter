@@ -544,6 +544,31 @@ export async function expectEmptyState(
 }
 
 /**
+ * Assert the screen claims nothing about a list it has not read (#2211): no
+ * empty state titled `emptyTitle`, and no count of zero anywhere — "0 teams",
+ * "All 0", "0 of 0".
+ *
+ * A failed or pending read holds no rows, and a screen that derived its empty
+ * state or its count from the rows said "No providers yet" under its own
+ * `LoadError`. Absent is also what a screen looks like before it has rendered,
+ * so call this *after* `expectLoadError` or `expectSkeleton`, once the screen
+ * has said what it does know.
+ *
+ * The zero is matched against each element's own text, the way `getByText`
+ * reads it, so a figure that merely contains a zero ("403", "0.5") does not
+ * count.
+ */
+export async function expectNoFalseEmpty(
+  canvasElement: HTMLElement,
+  emptyTitle: RegExp,
+): Promise<void> {
+  const canvas = within(canvasElement);
+  await expect(canvas.queryAllByText(emptyTitle)).toHaveLength(0);
+  const zeros = canvas.queryAllByText(/(^|\s)0(\s|$)/).map((node) => node.textContent);
+  await expect(zeros).toEqual([]);
+}
+
+/**
  * Assert the `ListTable` named `name` is a whole table to a screen reader
  * (#2000): a header rowgroup and a body rowgroup, a header row of column
  * headers, and body rows whose every child is a cell — one per column, or one

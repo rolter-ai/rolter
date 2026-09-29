@@ -6,7 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
-import { TableSkeleton } from "@/components/LoadingState";
+import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,7 @@ import {
 import type { Capability } from "@/lib/can";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { isAwaiting, type ReadState } from "@/lib/read-state";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
@@ -252,7 +253,15 @@ function SpendStrip({
       />
     );
   }
-  if (loading) return <Skeleton height={72} radius={10} />;
+  // the one announcement for spend loading: the cards under it hold their
+  // figures' places with bare bars, so a screen reader hears this once
+  if (loading) {
+    return (
+      <LoadingRegion testId="spend-loading">
+        <Skeleton height={72} radius={10} />
+      </LoadingRegion>
+    );
+  }
 
   const total = rows.reduce((sum, r) => sum + num(r.cost_usd), 0);
   const unattributed = rows
@@ -298,10 +307,17 @@ function SpendFigure({ label, value, note }: { label: string; value: string; not
 }
 
 /** the spend line on one unit's or customer's card */
-function CardSpend({ row }: { row?: AttributionSpendRow }) {
+function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  // no row means no spend only once the rollup answered: while it is out, or
+  // after it failed, every card said "No spend in this window" on no evidence
+  // (#2105). the strip above is the one place that says it is loading or why
+  // it failed, so a card holds the figure's place or stays quiet
+  if (isAwaiting(read))
+    return <Skeleton width={120} height={16} data-testid="card-spend-loading" />;
+  if (!read.isSuccess) return null;
   if (!row) {
     return (
       <div className="font-mono text-xs text-[color:var(--text-subtle)]">
@@ -342,7 +358,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   mutationError,
   disabled,
   spend,
-  spendLoading,
+  spendRead,
   spendError,
   onRetrySpend,
 }: {
@@ -370,7 +386,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   /** window spend keyed by the dimension's own id; the empty id is the
    *  unattributed bucket, which has no card of its own */
   spend: AttributionSpendRow[];
-  spendLoading: boolean;
+  /** the spend rollup's query, which says whether `spend` is an answer yet */
+  spendRead: ReadState;
   spendError: unknown;
   onRetrySpend: () => void;
 }) {
@@ -466,7 +483,12 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         </GatedButton>
       </div>
 
-      <SpendStrip rows={spend} loading={spendLoading} error={spendError} onRetry={onRetrySpend} />
+      <SpendStrip
+        rows={spend}
+        loading={isAwaiting(spendRead)}
+        error={spendError}
+        onRetry={onRetrySpend}
+      />
 
       {rows.length === 0 ? (
         <EmptyState
@@ -516,7 +538,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </div>
                   <RetiredBadge retiredAt={row.retired_at} />
                 </div>
-                <CardSpend row={spendById.get(row.id)} />
+                <CardSpend row={spendById.get(row.id)} read={spendRead} />
                 {kind === "customer" && (
                   <div className="text-xs text-muted-foreground">
                     {assigned ? (
@@ -729,7 +751,9 @@ export function BusinessUnits() {
       kind="unit"
       rows={units.data ?? []}
       units={units.data ?? []}
-      isLoading={units.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(units)}
       isError={units.isError}
       error={units.error as Error | undefined}
       onRetry={() => void units.refetch()}
@@ -746,7 +770,7 @@ export function BusinessUnits() {
       deleteError={remove.error}
       resetDelete={() => remove.reset()}
       spend={spend.data ?? []}
-      spendLoading={spend.isLoading}
+      spendRead={spend}
       spendError={spend.error}
       onRetrySpend={() => void spend.refetch()}
     />
@@ -871,7 +895,9 @@ export function Customers() {
       kind="customer"
       rows={customers.data ?? []}
       units={units.data ?? []}
-      isLoading={customers.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(customers)}
       isError={customers.isError}
       error={customers.error as Error | undefined}
       onRetry={() => void customers.refetch()}
@@ -888,7 +914,7 @@ export function Customers() {
       deleteError={remove.error}
       resetDelete={() => remove.reset()}
       spend={spend.data ?? []}
-      spendLoading={spend.isLoading}
+      spendRead={spend}
       spendError={spend.error}
       onRetrySpend={() => void spend.refetch()}
     />
