@@ -4,33 +4,27 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { ModelSheet } from "@/components/ModelSheet";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
-import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
-import { Field } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import {
-  createRoute,
-  createRouteTarget,
   deleteRoute,
+  fetchModels,
   fetchProviders,
   fetchRoutes,
   fetchRouteTargets,
-  STRATEGIES,
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
-import { StrategyHint } from "@/components/StrategyHint";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { strategyOptions, strategyTone } from "@/lib/strategies";
+import { strategyTone } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -87,6 +81,7 @@ export default function RoutingRules() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
     queryClient.invalidateQueries({ queryKey: ["models"] });
+    queryClient.invalidateQueries({ queryKey: ["config"] });
   };
 
   const remove = useMutation({
@@ -94,7 +89,12 @@ export default function RoutingRules() {
     onSuccess: invalidate,
   });
 
+  // a route is created through the model sheet, the same one Model Catalog
+  // opens, so the strategy, the targets and everything else about a new model
+  // are set in one place rather than in two forms that disagreed (#1979). the
+  // catalog is read only for the sheet's name-conflict check
   const [addOpen, setAddOpen] = React.useState(false);
+  const models = useQuery({ queryKey: ["models"], queryFn: fetchModels, enabled: addOpen });
   // a route is the public name clients call; deleting one breaks them silently,
   // so it is confirmed by name before anything leaves (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<RouteRow | null>(null);
@@ -296,131 +296,17 @@ export default function RoutingRules() {
         }}
       />
 
-      {scope.projectId && (
-        <AddRouteDialog
-          open={addOpen}
-          onOpenChange={setAddOpen}
-          projectId={scope.projectId}
-          providers={providers.data?.map((p) => ({ id: p.id, name: p.name })) ?? []}
-          onDone={invalidate}
-        />
-      )}
+      <ModelSheet
+        open={addOpen}
+        mode="add"
+        onOpenChange={setAddOpen}
+        projectId={scope.projectId ?? null}
+        orgId={scope.orgId ?? null}
+        providers={providers.data ?? []}
+        models={models.data ?? []}
+        routes={routes.data ?? []}
+        onDone={invalidate}
+      />
     </PageBody>
-  );
-}
-
-function AddRouteDialog({
-  open,
-  onOpenChange,
-  projectId,
-  providers,
-  onDone,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  projectId: string;
-  providers: { id: string; name: string }[];
-  onDone: () => void;
-}) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const [model, setModel] = React.useState("");
-  const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
-  const [providerId, setProviderId] = React.useState("");
-  const [weight, setWeight] = React.useState("100");
-
-  React.useEffect(() => {
-    if (open) {
-      setModel("");
-      setStrategy(STRATEGIES[0]);
-      setProviderId(providers[0]?.id ?? "");
-      setWeight("100");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const create = useMutation({
-    mutationFn: async () => {
-      const route = await createRoute(projectId, { model, strategy });
-      if (providerId) {
-        await createRouteTarget(route.id, {
-          provider_id: providerId,
-          weight: Number(weight) || 1,
-        });
-      }
-    },
-    onSuccess: () => {
-      // the dialog closes on success, so the outcome is announced somewhere
-      // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: model }) });
-      onDone();
-      onOpenChange(false);
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.saveFailed", { what: model }),
-        detail: errorDetail(error),
-      });
-    },
-  });
-
-  const dirty = !!(model.trim() || strategy !== STRATEGIES[0] || weight !== "100");
-
-  return (
-    <EditorSheet
-      name="route-create"
-      open={open}
-      onOpenChange={onOpenChange}
-      title={t("pages.routing.emptyAction")}
-      subtitle={t("pages.routing.addSubtitle")}
-      dirty={dirty}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
-      canSave={!!model.trim()}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
-    >
-      <div className="space-y-3">
-        <Field label={t("pages.routing.form.modelName")}>
-          <Input
-            className="font-mono"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="gpt-4o"
-          />
-        </Field>
-        {/* the select plus its caveat, so the label is bound by hand (#1264) */}
-        <Field label={t("pages.routing.form.strategy")} htmlFor="route-strategy">
-          <Combobox
-            id="route-strategy"
-            value={strategy}
-            onChange={setStrategy}
-            options={strategyOptions(strategy).map((s) => ({ value: s, label: s }))}
-          />
-          <StrategyHint strategy={strategy} />
-        </Field>
-        <Field label={t("pages.routing.form.firstTarget")}>
-          <Combobox
-            value={providerId}
-            onChange={setProviderId}
-            options={[
-              { value: "", label: t("pages.routing.form.noTarget") },
-              ...providers.map((p) => ({ value: p.id, label: p.name })),
-            ]}
-          />
-        </Field>
-        {providerId && (
-          <Field label={t("pages.routing.form.weight")}>
-            <Input
-              type="number"
-              min={1}
-              value={weight}
-              onChange={(e) => setWeight(e.target.value)}
-            />
-          </Field>
-        )}
-      </div>
-    </EditorSheet>
   );
 }

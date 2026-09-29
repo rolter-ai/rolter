@@ -38,6 +38,22 @@ const NOT_OFFERED: readonly string[] = ["adaptive"];
  */
 export const NEEDS_TELEMETRY: readonly string[] = ["precise_cache_aware", "lmcache_aware"];
 
+/**
+ * Strategies that read a target's `weight` (`build_with_stats` in
+ * `crates/rolter-balancer/src/lib.rs`).
+ *
+ * Every other strategy is built from the target count alone, so a weight on
+ * one of their targets is stored and never consulted. A screen that turns
+ * weights into traffic shares for those would be stating a split the gateway
+ * does not make.
+ */
+const READS_WEIGHTS: readonly string[] = ["weighted", "pipeline", "adaptive"];
+
+/** Whether the gateway spreads traffic by weight under `strategy`. */
+export function usesWeights(strategy: string): boolean {
+  return READS_WEIGHTS.includes(strategy);
+}
+
 /** The i18n key describing `strategy`, or `null` when it needs no caveat. */
 export function strategyHintKey(strategy: string): string | null {
   if (NEEDS_TELEMETRY.includes(strategy)) return "pages.routing.strategyHints.needsTelemetry";

@@ -16,7 +16,7 @@ import {
   answerDiscardPrompt,
   type FetchStub,
 } from "@/pages/story-harness";
-import type { EffectiveModelDto, ProviderRow, RouteRow } from "@/lib/api";
+import type { EffectiveModelDto, ProviderRow, RouteRow, RouteTargetRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectInViewport, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -84,6 +84,47 @@ const ADVANCED_ROUTE: RouteRow = {
 const MODELS: EffectiveModelDto[] = [
   { model: "gpt-4o", strategy: "round_robin", targets: 1, source: "db" },
   { model: "fake-llm", strategy: "round_robin", targets: 1, source: "config" },
+  { model: "llama-70b", strategy: "cache_aware", targets: 3, source: "db" },
+];
+
+/**
+ * A `cache_aware` route over three vLLM replicas (#1979). The sheet used to
+ * show target 0 alone and rewrite it on save; every line is on screen now, and
+ * a save touches only the lines that changed.
+ */
+const FLEET_ROUTE: RouteRow = {
+  ...ROUTE,
+  id: "route-2",
+  model: "llama-70b",
+  strategy: "cache_aware",
+  params: {},
+};
+
+const FLEET_TARGETS: RouteTargetRow[] = [
+  {
+    id: "fleet-1",
+    route_id: "route-2",
+    provider_id: "prov-2",
+    upstream_model: "meta-llama/Llama-3.1-70B",
+    weight: 1,
+    created_at: "2026-02-01T00:00:00Z",
+  },
+  {
+    id: "fleet-2",
+    route_id: "route-2",
+    provider_id: "prov-2",
+    upstream_model: "meta-llama/Llama-3.1-70B",
+    weight: 1,
+    created_at: "2026-02-01T00:00:00Z",
+  },
+  {
+    id: "fleet-3",
+    route_id: "route-2",
+    provider_id: "prov-1",
+    upstream_model: null,
+    weight: 1,
+    created_at: "2026-02-01T00:00:00Z",
+  },
 ];
 
 const TARGETS = [
@@ -101,6 +142,7 @@ const TARGETS = [
 const backing: FetchStub = async (input) => {
   const url = String(input);
   if (url.includes("/routes/route-1/targets")) return json(TARGETS);
+  if (url.includes("/routes/route-2/targets")) return json(FLEET_TARGETS);
   if (url.includes("/model-prices")) return json([]);
   if (url.includes("/currency")) return json({ settlement: "USD", codes: ["USD", "EUR"] });
   if (url.includes("/teams")) return json([]);
@@ -116,11 +158,13 @@ function Stage({
   mode,
   route,
   configModel,
+  configTargets,
   stub = backing,
 }: {
   mode: ModelSheetMode;
   route?: RouteRow | null;
   configModel?: EffectiveModelDto | null;
+  configTargets?: React.ComponentProps<typeof ModelSheet>["configTargets"];
   stub?: FetchStub;
 }) {
   const [open, setOpen] = React.useState(true);
@@ -143,8 +187,9 @@ function Stage({
         providers={PROVIDERS}
         route={route}
         configModel={configModel}
+        configTargets={configTargets}
         models={MODELS}
-        routes={[ROUTE]}
+        routes={[ROUTE, FLEET_ROUTE]}
         onDone={() => {}}
       />
     </Harness>
@@ -155,7 +200,16 @@ function Stage({
 // seed before it types: an edit landing first would be overwritten by it
 async function seeded(dialog: ReturnType<typeof within>): Promise<void> {
   // the combobox shows the provider's name; `prov-1` is what goes on the wire
-  await waitFor(() => expect(dialog.getByLabelText("Provider")).toHaveValue("openai-prod"));
+  await waitFor(() =>
+    expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
+  );
+}
+
+/** the bodies of every request matching `method` and `fragment`, in order */
+function sentBodies<T>(method: string, fragment: string): T[] {
+  return calls.calls
+    .filter((c) => c.method === method && c.url.includes(fragment) && c.body)
+    .map((c) => JSON.parse(c.body as string) as T);
 }
 
 const meta = {
@@ -181,37 +235,41 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * A blank draft: the sheet preselects the first provider, so the model id is
- * what is missing, and clearing the provider makes that the first reason.
+ * A blank draft: one target on the first provider is already there, so the
+ * model name is what is missing, and removing the last target makes "add a
+ * target" a reason of its own.
  */
 export const Add: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await expect(dialog.getByRole("heading", { name: "Add model" })).toBeVisible();
-    // the draft starts with no provider until the seed effect picks the first
-    // one; asserting before the seed raced it and read whichever state won
-    // (#1500)
+    // the draft starts with no target until the seed effect adds one on the
+    // first provider; asserting before the seed raced it (#1500)
     await seeded(dialog);
     // each error is read through its own field's description, so it is the
     // field that is invalid rather than some text somewhere on the sheet (#1527)
-    const upstream = dialog.getByLabelText("Upstream model name");
-    await expect(upstream).toHaveAttribute("aria-invalid", "true");
-    await expect(upstream).toHaveAccessibleDescription(/Enter the model id exactly/);
+    const name = dialog.getByLabelText("Model name");
+    await expect(name).toHaveAttribute("aria-invalid", "true");
+    await expect(name).toHaveAccessibleDescription(/Enter the name clients will send/);
     // the primary action keeps its place and greys out while the draft is
     // incomplete (#1265), with the first blocking reason beside it
     const save = dialog.getByRole("button", { name: "Add model" });
     await expect(save).toBeDisabled();
-    await expect(save).toHaveAccessibleDescription(/Enter the model id exactly/);
-    const provider = dialog.getByLabelText("Provider");
-    await expect(provider).not.toHaveAttribute("aria-invalid");
-    await pickOption(provider, "select provider…");
-    await waitFor(() => expect(provider).toHaveAttribute("aria-invalid", "true"));
-    await expect(provider).toHaveAccessibleDescription(/Pick the upstream provider/);
-    await expect(save).toHaveAccessibleDescription(/Pick the upstream provider/);
+    await expect(save).toHaveAccessibleDescription(/Enter the name clients will send/);
+    // a new model is not created `round_robin` behind the operator's back: the
+    // strategy is a field, starting at the first one offered (#1979)
+    await expect(dialog.getByLabelText("Strategy")).toHaveValue("round_robin");
+    await expect(dialog.getByLabelText("Strategy")).toBeEnabled();
+
+    await userEvent.type(name, "qwen-72b");
+    await userEvent.click(dialog.getByRole("button", { name: "Remove target 1" }));
+    const addTarget = dialog.getByRole("button", { name: "Add target" });
+    await waitFor(() => expect(addTarget).toHaveAccessibleDescription(/at least one target/));
+    await expect(save).toHaveAccessibleDescription(/at least one target/);
     // `getAll`: the sheet states each error under its field *and* repeats the
     // set in a summary above the footer
-    await expect(dialog.getAllByText(/Pick the upstream provider/).length).toBeGreaterThan(1);
+    await expect(dialog.getAllByText(/at least one target/).length).toBeGreaterThan(1);
     // "duplicate from" is offered only where there is something to duplicate
     await expect(dialog.getByLabelText("Duplicate from")).toBeVisible();
   },
@@ -237,13 +295,15 @@ export const AddOnAPhoneInRussian: Story = {
       await dialog.findByRole("heading", { name: ru.modelSheet.titleAdd }),
     ).toBeVisible();
     await waitFor(() =>
-      expect(dialog.getByLabelText(ru.modelSheet.fields.provider)).toHaveValue("openai-prod"),
+      expect(
+        dialog.getByLabelText(ru.modelSheet.targets.providerAria.replace("{{n}}", "1")),
+      ).toHaveValue("openai-prod"),
     );
     const save = dialog.getByRole("button", { name: ru.modelSheet.ctaAdd });
     const cancel = dialog.getByRole("button", { name: ru.common.cancel });
     // greyed out in place (#1265), still naming why
     await expect(save).toBeDisabled();
-    await expect(save).toHaveAccessibleDescription(ru.modelSheet.errors.upstream);
+    await expect(save).toHaveAccessibleDescription(ru.modelSheet.errors.name);
     await expectInViewport(save);
     await expectInViewport(cancel);
     // on the sheet, not only on the screen: level with the header's close
@@ -269,6 +329,17 @@ export const EditOnAPhoneInRussian: Story = {
     await expect(
       await dialog.findByRole("heading", { name: ru.modelSheet.titleEdit }),
     ).toBeVisible();
+    // the target line stacks below `sm`: the provider on a line of its own,
+    // the upstream model, weight and remove beneath it, all inside the sheet
+    const upstream = await dialog.findByLabelText(
+      ru.modelSheet.targets.upstreamAria.replace("{{n}}", "1"),
+    );
+    const remove = dialog.getByRole("button", {
+      name: ru.modelSheet.targets.removeAria.replace("{{n}}", "1"),
+    });
+    remove.scrollIntoView({ block: "center" });
+    await expectInViewport(upstream);
+    await expectInViewport(remove);
     const save = dialog.getByRole("button", { name: ru.modelSheet.ctaSave });
     await waitFor(() => expect(save).toBeEnabled());
     await expectInViewport(save);
@@ -297,26 +368,49 @@ export const Edit: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await expect(dialog.getByLabelText("Upstream model name")).toHaveValue("gpt-4o");
+    await expect(dialog.getByLabelText("Model name")).toHaveValue("gpt-4o");
     // renaming is not supported yet, and the field says so rather than
     // accepting an edit the control plane would drop
-    await expect(dialog.getByLabelText("Upstream model name")).toBeDisabled();
+    await expect(dialog.getByLabelText("Model name")).toBeDisabled();
+    // the strategy is shown as stored, and said to be fixed: the control plane
+    // takes it at creation and has no call that changes it (#1979)
+    const strategy = dialog.getByLabelText("Strategy");
+    await expect(strategy).toHaveValue("round_robin");
+    await expect(strategy).toBeDisabled();
+    await expect(strategy).toHaveAccessibleDescription(/set when a model is created/);
   },
 };
 
 /**
  * A config-owned model. It is always present and cannot be edited — the
  * control plane answers 409 — so the sheet is a reference view that says why
- * rather than a form that fails on save.
+ * rather than a form that fails on save. Its strategy and targets are the ones
+ * `rolter.toml` declares, not the blank draft's (#1979).
  */
 export const ViewConfigModel: Story = {
-  render: () => <Stage mode="view" configModel={MODELS[1]} />,
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 2, source: "config" }}
+      configTargets={[
+        { provider: "sim-a", upstream: "fake-llm", weight: 3 },
+        { provider: "sim-b", upstream: "fake-llm-canary", weight: 1 },
+      ]}
+    />
+  ),
   play: async () => {
     const dialog = within(sheet());
     await expect(dialog.getByText("Model details")).toBeVisible();
     await expect(dialog.getByText(/Read-only config model/)).toBeVisible();
     await expect(dialog.queryByRole("button", { name: "Save model" })).not.toBeInTheDocument();
-    await expect(dialog.getByLabelText("Provider")).toBeDisabled();
+    await waitFor(() => expect(dialog.getByLabelText("Strategy")).toHaveValue("weighted"));
+    await expect(dialog.getByLabelText("Strategy")).toBeDisabled();
+    // the targets are a list to read, not an editor with nothing behind it
+    const list = within(dialog.getByRole("list", { name: "Targets of fake-llm" }));
+    const lines = await list.findAllByRole("listitem");
+    await expect(lines).toHaveLength(2);
+    await expect(lines[1]).toHaveTextContent(/sim-b.*fake-llm-canary.*weight 1.*25% of traffic/);
+    await expect(dialog.queryByRole("button", { name: "Add target" })).not.toBeInTheDocument();
   },
 };
 
@@ -330,11 +424,10 @@ export const NameConflict: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Upstream model name"), "gpt-4o");
-    // the conflict is the public name's, which the alias field owns
-    const alias = dialog.getByLabelText("Rolter alias");
-    await waitFor(() => expect(alias).toHaveAttribute("aria-invalid", "true"));
-    await expect(alias).toHaveAccessibleDescription(/already exists/);
+    const name = dialog.getByLabelText("Model name");
+    await userEvent.type(name, "gpt-4o");
+    await waitFor(() => expect(name).toHaveAccessibleDescription(/already exists/));
+    await expect(name).toHaveAttribute("aria-invalid", "true");
     await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
   },
 };
@@ -355,24 +448,140 @@ export const InvalidBaseUrl: Story = {
 
 /**
  * Adding a model is a route plus a target, in that order: the target needs the
- * id the route creation returns.
+ * id the route creation returns. A target that names no upstream model of its
+ * own sends the public name through, and says so by sending no model at all.
  */
 export const AddsAModel: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
-    await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
     await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
     const route = (await calls.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)) as {
       model: string;
+      strategy: string;
     };
-    await expect(route.model).toBe("llama-3.1-70b");
+    await expect(route).toEqual({ model: "llama-3.1-70b", strategy: "round_robin" });
     const target = (await calls.expectSentBody("POST", "/routes/route-new/targets")) as {
       provider_id: string;
+      upstream_model?: string;
+      weight: number;
     };
-    await expect(target.provider_id).toBe("prov-2");
+    await expect(target).toEqual({ provider_id: "prov-2", weight: 1 });
+  },
+};
+
+/**
+ * A `cache_aware` model over two replicas, created from the sheet (#1979).
+ *
+ * The strategy the operator picks is the one the route is created with, and
+ * each target line becomes its own target, in the order listed. `cache_aware`
+ * does not read weights, and the sheet says so once there is more than one.
+ */
+export const AddsACacheAwareFleet: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.type(dialog.getByLabelText("Model name"), "qwen-72b");
+    await pickOption(dialog.getByLabelText("Strategy"), "cache_aware");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.type(
+      dialog.getByLabelText("Target 1 upstream model"),
+      "meta-llama/Llama-3.1-70B",
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await pickOption(await dialog.findByLabelText("Target 2 provider"), "openai-prod");
+    const weight = dialog.getByLabelText("Target 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "3");
+    await expect(dialog.getByText(/does not read weights/)).toHaveTextContent(/^cache_aware/);
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    const route = (await calls.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)) as {
+      strategy: string;
+    };
+    await expect(route.strategy).toBe("cache_aware");
+    await waitFor(() => expect(sentBodies("POST", "/routes/route-new/targets")).toHaveLength(2));
+    await expect(sentBodies("POST", "/routes/route-new/targets")).toEqual([
+      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
+      { provider_id: "prov-1", weight: 3 },
+    ]);
+  },
+};
+
+/** A weight is a whole number from 1; the control plane refuses anything else. */
+export const RefusesAWeightBelowOne: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.type(dialog.getByLabelText("Model name"), "qwen-72b");
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "0");
+    await waitFor(() => expect(weight).toHaveAttribute("aria-invalid", "true"));
+    await expect(weight).toHaveAccessibleDescription(/whole numbers, 1 or more/);
+    await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
+  },
+};
+
+/**
+ * Editing a multi-target route shows every target and writes only what moved.
+ *
+ * There is no update endpoint for a target, so a changed line is created anew
+ * and its old row deleted — and every create goes out before any delete, so
+ * the gateway never sees the route with nothing to send to part-way through.
+ * An untouched line is left alone.
+ */
+export const EditsEveryTargetOfAFleet: Story = {
+  render: () => <Stage mode="edit" route={FLEET_ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await waitFor(() =>
+      expect(dialog.getByLabelText("Target 3 provider")).toHaveValue("openai-prod"),
+    );
+    await expect(dialog.getByLabelText("Target 1 upstream model")).toHaveValue(
+      "meta-llama/Llama-3.1-70B",
+    );
+    await expect(dialog.getByLabelText("Strategy")).toHaveValue("cache_aware");
+
+    const weight = dialog.getByLabelText("Target 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "2");
+    await userEvent.click(dialog.getByRole("button", { name: "Remove target 3" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+
+    await calls.expectSent("DELETE", "/route-targets/fleet-3");
+    await calls.expectSent("DELETE", "/route-targets/fleet-2");
+    await expect(sentBodies("POST", "/routes/route-2/targets")).toEqual([
+      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 2 },
+    ]);
+    calls.expectNotSent("DELETE", "/route-targets/fleet-1");
+    const writes = calls.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.url}`);
+    const creates = writes.filter((w) => w.includes("/routes/route-2/targets"));
+    const lastCreate = writes.lastIndexOf(creates[creates.length - 1]);
+    const firstDelete = writes.findIndex((w) => w.startsWith("DELETE"));
+    await expect(lastCreate).toBeLessThan(firstDelete);
+  },
+};
+
+/**
+ * Duplicating a route starts from its strategy and targets. A target that sent
+ * the source's name through keeps sending that model once the copy is renamed.
+ */
+export const DuplicatesStrategyAndTargets: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await pickOption(dialog.getByLabelText("Duplicate from"), "llama-70b");
+    await waitFor(() => expect(dialog.getByLabelText("Strategy")).toHaveValue("cache_aware"));
+    await expect(await dialog.findByLabelText("Target 3 upstream model")).toHaveValue("llama-70b");
+    // the copy carries the source's name, which is taken, until it is renamed
+    await expect(dialog.getByLabelText("Model name")).toHaveAccessibleDescription(/already exists/);
   },
 };
 
@@ -465,8 +674,8 @@ export const OffersNoFakeConnectionTest: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await pickOption(dialog.getByLabelText("Provider"), "vllm-cluster");
-    await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
     // a complete draft, the state an operator would have tested from, with the
     // footer past validation: this is an absent control, not a footer that has
     // not painted its actions yet
@@ -481,7 +690,8 @@ export const OffersNoFakeConnectionTest: Story = {
 
 /**
  * A save that touched nothing in the advanced editor does not rewrite the blob
- * — the params PUT still goes, the advanced PUT does not.
+ * — the params PUT still goes, the advanced PUT does not — and the targets are
+ * not deleted and recreated either.
  */
 export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
   render: () => <Stage mode="edit" route={ADVANCED_ROUTE} />,
@@ -491,6 +701,9 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
     await calls.expectSent("PUT", "/routes/route-1/params");
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
+    // nor are the targets rewritten: an unchanged line is left as it is
+    calls.expectNotSent("POST", "/routes/route-1/targets");
+    calls.expectNotSent("DELETE", "/route-targets/");
   },
 };
 
@@ -630,10 +843,10 @@ export const DiscardGuardKeepsTheDraft: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(false);
-    await expect(dialog.getByLabelText("Upstream model name")).toHaveValue("llama-3.1-70b");
+    await expect(dialog.getByLabelText("Model name")).toHaveValue("llama-3.1-70b");
   },
 };
 
@@ -643,7 +856,7 @@ export const DiscardGuardThrowsItAway: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Upstream model name"), "llama-3.1-70b");
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(true);
     await expectSheetClosed();

@@ -35,6 +35,18 @@ pub trait LoadBalancer: Send + Sync {
 - **predicted_latency** — rank targets by what _this_ request is modelled to cost on each of them, from the queue it would join and its own prompt size, rather than by a per-target average. See below.
 - **lora_aware** — LoRA-adapter affinity for a fleet serving many adapters over shared base weights: prefer a target that already holds the requested adapter resident, with prefix affinity and in-flight load behind it. See below.
 
+### Which strategies read a target's weight
+
+`build_with_stats` hands the weight slice to three strategies: `weighted`,
+`pipeline` (its static-weight scorer) and `adaptive` (its fallback stack).
+Every other strategy is built from the target count alone, so a weight on one
+of their targets is stored and never consulted. The dashboard mirrors that
+list as `usesWeights()` in `ui/src/lib/strategies.ts`: the Model Catalog and
+the model sheet state a traffic share only for those three, and say the
+weights are ignored everywhere else (#1979). A new strategy that reads weights
+has to be added there too, or the dashboard will tell operators its weights do
+nothing.
+
 ## Balancer lifetime, and provider groups
 
 **A balancer belongs to the pool, not to the request.** Most strategies carry

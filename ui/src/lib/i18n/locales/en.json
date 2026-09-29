@@ -247,6 +247,8 @@
     },
     "sections": {
       "general": "General",
+      "routing": "Routing",
+      "routingInfo": "How the gateway spreads this model's traffic: the balancing strategy, and the provider targets it picks between.",
       "params": "Default parameters",
       "paramsInfo": "Server-side default values for inference parameters, and whether clients may override each one.",
       "caps": "Capabilities",
@@ -259,20 +261,12 @@
       "rbac": "Access & permissions"
     },
     "fields": {
-      "provider": "Provider",
-      "providerInfo": "The upstream provider that serves this model. Sets auth, endpoint shape, and which parameters are valid.",
-      "providerConfig": "config",
-      "providerSelect": "select provider…",
+      "name": "Model name",
+      "nameInfo": "The public name clients send in the model field. It is the route's name, and every target serves it.",
+      "nameHint": "The name clients call. Each target can send a different model id upstream.",
+      "nameHintEdit": "Renaming isn't supported yet — delete and re-add to change the name.",
       "modality": "Model type",
       "modalityInfo": "The modality this endpoint handles. Determines which request schema and playground surface apply.",
-      "upstream": "Upstream model name",
-      "upstreamInfo": "The exact model id the provider expects — this string is sent to the base URL. e.g. gpt-4o, claude-sonnet-4-20250514, Llama-3.1-8B-Instruct.",
-      "upstreamHint": "Sent verbatim to the provider — must match their API exactly.",
-      "upstreamHintEdit": "Renaming isn't supported yet — delete and re-add to change the name.",
-      "alias": "Rolter alias",
-      "aliasInfo": "Optional. The public name clients call this model by. Leave blank to reuse the upstream name. Use it to expose a stable, provider-agnostic name.",
-      "aliasPlaceholder": "same as upstream name",
-      "aliasHint": "The name clients send. Optional — defaults to the upstream name.",
       "baseUrl": "Base URL override",
       "baseUrlInfo": "Point this model at a custom endpoint (self-hosted, proxy, or region). Leave blank to use the provider's default base URL.",
       "baseUrlHint": "Optional. Overrides the provider endpoint for this model only.",
@@ -281,6 +275,25 @@
       "descriptionPlaceholder": "What is this model for? Any routing notes for the team…",
       "enabled": "Enabled",
       "enabledHint": "Off = kept in the catalog but excluded from routing and pickers."
+    },
+    "routing": {
+      "strategy": "Strategy",
+      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
+      "strategyFixed": "The strategy is set when a model is created and cannot be changed here yet."
+    },
+    "targets": {
+      "title": "Targets",
+      "info": "A target is a provider and the model id sent to it. Each request goes to one target, picked by the strategy.",
+      "add": "Add target",
+      "noProviders": "No providers yet. Add one under Model Providers first.",
+      "provider": "Provider",
+      "upstream": "Upstream model",
+      "weight": "Weight",
+      "providerAria": "Target {{n}} provider",
+      "upstreamAria": "Target {{n}} upstream model",
+      "weightAria": "Target {{n}} weight",
+      "removeAria": "Remove target {{n}}",
+      "upstreamPlaceholder": "same as model name"
     },
     "lock": {
       "lockAll": "Lock all",
@@ -327,8 +340,6 @@
       "concurrency": "Max concurrency",
       "timeout": "Timeout (ms)",
       "retries": "Max retries",
-      "weight": "Routing weight",
-      "weightInfo": "Relative share of traffic when this model is one of several targets for the same alias.",
       "context": "Context window",
       "maxOutput": "Max output tokens",
       "insecureTls": "Allow insecure TLS",
@@ -356,13 +367,26 @@
       "users": "Restrict to specific users"
     },
     "errors": {
-      "provider": "Required. Pick the upstream provider that actually serves this model.",
-      "upstream": "Required. Enter the model id exactly as the provider's API expects it — this is the string sent to the base URL (e.g. gpt-4o, claude-sonnet-4-20250514).",
-      "alias": "A model named “{{name}}” already exists. Give this one a distinct Rolter alias.",
+      "name": "Required. Enter the name clients will send in the model field (e.g. gpt-4o).",
+      "nameTaken": "A model named “{{name}}” already exists. Give this one a distinct name.",
+      "targets": "Add at least one target. A model with none answers every request with an error.",
+      "weight": "Weights are whole numbers, 1 or more.",
       "baseUrl": "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value."
     }
+  },
+  "routeTargets": {
+    "count_one": "{{count}} target",
+    "count_other": "{{count}} targets",
+    "listLabel": "Targets of {{model}}",
+    "weightsIgnored": "<0>{{strategy}}</0> does not read weights, so they do not split traffic on this route. Only weighted, pipeline and adaptive routes use them.",
+    "weight": "weight {{weight}}",
+    "share": "{{share}} of traffic",
+    "uptime": "{{uptime}} uptime",
+    "belowSla": "{{uptime}} uptime, below SLA",
+    "noHealth": "no health data",
+    "healthWindow": "Uptime over the last 7 days, against a {{sla}} SLA."
   },
   "nav": {
     "playground": "Playground",
@@ -522,11 +546,23 @@
       "columns": {
         "model": "Model",
         "strategy": "Strategy",
+        "targets": "Targets",
         "origin": "Origin",
-        "price": "In · out /Mtok",
-        "weight": "Weight"
+        "price": "In · out /Mtok"
       },
       "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
+      "strategyCaveat": {
+        "needsTelemetry": "needs telemetry",
+        "deploymentWide": "set deployment-wide",
+        "other": "has a caveat"
+      },
+      "targets": {
+        "toggleAria": "{{targets}} for {{model}}",
+        "none": "no targets",
+        "failing_one": "{{count}} below SLA",
+        "failing_other": "{{count}} below SLA",
+        "healthy": "every target within SLA"
+      },
       "readOnlyPill": "read-only",
       "view": "View",
       "edit": "Edit",
@@ -655,14 +691,6 @@
       "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
       "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
       "noTargets": "No targets yet.",
-      "addSubtitle": "Public model name resolved to upstream targets by the chosen strategy.",
-      "form": {
-        "modelName": "Model name",
-        "strategy": "Strategy",
-        "firstTarget": "First target",
-        "noTarget": "none (attach later)",
-        "weight": "Weight"
-      },
       "disabledBadge": "disabled"
     },
     "pricing": {
