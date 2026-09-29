@@ -116,7 +116,7 @@ When you change the thing in bold, the entries after it must change with it.
 - **Added an ADR** — `docs/dev-docs/adr/NNNN-*.md` plus its line in `docs/dev-docs/adr/README.md`; English only; commit as plain `docs:` since `adr` is not an allowed scope
 - **Added or changed a workflow** — pin new actions to a full commit SHA; add a least-privilege `permissions:` block; keep `uvx zizmor` and `actionlint` clean; if it is a merge gate, add it to `ci-ok`'s `needs:` in `.github/workflows/ci.yml`
 - **Changed behaviour of any feature** — ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the _same_ PR, plus the index/nav line; update `TODO.md` / `ROADMAP.md` when the roadmap moves
-- **Dashboard (`ui/`) changes** — screens, dropdowns, sheet rows, repeated markup, code surfaces, copy, focus and gating stories, destructive actions, loading/empty/error states: see `ui/AGENTS.md`, which loads automatically when working under `ui/`
+- **Dashboard (`ui/`) changes** — screens, dropdowns, list tables, sheet rows, repeated markup, code surfaces, copy, focus and gating stories, destructive actions, loading/empty/error states: see `ui/AGENTS.md`, which loads automatically when working under `ui/`
 
 ## Commit & PR conventions
 

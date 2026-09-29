@@ -27,9 +27,17 @@ Before building or reshaping any screen, run the design skill:
 
 It sets palette, typography and layout so a screen is a deliberate call for
 rolter rather than shadcn defaults, and it composes with the existing rolter
-design system (DesignSync / the Claude Design project) that supplies the tokens
-and primitives the dashboard already ships. Run the skill first, then build
-against the tokens. **Never hard-code a hex or a font the tokens already carry.**
+design system that supplies the tokens and primitives the dashboard already
+ships. Run the skill first, then build against the tokens. **Never hard-code a
+hex or a font the tokens already carry.**
+
+The design record lives at the repository root: `PRODUCT.md` (who the
+dashboard is for, the constraints) and `DESIGN.md` (tokens and named rules,
+derived from `ui/src/index.css`; the code wins where they disagree). Read both
+before UI work. The impeccable skill loads them itself; without the skill,
+read `reference/craft-floor.md` from its plugin folder before any UI edit and
+run its detector over the files you changed — see
+`docs/dev-docs/development/impeccable.md`.
 
 Then consult the Storybook MCP server (`rolter-storybook` in `.mcp.json`) before
 writing components — run `bun run storybook` in `ui/` if it is not up:

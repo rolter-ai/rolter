@@ -1,6 +1,7 @@
 import i18n from "@/lib/i18n";
 
-// client for the rolter-gateway data plane (/v1/*), used by the Playground.
+// client for the rolter-gateway data plane (/v1/*), used by the Playground,
+// plus the readiness probe behind the screen header's gateway pill (#1973).
 //
 // the dashboard is served by the control plane, but chat/embeddings/image/audio
 // calls hit the gateway on a different port. in dev, vite proxies /gw → :4000
@@ -324,4 +325,92 @@ export function realtimeUrl(model: string): string {
  */
 export function gatewayBaseUrl(): string {
   return new URL(GW_BASE, location.origin).toString().replace(/\/$/, "");
+}
+
+/**
+ * What one readiness probe of the gateway established (#1973).
+ *
+ * - `ready`: the gateway answered its `/readyz` with `200 ok`
+ * - `draining`: it answered `503 draining`, so it finishes the requests in
+ *   flight and takes no new ones
+ * - `unreachable`: the control plane's `/gw` proxy answered `502` in its own
+ *   JSON error shape, which it does only when the request to the gateway
+ *   itself failed
+ */
+export type GatewayReadiness = "ready" | "draining" | "unreachable";
+
+/**
+ * A probe answer that says nothing about the gateway: an unexpected status, a
+ * page from something in front of the control plane, a network failure or no
+ * answer within the timeout. `status` is `0` when there was no response.
+ */
+export class GatewayProbeError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`gateway readiness probe: ${status}`);
+    this.name = "GatewayProbeError";
+    this.status = status;
+  }
+}
+
+/**
+ * Read a `/gw/readyz` answer, or `null` when it is not one the gateway or the
+ * `/gw` proxy gives.
+ *
+ * Strict on purpose. A 200 has to carry the gateway's own `ok`, because an SPA
+ * fallback in front of the control plane answers any path with 200 and
+ * `index.html`. A 502 has to carry the proxy's `{"error":{"message":…}}`,
+ * because an ingress that cannot reach the *control plane* answers 502 too,
+ * and calling that "gateway unreachable" would send the operator to the wrong
+ * process. Anything else is unknown rather than guessed at.
+ */
+export function readinessFrom(status: number, body: string): GatewayReadiness | null {
+  if (status === 200) return body.trim() === "ok" ? "ready" : null;
+  if (status === 503) return body.trim() === "draining" ? "draining" : null;
+  if (status === 502) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+      return typeof parsed?.error?.message === "string" ? "unreachable" : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// the /gw proxy sets no timeout on its request to the gateway, so a gateway
+// host that drops packets holds the probe open until the OS gives up on the
+// connection (#2014). the pill stops waiting well before its next poll
+const READINESS_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the gateway, through the control plane's `/gw` proxy, whether it is
+ * taking traffic (#1973).
+ *
+ * Every signed-in caller can make this call: the proxy takes no admin token
+ * and the gateway's `/readyz` takes no key. No `Authorization` is sent — the
+ * dashboard's session token is not the gateway's business, and neither is a
+ * Playground key. Throws {@link GatewayProbeError} for any answer
+ * {@link readinessFrom} does not recognise.
+ */
+export async function fetchGatewayReadiness(signal?: AbortSignal): Promise<GatewayReadiness> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, READINESS_TIMEOUT_MS);
+  signal?.addEventListener("abort", abort);
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${GW_BASE}/readyz`, { cache: "no-store", signal: controller.signal });
+    } catch {
+      throw new GatewayProbeError(0);
+    }
+    const readiness = readinessFrom(res.status, await res.text());
+    if (!readiness) throw new GatewayProbeError(res.status);
+    return readiness;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
 }

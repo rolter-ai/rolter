@@ -116,6 +116,24 @@ A greyed-out **Add**, **Delete** or toggle carries a tooltip naming the role the
 
 The refresh button in every screen header re-reads everything on the screen. Screens that stream (LLM Logs, MCP Logs, Adaptive Routing) update on their own and show when they last did.
 
+LLM Logs says **Streaming** only after a read that succeeded. While the first page loads, its toolbar says it is loading, and when a read fails it gives the time of the failure instead. If the very first read fails, the screen stops refreshing and keeps the error on screen until you press **Try again**. If a later refresh fails while rows are already showing, the rows stay, and the toolbar reads _Refresh failed at 15:34:56, retrying_ until a refresh succeeds or you pause the stream.
+
+## The gateway status in the header
+
+Next to the refresh button, every screen header shows whether the gateway is taking traffic. The dashboard asks the gateway's `/readyz` every 30 seconds, through the control plane, and the pill shows what came back:
+
+| Pill                   | Meaning                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| gateway healthy        | The control plane reached the gateway, and it is taking traffic. The green dot pulses.                                    |
+| gateway draining       | The gateway was drained from the Cluster screen. It finishes the requests in flight and takes no new ones.                |
+| gateway unreachable    | The control plane cannot reach the gateway at `ROLTER_GATEWAY_URL`.                                                       |
+| gateway status unknown | The check got no answer the dashboard can read, for example because the browser lost its connection to the control plane. |
+| checking gateway       | The first check has not come back yet.                                                                                    |
+
+Hover the pill to see when it was last checked. One failed check does not change it: the pill keeps the last answer, stops pulsing, and says when that answer arrived. A second failed check turns it to unknown. Checks pause while the browser tab is hidden, and the refresh button checks again along with everything else.
+
+Every role sees the same pill. It reports the gateway the control plane forwards to: with several gateway replicas behind one address it means one of them answered, and it cannot tell whether a gateway has picked up the latest configuration. The Cluster screen, for superadmins, lists every node, whether it is live, and whether it runs the current configuration.
+
 ## When part of a screen fails to load
 
 Some screens read one record per row — the Complexity Router asks for each route's policy separately. If a row's read is delayed or refused, that row is not reported as empty. It is listed under **Policy could not be read**, with the reason from the control plane and a **Try again** button, and it offers no editor: writing a policy over one you were never shown is worse than waiting. Rows whose read is still in flight sit under **Checking for a policy** as placeholders, and the summary line counts only the rows that actually answered.
@@ -160,3 +178,7 @@ Replies are never treated as markup. HTML tags in a reply show as the characters
 | 1024 px and up | The full rail, collapsible, and resizable by dragging its right edge. The width you choose is remembered.                                   |
 
 Tables that are wider than the screen scroll inside their own frame, and forms that open as side sheets take the full width on a phone. The screen area below the header is a scroll region you can Tab to, so a long screen can be read with the keyboard alone.
+
+## With a screen reader
+
+The list screens (Virtual Keys, Users, Model Providers, Provider Groups, the Model Catalog, Alert History, MCP Logs, OAuth Grants and Auth Sessions) are tables to a screen reader, named after the screen, so table navigation works and each cell is read with its column header. A column you can sort says whether it is sorted ascending, descending or not at all. The column of row buttons has no visible heading and is announced as **Row actions**; on Auth Sessions the two button columns are **Renew** and **Revoke**.

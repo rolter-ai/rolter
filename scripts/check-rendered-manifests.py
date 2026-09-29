@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pyyaml==6.0.3"]
+# ///
 """Fail on a rendered chart that is not strictly valid YAML.
 
 `helm template` output is loaded by whatever is downstream — kubectl with
@@ -9,6 +13,13 @@ every environment variable silently disappears. PyYAML is lenient about it too,
 so the duplicate check is explicit.
 
 Reads a multi-document manifest on stdin.
+
+    helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+
+`--script` installs the pyyaml pinned above (#1901) and nothing else. The repo
+root's pyproject.toml is the rolter maturin wheel, and a `uv run` that treats
+it as the project builds that wheel before the script starts, minutes of work
+the check never uses (#2025).
 """
 
 import sys

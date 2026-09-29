@@ -27,6 +27,14 @@ on:
 permissions:
   contents: read
 
+# a new push to a pr cancels that pr's in-flight smoke, whose result no longer
+# describes the branch. a dispatch gets a per-run group instead, so two
+# dispatches on one branch (a sim and a vllm, say) never cancel each other or
+# queue behind each other
+concurrency:
+  group: engine-integration-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     name: ${{ inputs.engine || 'sim' }} smoke

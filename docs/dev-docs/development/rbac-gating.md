@@ -96,6 +96,13 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
   screen a member opens (#1848).
+- **Links into a gated screen.** A link the caller cannot follow is a 403
+  with an extra click. The LLM Logs payload drawer links to the log settings
+  unless `logging_settings:read` is an explicit `false`, the rail's own rule
+  for that leaf, and a refused caller reads who owns the setting instead
+  (#1984). It is a react-router `Link` rather than a raw anchor, so following
+  it does not reload the dashboard; a story that renders it supplies a
+  `MemoryRouter`.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
   the cluster, connectors, alerting and the MCP logs are wrapped in

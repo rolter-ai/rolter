@@ -228,7 +228,7 @@ function Inlines({ nodes }: { nodes: readonly MdInline[] }) {
               </React.Fragment>
             );
           case "image":
-            // never an <img>: a remote fetch would break the air-gapped
+            // never an image element: a remote fetch would break the air-gapped
             // guarantee and tell a third party the reply had been read
             return (
               <span

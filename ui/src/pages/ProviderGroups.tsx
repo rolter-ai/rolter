@@ -11,8 +11,11 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { CopyButton } from "@/components/CopyButton";
 import {
+  ListActionsHeader,
+  ListCell,
   ListHeader,
   ListRow,
+  ListStateRow,
   ListTable,
   PageBody,
   SearchInput,
@@ -143,7 +146,7 @@ export default function ProviderGroups() {
         />
       )}
 
-      <ListTable>
+      <ListTable label={t("screens.provider-groups.title")}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providerGroups.columns.name")}
@@ -169,19 +172,23 @@ export default function ProviderGroups() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <span />
+          <ListActionsHeader />
         </ListHeader>
-        {groups.isLoading && <ListSkeleton rows={4} className="p-3" />}
+        {groups.isLoading && (
+          <ListStateRow>
+            <ListSkeleton rows={4} className="p-3" />
+          </ListStateRow>
+        )}
         {rows.map((group) => (
           <ListRow key={group.id} grid={GRID}>
-            <span className="flex min-w-0 flex-col gap-1">
+            <ListCell className="flex min-w-0 flex-col gap-1">
               <span className="truncate font-mono text-sm">{group.name}</span>
               <LabelChips labels={labels.bySubject(group.id)} />
-            </span>
-            <span>
+            </ListCell>
+            <ListCell>
               <Badge tone="outline">{group.strategy}</Badge>
-            </span>
-            <span className="flex min-w-0 items-center gap-1">
+            </ListCell>
+            <ListCell className="flex min-w-0 items-center gap-1">
               <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
                 {group.slug}/
               </span>
@@ -190,8 +197,8 @@ export default function ProviderGroups() {
                 label={t("pages.providerGroups.copyAddress")}
                 className="h-6 px-1"
               />
-            </span>
-            <span className="flex min-w-0 flex-wrap items-center gap-1">
+            </ListCell>
+            <ListCell className="flex min-w-0 flex-wrap items-center gap-1">
               {group.members.length === 0 ? (
                 <span className="text-xs text-muted-foreground">
                   {t("pages.providerGroups.noMembers")}
@@ -204,8 +211,8 @@ export default function ProviderGroups() {
                   </Badge>
                 ))
               )}
-            </span>
-            <div className="flex items-center justify-end gap-1.5">
+            </ListCell>
+            <ListCell className="flex items-center justify-end gap-1.5">
               <GatedButton
                 gate="provider_group:update"
                 control="provider-group-edit"
@@ -232,48 +239,50 @@ export default function ProviderGroups() {
                 label={t("pages.providerGroups.deleteOne", { name: group.name })}
                 onClick={() => setDeleteTarget(group)}
               />
-            </div>
+            </ListCell>
           </ListRow>
         ))}
         {!groups.isLoading && rows.length === 0 && (
           // the old copy said "No provider groups match." with no search
           // running, which blames a filter the operator never set (#1180)
-          <EmptyState
-            uxTarget="provider-groups"
-            icon={<Layers />}
-            title={
-              filtering
-                ? t("pages.providerGroups.noMatchTitle")
-                : t("pages.providerGroups.emptyTitle")
-            }
-            description={
-              filtering
-                ? t("pages.providerGroups.noMatchBody")
-                : t("pages.providerGroups.emptyBody")
-            }
-            actions={
-              filtering ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSearch("");
-                    setLabelFilter("");
-                  }}
-                >
-                  {t("common.clearSearch")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="provider_group:create"
-                  control="provider-group-new-empty"
-                  disabled={scopeBlocked || !scope.orgId}
-                  onClick={() => setSheet({ mode: "add" })}
-                >
-                  {t("pages.providerGroups.emptyAction")}
-                </GatedButton>
-              )
-            }
-          />
+          <ListStateRow>
+            <EmptyState
+              uxTarget="provider-groups"
+              icon={<Layers />}
+              title={
+                filtering
+                  ? t("pages.providerGroups.noMatchTitle")
+                  : t("pages.providerGroups.emptyTitle")
+              }
+              description={
+                filtering
+                  ? t("pages.providerGroups.noMatchBody")
+                  : t("pages.providerGroups.emptyBody")
+              }
+              actions={
+                filtering ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setSearch("");
+                      setLabelFilter("");
+                    }}
+                  >
+                    {t("common.clearSearch")}
+                  </Button>
+                ) : (
+                  <GatedButton
+                    gate="provider_group:create"
+                    control="provider-group-new-empty"
+                    disabled={scopeBlocked || !scope.orgId}
+                    onClick={() => setSheet({ mode: "add" })}
+                  >
+                    {t("pages.providerGroups.emptyAction")}
+                  </GatedButton>
+                )
+              }
+            />
+          </ListStateRow>
         )}
       </ListTable>
 

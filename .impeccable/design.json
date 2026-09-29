@@ -1,0 +1,573 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-28T17:10:13+00:00",
+  "title": "Design System: rolter",
+  "extensions": {
+    "colorMeta": {
+      "red-accent": {
+        "role": "primary",
+        "displayName": "Accent Red",
+        "canonical": "oklch(65.7% 0.231 33.0)",
+        "tonalRamp": [
+          "#1e0100",
+          "#480800",
+          "#771501",
+          "#aa2202",
+          "#e12f01",
+          "#fe6749",
+          "#ffac9a",
+          "#fee9e5"
+        ]
+      },
+      "red-accent-hover": {
+        "role": "primary",
+        "displayName": "Accent Red, hover",
+        "canonical": "oklch(60.3% 0.214 28.7)",
+        "tonalRamp": [
+          "#1f0000",
+          "#4b0001",
+          "#7c0203",
+          "#b20105",
+          "#e02e25",
+          "#fe6556",
+          "#feab9f",
+          "#fee9e5"
+        ]
+      },
+      "red-accent-press": {
+        "role": "primary",
+        "displayName": "Accent Red, pressed",
+        "canonical": "oklch(52.5% 0.196 29.1)",
+        "tonalRamp": [
+          "#1f0000",
+          "#4b0000",
+          "#7c0202",
+          "#b20202",
+          "#d93c2f",
+          "#ff6554",
+          "#feab9f",
+          "#fee9e5"
+        ]
+      },
+      "red-folk": {
+        "role": "primary",
+        "displayName": "Folk Red",
+        "canonical": "oklch(49.7% 0.185 26.3)",
+        "tonalRamp": [
+          "#1f0001",
+          "#4b0104",
+          "#7c020c",
+          "#ae141b",
+          "#d5423d",
+          "#fc675e",
+          "#ffaba2",
+          "#ffe9e6"
+        ]
+      },
+      "red-folk-text": {
+        "role": "primary",
+        "displayName": "Folk Red, text half",
+        "canonical": "oklch(68.5% 0.206 32.5)",
+        "tonalRamp": [
+          "#1e0100",
+          "#480700",
+          "#781200",
+          "#ab2002",
+          "#dd3718",
+          "#ff664a",
+          "#ffac9a",
+          "#fee9e5"
+        ]
+      },
+      "surface-app": {
+        "role": "neutral",
+        "displayName": "App Backdrop",
+        "canonical": "oklch(21.0% 0.006 285.9)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "surface-base": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "oklch(17.9% 0.004 286.0)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "surface-elevated": {
+        "role": "neutral",
+        "displayName": "Raised Graphite",
+        "canonical": "oklch(24.1% 0.008 285.8)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "surface-subtle": {
+        "role": "neutral",
+        "displayName": "Zinc Band",
+        "canonical": "oklch(27.4% 0.005 286.0)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Near White",
+        "canonical": "oklch(98.5% 0.000 89.9)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Soft Zinc",
+        "canonical": "oklch(87.1% 0.005 286.3)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Zinc",
+        "canonical": "oklch(71.2% 0.013 286.1)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "text-subtle": {
+        "role": "neutral",
+        "displayName": "Subtle Zinc",
+        "canonical": "oklch(66.7% 0.016 286.0)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "zinc-shape": {
+        "role": "neutral",
+        "displayName": "Zinc Shape",
+        "canonical": "oklch(55.2% 0.014 285.9)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "focus-ring": {
+        "role": "neutral",
+        "displayName": "Focus Ring",
+        "canonical": "oklch(64.0% 0.000 89.9)",
+        "tonalRamp": [
+          "#09090b",
+          "#18181b",
+          "#27272a",
+          "#3f3f46",
+          "#71717a",
+          "#a1a1aa",
+          "#d4d4d8",
+          "#fafafa"
+        ]
+      },
+      "status-success": {
+        "role": "status",
+        "displayName": "Healthy Green",
+        "canonical": "oklch(62.7% 0.170 149.2)",
+        "tonalRamp": [
+          "#001003",
+          "#012d0f",
+          "#004e1e",
+          "#02712f",
+          "#079742",
+          "#3bba60",
+          "#68e285",
+          "#c8ffd0"
+        ]
+      },
+      "status-success-text": {
+        "role": "status",
+        "displayName": "Healthy Green, text half",
+        "canonical": "oklch(71.7% 0.177 149.5)",
+        "tonalRamp": [
+          "#001003",
+          "#012d0f",
+          "#004e1f",
+          "#027130",
+          "#059743",
+          "#30bb5e",
+          "#60e383",
+          "#c8ffd1"
+        ]
+      },
+      "status-warning": {
+        "role": "status",
+        "displayName": "Degraded Amber",
+        "canonical": "oklch(76.9% 0.165 70.1)",
+        "tonalRamp": [
+          "#140800",
+          "#351e00",
+          "#5a3702",
+          "#825203",
+          "#ac6e04",
+          "#d98b05",
+          "#feb251",
+          "#feebd6"
+        ]
+      },
+      "status-info": {
+        "role": "status",
+        "displayName": "Info Blue",
+        "canonical": "oklch(62.3% 0.188 259.8)",
+        "tonalRamp": [
+          "#000925",
+          "#002055",
+          "#01398c",
+          "#0755c5",
+          "#3177ea",
+          "#629dfe",
+          "#a2c6ff",
+          "#e6effe"
+        ]
+      },
+      "status-info-text": {
+        "role": "status",
+        "displayName": "Info Blue, text half",
+        "canonical": "oklch(71.3% 0.150 260.8)",
+        "tonalRamp": [
+          "#000827",
+          "#001e58",
+          "#05388d",
+          "#2759b0",
+          "#477ad5",
+          "#679dfa",
+          "#a3c5ff",
+          "#e6efff"
+        ]
+      },
+      "status-danger": {
+        "role": "status",
+        "displayName": "Down Red",
+        "canonical": "oklch(60.8% 0.209 27.0)",
+        "tonalRamp": [
+          "#1f0001",
+          "#4b0103",
+          "#7d0008",
+          "#b20111",
+          "#de312f",
+          "#fe655a",
+          "#ffaba1",
+          "#fee9e6"
+        ]
+      },
+      "status-danger-text": {
+        "role": "status",
+        "displayName": "Down Red, text half",
+        "canonical": "oklch(71.6% 0.178 26.1)",
+        "tonalRamp": [
+          "#1f0001",
+          "#4b0004",
+          "#7c010c",
+          "#ab1c20",
+          "#d24641",
+          "#f96a61",
+          "#feaba2",
+          "#fee9e6"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Screen, card and sheet titles; one per region."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Buttons, tabs, empty-state titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Tables, inputs, nav items, descriptions."
+      },
+      "body-compact": {
+        "displayName": "Body compact",
+        "purpose": "Document default for anything that sets no size."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Table headers, stat labels, helper lines."
+      },
+      "badge": {
+        "displayName": "Badge",
+        "purpose": "Badge text only."
+      },
+      "overline": {
+        "displayName": "Overline",
+        "purpose": "ListTable headers and small eyebrows; 11px uppercase, Subtle Zinc."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Identifiers and values inline with body text."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Stat-card headline number."
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "0 4px 12px rgba(0, 0, 0, 0.45)",
+        "purpose": "The combobox list and chart tooltips (--shadow-md)."
+      },
+      {
+        "name": "lifted",
+        "value": "0 12px 32px rgba(0, 0, 0, 0.55)",
+        "purpose": "Meant for dialogs and menus (--shadow-lg); they still use Tailwind's stock shadow-lg (#1990)."
+      },
+      {
+        "name": "sheet-edge",
+        "value": "-14px 0 44px rgba(0, 0, 0, 0.42)",
+        "purpose": "Right-hand sheet over a 50% black scrim; mirrored for the nav drawer."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Sheet and drawer slide-in, 240ms."
+      },
+      {
+        "name": "fade-in",
+        "value": "150ms ease",
+        "purpose": "Scrims and overlay entrances."
+      },
+      {
+        "name": "shimmer",
+        "value": "1.4s ease infinite",
+        "purpose": "Skeleton placeholder; off under prefers-reduced-motion."
+      },
+      {
+        "name": "pulse",
+        "value": "2s ease-in-out infinite",
+        "purpose": "Live status dot; off under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      },
+      {
+        "name": "2xl",
+        "value": "1400px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The default action: neutral near-white, not red.",
+      "html": "<button class=\"ds-btn-primary\">Save changes</button>",
+      "css": ".ds-btn-primary{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;justify-content:center;height:36px;padding:8px 16px;border:0;border-radius:8px;background:var(--zinc-50,#fafafa);color:var(--surface-base,#111113);font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s}.ds-btn-primary:hover{background:rgba(250,250,250,.9)}.ds-btn-primary:focus-visible{outline:none;box-shadow:0 0 0 1px #8c8c8c}"
+    },
+    {
+      "name": "Brand Button",
+      "kind": "button",
+      "refersTo": "button-brand",
+      "description": "Folk Red fill for the one action a screen exists for, such as signing in.",
+      "html": "<button class=\"ds-btn-brand\">Sign in</button>",
+      "css": ".ds-btn-brand{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;justify-content:center;height:36px;padding:8px 16px;border:0;border-radius:8px;background:var(--red-folk,#b41d21);color:#fff;font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s}.ds-btn-brand:hover{background:var(--red-700,#c22118)}.ds-btn-brand:focus-visible{outline:none;box-shadow:0 0 0 1px #8c8c8c}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Secondary actions beside a primary one.",
+      "html": "<button class=\"ds-btn-outline\">Cancel</button>",
+      "css": ".ds-btn-outline{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;justify-content:center;height:36px;padding:8px 16px;border:1px solid #27272a;border-radius:8px;background:var(--surface-base,#111113);color:var(--zinc-50,#fafafa);font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s}.ds-btn-outline:hover{background:var(--surface-subtle,#27272a)}.ds-btn-outline:focus-visible{outline:none;box-shadow:0 0 0 1px #8c8c8c}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Zinc Band field with a hairline border and a 2px focus ring.",
+      "html": "<input class=\"ds-input\" placeholder=\"gpt-4o\">",
+      "css": ".ds-input{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);height:36px;width:240px;padding:4px 12px;border:1px solid #27272a;border-radius:8px;background:var(--surface-subtle,#27272a);color:var(--zinc-50,#fafafa);font-size:14px}.ds-input::placeholder{color:#a1a1aa}.ds-input:focus-visible{outline:none;box-shadow:0 0 0 2px #8c8c8c}"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-success",
+      "description": "15% tint off the status fill, label in the matching -text token.",
+      "html": "<span class=\"ds-badge ds-badge-ok\"><span class=\"ds-dot\"></span>healthy</span> <span class=\"ds-badge ds-badge-down\"><span class=\"ds-dot\"></span>down</span>",
+      "css": ".ds-badge{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:6px;font-size:10px;font-weight:500;line-height:1;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:9999px;background:currentColor}.ds-badge-ok{background:rgba(22,163,74,.15);color:var(--status-success-text,#38c163)}.ds-badge-down{background:rgba(229,57,53,.15);color:var(--status-danger-text,#ff6f66)}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Border-only container on Graphite; no shadow.",
+      "html": "<div class=\"ds-card\"><h2 class=\"ds-card-title\">Routes</h2><p class=\"ds-card-desc\">Public model names routed by rolter.</p></div>",
+      "css": ".ds-card{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);min-width:0;padding:24px;border:1px solid rgba(255,255,255,.15);border-radius:10px;background:var(--surface-base,#111113);color:#fafafa}.ds-card-title{margin:0;font-size:18px;font-weight:600;letter-spacing:-.025em;line-height:1}.ds-card-desc{margin:6px 0 0;font-size:14px;color:#a1a1aa}"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item-active",
+      "description": "Idle items are Muted Zinc; the active one gets the Zinc Band and a Folk Red tick.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item\" href=\"#\">Providers</a><a class=\"ds-nav-item ds-nav-active\" aria-current=\"page\" href=\"#\">Routes</a><a class=\"ds-nav-item\" href=\"#\">Keys</a></nav>",
+      "css": ".ds-nav{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:flex;flex-direction:column;gap:2px;width:216px}.ds-nav-item{position:relative;display:flex;align-items:center;padding:6px 8px;border-radius:8px;font-size:14px;color:#a1a1aa;text-decoration:none;transition:background-color .15s,color .15s}.ds-nav-item:hover{background:#27272a;color:#fafafa}.ds-nav-item:focus-visible{outline:none;box-shadow:0 0 0 1px #8c8c8c}.ds-nav-active{background:var(--surface-subtle,#27272a);color:#fafafa}.ds-nav-active::before{content:'';position:absolute;left:-1px;top:50%;width:3px;height:16px;transform:translateY(-50%);border-radius:9999px;background:var(--red-folk,#b41d21)}"
+    },
+    {
+      "name": "Stat Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "KPI tile: 12px label over a 28px Geist Mono figure.",
+      "html": "<div class=\"ds-stat\"><span class=\"ds-stat-label\">p95 latency</span><span class=\"ds-stat-value\">412<span class=\"ds-stat-unit\">ms</span></span></div>",
+      "css": ".ds-stat{font-family: var(--font-sans, 'Geist Variable', ui-sans-serif, system-ui, sans-serif);display:flex;flex-direction:column;gap:8px;width:200px;padding:16px;border:1px solid rgba(255,255,255,.15);border-radius:10px;background:#111113}.ds-stat-label{font-size:12px;color:#a1a1aa}.ds-stat-value{font-family:var(--font-mono,'Geist Mono Variable',ui-monospace,monospace);font-size:28px;font-weight:500;line-height:1;letter-spacing:-.025em;color:#fafafa}.ds-stat-unit{margin-left:2px;font-size:16px;color:#a1a1aa}"
+    },
+    {
+      "name": "Вышивка Rule",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "The 10px cross-stitch ornament; at most one or two per screen.",
+      "html": "<div class=\"ds-vyshivka\" aria-hidden=\"true\"></div>",
+      "css": ".ds-vyshivka{height:10px;width:240px;background-image:linear-gradient(45deg,#b41d21 25%,transparent 25%,transparent 75%,#b41d21 75%),linear-gradient(45deg,#b41d21 25%,transparent 25%,transparent 75%,#b41d21 75%);background-size:10px 10px;background-position:0 0,5px 5px;opacity:.9}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Stitched Console",
+    "overview": "rolter is a graphite instrument panel with one red thread through it. The panel is for people running a gateway: it is dense, dark and quiet, and it lets numbers, health and cost carry the screen. The thread comes from Slavic folk embroidery, the shared cross-stitch vocabulary that runs from the Urals to the Carpathians rather than the pattern of any one country. It shows up as the logo, the active-nav mark, a switch that is on, and the one primary action a view is built around. Everything else is zinc. Density is deliberate. The document default is 13px, controls and tables are 14px, and a screen fits a table, its filters and a header without scrolling on a laptop. Surfaces separate by tone and hairline borders, not by shadows. Colour appears only to say something: a status, a selection, the brand. The dashboard is dark-only; there is no light theme to design for. The folk layer is restrained on purpose. A screen gets at most one or two stitched ornaments, and the ornament never sits under text or competes with data.",
+    "keyCharacteristics": [
+      "Dark-only zinc ramp, near-black `surface-base` on a slightly lighter `surface-app` backdrop.",
+      "One red voice per view; the rest is neutral.",
+      "Compact, crisp, quiet components with translucent hairline borders.",
+      "Geist for interface text, Geist Mono for every identifier, number and money value.",
+      "Contrast is enforced: text clears 4.5:1 and shapes 3:1 on every surface they can land on."
+    ],
+    "rules": [
+      {
+        "name": "The One Red Voice Rule",
+        "body": "A view has one red action at most: the Folk Red brand button, or a single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on) and Accent Red marks a selection. If two things on a screen are red for different reasons, one of them is wrong.",
+        "section": "colors"
+      },
+      {
+        "name": "The Shape-or-Glyph Rule",
+        "body": "Every hue that colours both shapes and text comes as a pair. Pick the half by what it paints: a dot, bar or border takes the fill; a letter takes the `-text` token.",
+        "section": "colors"
+      },
+      {
+        "name": "The Token-Only Rule",
+        "body": "No hex, no raw Tailwind palette colour (`text-emerald-600`), no `dark:` variant. Reference a token: `text-[color:var(--status-danger-text)]`.",
+        "section": "colors"
+      },
+      {
+        "name": "The Copyable-Is-Mono Rule",
+        "body": "If someone might paste it into a terminal or a config file, set it in Geist Mono, verbatim.",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Substitute Rule",
+        "body": "Never swap Geist for Inter, Roboto or Arial; fonts are vendored from `node_modules`, never fetched from a CDN.",
+        "section": "typography"
+      },
+      {
+        "name": "The Borders-Not-Shadows Rule",
+        "body": "A resting surface separates with a hairline and a tone step. A shadow means \"this is floating over the page\".",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do take every colour from a token in `ui/src/index.css`, and add a pair when a new hue must carry both a shape and text.",
+      "Do keep one red action per view, and colour state (active, on, selected) with Folk Red.",
+      "Do set identifiers, numbers and money in Geist Mono.",
+      "Do separate surfaces with a tone step and a hairline, and reserve shadows for overlays.",
+      "Do check new text against all four surfaces and any tint it sits on; record the worst ratio beside the token.",
+      "Do draw the folk layer from shared Slavic cross-stitch forms, used once or twice per screen."
+    ],
+    "donts": [
+      "Don't colour text with `red-folk`, `zinc-shape` or a status fill hue; use the `-text` half.",
+      "Don't write `dark:` variants, raw hex values or raw Tailwind palette colours.",
+      "Don't dim a region with `opacity` to show it is inactive; use a disabled fieldset or a quieter band.",
+      "Don't add a light theme, a theme toggle or a second accent colour.",
+      "Don't put an ornament behind text or data, or use more than two on a screen.",
+      "Don't use national flags, state colours, heraldry or any motif tied to one country.",
+      "Don't use emoji as icons; icons are Lucide outlines at 16px in `currentColor`.",
+      "Don't fetch fonts, icons or images from a CDN."
+    ]
+  }
+}

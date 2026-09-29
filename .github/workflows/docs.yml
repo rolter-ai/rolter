@@ -51,7 +51,11 @@ jobs:
             echo "::error::mdbook-mermaid did not run - diagrams would ship as code blocks"
             exit 1
           fi
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+      # only deploy consumes this artifact, and deploy skips pull requests, so a
+      # pr build stops at the checks above instead of uploading a book nobody reads
+      - name: upload pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/dev-docs/book
 

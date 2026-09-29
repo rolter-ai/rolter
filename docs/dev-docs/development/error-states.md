@@ -72,6 +72,45 @@ CostAttribution's spend strip and Account's usage figures followed in #1270:
 the strip had the Dashboard's old empty state, and Account now states any usage
 failure once above the key cards instead of letting each card read "no usage".
 
+LLM Logs has since taken `noAnalytics` out of `LoadError` altogether (#1984).
+A red `role="alert"` put a deployment shape rolter supports in the voice of a
+500, and a screen reader announced it as urgent on every visit. The screen now
+states the same cause in an informational `role="status"` panel: the
+`CLICKHOUSE_URL` guidance in monospace, the control plane's own message under
+it, and still no retry. The Dashboard follows in #1976, and MCP Logs,
+CostAttribution and Account in #2016, which also extracts the panel into a
+shared component.
+
+## A polled query that fails
+
+A screen that polls with `refetchInterval` can fail in a way a one-shot read
+cannot. react-query sends a query that has never held data back to `pending` on
+every refetch, and clears its error when it does. So a poll that keeps firing
+after a failed first load unmounts the `LoadError`, shows the skeleton while
+the retries run, then mounts the alert again. A screen reader hears the alert
+anew on every cycle. LLM Logs did this every five seconds (#1984).
+
+Stop polling while the query is in error with no data, using a function
+`refetchInterval`:
+
+```tsx
+refetchInterval: (q) =>
+  streaming && !(q.state.status === "error" && q.state.data === undefined) ? pollMs : false,
+```
+
+The `LoadError`'s retry is then what asks again, and a retry that lands starts
+the poll again. A failure with rows already on screen keeps its error through
+a refetch, so that case may go on polling, and should say it is retrying.
+
+Anything that claims the feed is live (a pulse, "Streaming") reads the query,
+never the pause toggle alone. It says live only after a fetch that succeeded.
+On a failure it says so, gives the time from `errorUpdatedAt` through
+`useFormat()`, and says "retrying" only when a poll will actually retry. The
+`Failed` story in `Logs.stories.tsx` holds a reference to the alert node across
+three polling intervals and asserts it is still connected: an alert that
+flickered would have been unmounted and replaced, so the held node would be
+detached even if a new alert had since appeared.
+
 Two of these are easy to collapse and must not be. A plain 401 is fixed by
 signing in; `open_mode_no_session` is a control plane running with no admin
 token, which has no accounts to sign into at all — signing in again is exactly

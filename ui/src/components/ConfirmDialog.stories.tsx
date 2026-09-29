@@ -84,6 +84,59 @@ export const DismissalMidFlightStillCloses: Story = {
   },
 };
 
+/**
+ * The confirm going disabled mid-flight takes focus with it, and `<body>` is
+ * outside the panel whose Tab trap hears the next key (#1998). Focus falls to
+ * the panel instead, Tab cycles inside it, the page stays inert, and a
+ * dismissal hands focus back to the control that raised the dialog.
+ */
+function Raised(args: React.ComponentProps<typeof ConfirmDialog>) {
+  const [open, setOpen] = React.useState(false);
+  const [pending, setPending] = React.useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Remove ops-slack
+      </button>
+      <ConfirmDialog
+        {...args}
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setPending(false);
+        }}
+        pending={pending}
+        // the request never answers
+        onConfirm={() => setPending(true)}
+      />
+    </>
+  );
+}
+
+export const PendingKeepsFocusInside: Story = {
+  render: (args) => <Raised {...args} />,
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Remove ops-slack" });
+    await userEvent.click(trigger);
+    const dialog = await screen().findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete channel" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled(),
+    );
+    await waitFor(() => expect(dialog).toHaveFocus());
+    for (const shift of [false, false, false, true, true, true]) {
+      await userEvent.tab({ shift });
+      await expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
+    await expect(trigger.closest("[inert]")).not.toBeNull();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen().queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await expect(trigger.closest("[inert]")).toBeNull();
+  },
+};
+
 export const Failed: Story = {
   args: { error: new Error("channel is referenced by 2 alert rules") },
   play: async () => {

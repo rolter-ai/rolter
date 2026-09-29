@@ -10,8 +10,12 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { UnservedConfigNotice } from "@/components/UnservedConfigNotice";
 import {
+  ListActionsHeader,
+  ListCell,
   ListHeader,
+  ListHeaderCell,
   ListRow,
+  ListStateRow,
   ListTable,
   PageBody,
   SearchInput,
@@ -140,29 +144,33 @@ export default function Providers() {
         />
       )}
 
-      <ListTable>
+      <ListTable label={t("screens.providers.title")}>
         <ListHeader grid={GRID}>
-          <span>{t("pages.providers.colName")}</span>
-          <span>{t("pages.providers.colType")}</span>
-          <span>{t("pages.providers.colApiBase")}</span>
-          <span>{t("pages.providers.colSlug")}</span>
-          <span>{t("pages.providers.colKeyEnv")}</span>
-          <span />
+          <ListHeaderCell>{t("pages.providers.colName")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.providers.colType")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.providers.colApiBase")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.providers.colSlug")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.providers.colKeyEnv")}</ListHeaderCell>
+          <ListActionsHeader />
         </ListHeader>
-        {providers.isLoading && <ListSkeleton rows={4} className="p-3" />}
+        {providers.isLoading && (
+          <ListStateRow>
+            <ListSkeleton rows={4} className="p-3" />
+          </ListStateRow>
+        )}
         {rows.map((provider) => (
           <ListRow key={provider.id} grid={GRID}>
-            <span className="flex min-w-0 flex-col gap-1">
+            <ListCell className="flex min-w-0 flex-col gap-1">
               <span className="truncate font-mono text-sm">{provider.name}</span>
               <LabelChips labels={labels.bySubject(provider.id)} />
-            </span>
-            <span>
+            </ListCell>
+            <ListCell>
               <Badge tone="outline">{provider.kind}</Badge>
-            </span>
-            <span className="truncate font-mono text-xs text-muted-foreground">
+            </ListCell>
+            <ListCell className="truncate font-mono text-xs text-muted-foreground">
               {provider.api_base}
-            </span>
-            <span className="flex min-w-0 items-center gap-1">
+            </ListCell>
+            <ListCell className="flex min-w-0 items-center gap-1">
               <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
                 {provider.slug}
               </span>
@@ -171,11 +179,11 @@ export default function Providers() {
                 label={t("pages.providers.copyPrefix")}
                 className="h-6 px-1"
               />
-            </span>
-            <span className="truncate font-mono text-xs text-muted-foreground">
+            </ListCell>
+            <ListCell className="truncate font-mono text-xs text-muted-foreground">
               {provider.api_key_env || "—"}
-            </span>
-            <div className="flex items-center justify-end gap-1.5">
+            </ListCell>
+            <ListCell className="flex items-center justify-end gap-1.5">
               <GatedButton
                 gate="provider:update"
                 control="provider-edit"
@@ -203,40 +211,42 @@ export default function Providers() {
                 title={t("pages.providers.deleteTitle")}
                 onClick={() => setDeleteTarget(provider)}
               />
-            </div>
+            </ListCell>
           </ListRow>
         ))}
         {!providers.isLoading && rows.length === 0 && (
-          <EmptyState
-            uxTarget="providers"
-            icon={<Plug />}
-            title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
-            description={
-              filtering ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")
-            }
-            actions={
-              filtering ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSearch("");
-                    setLabelFilter("");
-                  }}
-                >
-                  {t("common.clearSearch")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="provider:create"
-                  control="provider-new-empty"
-                  disabled={scopeBlocked || !scope.orgId}
-                  onClick={() => setSheet({ mode: "add" })}
-                >
-                  {t("pages.providers.add")}
-                </GatedButton>
-              )
-            }
-          />
+          <ListStateRow>
+            <EmptyState
+              uxTarget="providers"
+              icon={<Plug />}
+              title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}
+              description={
+                filtering ? t("pages.providers.noMatchBody") : t("pages.providers.emptyBody")
+              }
+              actions={
+                filtering ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setSearch("");
+                      setLabelFilter("");
+                    }}
+                  >
+                    {t("common.clearSearch")}
+                  </Button>
+                ) : (
+                  <GatedButton
+                    gate="provider:create"
+                    control="provider-new-empty"
+                    disabled={scopeBlocked || !scope.orgId}
+                    onClick={() => setSheet({ mode: "add" })}
+                  >
+                    {t("pages.providers.add")}
+                  </GatedButton>
+                )
+              }
+            />
+          </ListStateRow>
         )}
       </ListTable>
 

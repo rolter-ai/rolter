@@ -8,8 +8,12 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import {
+  ListActionsHeader,
+  ListCell,
   ListHeader,
+  ListHeaderCell,
   ListRow,
+  ListStateRow,
   ListTable,
   PageBody,
   RowIconButton,
@@ -215,15 +219,19 @@ export default function Users() {
         />
       )}
 
-      <ListTable>
+      <ListTable label={t("screens.gov-users.title")}>
         <ListHeader grid={GRID}>
-          <span>{t("pages.users.colUser")}</span>
-          <span>{t("pages.users.colRoles")}</span>
-          <span>{t("pages.users.colStatus")}</span>
-          <span>{t("pages.users.colCreated")}</span>
-          <span />
+          <ListHeaderCell>{t("pages.users.colUser")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.users.colRoles")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.users.colStatus")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
+          <ListActionsHeader />
         </ListHeader>
-        {orgId && users.isLoading && <ListSkeleton rows={4} className="p-3" />}
+        {orgId && users.isLoading && (
+          <ListStateRow>
+            <ListSkeleton rows={4} className="p-3" />
+          </ListStateRow>
+        )}
         {rows.map((user, i) => {
           const active = !user.deactivated_at;
           const grants = byUser.get(user.id) ?? [];
@@ -236,7 +244,7 @@ export default function Users() {
               // — container opacity takes every glyph under 4.5:1 (#1181)
               className={active ? undefined : "bg-[color:var(--surface-subtle)]/60"}
             >
-              <div className="flex min-w-0 items-center gap-2.5">
+              <ListCell className="flex min-w-0 items-center gap-2.5">
                 <span
                   className="flex h-8 w-8 flex-none items-center justify-center rounded-full font-mono text-[11px] font-semibold text-white"
                   style={{ background: AVATARS[i % AVATARS.length] }}
@@ -253,13 +261,13 @@ export default function Users() {
                     )}
                   </div>
                 </div>
-              </div>
-              <div className="min-w-0 truncate text-[11px] text-[color:var(--text-subtle)]">
+              </ListCell>
+              <ListCell className="min-w-0 truncate text-[11px] text-[color:var(--text-subtle)]">
                 {grants.length === 0
                   ? t("pages.users.noRoles")
                   : grants.map((g) => `${g.role}@${scopeLabel(g, scope.teams)}`).join(" · ")}
-              </div>
-              <div>
+              </ListCell>
+              <ListCell>
                 <span
                   className="inline-flex items-center gap-[5px] rounded-full px-[9px] py-0.5 text-[11px] font-semibold capitalize"
                   style={{
@@ -273,11 +281,11 @@ export default function Users() {
                   />
                   {active ? t("pages.users.statusActive") : t("pages.users.statusBlocked")}
                 </span>
-              </div>
-              <span className="font-mono text-xs text-muted-foreground">
+              </ListCell>
+              <ListCell className="font-mono text-xs text-muted-foreground">
                 {fmt.date(user.created_at ?? "")}
-              </span>
-              <div className="flex justify-end gap-[5px]">
+              </ListCell>
+              <ListCell className="flex justify-end gap-[5px]">
                 {/* an icon button's accessible name is the whole of what a
                     screen reader gets, so it names the account (#1214) */}
                 <RowIconButton
@@ -317,33 +325,37 @@ export default function Users() {
                     <Ban className="h-3.5 w-3.5" />
                   )}
                 </RowIconButton>
-              </div>
+              </ListCell>
             </ListRow>
           );
         })}
         {orgId && !users.isLoading && rows.length === 0 && (
-          <EmptyState
-            uxTarget="users"
-            icon={<UsersRound />}
-            title={filtersActive ? t("pages.users.noMatchTitle") : t("pages.users.emptyTitle")}
-            description={filtersActive ? t("pages.users.noMatchBody") : t("pages.users.emptyBody")}
-            actions={
-              filtersActive ? (
-                <Button variant="outline" onClick={clearFilters}>
-                  {t("common.clearSearch")}
-                </Button>
-              ) : (
-                <GatedButton
-                  gate="invitation:create"
-                  control="user-invite-empty"
-                  disabled={!orgId}
-                  onClick={() => setInviteOpen(true)}
-                >
-                  {t("pages.users.emptyAction")}
-                </GatedButton>
-              )
-            }
-          />
+          <ListStateRow>
+            <EmptyState
+              uxTarget="users"
+              icon={<UsersRound />}
+              title={filtersActive ? t("pages.users.noMatchTitle") : t("pages.users.emptyTitle")}
+              description={
+                filtersActive ? t("pages.users.noMatchBody") : t("pages.users.emptyBody")
+              }
+              actions={
+                filtersActive ? (
+                  <Button variant="outline" onClick={clearFilters}>
+                    {t("common.clearSearch")}
+                  </Button>
+                ) : (
+                  <GatedButton
+                    gate="invitation:create"
+                    control="user-invite-empty"
+                    disabled={!orgId}
+                    onClick={() => setInviteOpen(true)}
+                  >
+                    {t("pages.users.emptyAction")}
+                  </GatedButton>
+                )
+              }
+            />
+          </ListStateRow>
         )}
       </ListTable>
 

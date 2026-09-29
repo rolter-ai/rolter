@@ -836,6 +836,33 @@ The job carries no `continue-on-error`, so it blocks: a failing story fails
 `continue-on-error: true` was removed when the job was promoted in #753 and the
 line was left behind.)
 
+#### What `userEvent.tab()` cannot see (#1998)
+
+While a dialog, sheet or the nav drawer is open, `useModalA11y` makes
+everything outside it `inert`. `user-event` does not know that attribute: it
+works out where Tab goes from a selector of its own, which skips disabled
+controls and `tabindex="-1"` but not inert ones, and then calls `.focus()` on
+the result, which the browser refuses. A story that presses Tab from `<body>`
+over an inert page therefore watches focus stay on `<body>`, which proves
+neither the trap nor the inert page.
+
+So a modal story asserts the two halves apart. It waits for focus to be inside
+the panel before it tabs, since from there the panel's own trap answers the
+key, and it checks the page behind directly:
+
+```ts
+await waitFor(() => expect(dialog).toHaveFocus());
+await userEvent.tab();
+await expect(dialog).toContainElement(document.activeElement as HTMLElement);
+await expect(trigger.closest("[inert]")).not.toBeNull();
+```
+
+A pointer has the same blind spot. A synthetic click is dispatched straight to
+its target, so it still "works" on an inert element, while a real one passes
+through it as if it had `pointer-events: none`. Where a story needs to know that
+a real pointer lands on a scrim, it asks `document.elementFromPoint(x, y)`,
+which does honour inert. `ui/src/lib/modal-a11y.stories.tsx` has both shapes.
+
 #### How long a story waits (#1279)
 
 `.storybook/preview.ts` calls `configure({ asyncUtilTimeout: 5000 })`, which

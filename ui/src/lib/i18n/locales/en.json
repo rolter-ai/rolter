@@ -1427,7 +1427,9 @@
         "refreshAria": "Renew the session {{owner}} holds on {{server}}",
         "revokeAria": "Revoke the session {{owner}} holds on {{server}}",
         "header": "Sessions",
-        "revokeTitle": "Revoke this session; the consent behind it stands"
+        "revokeTitle": "Revoke this session; the consent behind it stands",
+        "colRenew": "Renew",
+        "colRevoke": "Revoke"
       },
       "server": "Server",
       "owner": "Owner",
@@ -2092,6 +2094,7 @@
       "payloadCaptureOff": "No payload stored: payload capture is currently off, so prompt and completion bodies are not retained for any request.",
       "payloadCaptureOnButAbsent": "Payload capture is on, but nothing was stored for this request: its model or key may fall outside the capture allow-list, or the payload's {{hours}}h retention window has already passed.",
       "payloadSettingsLink": "Open log settings",
+      "payloadSettingsOwner": "Payload capture is set by a superadmin, in the deployment's log settings.",
       "time": "Time",
       "model": "Model",
       "status": "Status",
@@ -2120,7 +2123,17 @@
       "requests_other": "{{count}} requests",
       "pageShort": "p{{page}}",
       "requestFallback": "request",
-      "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings."
+      "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
+      "feed": {
+        "loading": "Loading requests",
+        "loadFailed": "Load failed at {{time}}",
+        "refreshFailed": "Refresh failed at {{time}}",
+        "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
+      },
+      "noAnalytics": {
+        "title": "Request logs need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no request log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is logged here."
+      }
     },
     "mcpLogs": {
       "emptyTitle": "No MCP tool calls yet",
@@ -2798,7 +2811,7 @@
     },
     "dashboard": {
       "title": "Dashboard",
-      "subtitle": "Live overview of traffic, spend, latency, and provider health."
+      "subtitle": "Traffic, spend, latency, and error rate over the last 24 hours, plus the latest requests."
     },
     "logs": {
       "title": "LLM Logs",
@@ -3037,7 +3050,22 @@
     "scope": "Scope",
     "accountAndKeys": "Account & virtual keys",
     "signOut": "Sign out",
-    "gatewayHealthy": "gateway healthy",
+    "gateway": {
+      "checking": "checking gateway",
+      "healthy": "gateway healthy",
+      "degraded": "gateway draining",
+      "down": "gateway unreachable",
+      "unknown": "gateway status unknown",
+      "detail": {
+        "checking": "Checking whether the gateway is taking traffic.",
+        "healthy": "The control plane reached the gateway, and it is taking traffic.",
+        "degraded": "The gateway is draining: it finishes the requests in flight and takes no new ones.",
+        "down": "The control plane cannot reach the gateway at ROLTER_GATEWAY_URL.",
+        "unknown": "The gateway could not be checked."
+      },
+      "checkedAt": "Checked at {{time}}.",
+      "lastAnswerAt": "Last answer at {{time}}; the latest check failed."
+    },
     "refresh": "Refresh",
     "refreshing": "Refreshing…",
     "refreshData": "Refresh data",
