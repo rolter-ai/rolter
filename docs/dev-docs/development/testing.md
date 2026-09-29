@@ -684,9 +684,12 @@ listed, with its reason, in the run summary and the pull request body:
   closes on its own once GitHub re-reads the manifest.
 
 The pull request carries `station:mac`, since the mac station owns `ui/`, and
-that station reviews and merges it like any other of its PRs. It does not reach
-the project board: `project-automation.yml` does not fire for a pull request the
-repository token opens.
+that station reviews and merges it like any other of its PRs. A pull request
+the repository token opens raises no event that `project-automation.yml` fires
+on, so the workflow dispatches it with the new pull request's number and
+`area=ui` right after `gh pr create`, which puts it on the board as
+`In Review` (#2245). A failed dispatch only warns and names the command to run
+by hand.
 
 Each proposal body ends with a hidden marker naming the ranges it raises and
 their targets. Closing the pull request unmerged declines that exact set of
