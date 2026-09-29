@@ -1632,7 +1632,16 @@
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",
-        "body": "External enforcement through this provider stops immediately; traffic it was screening is no longer sent to it."
+        "body": "External enforcement through this provider stops immediately; traffic it was screening is no longer sent to it.",
+        "activateTitle": "Activate {{name}}?",
+        "activateReplaces": "It takes enforcement over from {{current}}, which is paused.",
+        "activateNoneActive": "No provider is active now, so none is paused.",
+        "activateOwnerUnknown": "The provider list did not load, so this screen cannot say which provider it replaces.",
+        "activateFailClosed": "Every request then waits for {{name}} before it goes upstream. It fails closed: when {{name}} times out or errors, the request is refused with <0>guardrail_blocked</0>.",
+        "activateFailOpen": "Every request then waits for {{name}} before it goes upstream. It fails open: when {{name}} times out or errors, the request goes upstream unchecked.",
+        "activatePostCall": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it and its failure policy never applies.",
+        "activateFileWins": "The config-file webhook stays in force while it is enabled, so {{name}} is ignored until that webhook is turned off.",
+        "activateConfirm": "Save and activate"
       },
       "deleteAria": "Delete provider {{name}}",
       "editAria": "Edit provider {{name}}",
@@ -1669,6 +1678,8 @@
       "fieldName": "Provider name",
       "fieldUrl": "Evaluation URL",
       "urlHint": "The gateway posts a vendor-neutral decision envelope.",
+      "urlRequired": "Enter the URL the gateway posts each request to.",
+      "urlInvalid": "Start the URL with http:// or https://.",
       "fieldStage": "Stage",
       "stagePre": "Before upstream",
       "stagePost": "Before response",
@@ -1688,6 +1699,9 @@
       "envHint": "Only the variable name is stored.",
       "activateLabel": "Activate provider",
       "activateHint": "Takes enforcement ownership from the currently active provider.",
+      "activateHintReplaces": "Takes enforcement over from {{name}}, which is then paused.",
+      "activateHintNone": "No provider is active now, so this one would be the only one.",
+      "activateHintSelf": "This provider is active. Turning it off pauses it, and no other provider takes its place.",
       "failOpenWarning": "Fail-open favors availability: traffic continues if this provider times out or errors.",
       "publishing": "Publishing…",
       "save": "Save provider"
