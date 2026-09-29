@@ -25,6 +25,22 @@ The rule dialog shows which of the two applies as soon as **Before response** is
 
 The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule, and every config-file rule, without deleting the registry. While it is off, **Guardrails → Rules** shows a banner saying no rule inspects traffic, with a link to **Feature Flags**, and every rule's card says **not enforced** instead of **enforced**.
 
+### Redaction tokens
+
+A `redact` rule replaces each match with its **Replacement token**. Leave the field empty and the gateway writes the default token for the rule's source:
+
+| Source                    | Default token          |
+| ------------------------- | ---------------------- |
+| Email address detector    | `[REDACTED:EMAIL]`     |
+| Phone number detector     | `[REDACTED:PHONE]`     |
+| API token detector        | `[REDACTED:API_TOKEN]` |
+| Payment card detector     | `[REDACTED:CARD]`      |
+| Custom regular expression | `[REDACTED]`           |
+
+A new rule starts with the field empty, and the empty field shows the default for the selected detector. Changing the detector or the source updates a token you have not edited; a token you typed is kept. `annotate` and `block` rules never rewrite traffic, so the dialog saves them with no replacement and their cards say the content is not rewritten. A redact rule's card names the token it writes, the default included.
+
+Over the API, omit `replacement` or send `null` to get the default token.
+
 ### What the Rules screen reports
 
 A card's status comes from the policy the control plane hands to gateways, read from the effective configuration (`GET /api/v1/config`), not only from the rule's own switch:

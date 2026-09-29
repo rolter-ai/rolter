@@ -53,6 +53,7 @@ import {
   type EffectiveRule,
   type RowState,
 } from "@/lib/guardrail-policy";
+import { defaultToken, replacementToken, ruleBody, withSource } from "@/lib/guardrail-replacement";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -65,7 +66,8 @@ const EMPTY: GuardrailRuleInput = {
   pattern: null,
   stage: "pre_call",
   action: "redact",
-  replacement: "[REDACTED:EMAIL]",
+  // empty, so the gateway writes the detector's own token (#2160)
+  replacement: null,
   include_system: false,
   position: 0,
 };
@@ -513,8 +515,16 @@ function RuleDialog({
   onSave: (body: GuardrailRuleInput) => void;
 }) {
   const { t } = useTranslation();
-  const [form, setForm] = React.useState<GuardrailRuleInput>(initial ?? EMPTY);
+  // a stored block or annotate row can still hold a token it never wrote, so
+  // the field starts empty should the action become redact (#2160)
+  const [form, setForm] = React.useState<GuardrailRuleInput>(() =>
+    initial ? ruleBody(initial) : EMPTY,
+  );
   const set = (patch: Partial<GuardrailRuleInput>) => setForm((value) => ({ ...value, ...patch }));
+  // a token the user never edited follows the detector
+  const setSource = (patch: Parameters<typeof withSource>[1]) =>
+    setForm((value) => withSource(value, patch));
+  const fallback = defaultToken(form.builtin);
   const valid =
     form.name.trim() !== "" && (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
   // shown before saving, and read out with the stage it depends on
@@ -550,7 +560,7 @@ function RuleDialog({
               id="rule-source"
               value={form.source_type}
               onChange={(picked) =>
-                set({
+                setSource({
                   source_type: picked as GuardrailRuleInput["source_type"],
                   builtin: picked === "builtin" ? "email" : null,
                   pattern: picked === "pattern" ? "" : null,
@@ -582,7 +592,7 @@ function RuleDialog({
               id="rule-builtin"
               value={form.builtin ?? "email"}
               onChange={(picked) =>
-                set({
+                setSource({
                   builtin: picked as GuardrailRuleInput["builtin"],
                 })
               }
@@ -644,10 +654,21 @@ function RuleDialog({
         </div>
         {streamingNote && <StreamingEffect id={noteId} mode={streamingNote} variant="note" />}
         {form.action === "redact" && (
-          <Field label={t("pages.guardrailRules.fieldReplacement")} htmlFor="rule-replacement">
+          <Field
+            label={t("pages.guardrailRules.fieldReplacement")}
+            htmlFor="rule-replacement"
+            hint={
+              <Trans
+                i18nKey="pages.guardrailRules.replacementHint"
+                values={{ token: fallback }}
+                components={[<code key="token" className="font-mono" />]}
+              />
+            }
+          >
             <Input
               id="rule-replacement"
               value={form.replacement ?? ""}
+              placeholder={fallback}
               onChange={(event) => set({ replacement: event.target.value || null })}
             />
           </Field>
@@ -674,7 +695,7 @@ function RuleDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(form)}>
+        <Button disabled={!valid || pending} onClick={() => onSave(ruleBody(form))}>
           {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>
       </DialogFooter>
@@ -705,11 +726,13 @@ function RuleDetails({
   streaming: StreamingMode | undefined;
 }) {
   const { t } = useTranslation();
+  // the token the gateway writes, so a block rule with a stale one says none
+  const token = replacementToken(rule);
   return (
     <>
       <p>
-        {rule.replacement
-          ? t("pages.guardrailRules.replacementDetail", { token: rule.replacement })
+        {token !== null
+          ? t("pages.guardrailRules.replacementDetail", { token })
           : t("pages.guardrailRules.noRewrite")}
       </p>
       {rule.stage === "post_call" && streaming && (
