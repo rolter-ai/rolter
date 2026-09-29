@@ -244,7 +244,9 @@ CPU image, engine versions, and host configuration; throughput thresholds are
 deliberately not merge gates.
 
 The `engine integration` workflow runs the `sim` smoke as a regular check on
-pull requests that touch engine paths. Dispatch it manually with
+pull requests that touch engine paths. A newer push to the same pull request
+cancels the smoke still running for the older commit; a manual dispatch is never
+cancelled by another run. Dispatch it manually with
 `engine=vllm` to smoke the real CPU engine (Actions tab, or
 `gh workflow run "engine integration" -f engine=vllm`). SGLang remains
 available through the local `just integration-sglang` command, but its
