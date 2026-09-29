@@ -2101,6 +2101,7 @@
       "actionFilterAria": "Фильтр по действию",
       "targetFilterAria": "Фильтр по типу объекта",
       "actorFilterAria": "Фильтр по автору действия",
+      "timeRangeAria": "Фильтр временного интервала",
       "anyActor": "Любой автор",
       "actorPlaceholder": "ID пользователя (полный UUID)…",
       "detail": "Детали записи",
