@@ -1339,7 +1339,8 @@
         "ready": "Start the consent flow for {{name}}",
         "unconfigured": "Register an OAuth client on this server before connecting.",
         "started": "Consent started for {{name}}",
-        "startedDetail": "Finish the approval in the new tab. The session appears on Auth Sessions once it completes.",
+        "startedDetail": "Finish the approval in the new tab. It ends on Auth Sessions, and this card shows Connected once it completes.",
+        "connected": "Connected",
         "blocked": "The consent tab was blocked",
         "blockedDetail": "Allow pop-ups for this dashboard, then start the flow again.",
         "failed": "Could not start consent for {{name}}"
@@ -1451,6 +1452,25 @@
       }
     },
     "mcpOAuth": {
+      "consent": {
+        "completedTitle": "Connected to <0>{{server}}</0>",
+        "completedTitleUnnamed": "Connected to the MCP server",
+        "completedBody": "The authorization server granted consent, and the new session is highlighted below. It renews itself before it expires. The MCP Catalog shows the connection in any tab that has it open, so this tab can be closed.",
+        "failedTitle": "Could not connect to <0>{{server}}</0>",
+        "failedTitleUnnamed": "Could not connect the MCP server",
+        "reasons": {
+          "access_denied": "The authorization server reports that consent was declined, so nothing was stored. Connect again from the MCP Catalog and approve the requested access.",
+          "authorization_failed": "The authorization server answered with an error instead of a consent, so nothing was stored. Check the server's OAuth client settings, then connect again.",
+          "state_invalid": "This approval link has expired or was already used. Each link works once, for a few minutes. Connect again from the MCP Catalog to get a new one.",
+          "issuer_mismatch": "The response did not come from the authorization server this connection was sent to, so it was discarded unread. If the server's issuer changed, or none is pinned on its OAuth client, fix that and connect again.",
+          "token_exchange_failed": "Consent was given, but the authorization server refused to exchange it for tokens or could not be reached, so nothing was stored. Check the client ID and secret on the server's OAuth client, then connect again.",
+          "not_configured": "The control plane cannot finish the connection: it needs ROLTER_KEK set to seal the tokens, and an OAuth client registered for this server. Ask an operator to check both.",
+          "internal_error": "The control plane hit an error while storing the consent, so the connection did not complete. Try again; if it repeats, the control plane log names the cause.",
+          "unknown": "The connection did not complete. Connect again from the MCP Catalog; if it keeps failing, the control plane log names the cause."
+        },
+        "backToCatalog": "Back to MCP Catalog",
+        "newSession": "New"
+      },
       "confirm": {
         "sessionTitle": "Revoke session on {{server}}?",
         "sessionBody": "The token behind this session stops working at once. The consent it was minted under stands, so a new session can be created without asking the user again.",
