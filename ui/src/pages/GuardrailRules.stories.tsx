@@ -20,6 +20,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { GuardrailRuleRow } from "@/lib/api";
+import { atShort, expectInViewport } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
   {
@@ -254,6 +255,41 @@ export const EditsRule: Story = {
     await expect(within(document.body).getByLabelText("Rule name")).toHaveValue(
       "Redact customer email",
     );
+  },
+};
+
+/**
+ * The same dialog in a 640×360 window — 1280×720 at 200 % zoom (#2003).
+ *
+ * It used to open 422px tall and centered, its title and close button above
+ * the top edge and its footer below the bottom, with the page's scroll locked
+ * behind it. Now the panel is capped at the window and the fields scroll
+ * between a header and a footer that stay on screen.
+ */
+export const EditsRuleOnAShortScreen: Story = {
+  ...atShort,
+  render: () => <Harness fetchStub={async () => json(RULES)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit rule Redact customer email" }),
+    );
+    const dialog = await within(document.body).findByRole("dialog", {
+      name: "Edit inspection rule",
+    });
+    await expectInViewport(dialog);
+    await expectInViewport(within(dialog).getByRole("heading", { name: "Edit inspection rule" }));
+    await expectInViewport(within(dialog).getByRole("button", { name: "Close" }));
+    const publish = within(dialog).getByRole("button", { name: "Publish rule" });
+    await expectInViewport(publish);
+    // the fields are what gave way, and the last of them is a scroll away
+    const last = within(dialog).getByRole("switch", { name: "Inspect system messages" });
+    const body = last.closest<HTMLElement>("[data-slot=dialog-body]");
+    await expect(body).not.toBeNull();
+    await expect(body!.scrollHeight).toBeGreaterThan(body!.clientHeight);
+    last.scrollIntoView({ block: "nearest" });
+    await waitFor(() => expectInViewport(last));
+    await expectInViewport(publish);
   },
 };
 

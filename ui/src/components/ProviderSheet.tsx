@@ -11,7 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetActions,
+  SheetBody,
+  SheetError,
+  SheetFooter,
+  SheetHeader,
+} from "@/components/ui/sheet";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
@@ -421,26 +428,30 @@ export function ProviderSheet({
         <SheetError message={save.isError ? (save.error as Error).message : undefined} />
         {test.data && <TestOutcome result={test.data} />}
         <SheetError message={test.isError ? (test.error as Error).message : undefined} />
-        <div className="flex items-center justify-end gap-2.5 px-[22px] py-3.5">
-          {/* only for a saved provider: the probe reads the stored row, so it
-              cannot speak for edits still sitting in the form */}
-          {mode === "edit" && provider && (
-            <Button
-              variant="outline"
-              className="mr-auto"
-              disabled={test.isPending}
-              onClick={() => test.mutate()}
-            >
-              {test.isPending ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  {t("providerSheet.testing")}
-                </>
-              ) : (
-                t("providerSheet.testConnection")
-              )}
-            </Button>
-          )}
+        <SheetActions
+          start={
+            // only for a saved provider: the probe reads the stored row, so it
+            // cannot speak for edits still sitting in the form
+            mode === "edit" &&
+            provider && (
+              <Button
+                variant="outline"
+                className="mr-auto"
+                disabled={test.isPending}
+                onClick={() => test.mutate()}
+              >
+                {test.isPending ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    {t("providerSheet.testing")}
+                  </>
+                ) : (
+                  t("providerSheet.testConnection")
+                )}
+              </Button>
+            )
+          }
+        >
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}
           </Button>
@@ -453,7 +464,7 @@ export function ProviderSheet({
           >
             {cta}
           </Button>
-        </div>
+        </SheetActions>
       </SheetFooter>
       {prompt}
     </Sheet>

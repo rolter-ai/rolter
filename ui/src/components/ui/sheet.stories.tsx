@@ -5,7 +5,8 @@ import { expect, userEvent, within } from "storybook/test";
 import { Button } from "./button";
 import { Field } from "./field";
 import { Input } from "./input";
-import { Sheet, SheetBody, SheetError, SheetFooter, SheetHeader } from "./sheet";
+import { Sheet, SheetActions, SheetBody, SheetError, SheetFooter, SheetHeader } from "./sheet";
+import { atMobile, expectInViewport } from "@/lib/story-viewport";
 
 const meta = {
   title: "Overlays/Sheet",
@@ -117,5 +118,79 @@ export const NoErrorRendersNothing: Story = {
   ),
   play: async () => {
     await expect(within(document.body).queryByRole("alert")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A footer with all three kinds of button, labelled at the length a Russian
+ * catalog reaches: a connection test that is not part of the dismiss/commit
+ * pair, Cancel, and the primary action.
+ */
+function Actions() {
+  return (
+    <Sheet open onOpenChange={() => {}}>
+      <SheetHeader title="Edit provider" subtitle="openai-primary" onClose={() => {}} />
+      <SheetBody>
+        <Field label="Name" htmlFor="name">
+          <Input id="name" defaultValue="openai-primary" />
+        </Field>
+      </SheetBody>
+      <SheetFooter>
+        <SheetActions
+          start={
+            <Button variant="outline" className="mr-auto">
+              Check the connection now
+            </Button>
+          }
+        >
+          <Button variant="ghost">Cancel</Button>
+          <Button>Save provider settings</Button>
+        </SheetActions>
+      </SheetFooter>
+    </Sheet>
+  );
+}
+
+function footerButtons() {
+  const body = within(document.body);
+  return {
+    test: body.getByRole("button", { name: "Check the connection now" }),
+    cancel: body.getByRole("button", { name: "Cancel" }),
+    save: body.getByRole("button", { name: "Save provider settings" }),
+  };
+}
+
+/**
+ * On a phone the sheet is the whole screen and cannot be scrolled sideways
+ * (#2003). The row becomes a column: the test above, then Cancel and the
+ * primary action on the bottom line, the primary last and taking the width
+ * Cancel leaves. Every button is on screen.
+ */
+export const ActionsStackOnAPhone: Story = {
+  ...atMobile,
+  render: () => <Actions />,
+  play: async () => {
+    const { test, cancel, save } = footerButtons();
+    for (const button of [test, cancel, save]) await expectInViewport(button);
+    const [t, c, s] = [test, cancel, save].map((b) => b.getBoundingClientRect());
+    await expect(t.bottom).toBeLessThanOrEqual(c.top);
+    await expect(t.left).toBe(c.left);
+    await expect(s.top).toBe(c.top);
+    await expect(s.left).toBeGreaterThan(c.right);
+    await expect(s.width).toBeGreaterThan(c.width);
+  },
+};
+
+/** From `sm` up it is one row: the test pinned left, the pair right. */
+export const ActionsInARowOnADesktop: Story = {
+  render: () => <Actions />,
+  play: async () => {
+    const { test, cancel, save } = footerButtons();
+    for (const button of [test, cancel, save]) await expectInViewport(button);
+    const [t, c, s] = [test, cancel, save].map((b) => b.getBoundingClientRect());
+    await expect(t.top).toBe(c.top);
+    await expect(s.top).toBe(c.top);
+    await expect(t.right).toBeLessThan(c.left);
+    await expect(s.left).toBeGreaterThan(c.right);
   },
 };
