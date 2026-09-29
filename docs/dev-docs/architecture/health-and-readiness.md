@@ -77,6 +77,49 @@ analytics is down would be a strictly worse outage.
 Running without `--database-url` (bootstrap config only), there is nothing to
 wait on and the answer is always ready.
 
+## The dashboard's gateway pill
+
+The status pill in every screen header (`ui/src/components/ScreenHeader.tsx`)
+polls the gateway's `/readyz` every 30 seconds through the control plane's
+`/gw/*` proxy (#1973).
+
+`/readyz` is the one gateway signal every dashboard role can read: the proxy
+takes no admin token and the endpoint takes no key. `/api/v1/cluster/nodes`
+knows more but is superadmin-only, and `/api/v1/health/*` is provider health
+from ClickHouse, not the gateway's. The probe sends no `Authorization` header.
+
+`readinessFrom` in `ui/src/lib/gateway.ts` reads the answer strictly:
+
+| Answer                                                    | Pill                                |
+| --------------------------------------------------------- | ----------------------------------- |
+| `200` with the body `ok`                                  | healthy (green dot, breathing)      |
+| `503` with the body `draining`                            | degraded: "gateway draining", amber |
+| `502` with the proxy's own `{"error":{"message":…}}` body | down: "gateway unreachable", red    |
+| anything else, a network error, or no answer within 10 s  | unknown, grey                       |
+| no answer yet                                             | checking, grey                      |
+
+A `200` that is not `ok` is an SPA fallback in front of the control plane, and
+a `502` that is not the proxy's JSON comes from an ingress that could not reach
+the _control plane_. Both read as unknown, so the pill never sends an operator
+to the wrong process.
+
+One failed check does not blank a known answer. `gatewayHealthFrom` in
+`ui/src/lib/gateway-health.ts` keeps it for up to one and a half poll
+intervals, without the pulse and with the answer's time in the tooltip, then
+drops to unknown. The poll pauses while the tab is hidden, and the header's
+refresh button re-asks along with everything else without spinning for the
+background poll.
+
+What the pill cannot see:
+
+- other gateways behind the same `ROLTER_GATEWAY_URL`, and whether a gateway
+  runs the current config version. Both need a fleet summary every signed-in
+  caller can read (#2013).
+- an unreachable gateway _host_. The proxy's HTTP client has no connect
+  timeout, so a host that drops packets hangs the request instead of answering
+  `502`, and the pill reports unknown after its own 10 second timeout rather
+  than down (#2014).
+
 ## Probe wiring
 
 `charts/rolter` wires this for you:

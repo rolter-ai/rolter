@@ -207,6 +207,54 @@ export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub
 }
 
 /**
+ * What `GET /gw/readyz` answers in a story (#1973), each in the shape the
+ * gateway or the control plane's `/gw` proxy really produces it:
+ *
+ * - `ready`: the gateway's `200 ok`
+ * - `draining`: the gateway's `503 draining`
+ * - `unreachable`: the proxy's own `502` JSON error, sent when it could not
+ *   reach the gateway at all
+ * - `unrecognised`: a `502` page from something in front of the control
+ *   plane, which says nothing about the gateway
+ * - `pending`: no answer yet
+ *
+ * Pass a function to change the answer between checks.
+ */
+export type GatewayAnswer = "ready" | "draining" | "unreachable" | "unrecognised" | "pending";
+
+function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
+  const text = (body: string, status: number, type = "text/plain; charset=utf-8") =>
+    Promise.resolve(new Response(body, { status, headers: { "Content-Type": type } }));
+  switch (answer) {
+    case "ready":
+      return text("ok", 200);
+    case "draining":
+      return text("draining", 503);
+    case "unreachable":
+      return Promise.resolve(
+        json({ error: { message: "gateway unreachable: error sending request" } }, 502),
+      );
+    case "unrecognised":
+      return text("<html><body>502 Bad Gateway</body></html>", 502, "text/html");
+    case "pending":
+      return new Promise<Response>(() => {});
+  }
+}
+
+/** Answer the header's gateway probe with `answer`, then fall through to `handler`. */
+export function withGateway(
+  answer: GatewayAnswer | (() => GatewayAnswer),
+  handler: FetchStub,
+): FetchStub {
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/gw/readyz")
+      return gatewayResponse(typeof answer === "function" ? answer() : answer);
+    return handler(input, init);
+  };
+}
+
+/**
  * An `AuthProvider` that boots with a session token already in localStorage,
  * the way a reloaded tab does (#1196).
  *
