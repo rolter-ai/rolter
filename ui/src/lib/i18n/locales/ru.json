@@ -2280,7 +2280,8 @@
       "trace": "Трассировка",
       "arguments": "Аргументы",
       "result": "Результат",
-      "closeDetails": "Закрыть детали вызова MCP"
+      "closeDetails": "Закрыть детали вызова MCP",
+      "openDetails": "Открыть детали вызова {{tool}} на {{server}} от {{time}}"
     },
     "providerGroups": {
       "emptyTitle": "Групп провайдеров пока нет",

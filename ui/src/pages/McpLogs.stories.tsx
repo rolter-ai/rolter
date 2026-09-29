@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
 import {
@@ -37,16 +37,23 @@ const call = (over: Partial<McpLogRow> = {}): McpLogRow => ({
 
 const SUMMARY = { calls: 128, failures: 3, avg_latency_ms: 410, p95_latency_ms: 980 };
 
-// `/logs/summary` is listed before `/logs`, which is a prefix of it
+// a second call to a different tool, so each row's button has a name of its own
+const TIMED_OUT: Partial<McpLogRow> = {
+  event_id: "evt-2",
+  tool: "create_issue",
+  status: "timeout",
+  error: "deadline exceeded",
+};
+
+// `/logs/summary` and the by-id `/logs/evt-2` are listed before `/logs`, which
+// is a prefix of both
 const loaded = routes([
   ["/mcp/logs/summary", () => ({ data: [SUMMARY] })],
   [
-    "/mcp/logs",
-    () => ({
-      data: [call(), call({ event_id: "evt-2", status: "timeout", error: "deadline exceeded" })],
-      next_cursor: null,
-    }),
+    "/mcp/logs/evt-2",
+    () => ({ ...call(TIMED_OUT), arguments: '{"title":"flaky test"}', result: null }),
   ],
+  ["/mcp/logs", () => ({ data: [call(), call(TIMED_OUT)], next_cursor: null })],
 ]);
 
 const meta = {
@@ -72,6 +79,61 @@ export const Loaded: Story = {
     expect(canvas.getByText("980 ms")).toBeInTheDocument();
     expect(canvas.getAllByText("320 ms").length).toBeGreaterThan(0);
     await expectListTable(canvasElement, "MCP Logs");
+  },
+};
+
+/**
+ * An event opens from the keyboard, not only from a mouse click on its row
+ * (#2022).
+ *
+ * The click sits on the row, and a `role="row"` takes no focus, so with no
+ * control inside it Tab walked past every event and the redacted payloads were
+ * mouse-only (WCAG 2.1.1). The row's button is reached by Tab, is named after
+ * the event down to its time, and hands focus to the drawer and back. The story
+ * opens the second row, so "focus went back to the control that opened it" has
+ * a wrong answer available: the first row's button.
+ */
+export const OpensAnEventFromTheKeyboard: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = (await canvas.findByText("create_issue")).closest<HTMLElement>('[role="row"]')!;
+    const time = within(row).getAllByRole("cell")[0].textContent;
+    const open = within(row).getByRole("button", {
+      name: `Open call details for create_issue on github at ${time}`,
+    });
+
+    // Tab alone gets there, the way a keyboard user arrives
+    for (let i = 0; i < 30 && document.activeElement !== open; i++) await userEvent.tab();
+    await expect(open).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
+    const drawer = await canvas.findByRole("complementary", { name: "MCP call details" });
+    await waitFor(() => expect(drawer).toHaveFocus());
+    await expect(await within(drawer).findByText("github → create_issue")).toBeVisible();
+    await expect(within(drawer).getByText("deadline exceeded")).toBeVisible();
+
+    // Escape closes it, and focus lands on this row's button again
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("complementary")).toBeNull());
+    await waitFor(() => expect(open).toHaveFocus());
+
+    // Space opens it as well, and the drawer's own close button hands focus
+    // back the same way
+    await userEvent.keyboard(" ");
+    const again = await canvas.findByRole("complementary", { name: "MCP call details" });
+    await waitFor(() => expect(again).toHaveFocus());
+    await userEvent.tab();
+    await expect(
+      within(again).getByRole("button", { name: "Close MCP log details" }),
+    ).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(canvas.queryByRole("complementary")).toBeNull());
+    await waitFor(() => expect(open).toHaveFocus());
   },
 };
 

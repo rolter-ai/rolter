@@ -2160,7 +2160,8 @@
       "trace": "Trace",
       "arguments": "Arguments",
       "result": "Result",
-      "closeDetails": "Close MCP log details"
+      "closeDetails": "Close MCP log details",
+      "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
     },
     "providerGroups": {
       "emptyTitle": "No provider groups yet",
