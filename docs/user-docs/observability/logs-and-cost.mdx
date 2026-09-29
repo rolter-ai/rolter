@@ -25,7 +25,7 @@ The dashboard reads the rows back through the control plane, which needs its own
 
 ## What gets logged
 
-Every proxied request writes one row to the `request_logs` table with the following fields:
+Every proxied request writes one row to the `request_logs` table with the following fields. With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, and every total read from the table shrinks with them.
 
 | Field                | Type          | Description                                                                                                                           |
 | -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |

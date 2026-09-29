@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,6 +12,8 @@ import { Switch } from "@/components/ui/switch";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
+import { useFormat } from "@/lib/i18n/format";
+import { sampleShare } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -46,11 +49,16 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
   uiEvents: dto.ui_events,
 });
 
+// the percent field as a number, or NaN while it holds nothing usable. a blank
+// field is NaN rather than the 0 that `Number("")` makes of it, so clearing the
+// field can never save a policy that logs nothing
+const parsePercent = (value: string) => (value.trim() === "" ? Number.NaN : Number(value));
+
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // returns a catalog key, translated by the caller
 function validate(form: FormState): string | null {
-  const percent = Number(form.samplePercent);
+  const percent = parsePercent(form.samplePercent);
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
     return "pages.logsSettings.errors.sampleRange";
   }
@@ -94,6 +102,8 @@ function LogsSettingsScreen() {
   useErrorState(!!settings.error, "logs-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
+  const sampleHintId = React.useId();
+  const sampleWarningId = React.useId();
   React.useEffect(() => {
     if (settings.data && form === null) {
       setForm(fromDto(settings.data));
@@ -165,7 +175,7 @@ function LogsSettingsScreen() {
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
         <div>
           <span className="text-sm font-medium">{t("pages.logsSettings.sampleRate")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p id={sampleHintId} className="mt-1 text-sm text-muted-foreground">
             {t("pages.logsSettings.sampleRateHint")}
           </p>
         </div>
@@ -174,6 +184,7 @@ function LogsSettingsScreen() {
             className="max-w-[120px]"
             inputMode="decimal"
             aria-label={t("pages.logsSettings.sampleRatePercent")}
+            aria-describedby={`${sampleHintId} ${sampleWarningId}`}
             value={form.samplePercent}
             onChange={(e) => set({ samplePercent: e.target.value })}
           />
@@ -181,6 +192,7 @@ function LogsSettingsScreen() {
             {t("pages.logsSettings.percentOfRequests")}
           </span>
         </div>
+        <SampledLogWarning id={sampleWarningId} percent={parsePercent(form.samplePercent)} />
       </section>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
@@ -329,6 +341,53 @@ function LogsSettingsScreen() {
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * What a sample rate below 100 % does to every figure read from the request log
+ * (#2088).
+ *
+ * The gateway drops an unsampled row before it reaches ClickHouse, and nothing
+ * that reads the log scales the rest back up, so at 25 % the Dashboard's spend
+ * is about a quarter of the real spend. The warning follows the form state, so
+ * it shows for an edit that has not been saved yet as well as for a saved rate
+ * on load.
+ *
+ * The status region stays mounted and only its content comes and goes: a live
+ * region inserted together with its text is not reliably announced, and the
+ * warning appearing mid-edit is what a screen-reader user needs to hear.
+ */
+function SampledLogWarning({ id, percent }: { id: string; percent: number }) {
+  const { t } = useTranslation();
+  const format = useFormat();
+  const below = Number.isFinite(percent) && percent >= 0 && percent < 100;
+  const rate = percent / 100;
+  const share = below ? sampleShare(rate) : null;
+  return (
+    <div id={id} role="status">
+      {below && (
+        <p className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
+          <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            <span className="font-medium">
+              {share
+                ? t("pages.logsSettings.sampled.title", {
+                    count: share.denominator,
+                    numerator: format.number(share.numerator),
+                    denominator: format.number(share.denominator),
+                  })
+                : t("pages.logsSettings.sampled.noneTitle")}
+            </span>{" "}
+            {share
+              ? t("pages.logsSettings.sampled.body", {
+                  percent: format.number(rate, { style: "percent", maximumFractionDigits: 2 }),
+                })
+              : t("pages.logsSettings.sampled.noneBody")}
+          </span>
+        </p>
+      )}
     </div>
   );
 }

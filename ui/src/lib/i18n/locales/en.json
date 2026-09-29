@@ -2485,7 +2485,14 @@
       "everyModel": "every model",
       "nothing": "nothing",
       "sampleRate": "Sample Rate",
-      "sampleRateHint": "Percentage of requests written to the log. Lower it to cut storage on high-volume deployments; metrics and budgets are unaffected.",
+      "sampleRateHint": "Share of requests written to the log. Lower it to cut storage on high-volume deployments. The Dashboard, LLM Logs, Business Units and Customers take their request counts, spend and tokens from this log, so they cover only the share it keeps; budgets, rate limits and /metrics still count every request.",
+      "sampled": {
+        "title_one": "The log keeps about {{numerator}} in {{denominator}} request.",
+        "title_other": "The log keeps about {{numerator}} in {{denominator}} requests.",
+        "body": "Spend, tokens and request counts read from it come to about {{percent}} of the real figures.",
+        "noneTitle": "The log keeps no requests.",
+        "noneBody": "The screens that read it get no new requests, spend or tokens."
+      },
       "sampleRatePercent": "Sample rate percent",
       "percentOfRequests": "% of requests",
       "capture": "Capture Request Payloads",

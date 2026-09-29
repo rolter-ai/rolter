@@ -10,7 +10,23 @@ Request logging is governed by one deployment-wide policy, edited from **Observa
 
 ## Sampling
 
-`sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it is the first lever to pull on a high-volume deployment — metrics, budgets and rate limits are computed from every request regardless, so sampling only reduces what lands in the log store.
+`sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it cuts what lands in the log store on a high-volume deployment, and it cuts every figure read back out of that store by the same share.
+
+The gateway decides per request, from a hash of the request id, and drops an unsampled row before it is written. The log does not record the rate a row was kept at, and nothing that reads it scales the kept rows back up. So below `1`:
+
+- request counts, spend and token totals on the **Dashboard**, in **LLM Logs**, on the [cost attribution](/security/cost-attribution) screens (**Business Units** and **Customers**) and in the usage panel on **Account** cover only the logged requests. At `0.25` the Dashboard shows about a quarter of the real spend;
+- **LLM Logs** lists only the logged requests, and a request that was not logged has no captured payload either;
+- the `request_volume` and `spend_velocity` [alert rules](/observability/alerting) read low, while `error_rate` and `p95_latency_ms` become estimates from the sample.
+
+Three things count every request at any rate, because the gateway records them before it decides whether to log the row:
+
+- [budgets](/security/budgets-and-rate-limits), which add each request's cost to a Redis counter;
+- [rate limits](/security/budgets-and-rate-limits), request and token windows alike;
+- the Prometheus [metrics](/observability/metrics) on `/metrics`.
+
+When spend read off the Dashboard has to be the real spend, keep the rate at `1` and bound storage with [retention](#retention) instead.
+
+Below 100 %, **Logs Settings** states the consequence under the field: the share the log keeps, such as "about 1 in 4 requests", and that figures read from the log come to about that share of the real ones. The warning follows the form, so it shows for an unsaved edit as well as for a rate already saved. A cleared field is refused rather than saved as `0`, which would log nothing.
 
 ---
 
