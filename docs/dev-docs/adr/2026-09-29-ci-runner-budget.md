@@ -165,7 +165,10 @@ above, 11 were cancelled mid-flight.
   codeql legs, so that default changes in the same PR as the matrix. The new
   leg's name has no comma because `release.yml` splits the list on commas. An
   admin deletes the `RELEASE_REQUIRED_CHECKS` repository variable first; it
-  equals the default today, so deleting it changes nothing.
+  equals the default today, so deleting it changes nothing. The shared leg runs
+  one `init` and one `analyze` for the three languages, then uploads each
+  language's SARIF under its old `/language:<name>` category, so code scanning
+  keeps the same four configurations and none goes stale.
 - The `helm chart` renders run the checker with `uv run --script`, which
   installs only the pyyaml pinned in the script's inline metadata (#1901), so
   the job stops building the wheel (#2038). That accidental build was the gate's

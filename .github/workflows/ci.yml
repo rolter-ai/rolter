@@ -91,8 +91,16 @@ jobs:
   # (a build-free source extractor), so to lift call-target resolution above
   # CodeQL's quality threshold we `cargo fetch` the dependencies first, giving
   # the extractor the crate sources it needs to resolve calls. see #484.
+  #
+  # two legs. rust gets its own because it is the slow one (~8 min) and the
+  # only one with a pr skip. actions, javascript-typescript and python share
+  # one init and one analyze: each is a build-free extraction of a minute or
+  # two, and three jobs spent most of their time on setup. the shared leg still
+  # uploads one sarif per language under its old `/language:<name>` category,
+  # so code scanning keeps the same four configurations. the leg name has no
+  # comma because release.yml splits its required-check list on commas
   codeql:
-    name: codeql (${{ matrix.language }})
+    name: codeql (${{ matrix.leg }})
     # scoped to `pull_request` for the same reason `quality` is: no other event
     # may inherit the title-edit fast path
     if: github.event_name != 'pull_request' || github.event.action != 'edited'
@@ -104,14 +112,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [rust, javascript-typescript, python, actions]
+        include:
+          - leg: rust
+            languages: rust
+          - leg: actions-js-python
+            languages: actions,javascript-typescript,python
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # the rust leg of a pull_request run diffs the merge commit against
           # its first parent (the base), so it needs both parents
-          fetch-depth: ${{ matrix.language == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
+          fetch-depth: ${{ matrix.leg == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
       # on a pull request that changes no rust source, cargo manifest, lockfile,
       # toolchain pin or codeql config, the rust analysis would extract the same
       # rust code master was already analysed with. the rust leg then skips its
@@ -122,7 +134,7 @@ jobs:
       # lands, which is also what catches a pr that breaks the leg itself. the
       # step fails open: any doubt about the diff means `analyze=true`, and a
       # step error leaves the output unset, which the guards below read as run
-      - if: matrix.language == 'rust' && github.event_name == 'pull_request'
+      - if: matrix.leg == 'rust' && github.event_name == 'pull_request'
         id: scope
         name: detect rust changes
         continue-on-error: true
@@ -156,29 +168,59 @@ jobs:
           esac
       # make the dependency sources available so the rust extractor resolves
       # calls into crates instead of leaving them unresolved
-      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
-      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         name: fetch dependencies for analysis
         run: cargo fetch --locked
       - name: initialize codeql
-        if: matrix.language != 'rust' || steps.scope.outputs.analyze != 'false'
+        if: matrix.leg != 'rust' || steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/init@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
-          languages: ${{ matrix.language }}
+          languages: ${{ matrix.languages }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
       - name: analyze
-        if: matrix.language != 'rust' || steps.scope.outputs.analyze != 'false'
+        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:rust"
+      # analyze takes one `category` for every language it ran, and the cli
+      # writes it verbatim into each run, so three languages under one
+      # category would collide on upload. analyze writes one sarif per language
+      # instead (named by the canonical language, so javascript-typescript is
+      # `javascript.sarif`) and each is uploaded under its own category. a
+      # failed analyze still uploads its debugging sarif (`failure-only`)
+      - name: analyze (actions, javascript-typescript, python)
+        if: matrix.leg != 'rust'
+        uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          upload: failure-only
+          output: ${{ runner.temp }}/codeql-sarif
+      - name: upload actions results
+        if: matrix.leg != 'rust'
+        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif/actions.sarif
+          category: "/language:actions"
+      - name: upload javascript-typescript results
+        if: matrix.leg != 'rust'
+        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif/javascript.sarif
+          category: "/language:javascript-typescript"
+      - name: upload python results
+        if: matrix.leg != 'rust'
+        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif/python.sarif
+          category: "/language:python"
 
   # the `edited` fast path needs exactly one fact about a head sha: did the
   # heavy gate run here, and did it pass. it used to ask that by looking at the

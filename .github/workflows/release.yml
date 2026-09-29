@@ -68,7 +68,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF: ${{ inputs.tag || github.sha }}
-          REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'ci-ok,codeql (rust),codeql (actions),codeql (python),codeql (javascript-typescript)' }}
+          REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'ci-ok,codeql (rust),codeql (actions-js-python)' }}
         run: |
           set -euo pipefail
           # resolve the ref (tag on dispatch, sha on push) to a commit sha
