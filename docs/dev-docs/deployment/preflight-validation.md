@@ -272,9 +272,9 @@ from one shared template, because three deployment paths that each re-implement
 "is this configured safely" will drift, and the one that drifts is the one
 nobody notices until a credential was stored unencrypted. The `helm chart`
 steps of the `static checks` CI job lint the chart and render every branch of
-that template. Each render is
-parsed with a strict YAML loader that rejects a duplicate mapping key (#1090).
-To run that parse on the default render locally after a chart change:
+that template. Each render is parsed with a strict YAML loader that rejects a
+duplicate mapping key (#1090). To run that parse on the default render locally
+after a chart change:
 
 ```bash
 helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py

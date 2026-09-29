@@ -105,8 +105,8 @@ deployed (#1140). Two things now hold it:
 - the `release-plz pr` job runs `scripts/sync-chart-appversion.py --fix` on the
   release branch and pushes the result, so the Release PR is already consistent
 - a `helm chart` step of `quality.yml`'s `static checks` job runs the same
-  script in check mode, so a disagreement fails CI rather than shipping — including if the release-branch
-  step ever stops working
+  script in check mode, so a disagreement fails CI rather than shipping —
+  including if the release-branch step ever stops working
 
 The script is also a `prek` hook on `Cargo.toml` and `Chart.yaml`, so a manual
 version-line move is caught before it is pushed. To reconcile by hand:

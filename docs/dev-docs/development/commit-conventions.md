@@ -65,11 +65,10 @@ be, and then it is not breaking.
   `quality.yml`'s `static checks` job re-checks every commit the PR
   introduces, so a `--no-verify` push or an amend is still caught, and a step
   of the `ci-ok` job in `ci.yml` checks the PR body (plus the commit range on
-  a dispatched or merge-queue run). The body half has
-  to live in `ci.yml` because a body edit takes the `edited` fast path, which
-  skips `quality.yml` entirely — a body check inside that workflow could never
-  see the edit that introduced a URL. See #1406 and
-  [`ci-gating.md`](ci-gating.md).
+  a dispatched or merge-queue run). The body half has to live in `ci.yml`
+  because a body edit takes the `edited` fast path, which skips `quality.yml`
+  entirely — a body check inside that workflow could never see the edit that
+  introduced a URL. See #1406 and [`ci-gating.md`](ci-gating.md).
 
 ## Tooling
 
