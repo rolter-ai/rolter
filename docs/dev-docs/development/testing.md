@@ -541,7 +541,7 @@ things differ:
   otherwise rebuild the clippy steps' dependency tree on every run.
   `rust build` sets no `RUSTFLAGS` at all: the variable replaces every
   `rustflags` entry in cargo's config, the wild linker's `--ld-path` included.
-- The semver steps are `continue-on-error`, the install and the baseline tag
+- The semver steps are `continue-on-error`, the install and the baseline
   lookup included, and the semver check has a 20-minute step limit. The report
   turns their failure into a warning. `ci-ok` never goes red over the semver
   check, as [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
@@ -552,8 +552,8 @@ build fails the gate well before GitHub's 360-minute default.
 
 ### The Rust cache is saved from `master` only
 
-Every `Swatinem/rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml`
-sets `save-if: ${{ github.ref == 'refs/heads/master' }}`. A pull request run
+Every `Swatinem/rust-cache` step in `quality.yml`, `ci.yml`, `extended.yml` and
+`engine-integration.yml` sets `save-if: ${{ github.ref == 'refs/heads/master' }}`. A pull request run
 restores the cache its job last saved on `master` and writes nothing back, and
 so do a release-PR dispatch, a merge-queue run and a `workflow_dispatch` on a
 branch. Only the `master` push run and the nightly `extended.yml` run, which
@@ -577,11 +577,18 @@ The first `master` push after the merge saves the new cache. The
 runs take 6-10 minutes, so a cold build fits inside the limit, and a hung test
 no longer holds the gate for GitHub's 360-minute default.
 
-A new `rust-cache` step takes the same `save-if` line. Two workflows go without
-it. `engine-integration.yml` runs only on path-filtered pull requests and on
-dispatch, never on a `master` push, so a master-only save would leave it cold
-forever. `gemini-interactions-smoke.yml` runs on its weekly schedule, which
-already runs on `master`. To see what the cache holds:
+A new `rust-cache` step takes the same `save-if` line. Only
+`gemini-interactions-smoke.yml` goes without it: it runs on its weekly schedule,
+which already runs on `master`.
+
+`engine-integration.yml` runs only on path-filtered pull requests and on
+dispatch, never on a `master` push, so a cache of its own would never warm. Its
+smoke builds the same `cargo build -p rolter-gateway` as `rust build`, so it
+restores that job's cache instead: both steps set `shared-key: rust-build`, and
+the smoke installs the wild linker too, because the linker's rustflags are part
+of every unit's fingerprint and a build without them would reuse nothing it
+restored (#2203). Keep the two jobs' toolchain, linker and key in step. To see
+what the cache holds:
 
 ```bash
 gh api repos/rolter-ai/rolter/actions/cache/usage
@@ -1406,9 +1413,16 @@ failure has to reach the `report failure` job as `failure`. On `master` that
 job opens an issue titled `extended.yml: nightly checks failing`, labelled `ci`,
 the first time a run fails, and comments on it with the run link and each job's
 result while it stays open. Close it once the fix lands; the next failure opens
-a new one. It is the only job in the workflow with a write scope, `issues: write`
-at job level with no checkout, and an issue it opens does not trigger
-`project-automation`, so add it to the board by hand. Breakage in these checks
+a new one. It is the only job in the workflow with write scopes, `issues: write`
+and `actions: write` at job level with no checkout.
+
+An issue opened with the workflow's own token raises no `issues` event, so
+`project-automation` never sees it. The job triages a new issue itself instead:
+it adds `station:rtx` and the `Maintenance, CI & DX` milestone, then dispatches
+`project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
+puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
+half only warns when it fails, since a renamed milestone must not cost the issue
+itself; the warning names the command to run by hand. Breakage in these checks
 therefore shows up up to a day late, on that issue, rather than on the PR that
 caused it. To check a branch before merging, dispatch the workflow on it; a
 failure there shows in that run and leaves the issue alone:

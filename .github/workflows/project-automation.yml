@@ -5,6 +5,13 @@ name: project-automation
 # column: issues get Todo plus Priority Medium, PRs get In Review because an
 # open PR is by definition waiting on review or on ci-ok.
 #
+# an issue or PR opened with a workflow's GITHUB_TOKEN raises no `opened`
+# event, so this workflow never sees it. such a workflow dispatches this one
+# instead, naming the item and optionally an Area and Effort to seed; a dispatch
+# is the one event that token may start. extended.yml's `report failure` does
+# this for the nightly tracking issue (#2201), and anyone can do the same by
+# hand for an item that missed the board.
+#
 # field and option ids are resolved by *name* at run time, never pinned:
 # replacing a field's option list through updateProjectV2Field mints new ids, and
 # a pinned id then makes every seed fail while items land in the untracked
@@ -35,6 +42,22 @@ on:
   # so the usual injection risk does not apply.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Number of the issue or pull request to put on the board
+        required: true
+        type: string
+      area:
+        description: Area to seed if the item has none (a board option name, e.g. ci)
+        required: false
+        type: string
+        default: ""
+      effort:
+        description: Effort to seed if the item has none (XS, S, M, L or XL)
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -46,14 +69,42 @@ jobs:
     # backstop only: RETRY_WINDOW below bounds the waiting, so this fires on a
     # hang, never on a rate limit
     timeout-minutes: 25
+    # the dispatch lookup reads the item with the repository token; the board
+    # writes below use the PAT
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
-      - name: add item to project and seed default Status and Priority
+      # an `opened` event carries the item's node id and url, a dispatch only
+      # its number. the number reaches the script through env and must be one
+      - name: resolve the dispatched item
+        id: dispatched
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ inputs.number }}
+        run: |
+          set -euo pipefail
+          if ! [[ $NUMBER =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error title=bad dispatch input::number must be an issue or pull request number"
+            exit 1
+          fi
+          gh api "repos/$GH_REPO/issues/$NUMBER" --jq '
+            "node-id=\(.node_id)",
+            "url=\(.html_url)",
+            "is-pr=\(has("pull_request"))"' >> "$GITHUB_OUTPUT"
+      - name: add item to project and seed its default fields
         env:
           GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
           PROJECT_ID: PVT_kwDOEjWga84Bdezc
-          CONTENT_ID: ${{ github.event.issue.node_id || github.event.pull_request.node_id }}
-          CONTENT_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
-          IS_PR: ${{ github.event_name == 'pull_request_target' }}
+          CONTENT_ID: ${{ github.event.issue.node_id || github.event.pull_request.node_id || steps.dispatched.outputs.node-id }}
+          CONTENT_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url || steps.dispatched.outputs.url }}
+          IS_PR: ${{ github.event_name == 'pull_request_target' || steps.dispatched.outputs.is-pr == 'true' }}
+          # seeds only a dispatch asks for; an opened event leaves both empty
+          SEED_AREA: ${{ inputs.area }}
+          SEED_EFFORT: ${{ inputs.effort }}
           # seconds this run may spend waiting on rate limits and outages. long
           # enough to ride out throttling and a budget that refills soon, short
           # enough that a burst of opened PRs cannot park runners for an hour
@@ -331,3 +382,5 @@ jobs:
             set_field Status Todo
             set_field Priority Medium
           fi
+          if [ -n "${SEED_AREA:-}" ]; then set_field Area "$SEED_AREA"; fi
+          if [ -n "${SEED_EFFORT:-}" ]; then set_field Effort "$SEED_EFFORT"; fi

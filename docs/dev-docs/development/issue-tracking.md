@@ -118,6 +118,18 @@ an issue before that task is reported done — see the scope-discipline section 
 starting `Status` — `Todo` for an issue, `In Review` for a PR, since an open PR
 is by definition waiting on review — plus `Priority: Medium` on an issue.
 
+An issue or PR that a workflow opens with its own `GITHUB_TOKEN` raises no
+`opened` event, so the workflow above never runs for it. A dispatch is the one
+event that token can start, so such a workflow dispatches `project-automation.yml`
+with the item's number, and may name an `Area` and `Effort` to seed on top of
+the defaults. `extended.yml`'s `report failure` job does this for the nightly
+tracking issue (#2201). The same dispatch puts any item that missed the board
+back on it by hand:
+
+```bash
+gh workflow run project-automation.yml -f number=<n> -f area=ci -f effort=XS
+```
+
 **Seeding is initialization, not policy.** A field that already carries a value
 was set deliberately, and the automation leaves it alone. It reads the item's
 current single-select values immediately before every write attempt, a retry
