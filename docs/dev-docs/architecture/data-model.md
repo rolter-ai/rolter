@@ -135,8 +135,8 @@ green and breaks deployments later. Never edit, delete or rename a file under
 append-only and never reused, even where the sequence has a gap.
 
 `scripts/check-migrations-immutable.sh` enforces this. It runs as the
-`migrations append-only` job in `quality.yml` (inside the `ci-ok` gate) and as a
-`prek` hook locally, rejecting any modified, deleted or renamed migration relative
+`migrations append-only` step of the `static checks` job in `quality.yml`
+(inside the `ci-ok` gate) and as a `prek` hook locally, rejecting any modified, deleted or renamed migration relative
 to the branch's fork point from `master`.
 
 ## Mapping to the gateway

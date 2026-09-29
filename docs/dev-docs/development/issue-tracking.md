@@ -229,8 +229,8 @@ That policy lives in the workflow's `run:` block, which only ever runs on
 extracts the block and runs it against a fake `gh`, a fake clock and a fake
 board: every row of the table, the order the patterns are tried in, triage
 landing during a backoff, and a write whose answer was lost. It is the
-`board automation retry policy` job in `quality.yml` and a prek hook on the
-workflow file. Add a case there when you add a row here.
+`board automation retry policy` step of the `static checks` job in
+`quality.yml` and a prek hook on the workflow file. Add a case there when you add a row here.
 
 ## Editing the board's single-select options
 

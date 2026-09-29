@@ -467,6 +467,49 @@ Policy (ROL-246):
 
 `.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
 
+### The static checks job
+
+The checks that read the tree and build nothing run as steps of one job,
+`static checks` (`static` in `quality.yml`): gitleaks over the working tree and
+the branch history, the session-url check over the PR's commits, migrations
+append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
+release handoff checker and its self-test, the board automation retry policy,
+and the helm chart's appVersion check, lint and three renders. Until #2025 each
+was a job of its own. They did 0-15 s of work apiece and then waited a median
+86-200 s for a runner, since every job a push starts draws on the same 20
+concurrent slots. The decision and its trade-offs are in
+[the CI runner budget ADR](../adr/2026-09-29-ci-runner-budget.md).
+
+The merge changed how a failure looks, not what can fail:
+
+- Every step runs under `!cancelled()`, so a typo and a taplo drift in the same
+  push fail as two steps, each named after the job it used to be. A step keeps
+  its old job's event guard: the branch-history gitleaks pass runs on pull
+  requests and merge-queue runs, the session-url commit check on pull requests
+  only.
+- A step that reads a tool the job installs (taplo, cargo-deny and cargo-machete
+  from `taiki-e/install-action`, uv, helm) is guarded on that install as well,
+  so a failed download shows up as a skipped check rather than as
+  `command not found` under the check's name.
+- The gitleaks steps run before any setup step, so the working-tree scan never
+  sees a tool unpacked into the workspace.
+- The last step, `report`, writes every step's outcome to the job summary and
+  emits one error annotation per failed step, titled with the former job's name
+  and carrying the command that reproduces it locally, usually the prek hook of
+  the same name (`prek run typos --all-files`). It also fails the job when a
+  step that must run on the event was skipped. A skipped step reads as a pass,
+  and that is how `ci-ok` once went green without reading a commit message
+  (#1562).
+- The job times out after 20 minutes. It does about 90 s of work, and a hung
+  step would otherwise hold every other check's verdict for GitHub's 360-minute
+  default.
+
+The report is the one place that knows which step must run on which event. A
+check added to the job therefore needs three things: its step, an `OUTCOME_*`
+line in the report's `env`, and a `row` call in the report's script. A step
+without a row runs unreported, and a row whose step id is misspelled reads an
+empty outcome, which the report counts as a failure.
+
 ### The rustdoc gate is the one CI check nothing local reproduces
 
 `cargo doc (warnings = errors)` is the gate that most often turns a
@@ -618,21 +661,24 @@ permission typo in the workflow still fails the check.
 
 ### Secret scanning
 
-The `gitleaks` job runs the gitleaks **CLI** from a digest-pinned container, not
-`gitleaks-action`. The action gates org-owned repositories behind a license key,
-and license secrets are invisible to both dependabot runs (a separate secret
-store) and fork PRs (no secrets at all), so every such PR failed the job and with
-it `ci-ok`. The CLI is free and unrestricted, so `quality.yml` now takes no
-secrets and behaves identically for forks, dependabot and direct pushes.
+The two gitleaks steps of the `static checks` job run the gitleaks **CLI** from
+a digest-pinned container, not `gitleaks-action`. The action gates org-owned
+repositories behind a license key, and license secrets are invisible to both
+dependabot runs (a separate secret store) and fork PRs (no secrets at all), so
+every such PR failed the check and with it `ci-ok`. The CLI is free and
+unrestricted, so `quality.yml` now takes no secrets and behaves identically for
+forks, dependabot and direct pushes.
 
 Two passes run with the shared `.github/config/gitleaks.toml` policy: `gitleaks
 dir` over the working tree (everything the commit ships) and, on PRs and
 merge-queue runs, `gitleaks git --log-opts base..head` over the branch history.
 That second pass catches a secret added and then removed inside the same PR; on
 a queue run the range is every commit the queue is about to write to `master`
-(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). The
-pinned digest is v8.30.1 — the version `prek.toml` already uses for the
-staged-content hook, so local and CI scans agree.
+(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). Both
+passes run before any setup step, so the working-tree scan sees the checkout and
+nothing a later step unpacked into it. The pinned digest is v8.30.1 — the
+version `prek.toml` already uses for the staged-content hook, so local and CI
+scans agree.
 
 Reproduce a CI run locally:
 
@@ -644,9 +690,10 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 
 ### Workflow security (zizmor)
 
-The `zizmor` job audits `.github/workflows/` and `.github/actions/` for workflow
-security smells — unpinned or impostor action refs, template injection into
-`run:`, over-broad `GITHUB_TOKEN` scopes, cache poisoning, dangerous triggers.
+The `zizmor` step of the `static checks` job audits `.github/workflows/` and
+`.github/actions/` for workflow security smells — unpinned or impostor action
+refs, template injection into `run:`, over-broad `GITHUB_TOKEN` scopes, cache
+poisoning, dangerous triggers.
 It is a **merge gate** (#1456): a finding fails `quality`, which fails `ci-ok`.
 
 It ran as informational (`continue-on-error: true`) until the baseline was
