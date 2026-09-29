@@ -9730,8 +9730,17 @@ async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
         landed,
         format!("{base}/auth-sessions?consent=completed&session={session_id}&server={server_id}")
     );
-    for secret in ["code-land", "access-land", "refresh-land", state.as_str()] {
-        assert!(!landed.contains(secret), "{secret} leaked into {landed}");
+    // names the kind of value, never the value, so a failure cannot print one
+    for (what, secret) in [
+        ("authorization code", "code-land"),
+        ("access token", "access-land"),
+        ("refresh token", "refresh-land"),
+        ("state", state.as_str()),
+    ] {
+        assert!(
+            !landed.contains(secret),
+            "the {what} leaked into the landing url"
+        );
     }
 
     // -- a replay, and a callback with no state at all ----------------------
