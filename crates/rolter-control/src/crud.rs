@@ -249,7 +249,13 @@ impl IntoResponse for ApiError {
                     Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
-                (status, err.to_string())
+                let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    tracing::error!(error = %err, "internal server error");
+                    "an internal server error occurred".to_string()
+                } else {
+                    err.to_string()
+                };
+                (status, message)
             }
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
@@ -5514,5 +5520,47 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod api_error_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn api_error_redacts_internal_store_errors_in_500_responses() {
+        let err = ApiError::Core(Error::Store(
+            "postgres connection failure: host postgres.internal:5432".to_string(),
+        ));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!body.contains("postgres"));
+        assert!(!body.contains("5432"));
+        assert!(body.contains("an internal server error occurred"));
+    }
+
+    #[tokio::test]
+    async fn api_error_preserves_not_found_and_config_messages() {
+        let not_found = ApiError::Core(Error::NotFound("resource 123".to_string()));
+        let response = not_found.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("not found: resource 123"));
+
+        let config_err = ApiError::Core(Error::Config("invalid slug".to_string()));
+        let response = config_err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("config error: invalid slug"));
     }
 }

@@ -30,3 +30,8 @@
 
 **Learning:** `AuthError::Internal(msg)` in `rolter-control` previously echoed `msg` (which carries raw database connection or query failure strings from Postgres/SQLx) directly into the HTTP 500 JSON response body message on auth routes (`/api/v1/auth/login`, `/api/v1/auth/me`, etc.).
 **Prevention:** Always log detailed internal error messages internally via `tracing::error!` and return a generic error message (such as `"an internal server error occurred"`) in HTTP 500 error response bodies to avoid leaking database internals.
+
+## 2026-10-10 - Redact Internal Store Errors in CRUD API 500 Responses
+
+**Learning:** `ApiError::into_response` in `crates/rolter-control/src/crud.rs` previously rendered `err.to_string()` directly into the JSON response body when `ApiError::Core(err)` mapped to `StatusCode::INTERNAL_SERVER_ERROR`. This exposed raw Postgres or I/O failure strings (such as database connection URLs or schema query errors) to clients across every CRUD API route in `rolter-control`.
+**Prevention:** Always log detailed internal errors via `tracing::error!` and return a sanitized, generic error message (e.g., `"an internal server error occurred"`) in HTTP 500 JSON response bodies.
