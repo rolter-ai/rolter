@@ -642,6 +642,8 @@ export const RequiringASecondFactorConfirmsFirst: Story = {
 
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     const dialog = await within(document.body).findByRole("dialog");
+    // the dialog animates in, so visibility is polled rather than read once (#2287)
+    await waitFor(() => expect(dialog).toBeVisible());
     await expect(
       within(dialog).getByText(/next password sign-in, before they get a session/i),
     ).toBeVisible();
@@ -692,7 +694,7 @@ export const AGraceWindowAnnouncesTheRequirement: Story = {
     const before = Date.now();
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     const dialog = await confirmation();
-    await expect(within(dialog).getByText(/It starts on/)).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText(/It starts on/)).toBeVisible());
     await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
 
     const body = await graceSave.expectSentBody<{ mfa_policy: string; mfa_enforce_after: string }>(
@@ -784,7 +786,7 @@ export const PullingAnAnnouncedWindowInConfirms: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
 
     const dialog = await confirmation();
-    await expect(within(dialog).getByText(/It starts on/)).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText(/It starts on/)).toBeVisible());
     // nothing is sent until the admin confirms the earlier date
     pulledIn.expectNotSent("PUT", "/auth-policy");
     await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
@@ -855,7 +857,7 @@ export const WithoutAKeyARequirementIsRefused: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
     const dialog = await confirmation();
     await userEvent.click(within(dialog).getByRole("button", { name: "Require it" }));
-    await expect(await within(dialog).findByText(/ROLTER_KEK/)).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText(/ROLTER_KEK/)).toBeVisible());
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
   },
 };

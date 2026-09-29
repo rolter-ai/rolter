@@ -736,7 +736,7 @@ export const AdminCannotWriteAModelLabel: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
     const panel = await within(document.body).findByRole("dialog");
-    await expect(await within(panel).findByText(/a price row exists/)).toBeVisible();
+    await waitFor(() => expect(within(panel).getByText(/a price row exists/)).toBeVisible());
     // `expectRefused` rather than a bare `toBeDisabled`, on both counts. The
     // sheet fires its own label query as it opens and the effective-permissions
     // answer is a request behind that again, so a one-shot assertion here is

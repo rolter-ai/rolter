@@ -791,7 +791,7 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
 
     const attribution = drawer.getByRole("region", { name: "Attribution" });
     // the key list answers after the drawer opens
-    await expect(await within(attribution).findByText("ci-runner")).toBeVisible();
+    await waitFor(() => expect(within(attribution).getByText("ci-runner")).toBeVisible());
     await expect(within(attribution).getByText("rk_live_ab12…")).toBeVisible();
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");

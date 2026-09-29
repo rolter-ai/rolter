@@ -114,8 +114,12 @@ export const OpensAnEventFromTheKeyboard: Story = {
     await userEvent.keyboard("{Enter}");
     const drawer = await canvas.findByRole("complementary", { name: "MCP call details" });
     await waitFor(() => expect(drawer).toHaveFocus());
-    await expect(await within(drawer).findByText("github → create_issue")).toBeVisible();
-    await expect(within(drawer).getByText("deadline exceeded")).toBeVisible();
+    // the drawer fades in, so a single visibility read can land on its first
+    // frame at opacity 0; poll it like any other state change (#2287)
+    await waitFor(() => {
+      expect(within(drawer).getByText("github → create_issue")).toBeVisible();
+      expect(within(drawer).getByText("deadline exceeded")).toBeVisible();
+    });
 
     // Escape closes it, and focus lands on this row's button again
     await userEvent.keyboard("{Escape}");
