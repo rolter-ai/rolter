@@ -169,7 +169,6 @@
       "analytics": "analytics",
       "requestLogs": "request logs",
       "routes": "routes",
-      "routeTargets": "this route's targets",
       "teams": "teams",
       "accessProfiles": "access profiles",
       "adaptiveSettings": "adaptive routing settings",
@@ -248,8 +247,6 @@
     },
     "sections": {
       "general": "General",
-      "routing": "Routing",
-      "routingInfo": "How the gateway spreads this model's traffic: the balancing strategy, and the provider targets it picks between.",
       "params": "Default parameters",
       "paramsInfo": "Server-side default values for inference parameters, and whether clients may override each one.",
       "caps": "Capabilities",
@@ -262,12 +259,20 @@
       "rbac": "Access & permissions"
     },
     "fields": {
-      "name": "Model name",
-      "nameInfo": "The public name clients send in the model field. It is the route's name, and every target serves it.",
-      "nameHint": "The name clients call. Each target can send a different model id upstream.",
-      "nameHintEdit": "Renaming isn't supported yet — delete and re-add to change the name.",
+      "provider": "Provider",
+      "providerInfo": "The upstream provider that serves this model. Sets auth, endpoint shape, and which parameters are valid.",
+      "providerConfig": "config",
+      "providerSelect": "select provider…",
       "modality": "Model type",
       "modalityInfo": "The modality this endpoint handles. Determines which request schema and playground surface apply.",
+      "upstream": "Upstream model name",
+      "upstreamInfo": "The exact model id the provider expects — this string is sent to the base URL. e.g. gpt-4o, claude-sonnet-4-20250514, Llama-3.1-8B-Instruct.",
+      "upstreamHint": "Sent verbatim to the provider — must match their API exactly.",
+      "upstreamHintEdit": "Renaming isn't supported yet — delete and re-add to change the name.",
+      "alias": "Rolter alias",
+      "aliasInfo": "Optional. The public name clients call this model by. Leave blank to reuse the upstream name. Use it to expose a stable, provider-agnostic name.",
+      "aliasPlaceholder": "same as upstream name",
+      "aliasHint": "The name clients send. Optional — defaults to the upstream name.",
       "baseUrl": "Base URL override",
       "baseUrlInfo": "Point this model at a custom endpoint (self-hosted, proxy, or region). Leave blank to use the provider's default base URL.",
       "baseUrlHint": "Optional. Overrides the provider endpoint for this model only.",
@@ -276,25 +281,6 @@
       "descriptionPlaceholder": "What is this model for? Any routing notes for the team…",
       "enabled": "Enabled",
       "enabledHint": "Off = kept in the catalog but excluded from routing and pickers."
-    },
-    "routing": {
-      "strategy": "Strategy",
-      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
-      "strategyFixed": "The strategy is set when a model is created and cannot be changed here yet."
-    },
-    "targets": {
-      "title": "Targets",
-      "info": "A target is a provider and the model id sent to it. Each request goes to one target, picked by the strategy.",
-      "add": "Add target",
-      "noProviders": "No providers yet. Add one under Model Providers first.",
-      "provider": "Provider",
-      "upstream": "Upstream model",
-      "weight": "Weight",
-      "providerAria": "Target {{n}} provider",
-      "upstreamAria": "Target {{n}} upstream model",
-      "weightAria": "Target {{n}} weight",
-      "removeAria": "Remove target {{n}}",
-      "upstreamPlaceholder": "same as model name"
     },
     "lock": {
       "lockAll": "Lock all",
@@ -341,6 +327,8 @@
       "concurrency": "Max concurrency",
       "timeout": "Timeout (ms)",
       "retries": "Max retries",
+      "weight": "Routing weight",
+      "weightInfo": "Relative share of traffic when this model is one of several targets for the same alias.",
       "context": "Context window",
       "maxOutput": "Max output tokens",
       "insecureTls": "Allow insecure TLS",
@@ -368,26 +356,13 @@
       "users": "Restrict to specific users"
     },
     "errors": {
-      "name": "Required. Enter the name clients will send in the model field (e.g. gpt-4o).",
-      "nameTaken": "A model named “{{name}}” already exists. Give this one a distinct name.",
-      "targets": "Add at least one target. A model with none answers every request with an error.",
-      "weight": "Weights are whole numbers, 1 or more.",
+      "provider": "Required. Pick the upstream provider that actually serves this model.",
+      "upstream": "Required. Enter the model id exactly as the provider's API expects it — this is the string sent to the base URL (e.g. gpt-4o, claude-sonnet-4-20250514).",
+      "alias": "A model named “{{name}}” already exists. Give this one a distinct Rolter alias.",
       "baseUrl": "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value."
     }
-  },
-  "routeTargets": {
-    "count_one": "{{count}} target",
-    "count_other": "{{count}} targets",
-    "listLabel": "Targets of {{model}}",
-    "weightsIgnored": "<0>{{strategy}}</0> does not read weights, so they do not split traffic on this route. Only weighted, pipeline and adaptive routes use them.",
-    "weight": "weight {{weight}}",
-    "share": "{{share}} of traffic",
-    "uptime": "{{uptime}} uptime",
-    "belowSla": "{{uptime}} uptime, below SLA",
-    "noHealth": "no health data",
-    "healthWindow": "Uptime over the last 7 days, against a {{sla}} SLA."
   },
   "nav": {
     "playground": "Playground",
@@ -404,7 +379,7 @@
     "budgets": "Budgets & Limits",
     "routing-rules": "Routing Rules",
     "complexity-router": "Complexity Router",
-    "circuit-breaker": "Provider Health",
+    "circuit-breaker": "Circuit Breaker",
     "pricing-overrides": "Pricing Overrides",
     "model-settings": "Model Settings",
     "mcp": "MCP Gateway",
@@ -547,23 +522,11 @@
       "columns": {
         "model": "Model",
         "strategy": "Strategy",
-        "targets": "Targets",
         "origin": "Origin",
-        "price": "In · out /Mtok"
+        "price": "In · out /Mtok",
+        "weight": "Weight"
       },
       "lockedHint": "Parameters locked — client overrides for the locked params are ignored; server-side values are enforced. Edit the model to unlock.",
-      "strategyCaveat": {
-        "needsTelemetry": "needs telemetry",
-        "deploymentWide": "set deployment-wide",
-        "other": "has a caveat"
-      },
-      "targets": {
-        "toggleAria": "{{targets}} for {{model}}",
-        "none": "no targets",
-        "failing_one": "{{count}} below SLA",
-        "failing_other": "{{count}} below SLA",
-        "healthy": "every target within SLA"
-      },
       "readOnlyPill": "read-only",
       "view": "View",
       "edit": "Edit",
@@ -692,6 +655,14 @@
       "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
       "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
       "noTargets": "No targets yet.",
+      "addSubtitle": "Public model name resolved to upstream targets by the chosen strategy.",
+      "form": {
+        "modelName": "Model name",
+        "strategy": "Strategy",
+        "firstTarget": "First target",
+        "noTarget": "none (attach later)",
+        "weight": "Weight"
+      },
       "disabledBadge": "disabled"
     },
     "pricing": {
@@ -1085,7 +1056,6 @@
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
       "checking": "Checking your invitation…",
       "title": "Join {{org}}",
-      "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",
       "password": "Password (at least 8 characters)",
       "confirm": "Confirm password",
@@ -1613,15 +1583,7 @@
       "toggleSystem": "Inspect system messages",
       "toggleSystemHint": "Off by default because operator-authored instructions are trusted.",
       "publishing": "Publishing…",
-      "publish": "Publish rule",
-      "streaming": {
-        "cardReject": "Refuses streamed requests on its routes while enforced · <0>streaming_post_call = \"reject\"</0>",
-        "cardPassthrough": "Streamed responses skip this rule · <0>streaming_post_call = \"passthrough\"</0>",
-        "cardUnknown": "Effect on streamed requests unknown · <0>streaming_post_call</0> could not be read",
-        "noteReject": "While this rule is enforced, streamed requests on the routes it covers are refused with a 400, because this deployment sets <0>streaming_post_call = \"reject\"</0>. Chat clients and coding agents usually stream.",
-        "notePassthrough": "Streamed responses skip this rule, because this deployment sets <0>streaming_post_call = \"passthrough\"</0>. Only non-streamed responses are checked.",
-        "noteUnknown": "<0>streaming_post_call</0> could not be read, so what this rule does to streamed requests is unknown. Under <0>reject</0>, they are refused on the routes it covers; under <0>passthrough</0>, they skip the rule."
-      }
+      "publish": "Publish rule"
     },
     "guardrailProviders": {
       "confirm": {
@@ -1637,25 +1599,10 @@
       "activeBanner": "{{name}} owns external enforcement",
       "activeFailClosed": "Requests stop when the service cannot decide.",
       "activeFailOpen": "Requests continue when the service cannot decide.",
-      "inertBanner": "{{name}} is not enforcing",
-      "inertBody": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it. Switch it to Before upstream, or activate a provider that runs before upstream.",
-      "fileBanner": "The config-file webhook owns external enforcement",
-      "fileInertBanner": "The config-file webhook is not enforcing",
-      "fileInertBody": "It sets stage = \"post_call\", which the gateway does not run yet, so no request is sent to it. Set stage = \"pre_call\" in the config file to enforce it.",
-      "fileNote": "Registry providers are ignored while the config-file webhook is enabled.",
-      "overriddenNote": "{{name}} is active here but ignored while the config-file webhook is enabled.",
-      "offBanner": "No external guardrail is enforcing",
-      "offBody": "No provider is active and the config file enables no webhook, so no request is sent to a guardrail service.",
-      "unknownBanner": "External enforcement status unknown",
-      "unknownBody": "The control plane's effective configuration did not confirm which webhook is in force, so this screen cannot say what the gateway enforces.",
       "emptyTitle": "No guardrail providers",
       "emptyBody": "Register a self-hosted HTTP guardrail service. Credentials remain environment references, never stored secret values.",
       "emptyAction": "Register first provider",
       "detailLine": "{{timeout}} ms timeout · {{retries}} retries · {{kib}} KiB cap",
-      "postCallCardNote": "Runs before the response, a stage the gateway does not run yet, so it checks nothing.",
-      "statusInert": "not enforcing",
-      "statusOverridden": "overridden by config file",
-      "statusUnknown": "status unknown",
       "editProvider": "Edit provider",
       "dialogEditTitle": "Edit guardrail provider",
       "dialogAddTitle": "Register guardrail provider",
@@ -1666,8 +1613,6 @@
       "fieldStage": "Stage",
       "stagePre": "Before upstream",
       "stagePost": "Before response",
-      "stagePostUnsupported": "Not enforced yet",
-      "postCallDialogNote": "The gateway does not run the Before response stage yet, so this provider checks nothing, and activating it pauses the provider that enforces now. Choose Before upstream to enforce it.",
       "fieldFailure": "Failure policy",
       "failClosed": "Fail closed",
       "failOpen": "Fail open",
@@ -1777,14 +1722,12 @@
         "allowed": "allowed",
         "granted": "granted by this custom role",
         "superadmin": "superadmin only",
-        "denied": "not allowed",
+        "denied": "denied",
         "na": "not applicable"
       },
-      "cellLabel": "{{action}}: {{state}}",
-      "legendAllowed": "Allowed",
+      "cellTitle": "{{action}} — {{state}}",
       "legendSuperadmin": "Superadmin only",
       "legendGranted": "Granted by a custom role",
-      "legendDenied": "Not allowed",
       "legendNa": "No such action",
       "tabs": {
         "matrix": "Permission matrix",
@@ -2050,6 +1993,7 @@
       "unreadPolicies_other": "{{count}} routes' policies could not be read"
     },
     "health": {
+      "closed": "closed",
       "emptyAction": "Open the playground",
       "emptyBody": "Uptime, MTTR and error-budget burn are computed from real traffic. Send a request through the gateway and the first rollup lands here.",
       "emptyTitle": "No health events recorded yet",
@@ -2062,12 +2006,10 @@
       "incidents": "Incidents",
       "mttr": "MTTR",
       "noEvents": "No events in window.",
-      "slaAtRisk": "SLA at risk",
-      "slaBreaching": "below SLA",
-      "slaWithin": "within SLA",
-      "subtitle": "Last 7 days against a {{sla}} SLA. SLA at risk means the 7 days still meet it, but the last two hours failed more often than it allows.",
+      "subtitle": "Circuit breakers, uptime and error-budget burn per provider — last 7 days, SLA target {{sla}}",
       "targets_one": "{{count}} target",
       "targets_other": "{{count}} targets",
+      "tripped": "tripped",
       "uptimeMeta": "uptime · {{events}} events",
       "bucketTitle": "{{bucket}}: {{ok}} ok, {{errors}} error, {{timeouts}} timeout"
     },
@@ -2181,29 +2123,7 @@
       "requests_one": "{{count}} request",
       "requests_other": "{{count}} requests",
       "pageShort": "p{{page}}",
-      "detail": {
-        "requestId": "Request ID",
-        "traceId": "Trace ID",
-        "copyRequestId": "Copy request ID",
-        "copyTraceId": "Copy trace ID",
-        "traceNotSent": "Not sent by the caller",
-        "noResponse": "No response",
-        "routing": "Routing",
-        "providerTarget": "Provider → target",
-        "providerToTarget": "{{provider}} → {{target}}",
-        "variant": "Variant",
-        "responseCache": "Response cache",
-        "cacheHit": "Hit",
-        "cacheMiss": "Miss",
-        "stream": "Stream",
-        "streamed": "Streamed",
-        "notStreamed": "Single response",
-        "ttft": "Time to first token",
-        "usage": "Usage and cost",
-        "promptCache": "Prompt cache",
-        "promptCacheTokens": "{{read}} read · {{write}} written",
-        "attribution": "Attribution"
-      },
+      "requestFallback": "request",
       "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "feed": {
         "loading": "Loading requests",
@@ -2936,8 +2856,8 @@
       "subtitle": "Route by prompt complexity tier to balance cost and quality."
     },
     "circuit-breaker": {
-      "title": "Provider Health",
-      "subtitle": "Uptime and error-budget burn per provider and target, measured against the SLA."
+      "title": "Circuit Breaker",
+      "subtitle": "Automatic failover when a primary endpoint degrades."
     },
     "pricing-overrides": {
       "title": "Pricing Overrides",

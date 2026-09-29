@@ -21,7 +21,6 @@ import {
   type NavItem,
 } from "@/components/ui/nav-sidebar";
 import { readRecentScreens, rememberScreen } from "@/lib/command-palette";
-import { useDocumentTitle } from "@/lib/document-title";
 import { chordText, dispatchShortcut, shortcutChord, type ShortcutHandlers } from "@/lib/shortcuts";
 import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/lib/nav";
 import { logout, ROLES, type MeMembership } from "@/lib/api";
@@ -246,9 +245,6 @@ function roleLabel(
 function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }) {
   const { t } = useTranslation();
   const [title, subtitle] = useScreenMeta(screen);
-  // the tab carries the screen's name, the refused state included: the header
-  // still names the screen there, so the tab says the same thing (#2002)
-  useDocumentTitle(title);
   const can = useCan();
   // a leaf the rail hides is still reachable by URL — a bookmark, a shared
   // link, the browser's history. it renders the refusal in the shell rather

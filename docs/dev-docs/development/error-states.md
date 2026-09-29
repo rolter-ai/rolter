@@ -161,17 +161,6 @@ Keep the four states apart and let each one say what it is:
   over contents nobody has seen;
 - **configured** and **unconfigured** — the two real answers.
 
-Routing Rules made the same mistake with its target reads (#2133):
-`targetQueries[i]?.data ?? []` drew a route whose targets were still loading, or
-had failed, as "No targets yet." and "0 targets". It resolves the failure
-inside the row, not in a group. The route's name, strategy and labels are
-known there and only its targets are not, so the card stays in the grid and
-holds a skeleton, or its own `LoadError` with a retry for that one read, where
-the targets would be. Its target count is left out until the read answers. The
-rule that matters is the same on both screens: the empty copy and the zero
-count wait for an answer. When route editing lands (#2134), a card whose
-targets failed must not open an editor seeded from nothing.
-
 Two consequences fall out of this. A count in the screen's summary counts only
 the rows that resolved, because a denominator that includes the unread ones
 states them as empty. And `useScreenReady` / `useErrorState` follow the detail

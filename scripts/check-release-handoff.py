@@ -11,13 +11,7 @@ accident because neither has a test behind it:
     release-plz.yml  --workflow_dispatch-->  release.yml  --> wheels/pypi/ghcr
     release-plz.yml  --workflow_dispatch-->  ci.yml       --> ci-ok on the release pr
 
-The second hop fires only while the release pr carries the release:ready
-label (#2025), so the label event gets a dispatch of its own, and both must
-match the same label name:
-
-    release-pr-ready.yml  --workflow_dispatch-->  ci.yml  --> ci-ok on the release pr
-
-The pipeline publishes to crates.io only behind a gate that is just as easy to cut:
+and it publishes to crates.io only behind a gate that is just as easy to cut:
 
     release-gate  --scripts/wait-for-ci-gate.sh-->  ci-ok of this sha's ci.yml push run
     release-plz-release  runs only when release-gate reports it verified
@@ -65,9 +59,8 @@ ROOT = Path(__file__).resolve().parent.parent
 PLZ = ".github/workflows/release-plz.yml"
 REL = ".github/workflows/release.yml"
 CI = ".github/workflows/ci.yml"
-READY = ".github/workflows/release-pr-ready.yml"
 WAIT = "scripts/wait-for-ci-gate.sh"
-FILES = (PLZ, REL, CI, READY)
+FILES = (PLZ, REL, CI)
 SCRIPTS = (WAIT,)
 
 Workflow = dict
@@ -449,84 +442,6 @@ def pr_gate_after_release_pr(wf: Workflow) -> bool:
 def pr_gate_confirms_run(wf: Workflow) -> bool:
     return "actions/workflows/ci.yml/runs?event=workflow_dispatch" in run_text(
         job(wf, "dispatch-release-pr-ci")
-    )
-
-
-# the release pr is gated only while it carries the release:ready label (#2025):
-# release-plz.yml skips the dispatch without it, and release-pr-ready.yml
-# dispatches when a person adds it. the two must agree on the name, or a
-# labelled pr is gated on one path and silently skipped on the other
-READY_LABEL = "release:ready"
-LABEL_MATCH = re.compile(r'\.name\s*==\s*"' + re.escape(READY_LABEL) + '"')
-LABEL_EVENT = {
-    f"github.event.label.name=='{READY_LABEL}'",
-    f"'{READY_LABEL}'==github.event.label.name",
-}
-
-
-@check(PLZ, f"the release-pr gate must dispatch only while the release pr carries {READY_LABEL}")
-def pr_gate_waits_for_label(wf: Workflow) -> bool:
-    return bool(LABEL_MATCH.search(run_text(job(wf, "dispatch-release-pr-ci"))))
-
-
-@check(
-    READY,
-    "no 'dispatch-on-label' job in release-pr-ready.yml, so labelling the release pr dispatches "
-    "nothing",
-)
-def ready_job(wf: Workflow) -> bool:
-    return job(wf, "dispatch-on-label") is not None
-
-
-def trigger_types(wf: Workflow, event: str) -> set:
-    # `types: labeled` and `types: [labeled]` are the same to actions
-    config = triggers(wf).get(event)
-    value = config.get("types") if isinstance(config, dict) else None
-    return {value} if isinstance(value, str) else set(value or [])
-
-
-def runs_on_label(cond: Any) -> bool:
-    return any(term.strip("()") in LABEL_EVENT for term in expression(cond).split("&&"))
-
-
-@check(
-    READY,
-    f"release-pr-ready.yml must run on pull_request 'labeled' and only when the label is "
-    f"{READY_LABEL}",
-)
-def ready_on_label(wf: Workflow) -> bool:
-    j = job(wf, "dispatch-on-label")
-    if j is None or widened(j.get("if")):
-        return False
-    return "labeled" in trigger_types(wf, "pull_request") and runs_on_label(j.get("if"))
-
-
-@check(READY, "the label workflow no longer dispatches ci.yml")
-def ready_dispatches_ci(wf: Workflow) -> bool:
-    return bool(re.search(r"\bgh workflow run ci\.yml\b", run_text(job(wf, "dispatch-on-label"))))
-
-
-@check(READY, "the label workflow needs 'actions: write' to dispatch")
-def ready_can_dispatch(wf: Workflow) -> bool:
-    return can_dispatch(wf, "dispatch-on-label")
-
-
-@check(READY, "the label workflow must confirm a ci run actually started")
-def ready_confirms_run(wf: Workflow) -> bool:
-    return "actions/workflows/ci.yml/runs?event=workflow_dispatch" in run_text(
-        job(wf, "dispatch-on-label")
-    )
-
-
-# a pull_request run from a branch of this repository gets the write token the
-# job asks for, so nothing in this workflow may check out or run code from the
-# pull request. no action at all is the rule that is simple to hold
-@check(READY, "release-pr-ready.yml holds actions: write, so it must use no action or checkout")
-def ready_runs_no_pr_code(wf: Workflow) -> bool:
-    jobs = [j for j in (wf.get("jobs") or {}).values() if isinstance(j, dict)]
-    return bool(jobs) and not any(
-        "uses" in j or any(isinstance(s, dict) and "uses" in s for s in j.get("steps") or [])
-        for j in jobs
     )
 
 
@@ -1201,114 +1116,6 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         "ci confirmation query commented out",
         comment_out(PLZ, "dispatch-release-pr-ci", "actions/workflows/ci.yml/runs?event="),
     ),
-    (
-        "pr_gate_waits_for_label",
-        "label check dropped from the release-pr gate",
-        replace_in_job(PLZ, "dispatch-release-pr-ci", '.name == "release:ready"', "true"),
-    ),
-    (
-        "pr_gate_waits_for_label",
-        "label check commented out",
-        comment_out(PLZ, "dispatch-release-pr-ci", '.name == "release:ready"'),
-    ),
-    (
-        "pr_gate_waits_for_label",
-        "label renamed in release-plz.yml only",
-        replace_in_job(PLZ, "dispatch-release-pr-ci", "release:ready", "release-ready"),
-    ),
-    ("ready_job", "label workflow job deleted", drop_job(READY, "dispatch-on-label")),
-    (
-        "ready_job",
-        "label workflow job disabled with if: false",
-        disable(READY, "dispatch-on-label"),
-    ),
-    (
-        "ready_on_label",
-        "labeled dropped from the trigger types",
-        lambda t: t[READY]["on"]["pull_request"].__setitem__("types", ["opened", "synchronize"]),
-    ),
-    (
-        "ready_on_label",
-        "trigger moved to pull_request_target",
-        lambda t: t[READY].__setitem__("on", {"pull_request_target": {"types": ["labeled"]}}),
-    ),
-    (
-        "ready_on_label",
-        "label condition dropped",
-        edit_job(READY, "dispatch-on-label", lambda j: j.pop("if")),
-    ),
-    (
-        "ready_on_label",
-        "label condition or-ed with another",
-        edit_job(
-            READY,
-            "dispatch-on-label",
-            set_key(
-                "if",
-                "github.event.label.name == 'release:ready' || github.event.label.name == 'x'",
-            ),
-        ),
-    ),
-    (
-        "ready_on_label",
-        "label renamed in release-pr-ready.yml only",
-        edit_job(
-            READY,
-            "dispatch-on-label",
-            lambda j: j.__setitem__("if", j["if"].replace("release:ready", "release-ready")),
-        ),
-    ),
-    (
-        "ready_dispatches_ci",
-        "ci dispatch removed from the label workflow",
-        replace_in_job(READY, "dispatch-on-label", "gh workflow run ci.yml", "true"),
-    ),
-    (
-        "ready_dispatches_ci",
-        "ci dispatch commented out in the label workflow",
-        comment_out(READY, "dispatch-on-label", "gh workflow run ci.yml"),
-    ),
-    (
-        "ready_can_dispatch",
-        "actions: write dropped from the label workflow",
-        edit_job(READY, "dispatch-on-label", set_key("permissions", {"actions": "read"})),
-    ),
-    (
-        "ready_can_dispatch",
-        "label workflow job block dropped, workflow default is none",
-        edit_job(READY, "dispatch-on-label", lambda j: j.pop("permissions")),
-    ),
-    (
-        "ready_confirms_run",
-        "label workflow confirmation query removed",
-        replace_in_job(
-            READY,
-            "dispatch-on-label",
-            "actions/workflows/ci.yml/runs?event=workflow_dispatch",
-            "actions/runs?event=workflow_dispatch",
-        ),
-    ),
-    (
-        "ready_confirms_run",
-        "label workflow confirmation commented out",
-        comment_out(READY, "dispatch-on-label", "actions/workflows/ci.yml/runs?event="),
-    ),
-    (
-        "ready_runs_no_pr_code",
-        "the label workflow checks out the pull request",
-        edit_job(
-            READY,
-            "dispatch-on-label",
-            lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v7"}),
-        ),
-    ),
-    (
-        "ready_runs_no_pr_code",
-        "a second job in the label workflow runs an action",
-        lambda t: jobs_of(t, READY).__setitem__(
-            "lint", {"runs-on": "ubuntu-latest", "steps": [{"uses": "actions/setup-node@v5"}]}
-        ),
-    ),
     ("ci_dispatchable", "ci.yml workflow_dispatch removed", drop_trigger(CI, "workflow_dispatch")),
     (
         "publish_gated",
@@ -1767,24 +1574,6 @@ BENIGN: list[tuple[str, Callable[[Tree], None]]] = [
         "the wait script run by path",
         replace_in_job(
             PLZ, "release-gate", "bash scripts/wait-for-ci-gate.sh", "./scripts/wait-for-ci-gate.sh"
-        ),
-    ),
-    (
-        "the label condition reversed and wrapped in an expression",
-        edit_job(
-            READY,
-            "dispatch-on-label",
-            set_key(
-                "if",
-                "${{ ('release:ready' == github.event.label.name) && "
-                "startsWith(github.event.pull_request.head.ref, 'release-plz-') }}",
-            ),
-        ),
-    ),
-    (
-        "the label trigger types written as a string, beside another event",
-        lambda t: t[READY].__setitem__(
-            "on", {"pull_request": {"types": "labeled"}, "workflow_dispatch": None}
         ),
     ),
     (

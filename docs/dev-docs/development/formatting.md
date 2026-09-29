@@ -20,9 +20,8 @@ just fmt-docs-check     # check only, the way CI does
 
 Both call `scripts/format-docs.sh`, which is also what the
 `prettier (markdown / json / yaml outside ui/)` prek hook and the
-`docs formatting (prettier)` step in `quality.yml`'s `ui, storybook, docs` job
-run. Never invoke prettier here with ad-hoc flags: the hook, the CI step and a
-local run all read the same
+`docs formatting (prettier)` job in `quality.yml` run. Never invoke prettier
+here with ad-hoc flags: the hook, the CI job and a local run all read the same
 two config files, and a flag that only one of them passes turns into a diff
 nobody can reproduce.
 
@@ -127,7 +126,7 @@ contents, list nesting and every MDX element name and attribute are identical.
 That is the check that matters for the two navs — `docs/dev-docs/SUMMARY.md` for
 mdBook and `docs/user-docs/docs.json` for Mintlify — since a reflow that moved a
 link target would break the book build or the docs site silently. The
-`llms.txt tracks the docs nav` check was confirmed green on the reformatted tree
+`llms.txt tracks the docs nav` job was confirmed green on the reformatted tree
 for the same reason.
 
 [#1695]: https://github.com/rolter-ai/rolter/issues/1695

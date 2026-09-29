@@ -27,7 +27,7 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { EffectiveModelDto, GatewayConfigDto, LabelRow, RouteRow, UptimeRow } from "@/lib/api";
+import type { EffectiveModelDto, LabelRow, RouteRow, RouteTargetRow } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const MODELS: EffectiveModelDto[] = [
@@ -47,42 +47,20 @@ const FANOUT_ROUTE = {
   param_policy: {},
 } as RouteRow;
 
+const FANOUT_TARGETS = [
+  { id: "t1", route_id: "route-1", provider_id: "prov-a", weight: 3, created_at: "" },
+  { id: "t2", route_id: "route-1", provider_id: "prov-b", weight: 1, created_at: "" },
+] as RouteTargetRow[];
+
 const FANOUT_PROVIDERS = [
   { id: "prov-a", name: "sim-a" },
   { id: "prov-b", name: "sim-b" },
 ];
 
-/**
- * The effective config: where every route's traffic goes, config-file and
- * database routes alike, with providers named rather than referenced by id.
- * The catalog reads each row's targets from here (#1979).
- */
-const CONFIG = {
-  providers: [],
-  virtual_keys: [],
-  routes: [
-    {
-      model: "gpt-4o",
-      strategy: "weighted",
-      targets: [
-        { provider: "sim-a", model: null, weight: 3 },
-        { provider: "sim-b", model: null, weight: 1 },
-      ],
-    },
-    {
-      model: "claude-sonnet",
-      strategy: "least_load",
-      targets: [{ provider: "anthropic", model: "claude-sonnet-4-20250514", weight: 1 }],
-    },
-  ],
-} satisfies GatewayConfigDto;
-
 const loaded = routes([
   // longest first: `/models/prices` would otherwise be answered by `/models`
   ["/model-prices", () => []],
   ["/currency", () => ({ base: "USD", rates: {} })],
-  ["/health/uptime", () => ({ data: [] })],
-  ["/config", () => CONFIG],
   ["/models", () => MODELS],
   ["/providers", () => []],
   ["/routes", () => []],
@@ -109,17 +87,6 @@ export const Loaded: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await expect(canvas.getByText("claude-sonnet")).toBeVisible();
     await expectListTable(canvasElement, "Model Catalog");
-    // a config-file route names its provider and its targets, which it used to
-    // leave as dashes (#1979)
-    await waitFor(() => expect(canvas.getByText("anthropic")).toBeVisible());
-    await expect(canvas.getByRole("button", { name: "1 target for claude-sonnet" })).toBeVisible();
-    // the strategy column sorts, like the columns beside it
-    const strategy = canvas.getByRole("columnheader", { name: "Strategy" });
-    await userEvent.click(within(strategy).getByRole("button"));
-    await expect(strategy).toHaveAttribute("aria-sort", "ascending");
-    const rows = canvas.getAllByRole("row").slice(1);
-    await expect(rows[0]).toHaveTextContent("claude-sonnet");
-    await expect(rows[1]).toHaveTextContent("gpt-4o");
   },
 };
 
@@ -193,8 +160,8 @@ export const MultiProviderRoute: Story = {
       fetchStub={routes([
         ["/model-prices", () => []],
         ["/currency", () => ({ base: "USD", rates: {} })],
-        ["/health/uptime", () => ({ data: [] })],
-        ["/config", () => CONFIG],
+        // longest first: `/routes/:id/targets` would otherwise match `/routes`
+        ["/targets", () => FANOUT_TARGETS],
         ["/models", () => [MODELS[0]]],
         ["/providers", () => FANOUT_PROVIDERS],
         ["/routes", () => [FANOUT_ROUTE]],
@@ -211,260 +178,12 @@ export const MultiProviderRoute: Story = {
   },
 };
 
-// ------------------------------------------------ strategy and targets (#1979)
-
-const FLEET_MODEL: EffectiveModelDto = {
-  model: "llama-70b",
-  strategy: "cache_aware",
-  targets: 3,
-  source: "db",
-};
-
-const FLEET_CONFIG = {
-  providers: [],
-  virtual_keys: [],
-  routes: [
-    {
-      model: "llama-70b",
-      strategy: "cache_aware",
-      targets: [
-        { provider: "vllm-a", model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider: "vllm-b", model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider: "vllm-c", model: "meta-llama/Llama-3.1-70B", weight: 2 },
-      ],
-    },
-  ],
-} satisfies GatewayConfigDto;
-
-const uptimeRow = (patch: Partial<UptimeRow>): UptimeRow => ({
-  provider: "vllm-a",
-  target_id: "meta-llama/Llama-3.1-70B",
-  grain: "target",
-  sources: ["passive"],
-  events: 2000,
-  ok: 1999,
-  errors: 1,
-  timeouts: 0,
-  uptime: 0.9995,
-  failure_rate: 0.0005,
-  error_budget_burn: 0.05,
-  sla_breached: 0,
-  last_event: "2026-09-29T08:00:00Z",
-  ...patch,
-});
-
-// one replica healthy, one under its SLA, and one nothing has observed yet
-const FLEET_UPTIME: UptimeRow[] = [
-  uptimeRow({}),
-  uptimeRow({ provider: "vllm-b", ok: 1940, errors: 60, uptime: 0.97, sla_breached: 1 }),
-];
-
-/**
- * A `cache_aware` route over three vLLM replicas (#1979).
- *
- * The strategy is the identifier an operator writes in `rolter.toml`, in mono
- * and in its own case. The targets cell counts the replicas and names the one
- * below its SLA; the weights open on demand, one line per target, with health
- * where the rollup has it. `cache_aware` never reads weights, so the list says
- * so and states no traffic split.
- */
-export const CacheAwareMultiTargetRoute: Story = {
-  render: () => (
-    <Harness
-      fetchStub={routes([
-        ["/model-prices", () => []],
-        ["/currency", () => ({ base: "USD", rates: {} })],
-        ["/health/uptime", () => ({ data: FLEET_UPTIME })],
-        ["/config", () => FLEET_CONFIG],
-        ["/models", () => [FLEET_MODEL]],
-        ["/providers", () => []],
-        ["/routes", () => []],
-      ])}
-    >
-      <Models />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const strategy = await canvas.findByText("cache_aware");
-    await expect(strategy).toHaveTextContent(/^cache_aware$/);
-    // verbatim: not the uppercase pill that read `CACHE_AWARE`
-    await expect(getComputedStyle(strategy).textTransform).toBe("none");
-    await expect(strategy.className).toContain("font-mono");
-
-    const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
-    // the weight column is gone: the first target's weight stood in for three
-    await expect(canvas.queryByRole("columnheader", { name: "Weight" })).toBeNull();
-
-    await userEvent.click(toggle);
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
-    // the disclosure points at the region it opened
-    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-    await expect(region).toContainElement(list);
-    const lines = within(list).getAllByRole("listitem");
-    await expect(lines).toHaveLength(3);
-    await expect(lines[0]).toHaveTextContent(/vllm-a.*Llama-3\.1-70B.*weight 1.*99\.95% uptime/);
-    await expect(lines[1]).toHaveTextContent(/vllm-b.*97\.00% uptime, below SLA/);
-    await expect(lines[2]).toHaveTextContent(/vllm-c.*weight 2.*no health data/);
-    await expect(canvas.getByText(/does not read weights/)).toHaveTextContent(/^cache_aware/);
-    await expect(canvas.queryByText(/of traffic/)).toBeNull();
-    // the opened row is a row of the table, with one cell across it
-    await expectListTable(canvasElement, "Model Catalog");
-
-    await userEvent.click(toggle);
-    await waitFor(() => expect(canvas.queryByRole("list", { name: /Targets of/ })).toBeNull());
-  },
-};
-
-/**
- * A weighted route states the split its weights make. Without the health
- * rollup — no ClickHouse here — the targets carry no health at all rather than
- * a column of "no data".
- */
-export const WeightedRouteSplitsByWeight: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async (input) => {
-        const url = String(input);
-        if (url.includes("/health/uptime")) {
-          return json({ error: { message: "analytics store not configured" } }, 503);
-        }
-        return oneRoutedModel(input);
-      })}
-    >
-      <Models />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "2 targets for gpt-4o" }));
-    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
-    const lines = list.getAllByRole("listitem");
-    await expect(lines[0]).toHaveTextContent(/sim-a.*weight 3.*75% of traffic/);
-    await expect(lines[1]).toHaveTextContent(/sim-b.*weight 1.*25% of traffic/);
-    await expect(canvas.queryByText(/uptime|no health data|below SLA/)).toBeNull();
-  },
-};
-
-/**
- * A strategy with a caveat carries it in the row: `precise_cache_aware`
- * quietly falls back to least-load without a telemetry source. This one is
- * shipped in `rolter.toml`, and its targets come from there too.
- */
-export const ConfigRouteCarriesItsCaveat: Story = {
-  render: () => (
-    <Harness
-      fetchStub={routes([
-        ["/model-prices", () => []],
-        // the sheet this story opens reads the deployment's currency table
-        ["/currency", () => ({ settlement: "USD", codes: ["USD"] })],
-        ["/health/uptime", () => ({ data: [] })],
-        [
-          "/config",
-          () => ({
-            ...FLEET_CONFIG,
-            routes: [{ ...FLEET_CONFIG.routes[0], strategy: "precise_cache_aware" }],
-          }),
-        ],
-        ["/models", () => [{ ...FLEET_MODEL, strategy: "precise_cache_aware", source: "config" }]],
-        ["/providers", () => []],
-        ["/routes", () => []],
-      ])}
-    >
-      <Models />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    // written in the row, where the table's scroll frame cannot clip it
-    const caveat = await canvas.findByText("needs telemetry");
-    await expect(caveat).toBeVisible();
-    await expect(caveat).toHaveAttribute(
-      "title",
-      expect.stringMatching(/falls back to least-load/),
-    );
-    // the providers arrive with the effective config, a request after the row
-    await expect(await canvas.findByTitle("vllm-a, vllm-b, vllm-c")).toHaveTextContent(
-      "vllm-a +2 more",
-    );
-    // and the whole sentence opens with the targets
-    await userEvent.click(canvas.getByRole("button", { name: "3 targets for llama-70b" }));
-    await expect(await canvas.findByRole("note")).toHaveTextContent(/falls back to least-load/);
-
-    // the read-only sheet lists the same targets instead of a blank draft
-    await userEvent.click(canvas.getByRole("button", { name: "View llama-70b" }));
-    const dialog = within(await within(document.body).findByRole("dialog"));
-    const lines = await within(
-      dialog.getByRole("list", { name: "Targets of llama-70b" }),
-    ).findAllByRole("listitem");
-    await expect(lines).toHaveLength(3);
-    await expect(dialog.getByLabelText("Strategy")).toHaveValue("precise_cache_aware");
-  },
-};
-
-/**
- * Until the effective config answers, a row knows its target count from the
- * catalog and no more, so the count is plain text with nothing to open.
- */
-export const TargetsBeforeTheConfigAnswers: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async (input) => {
-        const url = String(input);
-        if (url.includes("/config")) return new Promise<Response>(() => {});
-        if (url.includes("/models")) return json([FLEET_MODEL]);
-        if (url.includes("/currency")) return json({ base: "USD", rates: {} });
-        if (url.includes("/health/uptime")) return json({ data: [] });
-        return json([]);
-      })}
-    >
-      <Models />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("3 targets")).toBeVisible());
-    await expect(canvas.queryByRole("button", { name: /targets for/ })).toBeNull();
-  },
-};
-
-/** A route with no target has nowhere to send a request, and the row says so. */
-export const RouteWithNoTargets: Story = {
-  render: () => (
-    <Harness
-      fetchStub={routes([
-        ["/model-prices", () => []],
-        ["/currency", () => ({ base: "USD", rates: {} })],
-        ["/health/uptime", () => ({ data: [] })],
-        [
-          "/config",
-          () => ({ ...FLEET_CONFIG, routes: [{ ...FLEET_CONFIG.routes[0], targets: [] }] }),
-        ],
-        ["/models", () => [{ ...FLEET_MODEL, targets: 0 }]],
-        ["/providers", () => []],
-        ["/routes", () => []],
-      ])}
-    >
-      <Models />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("no targets")).toBeVisible());
-    await expect(canvas.queryByRole("button", { name: /targets for/ })).toBeNull();
-  },
-};
-
 // a catalog with one db-backed row that has a route behind it, so the edit
 // control is enabled for anyone the gate allows
 const oneRoutedModel = routes([
   ["/model-prices", () => []],
   ["/currency", () => ({ base: "USD", rates: {} })],
-  ["/health/uptime", () => ({ data: [] })],
-  ["/config", () => CONFIG],
+  ["/targets", () => FANOUT_TARGETS],
   ["/models", () => [MODELS[0]]],
   ["/providers", () => FANOUT_PROVIDERS],
   ["/routes", () => [FANOUT_ROUTE]],

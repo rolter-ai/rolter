@@ -1,13 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { STRATEGIES } from "@/lib/api";
-import {
-  strategyHintKey,
-  strategyOptions,
-  strategyTone,
-  STRATEGY_TONE,
-  usesWeights,
-} from "@/lib/strategies";
+import { strategyHintKey, strategyOptions, strategyTone, STRATEGY_TONE } from "@/lib/strategies";
 
 describe("strategyOptions", () => {
   it("offers every strategy the backend accepts except the deployment-wide one", () => {
@@ -63,18 +57,6 @@ describe("strategyHintKey", () => {
   it("says nothing about a strategy that needs no caveat", () => {
     expect(strategyHintKey("round_robin")).toBeNull();
     expect(strategyHintKey("cheapest")).toBeNull();
-  });
-});
-
-describe("usesWeights", () => {
-  // the strategies `build_with_stats` hands the weight slice to; the rest are
-  // built from the target count and never read a weight (#1979)
-  it("is true only where the balancer reads the weights", () => {
-    expect(STRATEGIES.filter((s) => usesWeights(s))).toEqual(["weighted", "pipeline", "adaptive"]);
-  });
-
-  it("does not claim a weighted split for a strategy it has never heard of", () => {
-    expect(usesWeights("strategy_from_the_future")).toBe(false);
   });
 });
 

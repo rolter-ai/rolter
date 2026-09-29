@@ -37,7 +37,7 @@ jobs:
       # mdbook-mermaid is required, not optional: without the preprocessor the
       # build still succeeds and quietly ships every diagram as a code block.
       - name: install mdbook
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: mdbook,mdbook-mermaid
       - name: build

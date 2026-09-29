@@ -45,15 +45,37 @@ const DISABLED_RULES: Record<string, { enabled: boolean }> = {
   "page-has-heading-one": { enabled: false },
 };
 
+async function safeGetStoryContext(
+  page: Parameters<NonNullable<TestRunnerConfig["preVisit"]>>[0],
+  context: Parameters<NonNullable<TestRunnerConfig["preVisit"]>>[1],
+) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await getStoryContext(page, context);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (
+        msg.includes("SB_PREVIEW_API_0011") ||
+        msg.includes("StoryStoreAccessedBeforeInitializationError")
+      ) {
+        await page.waitForTimeout(200);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return getStoryContext(page, context);
+}
+
 const config: TestRunnerConfig = {
   async preVisit(page, context) {
-    const story = await getStoryContext(page, context);
+    const story = await safeGetStoryContext(page, context);
     const size = story.parameters?.viewportSize as { width: number; height: number } | undefined;
     await page.setViewportSize(size ?? DESKTOP);
     await injectAxe(page);
   },
   async postVisit(page, context) {
-    const story = await getStoryContext(page, context);
+    const story = await safeGetStoryContext(page, context);
     const a11y = story.parameters?.a11y as
       | {
           disable?: boolean;

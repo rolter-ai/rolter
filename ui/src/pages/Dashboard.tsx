@@ -38,7 +38,7 @@ function isUnavailable(err: unknown): boolean {
   return err instanceof AnalyticsUnavailableError;
 }
 
-// live overview: 4 KPIs, hourly spend line, traffic
+// live overview from the design prototype: 4 KPIs, hourly spend line, traffic
 // donut, requests-by-provider bars, and a recent-requests mini table. all
 // clickhouse-backed; renders a calm not-configured state when analytics is off.
 export default function Dashboard() {

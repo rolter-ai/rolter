@@ -4,8 +4,9 @@ import { useTranslation } from "react-i18next";
 import { InfoHint } from "@/components/ui/info-hint";
 import { cn } from "@/lib/utils";
 
-// label + control + helper/error wrapper. composes around whatever control is
-// passed as children (Input, Select, Textarea, Switch, ...)
+// label + control + helper/error wrapper, mirrors the Rolter Design System
+// Field. Composes around whatever control is passed as children (Input,
+// Select, Textarea, Switch, ...).
 export interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
   label?: string;
   /** explicit control id; when omitted the field generates one and applies it

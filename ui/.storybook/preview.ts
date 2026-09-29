@@ -1,6 +1,3 @@
-// the vendored geist faces, from the same module `main.tsx` imports: without
-// it every story is drawn in whatever fallback the browser has (#2051)
-import "../src/lib/fonts";
 import "../src/index.css";
 // side-effect init of i18next so any story rendering a `useTranslation`
 // component (the nav sidebar, the locale picker) resolves copy instead of
@@ -12,7 +9,6 @@ import type { Decorator, Preview } from "@storybook/react";
 import { configure } from "storybook/test";
 
 import { DEFAULT_LOCALE, LOCALES, LOCALE_NAMES, setLocale, type Locale } from "../src/lib/i18n";
-import { loadTokenFonts } from "../src/lib/story-fonts";
 
 // testing-library waits one second by default, which is a unit-test budget: it
 // assumes the thing being awaited is a render, and a render is immediate. a
@@ -36,9 +32,9 @@ import { loadTokenFonts } from "../src/lib/story-fonts";
 // not get slower — only less willing to call a slow machine a broken screen.
 configure({ asyncUtilTimeout: 5000 });
 
-// the dashboard theme is dark-only (see the src/index.css
+// the Rolter Design System is a dark-only control-plane theme (see src/index.css
 // header): `:root` is the dark surface and there is no light variant, so stories
-// render on the theme's dark canvas rather than a fabricated light mode. every
+// render on the design's dark canvas rather than a fabricated light mode. every
 // story is wrapped in the base background/foreground tokens + a little padding so
 // components sit on the real surface they ship against.
 const withSurface: Decorator = (Story) =>
@@ -62,11 +58,6 @@ const withLocale: Decorator = (Story, context) => {
 };
 
 const preview: Preview = {
-  // `font-display: swap` fetches a face only when text first asks for it and
-  // draws the fallback until then, so a story measured or screenshotted in that
-  // window sees the fallback's metrics. load every face once, before the first
-  // story renders. `Behaviour/Fonts` asserts the faces are the ones on screen
-  beforeAll: loadTokenFonts,
   decorators: [withLocale, withSurface],
   globalTypes: {
     locale: {

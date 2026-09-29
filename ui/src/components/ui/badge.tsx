@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-// 7 tones + optional leading dot.
+// tones mirror the Rolter Design System Badge (7 tones + optional leading dot).
 // every tone reads its colour from the design tokens: the /15 tint comes off
 // the status fill hue, the label off the matching --status-*-text token that is
 // contrast-checked against both the tint and --surface-base (#1199). the theme

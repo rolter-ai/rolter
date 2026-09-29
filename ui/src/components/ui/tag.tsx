@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
-// mono-font removable tag
+// mono-font removable tag, mirrors the Rolter Design System Tag
 export interface TagProps extends React.HTMLAttributes<HTMLSpanElement> {
   onRemove?: () => void;
   /**

@@ -116,7 +116,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] cibuildwheel/maturin-action wheels → PyPI (`uv tool install rolter`) (`build-wheels` + `publish-pypi` in `release.yml`, PEP 740 attestations; `rolter` 0.0.11 is on PyPI)
 - [x] Publish crates to crates.io (#279)
 - [x] Multi-arch images → GHCR (`build-image` in `release.yml`, amd64 + arm64)
-- [x] Helm chart / K8s manifests (`charts/rolter/`, gated by the `helm chart` steps of the `static checks` job in `quality.yml`)
+- [x] Helm chart / K8s manifests (`charts/rolter/`, gated by the `helm chart` job in `quality.yml`)
 - [x] Release automation from Conventional Commits (release-plz, per-crate changelogs — see [Changelogs](AGENTS.md#changelogs))
 - [x] `cargo deny` + dependency/advisory scanning in CI (#283)
 
@@ -137,8 +137,8 @@ Full-featured hostable web control panel, not a read-only dashboard.
 
 ## Cross-cutting / tech debt
 
-- [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke`, nightly in `extended.yml`)
-- [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml` on PRs and nightly on `master` in `extended.yml`, `.github/scripts/coverage-ratchet.sh`)
+- [x] Full-stack Docker Compose smoke test in CI (#449 — `compose-smoke` in `quality.yml`)
+- [x] Publish Rust coverage and establish a ratcheting threshold (#450 — `coverage` in `quality.yml`, `.github/scripts/coverage-ratchet.sh`)
 - [x] Document and enforce the `ci-ok` branch-protection policy (#448 — `docs/dev-docs/development/testing.md`)
 - [x] Publish `rolter` to PyPI (`rolter` 0.0.11 is live; `uv tool install rolter`). All crates publish to crates.io at the same version through release-plz.
 - [x] Integration tests for the gateway (mock upstream) + streaming assertions

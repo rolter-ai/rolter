@@ -97,10 +97,4 @@ roles (`TableSemantics`), the `aria-sort` cycle and the hidden arrow
 (`LoadingRowKeepsTheTableWhole`, `NoRows`).
 
 The Logs screen is not built from these primitives: it renders a native
-`<table>` and gets its semantics from the elements. So does the Roles &
-Permissions matrix (#2081), which needs what the list primitives do not have: a
-row header per resource (`th scope="row"`) and a `tbody` per scope under its own
-full-width header. Each of its chips pairs an `aria-hidden` mark with the same
-statement in `sr-only` text, so a cell is read as "Read: allowed Create: not
-allowed …" with its role and resource announced; the `Loaded` story asserts
-that name and the mark's glyph.
+`<table>` and gets its semantics from the elements.

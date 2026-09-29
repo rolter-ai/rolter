@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-// underline tab bar
+// underline tab bar. mirrors the Rolter Design System navigation/Tabs.
 export interface TabItem {
   value: string;
   label: React.ReactNode;

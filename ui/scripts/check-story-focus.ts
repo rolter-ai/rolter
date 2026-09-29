@@ -14,7 +14,7 @@
 // The second line has no retry. It passes while the handover happens to land
 // inside the incidental gap between the two statements, and fails the moment it
 // does not — which is why #1675's pair passed against `storybook dev` and failed
-// against `build-storybook`, the build the `ui, storybook, docs` CI job
+// against `build-storybook`, the build the `storybook build + play tests` job
 // runs. Deferring the restoration by 600ms reproduces it exactly.
 //
 // #1672 does not cover this. It raised `asyncUtilTimeout` to 5s, which is how

@@ -8,17 +8,11 @@ name: quality
 # supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
-# reviewer: many independent checks. they share a handful of jobs by what they
-# need: `static checks` for the ones that only read the tree, `rust lint` for
-# the rust checks that link nothing, `rust build` for the ones that link or boot
-# a binary. each runs one named step per concern plus a report step that names
-# whichever failed. `ui, storybook, docs` does the same for every check that
-# runs on bun. nextest, the image smoke and coverage run as jobs of their own.
-# ci.yml aggregates every job here (plus pr-title) into a single `ci-ok` check
-# for branch protection. coverage runs as informational (continue-on-error) on
-# pull requests only; the informational checks that need a full build and gate
-# nothing (macOS, compose smoke, msrv, master coverage) run nightly in
-# extended.yml instead of taking a runner on every push (ADR-0034).
+# reviewer: many independent checks. jobs are split so a failure points at one
+# concern. ci.yml aggregates every job here (plus pr-title) into a single
+# `ci-ok` check for branch protection. some newer/heavier checks run as
+# informational (continue-on-error) until their baseline is trusted, then get
+# promoted to blocking — see ROL-124.
 on:
   # takes no secrets: every job here scans the checked-out source with pinned
   # public tooling, so the gate behaves identically on dependabot and fork PRs,
@@ -31,432 +25,35 @@ on:
 permissions:
   contents: read
 
-# rust caches: every Swatinem/rust-cache step saves only on refs/heads/master
-# (`save-if`). pull requests, release-pr dispatches and merge-queue runs restore
-# master's caches and write none. every pr ref and the release-pr branch used to
-# save its own copy of each job's target dir, which only that ref could restore,
-# and those copies pushed the actions cache past its 10 GB limit and evicted
-# master's (ADR-0034). the same rule holds in ci.yml and extended.yml;
-# engine-integration.yml is exempt because it never runs on a master push
-
 # faster linking on the linux runner: ./.github/actions/wild-linker restores the
 # wild binary from the actions cache and writes ~/.cargo/config.toml to use it
 # for *-unknown-linux-{gnu,musl}. only the jobs that actually link install it —
-# `rust lint` does not, since clippy, cargo hack and rustdoc emit metadata and
-# never invoke the linker. a job that installs it sets no job-level RUSTFLAGS,
-# which would replace the `--ld-path` rustflags the action writes.
+# clippy, cargo hack and rustdoc emit metadata and never invoke the linker.
 
 jobs:
-  # ── rust lint: every rust check that links nothing ──────────────────────────
-  # fmt, clippy, rustdoc and `cargo check` only emit metadata, so this job skips
-  # the wild linker. until #2025 they were three jobs (`fmt / clippy`,
-  # `feature matrix`, `cargo doc (warnings = errors)`), each restoring its own
-  # target dir and waiting for its own runner. they share one now, under the
-  # rules of `static checks`: one named step per former check, every check step
-  # under `!cancelled()` so one red step never hides the next, each guarded on
-  # the setup it reads, and a `report` step that names whichever failed and
-  # fails the job when one was skipped
-  rust-lint:
-    name: rust lint
+  # ── rust: format + lint ─────────────────────────────────────────────────────
+  fmt-clippy:
+    name: fmt / clippy
     runs-on: ubuntu-latest
-    # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
-    # requests no longer cache for each other. a hung step fails the gate in
-    # half an hour instead of GitHub's 360-minute default
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        id: toolchain
-        if: ${{ !cancelled() }}
         with:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: ${{ !cancelled() }}
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: install cargo-hack
-        id: cargo-hack
-        if: ${{ !cancelled() }}
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
-        with:
-          tool: cargo-hack
-
-      # ── fmt / clippy ──────────────────────────────────────────────────────
       - name: fmt
-        id: fmt
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --all --check
       - name: clippy (default features)
-        id: clippy
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo clippy --workspace --all-targets -- -D warnings
       # rolter-control as well as rolter-store: most of the postgres-gated code
       # (crud, sso, scim, the policy modules) lives in control, and linting only
       # the store left all of it unchecked under the feature it is written for
       - name: clippy (postgres feature)
-        id: clippy-postgres
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: |
           cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings
-
-      # ── cargo doc (warnings = errors) ─────────────────────────────────────
-      # broken intra-doc links / invalid rustdoc are common agent mistakes.
-      # RUSTDOCFLAGS sits on the step: rust-cache hashes the job's RUST* env
-      # into its key, and the flag only concerns this step
-      - name: cargo doc (warnings = errors)
-        id: doc
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --workspace --no-deps --all-features
-
-      # ── feature matrix ────────────────────────────────────────────────────
-      # agents frequently break builds behind a cargo feature; check each in
-      # turn. `cargo check` without RUSTFLAGS only fails on hard errors, so a
-      # lint that fires in exactly one feature combination — `dead_code` on an
-      # item reachable only under `--no-default-features`, say — passed this
-      # gate silently while clippy never saw it, since clippy only builds
-      # default features (#1399). RUSTFLAGS is capped to `allow` for registry
-      # dependencies, so this denies warnings in workspace crates only.
-      #
-      # both steps set RUSTFLAGS on the step and build into target/hack: a
-      # different RUSTFLAGS invalidates every unit cargo has built, so sharing
-      # target/ with the clippy steps would recompile the whole dependency tree
-      # twice per run
-      - name: cargo hack (each feature)
-        id: hack
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.cargo-hack.outcome == 'success' }}
-        env:
-          RUSTFLAGS: "-D warnings"
-          CARGO_TARGET_DIR: target/hack
-        run: cargo hack check --each-feature --workspace --all-targets
-      # --each-feature only ever turns on a package's *own* features, so it
-      # never builds a dependent against a dependency feature it does not
-      # itself enable. that gap let `rolter` stop compiling whenever
-      # `rolter-control/postgres` was on without `rolter/postgres` (#1295).
-      - name: cross-crate feature combination (dependency postgres only)
-        id: cross-crate
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        env:
-          RUSTFLAGS: "-D warnings"
-          CARGO_TARGET_DIR: target/hack
-        run: cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres
-
-      # the verdict for the whole job. every step here must run on every event,
-      # so a skip counts as a failure (#1562). outcomes arrive through env,
-      # never inline in the script (zizmor's template-injection rule); a step
-      # id that does not exist yields an empty outcome, which also fails
-      - name: report
-        if: ${{ !cancelled() }}
-        env:
-          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
-          OUTCOME_TOOLCHAIN: ${{ steps.toolchain.outcome }}
-          OUTCOME_CARGO_HACK: ${{ steps.cargo-hack.outcome }}
-          OUTCOME_FMT: ${{ steps.fmt.outcome }}
-          OUTCOME_CLIPPY: ${{ steps.clippy.outcome }}
-          OUTCOME_CLIPPY_POSTGRES: ${{ steps.clippy-postgres.outcome }}
-          OUTCOME_DOC: ${{ steps.doc.outcome }}
-          OUTCOME_HACK: ${{ steps.hack.outcome }}
-          OUTCOME_CROSS_CRATE: ${{ steps.cross-crate.outcome }}
-        run: |
-          set -euo pipefail
-          summary="${GITHUB_STEP_SUMMARY}"
-          failed=0
-
-          {
-            echo "### rust lint"
-            echo
-            echo "| former job | step | outcome | reproduce locally |"
-            echo "| --- | --- | --- | --- |"
-          } >> "${summary}"
-
-          # row <former job> <step> <outcome> <command>
-          row() {
-            local job="$1" step="$2" outcome="$3" repro="$4" shown
-            shown="${outcome:-no outcome}"
-            if [ "${outcome}" = "skipped" ]; then
-              shown="**skipped, but must run**"
-              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
-              failed=1
-            elif [ "${outcome}" != "success" ]; then
-              shown="**${outcome:-no outcome}**"
-              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
-              failed=1
-            fi
-            # a literal | would end the table cell early
-            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
-          }
-
-          setup="nothing to run locally; re-run the job"
-          row "rust lint" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
-          row "rust lint" "rust toolchain" "${OUTCOME_TOOLCHAIN}" "${setup}"
-          row "feature matrix" "install cargo-hack" "${OUTCOME_CARGO_HACK}" "${setup}"
-          row "fmt / clippy" "fmt" "${OUTCOME_FMT}" "cargo fmt --all --check"
-          row "fmt / clippy" "clippy (default features)" "${OUTCOME_CLIPPY}" \
-            "cargo clippy --workspace --all-targets -- -D warnings"
-          row "fmt / clippy" "clippy (postgres feature)" "${OUTCOME_CLIPPY_POSTGRES}" \
-            "cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings"
-          row "cargo doc (warnings = errors)" "cargo doc (warnings = errors)" "${OUTCOME_DOC}" \
-            'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features'
-          row "feature matrix" "cargo hack (each feature)" "${OUTCOME_HACK}" \
-            'RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets'
-          row "feature matrix" "cross-crate feature combination (dependency postgres only)" "${OUTCOME_CROSS_CRATE}" \
-            'RUSTFLAGS="-D warnings" cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres'
-
-          echo >> "${summary}"
-          if [ "${failed}" -ne 0 ]; then
-            echo "one or more rust lint checks did not pass; each has an error annotation naming its former job" >> "${summary}"
-            exit 1
-          fi
-          echo "every rust lint check passed" >> "${summary}"
-
-  # ── rust build: everything that links, then the advisory semver check ──────
-  # the publish verify build, the gateway smoke build and probe, and last the
-  # semver check, which used to be `package (publish verify)`,
-  # `gateway smoke (fake-llm)` and `semver-checks (advisory)` (#2025). same
-  # step rules as `rust lint`, except that the semver steps are advisory: each
-  # is `continue-on-error`, its install included, and the report turns their
-  # failure into a warning, never an error (ADR-0032, ADR-0034)
-  rust-build:
-    name: rust build
-    runs-on: ubuntu-latest
-    # about 3.5 min warm; the three builds can take 20 cold, and the semver
-    # step carries a limit of its own
-    timeout-minutes: 45
-    # no job-level RUSTFLAGS here, ever: the variable replaces every `rustflags`
-    # entry in cargo's config, the wild-linker action's `--ld-path` included,
-    # so the links would quietly fall back to the system linker. a flag one
-    # step needs goes on that step
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
-        with:
-          persist-credentials: false
-          # the semver check's --baseline-rev needs the tag history, which a
-          # shallow clone omits
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        id: toolchain
-        if: ${{ !cancelled() }}
-        with:
-          toolchain: stable
-      - uses: ./.github/actions/wild-linker
-        id: wild
-        if: ${{ !cancelled() }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: ${{ !cancelled() }}
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        id: uv
-        if: ${{ !cancelled() }}
-
-      # ── package (publish verify) ──────────────────────────────────────────
-      # `cargo publish` builds each crate from its packaged tarball in
-      # isolation, so a file referenced outside the crate directory (e.g.
-      # include_str!("../../x")) or a path dependency not carried in the
-      # package compiles fine in-tree but 404s at publish time.
-      # `cargo package --workspace` reproduces that isolated verify build for
-      # every publishable crate, so packaging breakage fails here on the PR
-      # instead of mid-release after some crates have already published to
-      # crates.io (ROL-233). the PyPI side gets the same early check:
-      # `maturin sdist` from the repo root parses pyproject.toml and
-      # [tool.maturin], resolves manifest-path, bindings, readme and license,
-      # and packages the path dependencies, in seconds and without compiling.
-      # release.yml's build-wheels is the first real wheel build, and it runs
-      # after crates.io has published and the tag is pushed (#2025)
-      - name: cargo package (verifies each crate in isolation)
-        id: package
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
-        run: cargo package --workspace --locked
-      - name: maturin sdist (validates the PyPI packaging)
-        id: sdist
-        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
-
-      # ── gateway smoke (fake-llm) ──────────────────────────────────────────
-      # boots the real binary and exercises the built-in fake-llm (no upstream
-      # or secrets needed), catching wiring regressions no unit test sees.
-      - name: build gateway
-        id: smoke-build
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
-        run: cargo build -p rolter-gateway
-      - name: boot + probe
-        id: smoke-probe
-        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          # no config file: the gateway starts open with the built-in fake-llm
-          ./target/debug/rolter-gateway --config /nonexistent.toml &
-          pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
-          # wait for the listener
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4000/healthz >/dev/null 2>&1; then break; fi
-            sleep 1
-          done
-          echo "== /healthz =="
-          curl -fsS http://127.0.0.1:4000/healthz
-          echo "== /v1/models =="
-          curl -fsS http://127.0.0.1:4000/v1/models
-          echo "== fake-llm chat (non-streaming) =="
-          curl -fsS http://127.0.0.1:4000/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"fake-llm","messages":[{"role":"user","content":"hi"}]}' \
-            | tee /tmp/resp.json
-          grep -q '"choices"' /tmp/resp.json
-          echo "== fake-llm chat (streaming) =="
-          # write to a file rather than piping into grep -q: grep exits on the
-          # first match and closes the pipe, so curl fails writing the rest of
-          # the SSE stream (exit 23) and `set -o pipefail` fails the step
-          curl -fsS -N --max-time 30 http://127.0.0.1:4000/v1/chat/completions \
-            -H 'content-type: application/json' \
-            -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
-            -o /tmp/stream.txt
-          cat /tmp/stream.txt
-          grep -q 'data:' /tmp/stream.txt
-
-      # ── semver-checks (advisory) ──────────────────────────────────────────
-      # notice when a shared crate's rust API moved. scoped deliberately: the
-      # baseline is the previous release *tag*, not the published crate, and
-      # only the crates listed in GUARDED are checked. this is a review signal,
-      # never a gate: ADR-0032 (#922) decides that no rolter crate offers a
-      # stable rust API at 1.0, so every step here stays `continue-on-error`
-      # and the report only ever warns about it — a gate enforcing a promise
-      # the ADR disclaims would be worse than either choice alone. what each
-      # surface actually promises is in
-      # docs/dev-docs/development/api-stability.md (#1217). the steps come
-      # last so a slow or red semver run never delays a blocking verdict
-      - name: install cargo-semver-checks
-        id: semver-install
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
-        with:
-          tool: cargo-semver-checks
-      - name: resolve baseline tag
-        id: baseline
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: |
-          tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
-          if [ -z "$tag" ]; then
-            echo "::warning title=semver-checks (advisory)::no release tag found; nothing to diff against"
-            echo "no release tag found; nothing to diff against" >> "$GITHUB_STEP_SUMMARY"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-          else
-            echo "baseline: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          fi
-      # --release-type patch is the strict reading: on the guarded crates a
-      # breaking change must be a deliberate act, not a side effect
-      - name: cargo semver-checks (guarded crates)
-        id: semver
-        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' && steps.semver-install.outcome == 'success' && steps.baseline.outputs.tag != '' }}
-        continue-on-error: true
-        timeout-minutes: 20
-        env:
-          # crates whose rust API is checked for patch-level compatibility
-          # against the last release tag. keep in sync with
-          # docs/dev-docs/development/api-stability.md
-          GUARDED: -p rolter-auth -p rolter-balancer -p rolter-gateway -p rolter-proxy
-          BASELINE: ${{ steps.baseline.outputs.tag }}
-        run: |
-          # shellcheck disable=SC2086 # GUARDED is a deliberate word-split list
-          cargo semver-checks $GUARDED --baseline-rev "$BASELINE" --release-type patch
-
-      # the verdict for the whole job: every blocking step must run on every
-      # event, so a skip there is a failure (#1562), while a semver step that
-      # did not pass only warns. outcomes arrive through env, as in `rust lint`
-      - name: report
-        if: ${{ !cancelled() }}
-        env:
-          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
-          OUTCOME_TOOLCHAIN: ${{ steps.toolchain.outcome }}
-          OUTCOME_WILD: ${{ steps.wild.outcome }}
-          OUTCOME_UV: ${{ steps.uv.outcome }}
-          OUTCOME_PACKAGE: ${{ steps.package.outcome }}
-          OUTCOME_SDIST: ${{ steps.sdist.outcome }}
-          OUTCOME_SMOKE_BUILD: ${{ steps.smoke-build.outcome }}
-          OUTCOME_SMOKE_PROBE: ${{ steps.smoke-probe.outcome }}
-          OUTCOME_SEMVER_INSTALL: ${{ steps.semver-install.outcome }}
-          OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
-          OUTCOME_SEMVER: ${{ steps.semver.outcome }}
-          SEMVER_BASELINE: ${{ steps.baseline.outputs.tag }}
-        run: |
-          set -euo pipefail
-          summary="${GITHUB_STEP_SUMMARY}"
-          failed=0
-
-          {
-            echo "### rust build"
-            echo
-            echo "| former job | step | outcome | reproduce locally |"
-            echo "| --- | --- | --- | --- |"
-          } >> "${summary}"
-
-          # row <former job> <step> <outcome> <command>: a blocking step
-          row() {
-            local job="$1" step="$2" outcome="$3" repro="$4" shown
-            shown="${outcome:-no outcome}"
-            if [ "${outcome}" = "skipped" ]; then
-              shown="**skipped, but must run**"
-              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
-              failed=1
-            elif [ "${outcome}" != "success" ]; then
-              shown="**${outcome:-no outcome}**"
-              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
-              failed=1
-            fi
-            # a literal | would end the table cell early
-            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
-          }
-
-          # advisory <former job> <step> <outcome> <command>: a semver step,
-          # which warns and never fails the job (ADR-0032). the check itself is
-          # skipped honestly when there is no release tag to diff against
-          advisory() {
-            local job="$1" step="$2" outcome="$3" repro="$4" shown
-            shown="${outcome:-no outcome}"
-            if [ "${outcome}" = "skipped" ] && [ "${step}" = "cargo semver-checks (guarded crates)" ] \
-              && [ "${OUTCOME_BASELINE}" = "success" ] && [ -z "${SEMVER_BASELINE}" ]; then
-              shown="skipped (no release tag to diff against)"
-            elif [ "${outcome}" != "success" ]; then
-              shown="${outcome:-no outcome} (advisory)"
-              echo "::warning title=${job}::${step} did not pass (outcome: ${outcome:-none}). advisory only, it never fails the gate (ADR-0032). reproduce locally with: ${repro}"
-            fi
-            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
-          }
-
-          setup="nothing to run locally; re-run the job"
-          row "rust build" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
-          row "rust build" "rust toolchain" "${OUTCOME_TOOLCHAIN}" "${setup}"
-          row "rust build" "wild linker" "${OUTCOME_WILD}" "${setup}"
-          row "package (publish verify)" "set up uv" "${OUTCOME_UV}" "${setup}"
-          row "package (publish verify)" "cargo package (verifies each crate in isolation)" "${OUTCOME_PACKAGE}" \
-            "cargo package --workspace --locked"
-          row "package (publish verify)" "maturin sdist (validates the PyPI packaging)" "${OUTCOME_SDIST}" \
-            "uvx maturin@1.15.0 sdist --out target/sdist"
-          row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
-          row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
-            "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
-          advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
-            "cargo install cargo-semver-checks --locked"
-          advisory "semver-checks (advisory)" "resolve baseline tag" "${OUTCOME_BASELINE}" \
-            "git describe --tags --abbrev=0 --match 'v[0-9]*'"
-          advisory "semver-checks (advisory)" "cargo semver-checks (guarded crates)" "${OUTCOME_SEMVER}" \
-            "cargo semver-checks <GUARDED from quality.yml> --baseline-rev ${SEMVER_BASELINE:-<last v* tag>} --release-type patch"
-
-          echo >> "${summary}"
-          if [ "${failed}" -ne 0 ]; then
-            echo "one or more rust build checks did not pass; each has an error annotation naming its former job" >> "${summary}"
-            exit 1
-          fi
-          echo "every blocking rust build check passed; semver-checks only ever warns" >> "${summary}"
 
   # ── rust: tests ─────────────────────────────────────────────────────────────
   # nextest for the unit/integration tests (per-test isolation, faster) plus an
@@ -464,11 +61,6 @@ jobs:
   test:
     name: nextest / doctests
     runs-on: ubuntu-latest
-    # warm runs take 6-10 min. the limit leaves room for a cold build after a
-    # Cargo.lock bump, which pull requests no longer cache for each other, while
-    # a hung test fails the gate in half an hour instead of GitHub's 360-minute
-    # default
-    timeout-minutes: 30
     # a real postgres so the store + control-plane integration tests actually
     # run (they self-skip when ROLTER_TEST_DATABASE_URL is unset) rather than
     # passing as silent no-ops
@@ -528,9 +120,7 @@ jobs:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: nextest
       - name: nextest (workspace, all features)
@@ -538,73 +128,92 @@ jobs:
       - name: doc tests
         run: cargo test --doc --workspace --all-features
 
-  # ── static checks: everything that reads the tree and builds nothing ────────
-  # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
-  # waited a median 86-200 s for a runner: a pr push started 36 jobs at once
-  # against the org's 20 concurrent slots, so 16 queued even on an idle org
-  # (#2025). they share one runner now, and a failure still names its concern:
-  #
-  # - one named step per former job (two for gitleaks, three for the release
-  #   handoff, five for the helm chart), keeping that job's command, env and
-  #   event guard. the session-url commit check also carries the fixture test
-  #   of ci-ok's pr-body step (#2035)
-  # - every step runs under `!cancelled()` rather than the default `success()`,
-  #   so one red step never hides the ones after it. `always()` would also keep
-  #   a superseded run holding its runner after ci.yml cancelled it
-  # - a step that reads a tool installed here is also guarded on that install,
-  #   so a failed download shows up as a skip the report names, not as a
-  #   confusing `command not found` under the check's name
-  # - the `report` step lists every step's outcome in the job summary, emits
-  #   one `::error` per failed step titled with the former job's name and the
-  #   command that reproduces it locally, and fails the job when a step that
-  #   must run on this event was skipped: a skipped step reads as a pass, and
-  #   that is how `ci-ok` once went green without reading a commit message
-  #   (#1562)
-  #
-  # a check added here needs its step, an `OUTCOME_*` line and a `row` in the
-  # report, or it runs without the report ever vouching for it
-  static:
-    name: static checks
+  # ── rust: non-default feature builds ────────────────────────────────────────
+  # agents frequently break builds behind a cargo feature; check each in turn.
+  feature-matrix:
+    name: feature matrix
     runs-on: ubuntu-latest
-    # about 90 s of work. without a timeout a hung step would hold the runner,
-    # and every sibling's verdict with it, for GitHub's 360-minute default
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    # `shell: bash` for pipefail: without it a failing `helm template` on the
-    # left of a pipe into the manifest checker is masked by the checker exiting
-    # 0 on empty input. every other step is a single command or sets its own
-    # options, so the stricter shell changes nothing there
-    defaults:
-      run:
-        shell: bash
+    # `cargo check` without this only fails on hard errors, so a lint that fires
+    # in exactly one feature combination — `dead_code` on an item reachable only
+    # under `--no-default-features`, say — passed this gate silently while the
+    # clippy job above never saw it, since that job only builds default features
+    # (#1399). RUSTFLAGS is capped to `allow` for registry dependencies, so this
+    # denies warnings in workspace crates only.
     env:
-      # v8.30.1, the same version prek.toml pins for the staged hook, so local
-      # and CI scan with one binary and one policy. see #734
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-hack
+      - name: cargo hack (each feature)
+        run: cargo hack check --each-feature --workspace --all-targets
+      # --each-feature only ever turns on a package's *own* features, so it
+      # never builds a dependent against a dependency feature it does not
+      # itself enable. that gap let `rolter` stop compiling whenever
+      # `rolter-control/postgres` was on without `rolter/postgres` (#1295).
+      - name: cross-crate feature combination (dependency postgres only)
+        run: cargo check --workspace --all-targets --features rolter-store/postgres,rolter-control/postgres
+
+  # ── rust: doc warnings ──────────────────────────────────────────────────────
+  # broken intra-doc links / invalid rustdoc are common agent mistakes.
+  docs:
+    name: cargo doc (warnings = errors)
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo doc
+        run: cargo doc --workspace --no-deps --all-features
+
+  # ── supply chain: advisories / bans / licenses / sources ────────────────────
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: cargo-deny (advisories, bans, licenses, sources)
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo deny check
+        run: cargo deny --all-features --config .config/deny.toml check
+
+  # ── supply chain: secret scanning ───────────────────────────────────────────
+  # agents must never leak a provider key; fail the build if one is committed.
+  # runs the gitleaks CLI, not gitleaks-action: the action gates org-owned repos
+  # behind a license key, and license secrets are invisible to dependabot runs
+  # (separate secret store) and to fork PRs (no secrets at all), so every such
+  # PR failed this job and therefore ci-ok. the CLI is free and unrestricted.
+  # the image digest is v8.30.1, the same version prek.toml pins for the staged
+  # hook, so local and CI scan with one binary and one policy. see #734.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    env:
       GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
         with:
           persist-credentials: false
-          # gitleaks' history pass, the session-url commit range and the
-          # migrations diff all walk real history
           fetch-depth: 0
-
-      # ── supply chain: secret scanning ─────────────────────────────────────
-      # agents must never leak a provider key; fail the build if one is
-      # committed. runs the gitleaks CLI, not gitleaks-action: the action gates
-      # org-owned repos behind a license key, and license secrets are invisible
-      # to dependabot runs (separate secret store) and to fork PRs (no secrets
-      # at all), so every such PR failed this check and therefore ci-ok. the
-      # CLI is free and unrestricted.
-      #
-      # both passes run before any setup step, so `dir .` sees exactly the
-      # checkout and never a tool some later step unpacked into the workspace.
       # working tree: everything the commit actually ships
       - name: gitleaks (working tree)
-        id: gitleaks-tree
-        if: ${{ !cancelled() }}
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo "$GITLEAKS_IMAGE" \
             dir . --config .github/config/gitleaks.toml --redact --exit-code 1
@@ -614,8 +223,7 @@ jobs:
       # batched ahead of this one included. the payload names both ends, so
       # this needs no token and quality.yml stays secret-free (#734, #1722)
       - name: gitleaks (branch history)
-        id: gitleaks-history
-        if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -630,60 +238,43 @@ jobs:
             git . --config .github/config/gitleaks.toml --redact --exit-code 1 \
             --log-opts "$BASE_SHA..$HEAD_SHA"
 
-      # ── tools, installed once for every step below ────────────────────────
-      # taiki-e checks each download against the sha256 in its manifest, and
-      # the versions are pinned here: cargo-deny at the version the gate has
-      # always run, cargo-machete at the release bnjbvr/cargo-machete resolved
-      # on every run through an unauthenticated `releases/latest` call, which
-      # also unpacked its tarball into the workspace
-      - name: install taplo, cargo-deny and cargo-machete
-        id: tools
-        if: ${{ !cancelled() }}
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+  # ── hygiene: no agent session urls in commits or the pr body ────────────────
+  # a commit-msg prek hook catches this locally, but `--no-verify` still
+  # bypasses it — this is the backstop for the commit messages the pr
+  # introduces, so a url added by an amend or a --no-verify push is still
+  # caught. the pr *body* is checked by a step of the `ci-ok` job in ci.yml
+  # instead, not here: a body edit skips this whole workflow, so a check that
+  # lives here can never see one. see #1406.
+  session-urls:
+    name: no agent session urls (commits)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tool: taplo,cargo-deny@0.20.2,cargo-machete@0.9.2
-      - name: set up uv
-        id: uv
-        if: ${{ !cancelled() }}
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: set up helm
-        id: helm
-        if: ${{ !cancelled() }}
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.4
-
-      # ── hygiene: no agent session urls in commits ─────────────────────────
-      # a commit-msg prek hook catches this locally, but `--no-verify` still
-      # bypasses it — this is the backstop for the commit messages the pr
-      # introduces, so a url added by an amend or a --no-verify push is still
-      # caught. the pr *body* is checked by a step of the `ci-ok` job in ci.yml
-      # instead, not here: a body edit skips this whole workflow, so a check that
-      # lives here can never see one. see #1406.
-      - name: no agent session urls (commits)
-        id: session-urls
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+          persist-credentials: false
+          # the commit range below diffs against the pr base, which needs real history
+          fetch-depth: 0
+      - name: check commit messages
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/check-agent-session-urls.sh --commit-range "${BASE_SHA}..${HEAD_SHA}"
-      # ci-ok's pr-body step reads the body from the api, so the only place
-      # that step's shell ever ran was a real pull request. this runs it, as
-      # extracted from ci.yml, against a fake gh and clock: a body edited after
-      # the event fired, a flaking api, and the dispatch and queue lookups
-      # (#2035). it reads nothing the step above produces
-      - name: pr body lookups against a fake gh
-        id: session-urls-fixture
-        if: ${{ !cancelled() }}
-        run: bash scripts/test-agent-session-urls.sh
 
-      # ── storage: migrations are append-only ───────────────────────────────
-      # sqlx checksums every applied migration, so editing a shipped file breaks
-      # every existing deployment on its next upgrade — and nothing else catches
-      # it, because CI databases always start empty. see #710 / #724.
-      - name: migrations append-only
-        id: migrations
-        if: ${{ !cancelled() }}
+  # ── storage: migrations are append-only ─────────────────────────────────────
+  # sqlx checksums every applied migration, so editing a shipped file breaks
+  # every existing deployment on its next upgrade — and nothing else catches it,
+  # because CI databases always start empty. see #710 / #724.
+  migrations-immutable:
+    name: migrations append-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the check diffs against origin/master, so it needs real history
+          fetch-depth: 0
+      - name: check migrations are append-only
         env:
           CI: "true"
           # on a merge-queue run the checkout is a synthetic ref and
@@ -694,67 +285,145 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
-      # ── spelling: docs / comments / identifiers ───────────────────────────
-      # false positives are pinned in .github/config/typos.toml with an
-      # explaining comment each.
-      - name: typos
-        id: typos
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/typos
+  # ── release handoff: release-plz must still dispatch release.yml ────────────
+  # a token-created tag does not fire `push: tags`, so the dispatch in
+  # release-plz.yml is the only thing that starts wheel/pypi publishing. losing
+  # it fails silently — releases keep shipping, just without a wheel (#903).
+  # the checker reads the workflows as parsed yaml (#1723); `uv run --script`
+  # installs the pyyaml pinned in its inline metadata, nothing else. it also
+  # asserts the crates.io publish still waits on `release-gate` (#2025)
+  release-handoff:
+    name: release handoff wired
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: "1.50.0"
-          config: .github/config/typos.toml
-
-      # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ─────────────
-      # blocking: the whole tree is taplo-formatted, so any drift is a real diff.
-      - name: taplo fmt
-        id: taplo
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: taplo fmt --check --diff
-
-      # ── supply chain: advisories / bans / licenses / sources ──────────────
-      - name: cargo-deny
-        id: cargo-deny
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: cargo deny --all-features --config .config/deny.toml check
-
-      # ── unused dependencies ───────────────────────────────────────────────
-      - name: unused deps
-        id: machete
-        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
-        run: cargo-machete
-
-      # ── workflow lint: validate the CI yaml itself ────────────────────────
-      # agents edit workflows too; catch syntax and shell smells early.
-      - name: actionlint
-        id: actionlint
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: check the release handoff is wired
+        run: uv run --script scripts/check-release-handoff.py
+      # a check that can no longer fail is worse than none: it reads as coverage
+      - name: every check still fails on a broken fixture
+        run: uv run --script scripts/check-release-handoff.py --self-test
+      # release-plz.yml's `release-gate` only waits on a release push to master,
+      # so a regression in its scripts would first show as a release published
+      # ungated or never published. this runs both against a fake gh, curl,
+      # cargo and clock. it reads nothing the steps above produce
+      - name: release gate scripts against a fake gh
         if: ${{ !cancelled() }}
+        run: bash scripts/test-release-gate.sh
+
+  # ── board automation: the add-to-board retry policy ─────────────────────────
+  # project-automation.yml decides which GitHub API failures to wait out and
+  # which to report, and it only runs on master when an issue or PR is opened,
+  # where a regression shows up as items quietly missing from the board. this
+  # runs that step against a fake gh, a fake clock and a fake board (#1718)
+  project-automation:
+    name: board automation retry policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: run the add-to-board step against a fake gh
+        run: bash scripts/test-project-automation.sh
+
+  # ── helm chart: lint and render ─────────────────────────────────────────────
+  # the chart carries the same pre-boot validation the CLI does (#854), and a
+  # chart is the one deployment path with no compiler behind it: a template that
+  # renders to malformed YAML fails at `helm install`, on someone's cluster,
+  # rather than here. render every branch the preflight initContainer has.
+  helm-chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    # `shell: bash` for pipefail: without it a failing `helm template` on the
+    # left of the pipe is masked by the checker exiting 0 on empty input
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # appVersion is what an operator reads to know which rolter a release
+      # deploys. nothing updated it, so it drifted three releases behind the
+      # workspace before anyone noticed (#1140)
+      - name: chart appVersion tracks the workspace version
+        run: python3 scripts/sync-chart-appversion.py
+      - name: lint
+        run: helm lint charts/rolter
+      # every render is parsed with a strict YAML loader rather than discarded:
+      # helm's own loader tolerates a duplicate mapping key, kubectl's
+      # server-side apply and the GitOps controllers do not, and a duplicate
+      # `env:` sat in both deployment templates unnoticed until #1090.
+      # `uv run --script` installs only the pyyaml pinned in the checker's
+      # inline metadata (#1901); run as part of the repo-root project, uv
+      # would build the rolter maturin wheel first, about 3.5 minutes per job
+      # (#2025). that build was the gate's only pass over pyproject.toml, which
+      # the package job now checks on purpose
+      - name: render defaults
+        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+      - name: render with preflight disabled
+        run: |
+          helm template ci charts/rolter --set preflight.enabled=false \
+            | uv run --script scripts/check-rendered-manifests.py
+      - name: render with every preflight option on
+        run: |
+          helm template ci charts/rolter \
+            --set preflight.connect=true \
+            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
+            --set 'secretEnv[0].name=ROLTER_KEK' \
+            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
+            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
+            | uv run --script scripts/check-rendered-manifests.py
+
+  # ── workflow lint: validate the CI yaml itself ──────────────────────────────
+  # agents edit workflows too; catch syntax and shell smells early.
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
 
-      # ── workflow security: zizmor static analysis ─────────────────────────
-      # catches workflow security smells (unpinned actions, template injection
-      # in run:, over-broad GITHUB_TOKEN). a **merge gate** since #1456: the
-      # baseline was clean at `medium`, and an informational job that nobody
-      # has to fix is one everybody learns to scroll past — a regression to 34
-      # findings went unnoticed for exactly that reason (#1325), and an
-      # unreachable action pin (#1227) rode along on every PR for weeks as
-      # accepted noise. blocking is what makes a clean baseline stay clean.
-      #
-      # threshold is `--min-severity=medium --persona=regular`, the setting the
-      # baseline was proven clean against. the four `# zizmor: ignore[...]`
-      # suppressions in the tree were each re-read in #1456 and each still
-      # carries the reason it was added; see docs/dev-docs/development/testing.md.
-      # the token reaches this step alone, through its env
+  # ── workflow security: zizmor static analysis ───────────────────────────────
+  # catches workflow security smells (unpinned actions, template injection in
+  # run:, over-broad GITHUB_TOKEN). a **merge gate** since #1456: the baseline
+  # was clean at `medium`, and an informational job that nobody has to fix is
+  # one everybody learns to scroll past — a regression to 34 findings went
+  # unnoticed for exactly that reason (#1325), and an unreachable action pin
+  # (#1227) rode along on every PR for weeks as accepted noise. blocking is
+  # what makes a clean baseline stay clean.
+  #
+  # threshold is `--min-severity=medium --persona=regular`, the setting the
+  # baseline was proven clean against. the four `# zizmor: ignore[...]`
+  # suppressions in the tree were each re-read in #1456 and each still carries
+  # the reason it was added; see docs/dev-docs/development/testing.md.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: zizmor
-        id: zizmor
-        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         # three of the audits (impostor-commit, known-vulnerable-actions,
         # stale-action-refs) call the github api, and one 401/5xx there aborts
         # the *whole* run with `fatal: no audit was performed` — a red check on
         # a PR that touched no workflow, indistinguishable from a real finding
-        # now that this step blocks (#1509). so retry, but only that failure.
+        # now that this job blocks (#1509). so retry, but only that failure.
         #
         # zizmor separates the two cases in its exit code: 0 is clean and 11-14
         # are "audit completed, highest severity informational..high", while a
@@ -793,287 +462,19 @@ jobs:
             sleep $((attempt * 5))
           done
 
-      # ── release handoff: release-plz must still dispatch release.yml ──────
-      # a token-created tag does not fire `push: tags`, so the dispatch in
-      # release-plz.yml is the only thing that starts wheel/pypi publishing.
-      # losing it fails silently — releases keep shipping, just without a wheel
-      # (#903). the checker reads the workflows as parsed yaml (#1723); `uv run
-      # --script` installs the pyyaml pinned in its inline metadata, nothing
-      # else. it also asserts the crates.io publish still waits on
-      # `release-gate` (#2025)
-      - name: release handoff wired
-        id: release-handoff
-        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uv run --script scripts/check-release-handoff.py
-      # a check that can no longer fail is worse than none: it reads as coverage
-      - name: release handoff wired (self-test)
-        id: release-handoff-self-test
-        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uv run --script scripts/check-release-handoff.py --self-test
-      # release-plz.yml's `release-gate` only waits on a release push to master,
-      # so a regression in its scripts would first show as a release published
-      # ungated or never published. this runs both against a fake gh, curl,
-      # cargo and clock. it reads nothing the steps above produce
-      - name: release gate scripts against a fake gh
-        id: release-gate
-        if: ${{ !cancelled() }}
-        run: bash scripts/test-release-gate.sh
-
-      # ── board automation: the add-to-board retry policy ───────────────────
-      # project-automation.yml decides which GitHub API failures to wait out and
-      # which to report, and it only runs on master when an issue or PR is
-      # opened, where a regression shows up as items quietly missing from the
-      # board. this runs that step against a fake gh, a fake clock and a fake
-      # board (#1718)
-      - name: board automation retry policy
-        id: project-automation
-        if: ${{ !cancelled() }}
-        run: bash scripts/test-project-automation.sh
-
-      # ── helm chart: lint and render ───────────────────────────────────────
-      # the chart carries the same pre-boot validation the CLI does (#854), and
-      # a chart is the one deployment path with no compiler behind it: a
-      # template that renders to malformed YAML fails at `helm install`, on
-      # someone's cluster, rather than here. render every branch the preflight
-      # initContainer has.
-      #
-      # appVersion is what an operator reads to know which rolter a release
-      # deploys. nothing updated it, so it drifted three releases behind the
-      # workspace before anyone noticed (#1140)
-      - name: helm chart (appVersion tracks the workspace version)
-        id: chart-appversion
-        if: ${{ !cancelled() }}
-        run: python3 scripts/sync-chart-appversion.py
-      - name: helm chart (lint)
-        id: helm-lint
-        if: ${{ !cancelled() && steps.helm.outcome == 'success' }}
-        run: helm lint charts/rolter
-      # every render is parsed with a strict YAML loader rather than discarded:
-      # helm's own loader tolerates a duplicate mapping key, kubectl's
-      # server-side apply and the GitOps controllers do not, and a duplicate
-      # `env:` sat in both deployment templates unnoticed until #1090.
-      # `uv run --script` installs only the pyyaml pinned in the checker's
-      # inline metadata (#1901); run as part of the repo-root project, uv
-      # would build the rolter maturin wheel first, about 3.5 minutes per job
-      # (#2025). that build was the gate's only pass over pyproject.toml, which
-      # rust build's package step now checks on purpose
-      - name: helm chart (render defaults)
-        id: helm-render-defaults
-        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
-      - name: helm chart (render with preflight disabled)
-        id: helm-render-no-preflight
-        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter --set preflight.enabled=false \
-            | uv run --script scripts/check-rendered-manifests.py
-      - name: helm chart (render with every preflight option on)
-        id: helm-render-all-preflight
-        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter \
-            --set preflight.connect=true \
-            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
-            --set 'secretEnv[0].name=ROLTER_KEK' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
-            | uv run --script scripts/check-rendered-manifests.py
-
-      # the verdict for the whole job, and the one place that knows which step
-      # must run on which event. outcomes arrive through env, never inline in
-      # the script (zizmor's template-injection rule). a step id that does not
-      # exist yields an empty outcome, which counts as a failure rather than a
-      # pass
-      - name: report
-        if: ${{ !cancelled() }}
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
-          OUTCOME_GITLEAKS_TREE: ${{ steps.gitleaks-tree.outcome }}
-          OUTCOME_GITLEAKS_HISTORY: ${{ steps.gitleaks-history.outcome }}
-          OUTCOME_TOOLS: ${{ steps.tools.outcome }}
-          OUTCOME_UV: ${{ steps.uv.outcome }}
-          OUTCOME_HELM: ${{ steps.helm.outcome }}
-          OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
-          OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
-          OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
-          OUTCOME_TYPOS: ${{ steps.typos.outcome }}
-          OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
-          OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
-          OUTCOME_MACHETE: ${{ steps.machete.outcome }}
-          OUTCOME_ACTIONLINT: ${{ steps.actionlint.outcome }}
-          OUTCOME_ZIZMOR: ${{ steps.zizmor.outcome }}
-          OUTCOME_RELEASE_HANDOFF: ${{ steps.release-handoff.outcome }}
-          OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
-          OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
-          OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
-          OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
-          OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
-          OUTCOME_HELM_RENDER_DEFAULTS: ${{ steps.helm-render-defaults.outcome }}
-          OUTCOME_HELM_RENDER_NO_PREFLIGHT: ${{ steps.helm-render-no-preflight.outcome }}
-          OUTCOME_HELM_RENDER_ALL_PREFLIGHT: ${{ steps.helm-render-all-preflight.outcome }}
-        run: |
-          set -euo pipefail
-          summary="${GITHUB_STEP_SUMMARY}"
-          failed=0
-
-          # the event guards below mirror the steps' `if:` conditions. a step
-          # outside its event is skipped honestly; inside it, a skip is a
-          # failure, whether a setup step failed or a guard was edited wrong
-          on_pr=no
-          on_pr_or_queue=no
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            on_pr=yes
-          fi
-          if [ "${EVENT_NAME}" = "pull_request" ] || [ "${EVENT_NAME}" = "merge_group" ]; then
-            on_pr_or_queue=yes
-          fi
-
-          {
-            echo "### static checks on \`${EVENT_NAME}\`"
-            echo
-            echo "| former job | step | outcome | reproduce locally |"
-            echo "| --- | --- | --- | --- |"
-          } >> "${summary}"
-
-          # row <former job> <step> <outcome> <must run on this event: yes|no> <command>
-          row() {
-            local job="$1" step="$2" outcome="$3" required="$4" repro="$5" shown
-            shown="${outcome:-no outcome}"
-            if [ "${outcome}" = "skipped" ] && [ "${required}" = "no" ]; then
-              shown="skipped (does not run on ${EVENT_NAME})"
-            elif [ "${outcome}" = "skipped" ]; then
-              shown="**skipped, but must run on ${EVENT_NAME}**"
-              echo "::error title=${job}::${step} was skipped on a ${EVENT_NAME} run, where it must run. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
-              failed=1
-            elif [ "${outcome}" != "success" ]; then
-              shown="**${outcome:-no outcome}**"
-              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
-              failed=1
-            fi
-            # a literal | would end the table cell early
-            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
-          }
-
-          setup="nothing to run locally; re-run the job"
-          row "static checks" "checkout" "${OUTCOME_CHECKOUT}" yes "${setup}"
-          row "gitleaks" "gitleaks (working tree)" "${OUTCOME_GITLEAKS_TREE}" yes \
-            "gitleaks dir . --config .github/config/gitleaks.toml --redact"
-          row "gitleaks" "gitleaks (branch history)" "${OUTCOME_GITLEAKS_HISTORY}" "${on_pr_or_queue}" \
-            "gitleaks git . --config .github/config/gitleaks.toml --redact --log-opts origin/master..HEAD"
-          row "static checks" "install taplo, cargo-deny and cargo-machete" "${OUTCOME_TOOLS}" yes "${setup}"
-          row "static checks" "set up uv" "${OUTCOME_UV}" yes "${setup}"
-          row "static checks" "set up helm" "${OUTCOME_HELM}" yes "${setup}"
-          row "no agent session urls (commits)" "no agent session urls (commits)" "${OUTCOME_SESSION_URLS}" "${on_pr}" \
-            "bash scripts/check-agent-session-urls.sh --commit-range origin/master..HEAD"
-          row "no agent session urls (commits)" "pr body lookups against a fake gh" "${OUTCOME_SESSION_URLS_FIXTURE}" yes \
-            "prek run agent-session-urls --all-files"
-          row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
-            "prek run migrations-immutable --all-files"
-          row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
-          row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
-          row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
-            "cargo deny --all-features --config .config/deny.toml check"
-          row "unused deps" "unused deps" "${OUTCOME_MACHETE}" yes "cargo machete"
-          row "actionlint" "actionlint" "${OUTCOME_ACTIONLINT}" yes "prek run actionlint --all-files"
-          row "zizmor" "zizmor" "${OUTCOME_ZIZMOR}" yes \
-            "uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
-          row "release handoff wired" "release handoff wired" "${OUTCOME_RELEASE_HANDOFF}" yes \
-            "prek run release-handoff --all-files"
-          row "release handoff wired" "release handoff wired (self-test)" "${OUTCOME_RELEASE_HANDOFF_SELF_TEST}" yes \
-            "prek run release-handoff-self-test --all-files"
-          row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
-            "prek run release-gate --all-files"
-          row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
-            "prek run project-automation --all-files"
-          row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
-            "prek run chart-appversion --all-files"
-          row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"
-          row "helm chart" "helm chart (render defaults)" "${OUTCOME_HELM_RENDER_DEFAULTS}" yes \
-            "helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py"
-          row "helm chart" "helm chart (render with preflight disabled)" "${OUTCOME_HELM_RENDER_NO_PREFLIGHT}" yes \
-            "helm template ci charts/rolter --set preflight.enabled=false | uv run --script scripts/check-rendered-manifests.py"
-          row "helm chart" "helm chart (render with every preflight option on)" "${OUTCOME_HELM_RENDER_ALL_PREFLIGHT}" yes \
-            "the helm template command of this step in quality.yml, piped to uv run --script scripts/check-rendered-manifests.py"
-
-          echo >> "${summary}"
-          if [ "${failed}" -ne 0 ]; then
-            echo "one or more static checks did not pass; each has an error annotation naming its former job" >> "${summary}"
-            exit 1
-          fi
-          echo "every static check that applies to \`${EVENT_NAME}\` passed" >> "${summary}"
-
-  # ── ui, storybook, docs: every check that runs on bun ───────────────────────
-  # the dashboard checks, the storybook play tests, the docs formatting check
-  # and the llms.txt check. until #2025 they were four jobs (`ui lint / build`,
-  # `storybook build + play tests`, `docs formatting (prettier)`,
-  # `llms.txt tracks the docs nav`), each with its own checkout and bun
-  # download, and the first two each ran their own `bun install`. they share
-  # one runner now, under the rules of `static checks`: one named step per
-  # former check, every check step under `!cancelled()` so one red step never
-  # hides the next, each guarded on the setup it reads, and a `report` step
-  # that names whichever failed and fails the job when one was skipped.
-  #
-  # the two docs steps read nothing from ui/node_modules: scripts/format-docs.sh
-  # runs its own `bunx prettier@<version>` and gen-llms-txt.ts imports only
-  # node:fs and node:path. so they are guarded on setup-bun alone, and a broken
-  # `bun install` does not hide a docs failure
+  # ── ui: typecheck + production build ────────────────────────────────────────
   ui:
-    name: ui, storybook, docs
+    name: ui lint / build
     runs-on: ubuntu-latest
-    # about 5-6 min, most of it the chromium download and the storybook build.
-    # a hung play test fails the gate in 25 minutes instead of GitHub's
-    # 360-minute default
-    timeout-minutes: 25
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        id: checkout
         with:
           persist-credentials: false
-      # the version comes from .bun-version, the one place it is pinned (#1922).
-      # without it every run took whatever bun was latest that day, and a bun
-      # release that changed the bun.lock format would fail every frozen install
-      # at once with no change in the repo. extended.yml's `bun pin` job fails
-      # nightly once a newer bun is out, so the pin does not go stale
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        id: setup-bun
-        if: ${{ !cancelled() }}
-        with:
-          bun-version-file: .bun-version
-
-      # ── docs formatting (prettier) ────────────────────────────────────────
-      # ui/ has had a prettier config and a `format:check` step since #1667;
-      # every markdown, mdx, json and yaml file outside it had none, so
-      # wrapping, table padding and list markers were whatever each author
-      # typed and a one-word edit showed up in review as a reflowed paragraph
-      # (#1695). the style is the root .prettierrc and the exclusions are
-      # .prettierignore — the same pair the
-      # `prettier (markdown / json / yaml outside ui/)` prek hook reads
-      - name: docs formatting (prettier)
-        id: format-docs
-        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
-        working-directory: .
-        run: bash scripts/format-docs.sh --check
-
-      # ── llms.txt tracks the docs nav ──────────────────────────────────────
-      # llms.txt is generated from docs.json plus each page's frontmatter
-      # (#1582). a hand-maintained index goes stale silently — a page is added
-      # and the index keeps listing the ones that existed when someone last
-      # remembered — so the committed file is regenerated here and the step
-      # fails when it has drifted
-      - name: llms.txt tracks the docs nav
-        id: llms-txt
-        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
-        working-directory: .
-        run: bun scripts/gen-llms-txt.ts --check
-
-      # ── ui lint / build ───────────────────────────────────────────────────
       - name: install
-        id: install
-        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
         # frozen for everyone, dependabot included. it used to self-heal on
         # dependabot's PRs, because the npm ecosystem bumped package.json
         # without writing bun.lock — but that made dependabot's PR pass without
@@ -1083,8 +484,6 @@ jobs:
         # that caused it, and never reaches master
         run: bun install --frozen-lockfile
       - name: lint (tsc --noEmit)
-        id: lint
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run lint
       # ui/ had no formatter config at all until #1667, so `npx prettier` on a
       # file it just edited rewrote the whole thing to prettier's 80 columns and
@@ -1092,14 +491,10 @@ jobs:
       # the tree already had (printWidth 100, everything else prettier's
       # default) and this step keeps it from drifting again
       - name: formatting (prettier --check)
-        id: format
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run format:check
       # every locale must match the en base catalog: a missing key falls back to
       # english mid-sentence, an orphan is copy nothing renders (#489)
       - name: i18n catalog parity
-        id: i18n
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:i18n
       # catalog parity cannot see a string that never reached a catalog at all,
       # which is how `window.confirm("Discard unsaved changes?")` shipped green
@@ -1107,8 +502,6 @@ jobs:
       # that is not in a catalog; the baseline is retired and only reasoned
       # notation in ui/src/lib/i18n/literals-allowlist.ts is tolerated (#958)
       - name: no new hardcoded user-facing strings
-        id: literals
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:literals
       # the maintenance matrix's four "never hand-roll this" rules — Combobox
       # over a bare <select>, CodeBlock over a raw <pre>, ConfirmDialog over
@@ -1118,8 +511,6 @@ jobs:
       # looked. a case the rule is genuinely not about carries an inline
       # `ui-primitives-allow:` waiver with its reason
       - name: no hand-rolled shared components
-        id: primitives
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:primitives
       # focus moves from an effect, a step after a dialog or drawer enters or
       # leaves the document, so a story that asserts it with no waiter is
@@ -1128,8 +519,6 @@ jobs:
       # workflow runs (#1675); #1672's 5s budget does not reach them, because an
       # assertion that never polls waits zero milliseconds at any budget
       - name: story focus assertions wait for the handover
-        id: focus
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:focus
       # the same class of defect one step out: an assertion that never polls
       # waits zero milliseconds at any budget, so a one-shot `toBeDisabled()` on
@@ -1138,40 +527,74 @@ jobs:
       # are still a request behind the dialog. #1689 was six plays of exactly
       # that, passing only while the stub answered inside the same tick (#1700)
       - name: story assertions do not depend on zero latency
-        id: waits
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:waits
       - name: unit tests (bun test)
-        id: unit
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run test
       - name: build
-        id: build
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build
 
-      # ── storybook build + play tests (headless chromium) ─────────────────
-      # builds the static Storybook and runs the interaction (play) tests via
-      # the test-runner against it. a merge gate since #753 — every screen
-      # ships stories for loaded/loading/empty/error plus play tests, so a
-      # regression here is a real one. the heavy step is the one-off chromium
-      # download; the tests themselves are seconds.
-      #
-      # the test-runner launches the headless shell, a separate download from
-      # the full chromium build. ui/package.json pins the test-runner's
-      # playwright to the same version as @playwright/test, so one install
-      # serves both (#737)
+  # ── docs: prose, data and workflow files are formatted ─────────────────────
+  # ui/ has had a prettier config and a `format:check` step since #1667; every
+  # markdown, mdx, json and yaml file outside it had none, so wrapping, table
+  # padding and list markers were whatever each author typed and a one-word
+  # edit showed up in review as a reflowed paragraph (#1695). the style is the
+  # root .prettierrc and the exclusions are .prettierignore — the same pair the
+  # `prettier (markdown / json / yaml outside ui/)` prek hook reads
+  format-docs:
+    name: docs formatting (prettier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: check
+        run: bash scripts/format-docs.sh --check
+
+  # ── docs: the agent-facing index tracks the nav ─────────────────────────────
+  # llms.txt is generated from docs.json plus each page's frontmatter (#1582).
+  # a hand-maintained index goes stale silently — a page is added and the index
+  # keeps listing the ones that existed when someone last remembered — so the
+  # committed file is regenerated here and the job fails when it has drifted
+  llms-txt:
+    name: llms.txt tracks the docs nav
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: check
+        run: bun scripts/gen-llms-txt.ts --check
+
+  # ── storybook: build + play/interaction tests (headless chromium) ───────────
+  # builds the static Storybook and runs the interaction (play) tests via the
+  # test-runner against it. a merge gate since #753 — every screen ships stories
+  # for loaded/loading/empty/error plus play tests, so a regression here is a
+  # real one. the heavy step is the one-off chromium download; the tests
+  # themselves are seconds.
+  storybook:
+    name: storybook build + play tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: install
+        # frozen for everyone; see the ui job's install step for why (#1137)
+        run: bun install --frozen-lockfile
+      # the test-runner launches the headless shell, a separate download from the
+      # full chromium build. ui/package.json pins the test-runner's playwright to
+      # the same version as @playwright/test, so one install serves both (#737)
       - name: install chromium (playwright)
-        id: chromium
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bunx playwright install --with-deps chromium chromium-headless-shell
       - name: build storybook
-        id: build-storybook
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build-storybook
       - name: run play tests
-        id: play-tests
-        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.build-storybook.outcome == 'success' }}
         # serve the static build, wait for it, then run the test-runner against it
         run: |
           python3 -m http.server 6006 --directory storybook-static &
@@ -1181,89 +604,74 @@ jobs:
           done
           bun run test-storybook --url http://127.0.0.1:6006
 
-      # the verdict for the whole job. every step here must run on every event,
-      # so a skip counts as a failure (#1562). outcomes arrive through env,
-      # never inline in the script (zizmor's template-injection rule); a step
-      # id that does not exist yields an empty outcome, which also fails
-      - name: report
-        if: ${{ !cancelled() }}
-        working-directory: .
-        env:
-          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
-          OUTCOME_SETUP_BUN: ${{ steps.setup-bun.outcome }}
-          OUTCOME_FORMAT_DOCS: ${{ steps.format-docs.outcome }}
-          OUTCOME_LLMS_TXT: ${{ steps.llms-txt.outcome }}
-          OUTCOME_INSTALL: ${{ steps.install.outcome }}
-          OUTCOME_LINT: ${{ steps.lint.outcome }}
-          OUTCOME_FORMAT: ${{ steps.format.outcome }}
-          OUTCOME_I18N: ${{ steps.i18n.outcome }}
-          OUTCOME_LITERALS: ${{ steps.literals.outcome }}
-          OUTCOME_PRIMITIVES: ${{ steps.primitives.outcome }}
-          OUTCOME_FOCUS: ${{ steps.focus.outcome }}
-          OUTCOME_WAITS: ${{ steps.waits.outcome }}
-          OUTCOME_UNIT: ${{ steps.unit.outcome }}
-          OUTCOME_BUILD: ${{ steps.build.outcome }}
-          OUTCOME_CHROMIUM: ${{ steps.chromium.outcome }}
-          OUTCOME_BUILD_STORYBOOK: ${{ steps.build-storybook.outcome }}
-          OUTCOME_PLAY_TESTS: ${{ steps.play-tests.outcome }}
+  # ── smoke: run the gateway and hit it end-to-end ────────────────────────────
+  # boots the real binary and exercises the built-in fake-llm (no upstream or
+  # secrets needed), catching wiring regressions no unit test sees.
+  smoke:
+    name: gateway smoke (fake-llm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/wild-linker
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: build gateway
+        run: cargo build -p rolter-gateway
+      - name: boot + probe
         run: |
           set -euo pipefail
-          summary="${GITHUB_STEP_SUMMARY}"
-          failed=0
+          # no config file: the gateway starts open with the built-in fake-llm
+          ./target/debug/rolter-gateway --config /nonexistent.toml &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          # wait for the listener
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4000/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "== /healthz =="
+          curl -fsS http://127.0.0.1:4000/healthz
+          echo "== /v1/models =="
+          curl -fsS http://127.0.0.1:4000/v1/models
+          echo "== fake-llm chat (non-streaming) =="
+          curl -fsS http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","messages":[{"role":"user","content":"hi"}]}' \
+            | tee /tmp/resp.json
+          grep -q '"choices"' /tmp/resp.json
+          echo "== fake-llm chat (streaming) =="
+          # write to a file rather than piping into grep -q: grep exits on the
+          # first match and closes the pipe, so curl fails writing the rest of
+          # the SSE stream (exit 23) and `set -o pipefail` fails the step
+          curl -fsS -N --max-time 30 http://127.0.0.1:4000/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"fake-llm","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
+            -o /tmp/stream.txt
+          cat /tmp/stream.txt
+          grep -q 'data:' /tmp/stream.txt
 
-          {
-            echo "### ui, storybook, docs"
-            echo
-            echo "| former job | step | outcome | reproduce locally |"
-            echo "| --- | --- | --- | --- |"
-          } >> "${summary}"
-
-          # row <former job> <step> <outcome> <command>
-          row() {
-            local job="$1" step="$2" outcome="$3" repro="$4" shown
-            shown="${outcome:-no outcome}"
-            if [ "${outcome}" = "skipped" ]; then
-              shown="**skipped, but must run**"
-              echo "::error title=${job}::${step} was skipped, and it must run on every event. a skipped step reads as a pass (#1562): check the setup steps above and this step's if: guard. reproduce locally with: ${repro}"
-              failed=1
-            elif [ "${outcome}" != "success" ]; then
-              shown="**${outcome:-no outcome}**"
-              echo "::error title=${job}::${step} did not pass (outcome: ${outcome:-none}). reproduce locally with: ${repro}"
-              failed=1
-            fi
-            # a literal | would end the table cell early
-            printf "| %s | %s | %s | \`%s\` |\n" "${job}" "${step}" "${shown}" "${repro//|/\\|}" >> "${summary}"
-          }
-
-          setup="nothing to run locally; re-run the job"
-          ui="ui lint / build"
-          sb="storybook build + play tests"
-          row "ui, storybook, docs" "checkout" "${OUTCOME_CHECKOUT}" "${setup}"
-          row "ui, storybook, docs" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
-          row "docs formatting (prettier)" "docs formatting (prettier)" "${OUTCOME_FORMAT_DOCS}" "just fmt-docs-check"
-          row "llms.txt tracks the docs nav" "llms.txt tracks the docs nav" "${OUTCOME_LLMS_TXT}" \
-            "bun scripts/gen-llms-txt.ts --check"
-          row "${ui}" "install" "${OUTCOME_INSTALL}" "cd ui && bun install --frozen-lockfile"
-          row "${ui}" "lint (tsc --noEmit)" "${OUTCOME_LINT}" "cd ui && bun run lint"
-          row "${ui}" "formatting (prettier --check)" "${OUTCOME_FORMAT}" "cd ui && bun run format:check"
-          row "${ui}" "i18n catalog parity" "${OUTCOME_I18N}" "cd ui && bun run check:i18n"
-          row "${ui}" "no new hardcoded user-facing strings" "${OUTCOME_LITERALS}" "cd ui && bun run check:literals"
-          row "${ui}" "no hand-rolled shared components" "${OUTCOME_PRIMITIVES}" "cd ui && bun run check:primitives"
-          row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
-          row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
-          row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
-          row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
-          row "${sb}" "install chromium (playwright)" "${OUTCOME_CHROMIUM}" \
-            "cd ui && bunx playwright install --with-deps chromium chromium-headless-shell"
-          row "${sb}" "build storybook" "${OUTCOME_BUILD_STORYBOOK}" "cd ui && bun run build-storybook"
-          row "${sb}" "run play tests" "${OUTCOME_PLAY_TESTS}" "cd ui && bun run test:stories"
-
-          echo >> "${summary}"
-          if [ "${failed}" -ne 0 ]; then
-            echo "one or more ui, storybook or docs checks did not pass; each has an error annotation naming its former job" >> "${summary}"
-            exit 1
-          fi
-          echo "every ui, storybook and docs check passed" >> "${summary}"
+  # ── full-stack smoke: the production-shaped docker compose topology ──────────
+  # boots postgres, redis, clickhouse, gateway and control together via
+  # docker-compose.yml + the CI overlay, then exercises the gateway (fake-llm)
+  # and the control snapshot path. catches wiring/env/compose regressions the
+  # single-binary smoke above cannot see (e.g. a misnamed ROLTER_DATABASE_URL).
+  # informational until the ~image-build cost and flake profile are trusted;
+  # promote by dropping continue-on-error. see ROL-245.
+  compose-smoke:
+    name: compose smoke (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: full-stack compose smoke
+        run: bash docker/smoke/smoke.sh
 
   # ── image smoke: the single image through published ports ───────────────────
   # runs the image the quickstart documents (default command, ports published
@@ -1271,7 +679,7 @@ jobs:
   # admin token and no acknowledgement. `rolter --version` and every in-process
   # test pass on an image whose planes bind the container's loopback, which a
   # published port never reaches (#1891); only this sees it. blocking, unlike
-  # extended.yml's compose smoke: it needs no secrets and no compose stack
+  # compose-smoke: it needs no secrets and no compose stack
   image-smoke:
     name: image smoke (published ports)
     runs-on: ubuntu-latest
@@ -1285,6 +693,61 @@ jobs:
       - name: run it with published ports and curl both planes
         run: bash docker/smoke/image-smoke.sh rolter:image-smoke
 
+  # ── packaging: catch crate-publish breakage before a release ────────────────
+  # `cargo publish` builds each crate from its packaged tarball in isolation, so a
+  # file referenced outside the crate directory (e.g. include_str!("../../x")) or a
+  # path dependency not carried in the package compiles fine in-tree but 404s at
+  # publish time. `cargo package --workspace` reproduces that isolated verify build
+  # for every publishable crate, so packaging breakage fails here on the PR instead
+  # of mid-release after some crates have already published to crates.io (ROL-233).
+  # the PyPI side gets the same early check: `maturin sdist` from the repo root
+  # parses pyproject.toml and [tool.maturin], resolves manifest-path, bindings,
+  # readme and license, and packages the path dependencies, in seconds and
+  # without compiling. release.yml's build-wheels is the first real wheel build,
+  # and it runs after crates.io has published and the tag is pushed (#2025)
+  package:
+    name: package (publish verify)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/wild-linker
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: cargo package (verifies each crate in isolation)
+        run: cargo package --workspace --locked
+      - name: maturin sdist (validates the PyPI packaging)
+        if: ${{ !cancelled() }}
+        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
+
+  # ── spelling: docs / comments / identifiers ─────────────────────────────────
+  # false positives are pinned in .github/config/typos.toml with an explaining comment each.
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/typos
+        with:
+          version: "1.50.0"
+          config: .github/config/typos.toml
+
+  # ── unused dependencies ─────────────────────────────────────────────────────
+  machete:
+    name: unused deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: bnjbvr/cargo-machete@ac30a525c0a8d163a92d727b3ff079ee3f6ecb08 # v0.9.2
+
   # ── informational checks ────────────────────────────────────────────────────
   # non-blocking for now (continue-on-error); promote to required once their
   # baseline is understood. see the required-checks policy in ROL-124.
@@ -1295,16 +758,8 @@ jobs:
   # .github/coverage-baseline.txt (new code cannot drop below baseline − tolerance),
   # and uploads the lcov report as a CI artifact. it does not block until the
   # baseline is trusted — promote by dropping continue-on-error here.
-  #
-  # pull_request only: testing.md asks for the baseline edit in the PR that
-  # moves coverage, so a PR needs the number, while push, dispatch and queue
-  # runs would spend a full instrumented build on a verdict nobody reads.
-  # extended.yml runs the same job on master nightly with the same
-  # `shared-key: coverage`, which saves the cache this job restores; keep the
-  # two in step
   coverage:
     name: coverage (informational)
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
@@ -1347,10 +802,7 @@ jobs:
           components: llvm-tools-preview
       - uses: ./.github/actions/wild-linker
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: coverage
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
@@ -1370,3 +822,105 @@ jobs:
             lcov.info
             coverage.json
           if-no-files-found: error
+
+  # ── toml formatting: Cargo.toml / rolter.toml / deny.toml ───────────────────
+  # blocking: the whole tree is taplo-formatted, so any drift is a real diff.
+  taplo:
+    name: taplo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: taplo
+      - name: taplo fmt --check
+        run: taplo fmt --check --diff
+
+  # ── MSRV: build on the pinned minimum supported rust version ─────────────────
+  # agents can silently adopt newer-than-declared language features; this catches
+  # it against `rust-version` in Cargo.toml. informational until the baseline is
+  # green on the pinned toolchain.
+  msrv:
+    name: msrv build (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: 1.82.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo check (msrv)
+        run: cargo check --workspace --all-features
+
+  # ── cross-platform: check the workspace builds off linux ────────────────────
+  # linux is covered by every job above; macOS catches os-specific breakage.
+  # informational for now (adds runner minutes); promote if it earns its keep.
+  cross-platform:
+    name: macos check (informational)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo check (macos)
+        run: cargo check --workspace --all-features
+
+  # ── semver: notice when a shared crate's rust API moved ─────────────────────
+  # scoped deliberately. the baseline is the previous release *tag*, not the
+  # published crate, and only the crates listed in GUARDED are checked. this is
+  # a review signal, never a gate: ADR-0032 (#922) decides that no rolter crate
+  # offers a stable rust API at 1.0, so `continue-on-error` stays on and this
+  # job never joins ci-ok's needs — a gate enforcing a promise the ADR disclaims
+  # would be worse than either choice alone. what each surface actually promises
+  # is in docs/dev-docs/development/api-stability.md (#1217).
+  semver-checks:
+    name: semver-checks (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      # crates whose rust API is checked for patch-level compatibility against
+      # the last release tag. keep in sync with docs/dev-docs/development/api-stability.md
+      GUARDED: -p rolter-auth -p rolter-balancer -p rolter-gateway -p rolter-proxy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # --baseline-rev needs the tag history, which a shallow clone omits
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-semver-checks
+      - name: resolve baseline tag
+        id: baseline
+        run: |
+          tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          if [ -z "$tag" ]; then
+            echo "no release tag found; nothing to diff against" >> "$GITHUB_STEP_SUMMARY"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+      # --release-type patch is the strict reading: on the guarded crates a
+      # breaking change must be a deliberate act, not a side effect
+      - name: cargo semver-checks (guarded crates)
+        if: steps.baseline.outputs.tag != ''
+        env:
+          BASELINE: ${{ steps.baseline.outputs.tag }}
+        run: |
+          # shellcheck disable=SC2086 # GUARDED is a deliberate word-split list
+          cargo semver-checks $GUARDED --baseline-rev "$BASELINE" --release-type patch

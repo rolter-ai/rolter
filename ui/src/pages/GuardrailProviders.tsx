@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TFunction } from "i18next";
-import { Loader2, PlugZap, Plus, ShieldAlert, ShieldOff, ShieldQuestion } from "lucide-react";
+import { Loader2, PlugZap, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -27,21 +26,12 @@ import { Switch } from "@/components/ui/switch";
 import {
   createGuardrailProvider,
   deleteGuardrailProvider,
-  fetchConfig,
   fetchGuardrailProviders,
   updateGuardrailProvider,
   type GuardrailProviderInput,
   type GuardrailProviderRow,
 } from "@/lib/api";
-import {
-  providerStatus,
-  readEffectiveWebhook,
-  resolveEnforcement,
-  type Enforcement,
-  type ProviderStatus,
-} from "@/lib/guardrail-enforcement";
 import { errorDetail, useToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const EMPTY: GuardrailProviderInput = {
@@ -61,19 +51,9 @@ function GuardrailProvidersScreen() {
   const { t } = useTranslation();
   const client = useQueryClient();
   const toast = useToast();
-  // the registry and the effective webhook are read together, so the banner
-  // never pairs a fresh list with a stale webhook between two refetches. an
-  // unreadable config is `null`: the list still renders and the banner says it
-  // cannot confirm enforcement (#2162)
   const query = useQuery({
     queryKey: ["guardrail-providers"],
-    queryFn: async () => {
-      const [providers, webhook] = await Promise.all([
-        fetchGuardrailProviders(),
-        fetchConfig().then(readEffectiveWebhook, () => null),
-      ]);
-      return { providers, webhook };
-    },
+    queryFn: fetchGuardrailProviders,
     retry: false,
   });
 
@@ -120,10 +100,8 @@ function GuardrailProvidersScreen() {
     setDeleteTarget(provider);
   };
 
-  const providers = query.data?.providers ?? [];
-  const enforcement = query.data
-    ? resolveEnforcement(query.data.providers, query.data.webhook)
-    : null;
+  const providers = query.data ?? [];
+  const active = providers.find((provider) => provider.enabled);
 
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
@@ -148,10 +126,20 @@ function GuardrailProvidersScreen() {
         </GatedButton>
       </div>
 
-      {/* an empty registry with nothing on in the config file is the empty
-          state's to explain; every other state is worth a line here */}
-      {enforcement && (enforcement.state !== "off" || providers.length > 0) && (
-        <EnforcementBanner enforcement={enforcement} onRetry={() => void query.refetch()} />
+      {active && (
+        <section className="flex items-center gap-3 rounded-[10px] border border-[color:var(--status-success)]/30 bg-[color:var(--status-success)]/5 p-4">
+          <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />
+          <div>
+            <p className="text-sm font-medium">
+              {t("pages.guardrailProviders.activeBanner", { name: active.name })}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {active.failure_mode === "fail_closed"
+                ? t("pages.guardrailProviders.activeFailClosed")
+                : t("pages.guardrailProviders.activeFailOpen")}
+            </p>
+          </div>
+        </section>
       )}
 
       {query.isLoading ? (
@@ -187,9 +175,6 @@ function GuardrailProvidersScreen() {
               title={provider.name}
               description={provider.url}
               enabled={provider.enabled}
-              status={
-                enforcement ? cardStatus(providerStatus(provider, enforcement), t) : undefined
-              }
               badges={
                 <>
                   <Badge tone={provider.failure_mode === "fail_closed" ? "danger" : "warning"}>
@@ -199,22 +184,11 @@ function GuardrailProvidersScreen() {
                   <Badge tone="info">{provider.auth_kind.replace("_", " ")}</Badge>
                 </>
               }
-              details={
-                <>
-                  {t("pages.guardrailProviders.detailLine", {
-                    timeout: provider.timeout_ms,
-                    retries: provider.max_retries,
-                    kib: Math.round(provider.max_body_bytes / 1024),
-                  })}
-                  {/* said on a paused row too: activating it is how a working
-                      provider gets replaced by one that checks nothing */}
-                  {provider.stage === "post_call" && (
-                    <p className="mt-1 text-[color:var(--status-warning-text)]">
-                      {t("pages.guardrailProviders.postCallCardNote")}
-                    </p>
-                  )}
-                </>
-              }
+              details={t("pages.guardrailProviders.detailLine", {
+                timeout: provider.timeout_ms,
+                retries: provider.max_retries,
+                kib: Math.round(provider.max_body_bytes / 1024),
+              })}
               actions={
                 <>
                   <GatedButton
@@ -293,129 +267,6 @@ function GuardrailProvidersScreen() {
   );
 }
 
-/**
- * The card badge for a row, or `undefined` for the two states `PolicyCard`
- * already says from `enabled` alone.
- */
-function cardStatus(
-  status: ProviderStatus,
-  t: TFunction,
-): { tone: "warning" | "neutral"; label: string } | undefined {
-  switch (status) {
-    case "inert":
-      return { tone: "warning", label: t("pages.guardrailProviders.statusInert") };
-    case "overridden":
-      return { tone: "neutral", label: t("pages.guardrailProviders.statusOverridden") };
-    case "unknown":
-      return { tone: "neutral", label: t("pages.guardrailProviders.statusUnknown") };
-    default:
-      return undefined;
-  }
-}
-
-const BANNER_TONE = {
-  success: "border-[color:var(--status-success)]/30 bg-[color:var(--status-success)]/5",
-  warning: "border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5",
-  neutral: "border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]",
-};
-
-/**
- * What the gateway enforces, read from the effective webhook rather than from
- * the registry's switch. Green only when requests are really sent to a
- * guardrail service before they go upstream (#2162).
- */
-function EnforcementBanner({
-  enforcement,
-  onRetry,
-}: {
-  enforcement: Enforcement;
-  onRetry: () => void;
-}) {
-  const { t } = useTranslation();
-  const titleId = React.useId();
-  let tone: keyof typeof BANNER_TONE = "neutral";
-  let icon: React.ReactNode;
-  let title: string;
-  const lines: React.ReactNode[] = [];
-
-  if (enforcement.state === "unknown") {
-    icon = <ShieldQuestion className="h-5 w-5 text-muted-foreground" aria-hidden />;
-    title = t("pages.guardrailProviders.unknownBanner");
-    lines.push(t("pages.guardrailProviders.unknownBody"));
-  } else if (enforcement.state === "off") {
-    icon = <ShieldOff className="h-5 w-5 text-muted-foreground" aria-hidden />;
-    title = t("pages.guardrailProviders.offBanner");
-    lines.push(t("pages.guardrailProviders.offBody"));
-  } else {
-    const { provider, overridden, webhook } = enforcement;
-    if (enforcement.state === "enforced") {
-      tone = "success";
-      icon = <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />;
-      title = provider
-        ? t("pages.guardrailProviders.activeBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileBanner");
-    } else {
-      tone = "warning";
-      icon = (
-        <ShieldAlert className="h-5 w-5 text-[color:var(--status-warning-text)]" aria-hidden />
-      );
-      title = provider
-        ? t("pages.guardrailProviders.inertBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileInertBanner");
-    }
-    if (!provider) {
-      // the file's webhook is not a row on this screen, so its endpoint is
-      // the only way to tell which service it is
-      lines.push(<span className="font-mono">{webhook.url}</span>);
-    }
-    if (enforcement.state === "enforced") {
-      lines.push(
-        webhook.failure_mode === "fail_closed"
-          ? t("pages.guardrailProviders.activeFailClosed")
-          : t("pages.guardrailProviders.activeFailOpen"),
-      );
-    } else {
-      lines.push(
-        provider
-          ? t("pages.guardrailProviders.inertBody")
-          : t("pages.guardrailProviders.fileInertBody"),
-      );
-    }
-    if (!provider) {
-      lines.push(
-        overridden
-          ? t("pages.guardrailProviders.overriddenNote", { name: overridden.name })
-          : t("pages.guardrailProviders.fileNote"),
-      );
-    }
-  }
-
-  return (
-    // named by its title, so the status is a region a screen reader can jump to
-    <section
-      aria-labelledby={titleId}
-      className={cn("flex items-start gap-3 rounded-[10px] border p-4", BANNER_TONE[tone])}
-    >
-      <span className="mt-0.5 flex-none">{icon}</span>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p id={titleId} className="text-sm font-medium">
-          {title}
-        </p>
-        {lines.map((line, index) => (
-          <p key={index} className="break-words text-xs text-muted-foreground">
-            {line}
-          </p>
-        ))}
-      </div>
-      {enforcement.state === "unknown" && (
-        <Button variant="outline" size="sm" className="flex-none" onClick={onRetry}>
-          {t("errors.load.retry")}
-        </Button>
-      )}
-    </section>
-  );
-}
-
 function ProviderDialog({
   open,
   initial,
@@ -435,7 +286,6 @@ function ProviderDialog({
   const [form, setForm] = React.useState<GuardrailProviderInput>(initial ?? EMPTY);
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
-  const postCall = form.stage === "post_call";
   const valid =
     form.name.trim() !== "" &&
     /^https?:\/\//.test(form.url) &&
@@ -482,18 +332,9 @@ function ProviderDialog({
                   stage: picked as GuardrailProviderInput["stage"],
                 })
               }
-              aria-describedby={postCall ? "provider-stage-note" : undefined}
               options={[
                 { value: "pre_call", label: t("pages.guardrailProviders.stagePre") },
-                // the gateway runs only the pre-call stage (`consult_pre_call`
-                // returns early for any other), so this is not offered until
-                // it runs the output stage too (#2162)
-                {
-                  value: "post_call",
-                  label: t("pages.guardrailProviders.stagePost"),
-                  description: t("pages.guardrailProviders.stagePostUnsupported"),
-                  disabled: true,
-                },
+                { value: "post_call", label: t("pages.guardrailProviders.stagePost") },
               ]}
             />
           </Field>
@@ -513,16 +354,6 @@ function ProviderDialog({
             />
           </Field>
         </div>
-        {/* a row can still carry the stage: the API accepts it, and rows saved
-            from this dialog before it was disabled keep it */}
-        {postCall && (
-          <p
-            id="provider-stage-note"
-            className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
-          >
-            {t("pages.guardrailProviders.postCallDialogNote")}
-          </p>
-        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label={t("pages.guardrailProviders.fieldTimeout")} htmlFor="provider-timeout">
             <Input

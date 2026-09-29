@@ -15,9 +15,8 @@ on:
   # admin bypass to merge (#1025). `workflow_dispatch` is the documented
   # exception: it always creates a run, even from the `GITHUB_TOKEN`, and the
   # check-runs it produces attach to the head commit of the ref it runs on,
-  # which is the release PR's head. `release-plz.yml` dispatches it while the
-  # release PR carries the `release:ready` label (`dispatch-release-pr-ci`
-  # there), and `release-pr-ready.yml` dispatches it when that label is added.
+  # which is the release PR's head. `release-plz.yml` dispatches it — see
+  # `dispatch-release-pr-ci` there.
   workflow_dispatch:
   # the merge queue builds a synthetic branch holding master plus every pr
   # ahead of this one in the queue, and asks for the same required check
@@ -91,16 +90,8 @@ jobs:
   # (a build-free source extractor), so to lift call-target resolution above
   # CodeQL's quality threshold we `cargo fetch` the dependencies first, giving
   # the extractor the crate sources it needs to resolve calls. see #484.
-  #
-  # two legs. rust gets its own because it is the slow one (~8 min) and the
-  # only one with a pr skip. actions, javascript-typescript and python share
-  # one init and one analyze: each is a build-free extraction of a minute or
-  # two, and three jobs spent most of their time on setup. the shared leg still
-  # uploads one sarif per language under its old `/language:<name>` category,
-  # so code scanning keeps the same four configurations. the leg name has no
-  # comma because release.yml splits its required-check list on commas
   codeql:
-    name: codeql (${{ matrix.leg }})
+    name: codeql (${{ matrix.language }})
     # scoped to `pull_request` for the same reason `quality` is: no other event
     # may inherit the title-edit fast path
     if: github.event_name != 'pull_request' || github.event.action != 'edited'
@@ -112,115 +103,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - leg: rust
-            languages: rust
-          - leg: actions-js-python
-            languages: actions,javascript-typescript,python
+        language: [rust, javascript-typescript, python, actions]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # the rust leg of a pull_request run diffs the merge commit against
-          # its first parent (the base), so it needs both parents
-          fetch-depth: ${{ matrix.leg == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
-      # on a pull request that changes no rust source, cargo manifest, lockfile,
-      # toolchain pin or codeql config, the rust analysis would extract the same
-      # rust code master was already analysed with. the rust leg then skips its
-      # setup, extract and analyze steps and still reports success: codeql never
-      # fails on alerts, so the skip cannot change a verdict (ADR-0034). only
-      # `pull_request` skips. push, merge_group and workflow_dispatch always
-      # analyse, so the merge queue still runs this leg in full before anything
-      # lands, which is also what catches a pr that breaks the leg itself. the
-      # step fails open: any doubt about the diff means `analyze=true`, and a
-      # step error leaves the output unset, which the guards below read as run
-      - if: matrix.leg == 'rust' && github.event_name == 'pull_request'
-        id: scope
-        name: detect rust changes
-        continue-on-error: true
-        shell: bash
-        run: |
-          analyze() {
-            echo "$1"
-            echo "analyze=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-          git rev-parse --verify --quiet 'HEAD^2' > /dev/null \
-            || analyze "HEAD is not a pull request merge commit; running the rust analysis"
-          changed=$(git diff --no-renames --name-only 'HEAD^1' HEAD) \
-            || analyze "could not diff the pull request against its base; running the rust analysis"
-          pattern='(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/codeql/)'
-          rc=0
-          matched=$(printf '%s\n' "$changed" | grep -E "$pattern") || rc=$?
-          case "$rc" in
-            0)
-              echo "rust-relevant files changed:"
-              printf '%s\n' "$matched" | sed 's/^/  /'
-              echo "analyze=true" >> "$GITHUB_OUTPUT"
-              ;;
-            1)
-              echo "::notice title=codeql (rust)::no rust-relevant change in this pull request, skipping extract and analyze"
-              echo "analyze=false" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              analyze "grep failed (exit ${rc}); running the rust analysis"
-              ;;
-          esac
       # make the dependency sources available so the rust extractor resolves
       # calls into crates instead of leaving them unresolved
-      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.language == 'rust'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
-      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.language == 'rust'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-      - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+      - if: matrix.language == 'rust'
         name: fetch dependencies for analysis
         run: cargo fetch --locked
       - name: initialize codeql
-        if: matrix.leg != 'rust' || steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/init@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
-          languages: ${{ matrix.languages }}
+          languages: ${{ matrix.language }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
       - name: analyze
-        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
-          category: "/language:rust"
-      # analyze takes one `category` for every language it ran, and the cli
-      # writes it verbatim into each run, so three languages under one
-      # category would collide on upload. analyze writes one sarif per language
-      # instead (named by the canonical language, so javascript-typescript is
-      # `javascript.sarif`) and each is uploaded under its own category. a
-      # failed analyze still uploads its debugging sarif (`failure-only`)
-      - name: analyze (actions, javascript-typescript, python)
-        if: matrix.leg != 'rust'
-        uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
-        with:
-          upload: failure-only
-          output: ${{ runner.temp }}/codeql-sarif
-      - name: upload actions results
-        if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
-        with:
-          sarif_file: ${{ runner.temp }}/codeql-sarif/actions.sarif
-          category: "/language:actions"
-      - name: upload javascript-typescript results
-        if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
-        with:
-          sarif_file: ${{ runner.temp }}/codeql-sarif/javascript.sarif
-          category: "/language:javascript-typescript"
-      - name: upload python results
-        if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
-        with:
-          sarif_file: ${{ runner.temp }}/codeql-sarif/python.sarif
-          category: "/language:python"
+          category: "/language:${{ matrix.language }}"
 
   # the `edited` fast path needs exactly one fact about a head sha: did the
   # heavy gate run here, and did it pass. it used to ask that by looking at the
@@ -458,31 +366,19 @@ jobs:
       # performs that merge. its ref is synthetic and belongs to no pr head, so
       # the pr is resolved by the number embedded in
       # `gh-readonly-queue/<base>/pr-<n>-<sha>` (#1318).
-      #
-      # on a pull_request run the body is read live from the api, never from
-      # `github.event.pull_request.body`. the payload copy is frozen when the
-      # event fires, and this step runs after `quality` and `codeql`, minutes
-      # later. a session url added in between failed only the `edited` run the
-      # edit started, whose `ci-ok` also declines while the gate is unfinished,
-      # and then this run's newer, green `ci-ok` outranked it with the url
-      # still in the body (#2035). the number in the payload cannot change, so
-      # it is the one field taken from there. this is the same `pulls.get` the
-      # pr-title step makes with the same token, so a fork or dependabot pr
-      # needs nothing it did not already have
       - name: no agent session urls (pr body)
         id: pr-body
         if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') }}
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if [ "${EVENT_NAME}" = "pull_request" ]; then
-            # live: the api, with three attempts and no green on a failed read
-            bash scripts/check-agent-session-urls.sh --pr-number "${REPO}" "${PR_NUMBER}"
+            bash scripts/check-agent-session-urls.sh --text "${PR_BODY}"
           elif [ "${EVENT_NAME}" = "merge_group" ]; then
             # queued: the ref is synthetic, so the pr is resolved by the number
             # inside it rather than by head ref
@@ -509,8 +405,8 @@ jobs:
       # read a commit message (#1562). the two runs that take the dispatch path
       # are exactly the wrong ones to have no verdict on: the release PR, which
       # only ever gets a dispatched run because release-plz opens it with the
-      # repo `GITHUB_TOKEN` (#1025), and the dispatch that used to be the way
-      # out for a head sha whose `opened` run failed its body check (#1522).
+      # repo `GITHUB_TOKEN` (#1025), and the documented recovery for a head sha
+      # whose `opened` event froze a dirty body (#1522).
       #
       # a dispatch carries no pull request in its payload, so the range is
       # resolved by head ref through the same lookup #1523 added for the body.

@@ -132,24 +132,6 @@ status_page_interval_secs = 60
   Active health checks are most valuable for **self-hosted vLLM, TGI, or SGLang pools** where instances can crash or restart independently. For managed APIs like OpenAI and Anthropic, cooldowns and retries are usually sufficient — those providers are highly available and probing them generates billable traffic.
 </Tip>
 
-## Provider health in the dashboard
-
-**Models → Provider Health** reads `provider_health_events` over the last 7 days (probes, status-page polls and real traffic) and measures each provider against a 99% SLA. One card per provider, with the targets that carried its traffic listed inside it.
-
-The screen does not show circuit-breaker state. The gateway keeps its breakers in memory and does not report them to the control plane; trips are counted as `rolter_breaker_trip_total` in [`/metrics`](/observability/metrics). See [Circuit breakers](/reliability/circuit-breakers).
-
-Each card, and each target inside it, is in one of three states:
-
-| State       | What it means                                                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| below SLA   | More than 1% of the last 7 days' events failed. The state holds until those failures leave the window, even if the provider has since recovered.       |
-| SLA at risk | The 7 days still meet the SLA, but more than 1% of events in the last two hours failed, so the error budget is being spent faster than the SLA allows. |
-| within SLA  | The 7 days meet the SLA, and so do the last two hours.                                                                                                 |
-
-The last two hours are the two newest hourly buckets in the timeline. A probed provider is judged on its own probes and status-page polls. A provider with no probes has no events of its own, so its card is rolled up from its targets and shows the worst of their states.
-
-**Error budget burn** is the 7-day failure rate as a share of the 1% the SLA allows. Above 100% is a breach.
-
 ## Gateway liveness endpoint
 
 Separate from upstream health checks, Rolter exposes its own liveness endpoint at:

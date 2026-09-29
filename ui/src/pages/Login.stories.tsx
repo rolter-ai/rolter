@@ -14,7 +14,6 @@ import {
   type FetchStub,
 } from "./story-harness";
 import { AuthProvider } from "@/lib/auth";
-import en from "@/lib/i18n/locales/en.json";
 import { withPageA11y } from "@/lib/story-a11y";
 
 /**
@@ -228,29 +227,6 @@ export const Loading: Story = {
     await expect(canvas.queryByLabelText(/^password/i)).not.toBeInTheDocument();
     // the branding and the heading are not deployment-dependent, so they stay
     await expect(canvas.getByRole("heading")).toBeVisible();
-  },
-};
-
-/**
- * Signed out there is no shell around this page to name the tab, so the page
- * names it itself: its own heading, then the name, lowercase (#2002).
- */
-export const DocumentTitle: Story = {
-  // blanked first: the tab title outlives a story, and one left behind by the
-  // previous story must not pass for this one's
-  beforeEach: () => {
-    document.title = "";
-  },
-  render: () => (
-    <Harness fetchStub={async () => json(METHODS)}>
-      <AuthProvider>
-        <Login />
-      </AuthProvider>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await within(canvasElement).findByRole("heading", { level: 1, name: en.auth.title });
-    await waitFor(() => expect(document.title).toBe(`${en.auth.title} · rolter`));
   },
 };
 

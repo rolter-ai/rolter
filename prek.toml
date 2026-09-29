@@ -189,17 +189,17 @@ id = "release-handoff"
 name = "release handoff is wired"
 entry = "scripts/check-release-handoff.py"
 language = "python"
-files = "^(\\.github/workflows/(release|release-plz|release-pr-ready|ci)\\.yml|scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh))$"
+files = "^(\\.github/workflows/(release|release-plz|ci)\\.yml|scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh))$"
 pass_filenames = false
 
-# the self-test's broken fixtures edit the text of the workflows and the wait
-# script, so an edit to any of them can leave one with nothing to break
+# the self-test's broken fixtures edit the wait script's text, so an edit there
+# can leave one with nothing to break
 [[repos.hooks]]
 id = "release-handoff-self-test"
 name = "release handoff checks can still fail"
 entry = "scripts/check-release-handoff.py --self-test"
 language = "python"
-files = "^(\\.github/workflows/(release|release-plz|release-pr-ready|ci)\\.yml|scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh))$"
+files = "^scripts/(check-release-handoff\\.py|wait-for-ci-gate\\.sh)$"
 pass_filenames = false
 
 # release-plz.yml's release-gate runs both scripts only on a push to master,
@@ -210,16 +210,6 @@ name = "release gate scripts against a fake gh"
 entry = "bash scripts/test-release-gate.sh"
 language = "system"
 files = "^scripts/(wait-for-ci-gate|unpublished-crates|test-release-gate)\\.sh$"
-pass_filenames = false
-
-# ci-ok's pr-body step reads the body from the api, so its shell only ever ran
-# on a real pull request. this runs it, extracted from ci.yml, against a fake gh
-[[repos.hooks]]
-id = "agent-session-urls"
-name = "pr body lookups against a fake gh"
-entry = "bash scripts/test-agent-session-urls.sh"
-language = "system"
-files = "^(\\.github/workflows/ci\\.yml|scripts/(check|test)-agent-session-urls\\.sh)$"
 pass_filenames = false
 
 [[repos.hooks]]

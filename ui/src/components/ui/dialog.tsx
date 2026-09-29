@@ -6,8 +6,8 @@ import { useTranslation } from "react-i18next";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { cn } from "@/lib/utils";
 
-// minimal dependency-free dialog (no radix) — overlay + centered panel.
-// Controlled via `open`/`onOpenChange`.
+// minimal dependency-free dialog (no radix) — overlay + centered panel,
+// mirrors the Rolter Design System Dialog. Controlled via `open`/`onOpenChange`.
 // focus management, the Tab trap and Escape come from useModalA11y; the title
 // registers itself through context so the panel is labelled by it
 //

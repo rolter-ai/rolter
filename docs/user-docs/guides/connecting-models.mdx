@@ -30,7 +30,7 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
     **Test connection** asks the upstream for its model list and says so if it gets anything else. Fix a wrong key or URL here, not after a client fails.
   </Step>
   <Step title="Add a route">
-    **Models → Model Catalog → + Add model** (the **+ Add route** button on Routing Rules opens the same sheet): the public name clients will send (say `gpt-4o`), a strategy, and the provider target it lands on. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
+    **Models → Routing Rules**: the public name clients will send (say `gpt-4o`) and the provider model it lands on. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
   </Step>
   <Step title="Try it">
     Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost. Pick the model you just routed in the Playground's model selector rather than trusting its default ([#1853](https://github.com/rolter-ai/rolter/issues/1853)).
@@ -39,10 +39,10 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
 
 ## Failover
 
-Give a route two targets that serve the same model — two regions of one vendor, or two vendors. In the model sheet, **+ Add target** adds the second line. A transient failure on one (a 5xx, a timeout) is retried on the other before the client sees it, a target that keeps failing is put in cooldown, and a circuit breaker stops sending it traffic until it recovers.
+Give a route two targets that serve the same model — two regions of one vendor, or two vendors. A transient failure on one (a 5xx, a timeout) is retried on the other before the client sees it, a target that keeps failing is put in cooldown, and a circuit breaker stops sending it traffic until it recovers.
 
 - Retries, backoff and timeouts: **Settings → Performance Tuning**, and [Retries & cooldowns](/reliability/retries-and-cooldowns).
-- Uptime and SLA state per provider and target: **Models → Provider Health**, and [Provider health in the dashboard](/reliability/health-checks#provider-health-in-the-dashboard). Breaker trips are counted in `/metrics`; see [Circuit breakers](/reliability/circuit-breakers).
+- Breaker state per target: **Models → Circuit Breaker**, and [Circuit breakers](/reliability/circuit-breakers).
 - Probe targets before a request fails: [Health checks](/reliability/health-checks).
 
 ## Several vendors
@@ -56,7 +56,7 @@ On each route you can pin **parameter defaults** (a default `temperature`, a cap
 For many replicas of self-hosted engines (vLLM, SGLang, TGI):
 
 - **Provider groups** name a set of providers once, and `group/model` addresses the whole set — **Models → Provider Groups**.
-- **Pick a strategy per route**, matched to the workload. It is chosen when the model is created, in the model sheet or in `rolter.toml`; the dashboard cannot change it afterwards yet ([#2208](https://github.com/rolter-ai/rolter/issues/2208)).
+- **Pick a strategy per route**, matched to the workload:
 
 | workload                                   | strategy                                                      |
 | ------------------------------------------ | ------------------------------------------------------------- |

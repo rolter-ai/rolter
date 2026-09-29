@@ -818,29 +818,6 @@ through exactly one of them — and labels the headline as a roll-up. Before
 #1257 the screen laid every row out as a peer card, so a single dead provider
 appeared several times over with contradictory failure counts.
 
-#### SLA states on the dashboard
-
-The dashboard screen is labelled **Provider Health**. Its nav key is still
-`circuit-breaker`, so old links keep working, but it never reads the gateway's
-circuit breakers: those live in gateway memory and leave it only as `/metrics`
-counters. Until #2113 the screen called `sla_breached` _tripped_, which read as
-live breaker state when it was a 7-day SLA verdict. Each card and target row
-carries one of three SLA states instead:
-
-- `breaching` — `sla_breached` from the uptime rollup: the window's failure rate
-  is over `1 - sla`.
-- `atRisk` — the window meets the SLA, but the two newest hourly buckets of the
-  timeline fail faster than it allows, i.e. `error_budget_burn` over those
-  buckets alone is above 1. Over the whole window a burn above 1 _is_ a breach,
-  so a middle state has to come from a shorter span.
-- `within` — neither.
-
-"Newest" is measured from the latest bucket in the timeline response, not from
-the browser clock: ClickHouse writes buckets as zone-less `2026-08-06 10:00:00`
-strings in its own zone, which the browser cannot know. A probed provider's card
-takes the state of its `provider` row and buckets; a rolled-up card takes the
-worst state of its targets, the same rule its breach flag already followed.
-
 ## Health
 
 - `GET /healthz` on both binaries for liveness probes.

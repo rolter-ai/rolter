@@ -88,22 +88,13 @@ jobs:
   # rather than from the action's `prs` output: that output is only populated on
   # the run that *creates* the PR, while the branch is force-pushed on every
   # later master commit and needs re-gating each time.
-  #
-  # it dispatches only while the release PR carries the `release:ready` label
-  # (#2025). gating every force-push cost a full ci.yml run on each master
-  # commit, for a PR nobody was about to merge, and the next push cancelled most
-  # of those runs before they finished. a maintainer adds the label when the
-  # release should go out: release-pr-ready.yml dispatches on that label event,
-  # and every later push that moves the branch dispatches here while the label
-  # stays. no label means no dispatch, and the release PR then stays BLOCKED,
-  # which is the safe way to be wrong. see docs/dev-docs/development/packaging.md
   dispatch-release-pr-ci:
     name: dispatch release pr ci
     needs: release-plz-pr
     runs-on: ubuntu-latest
     permissions:
       actions: write # workflow_dispatch ci.yml; nothing else is needed
-      pull-requests: read # find the open release PR and read its labels
+      pull-requests: read # find the open release PR
     steps:
       - name: dispatch ci.yml against the release branch
         id: dispatch
@@ -112,38 +103,20 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # release-plz names the branch `release-plz-<timestamp>`; match on
-          # the prefix so a change to the suffix does not silently stop gating
-          # releases. only a branch of this repository counts: a fork's PR can
-          # take any head name, and `--ref` below names a branch here
-          pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" \
-            | jq -c --arg repo "$REPO" \
-              '[.[] | select(.head.repo.full_name == $repo and (.head.ref | startswith("release-plz-")))] | .[0] // empty')"
-          if [ -z "$pr" ]; then
+          # release-plz names the branch after the base it releases from
+          # (`release-plz-<base>`); match on the prefix so a config change to the
+          # suffix does not silently stop gating releases
+          branch="$(gh api "repos/$REPO/pulls?state=open&per_page=100" \
+            -q '[.[] | select(.head.ref | startswith("release-plz-")) | .head.ref] | .[0] // ""')"
+          if [ -z "$branch" ]; then
             echo "no open release PR on this push; nothing to gate"
-            echo "branch=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          branch="$(jq -r '.head.ref' <<< "$pr")"
-          number="$(jq -r '.number' <<< "$pr")"
-          # anything short of an exact label match, a missing labels array
-          # included, dispatches nothing. release-pr-ready.yml matches the
-          # same name on the label event
-          if ! jq -e 'any(.labels[]?; .name == "release:ready")' <<< "$pr" > /dev/null; then
-            echo "::notice::release PR #$number ($branch) is not labelled release:ready, so ci.yml was not dispatched; add the label when the release should go out"
-            {
-              echo "### release pr ci not dispatched"
-              echo
-              echo "release PR #$number (\`$branch\`) has no \`release:ready\` label."
-              echo "adding the label dispatches ci.yml on the branch; see release-pr-ready.yml."
-            } >> "$GITHUB_STEP_SUMMARY"
             echo "branch=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # seconds since epoch, used to distinguish our run from older ones
           started="$(date -u +%s)"
           gh workflow run ci.yml --repo "$REPO" --ref "$branch"
-          echo "dispatched ci.yml for $branch (release PR #$number is labelled release:ready)"
+          echo "dispatched ci.yml for $branch"
           {
             echo "branch=$branch"
             echo "started=$started"

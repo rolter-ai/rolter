@@ -3,7 +3,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 // colored ◆ glyph + uppercase label activity row. pending/running states gently
-// breathe the diamond
+// breathe the diamond. mirrors the Rolter Design System feedback/StatusRow.
 export type StatusKind = "pending" | "running" | "success" | "error" | "warning" | "info" | "idle";
 
 export interface StatusRowProps extends React.HTMLAttributes<HTMLElement> {

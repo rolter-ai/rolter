@@ -80,34 +80,30 @@ the release PR carries `release:ready`.
 
 ### The layout
 
-| Job                             | Workflow      | Runs when                   | Blocking           | Contains                                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------- | ------------- | --------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `static checks`                 | `quality.yml` | every call                  | yes                | gitleaks (working tree first, then branch history), agent session urls in commits, the pr-body step against a fake gh, migrations append-only, typos, taplo fmt, cargo-deny, unused deps, actionlint, zizmor, release handoff wired, board automation retry policy, helm chart (the checker runs under `uv run --script`), and a report step. 65-90 s |
-| `rust lint`                     | `quality.yml` | every call                  | yes                | fmt, clippy (default and `postgres`), cargo doc, `cargo hack check --each-feature` and the cross-crate feature combination. About 220 s warm                                                                                                                                                                                                          |
-| `rust build`                    | `quality.yml` | every call                  | yes, except semver | package (publish verify, plus a `maturin sdist` check of the PyPI packaging) and the gateway smoke build and probe, then three `semver-checks` steps (install, baseline, check), placed last and each `continue-on-error`                                                                                                                             |
-| `nextest / doctests`            | `quality.yml` | every call                  | yes                | unchanged, about 388 s, 30 min job timeout                                                                                                                                                                                                                                                                                                            |
-| `image smoke (published ports)` | `quality.yml` | every call                  | yes                | unchanged from #1950, still its own job                                                                                                                                                                                                                                                                                                               |
-| `ui, storybook, docs`           | `quality.yml` | every call                  | yes                | one pinned bun and one `bun install`, then every former ui, storybook, docs-formatting and `llms.txt` check as its own step. About 320 s, 25 min job timeout                                                                                                                                                                                          |
-| `coverage (informational)`      | `quality.yml` | `pull_request` only         | no                 | unchanged llvm-cov, ratchet and lcov artifact                                                                                                                                                                                                                                                                                                         |
-| `codeql (rust)`                 | `ci.yml`      | unchanged                   | yes                | same name; on a PR with no Rust change it skips extract and analyze inside the job                                                                                                                                                                                                                                                                    |
-| `codeql (actions-js-python)`    | `ci.yml`      | unchanged                   | yes                | one leg for actions, javascript-typescript and python, which were three                                                                                                                                                                                                                                                                               |
-| `gate-ok`                       | `ci.yml`      | unchanged                   | yes                | unchanged; the job the title-edit fast path looks up by name                                                                                                                                                                                                                                                                                          |
-| `ci-ok`                         | `ci.yml`      | every event, `if: always()` | required check     | needs `quality` and `codeql`; runs pr-title and both agent-session-url checks as steps, then the verdict                                                                                                                                                                                                                                              |
+| Job                             | Workflow      | Runs when                   | Blocking           | Contains                                                                                                                                                                                                                                                                                                          |
+| ------------------------------- | ------------- | --------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `static checks`                 | `quality.yml` | every call                  | yes                | gitleaks (working tree first, then branch history), agent session urls in commits, migrations append-only, typos, taplo fmt, cargo-deny, unused deps, actionlint, zizmor, release handoff wired, board automation retry policy, helm chart (the checker runs under `uv run --script`), and a report step. 65-90 s |
+| `rust lint`                     | `quality.yml` | every call                  | yes                | fmt, clippy (default and `postgres`), cargo doc, `cargo hack check --each-feature` and the cross-crate feature combination. About 220 s warm                                                                                                                                                                      |
+| `rust build`                    | `quality.yml` | every call                  | yes, except semver | package (publish verify, plus a `maturin sdist` check of the PyPI packaging) and the gateway smoke build and probe, then three `semver-checks` steps (install, baseline, check), placed last and each `continue-on-error`                                                                                         |
+| `nextest / doctests`            | `quality.yml` | every call                  | yes                | unchanged, about 388 s                                                                                                                                                                                                                                                                                            |
+| `image smoke (published ports)` | `quality.yml` | every call                  | yes                | unchanged from #1950, still its own job                                                                                                                                                                                                                                                                           |
+| `ui, storybook, docs`           | `quality.yml` | every call                  | yes                | one pinned bun and one `bun install`, then every former ui, storybook, docs-formatting and `llms.txt` check as its own step. About 320 s, 25 min job timeout                                                                                                                                                      |
+| `coverage (informational)`      | `quality.yml` | `pull_request` only         | no                 | unchanged llvm-cov, ratchet and lcov artifact                                                                                                                                                                                                                                                                     |
+| `codeql (rust)`                 | `ci.yml`      | unchanged                   | yes                | same name; on a PR with no Rust change it skips extract and analyze inside the job                                                                                                                                                                                                                                |
+| `codeql (actions-js-python)`    | `ci.yml`      | unchanged                   | yes                | one leg for actions, javascript-typescript and python, which were three                                                                                                                                                                                                                                           |
+| `gate-ok`                       | `ci.yml`      | unchanged                   | yes                | unchanged; the job the title-edit fast path looks up by name                                                                                                                                                                                                                                                      |
+| `ci-ok`                         | `ci.yml`      | every event, `if: always()` | required check     | needs `quality` and `codeql`; runs pr-title and both agent-session-url checks as steps, then the verdict                                                                                                                                                                                                          |
 
 The informational jobs that needed a full build move to a new `extended.yml`
 that runs nightly and on `workflow_dispatch`. Coverage runs there on `master`
 with the same `shared-key: coverage` as the PR job, so it seeds the cache that
 PR coverage restores and gives a daily number for `master`. msrv runs as
-`cargo +<rust-version> check`, with the version read from `Cargo.toml`, so the
-toolchain file can no longer override it and the job follows the declaration.
-The macOS check and compose smoke move unchanged. None of these jobs carries
+`cargo +1.82.0 check`, so the toolchain file can no longer override it. The
+macOS check and compose smoke move unchanged. None of these jobs carries
 `continue-on-error`, since nothing gates on `extended.yml`. A `report failure`
 job opens or comments on one tracking issue when any of them fails. It holds
 `issues: write` at job level with no checkout, because zizmor 1.26.1 rates the
-same permission at workflow level as high and would fail the gate. A small
-`bun pin` job runs there too: every `setup-bun` step reads `.bun-version`, which
-no dependabot ecosystem raises, so the job fails once a newer bun is released
-and the tracking issue asks for the bump (#1922).
+same permission at workflow level as high and would fail the gate.
 
 Coverage stays on pull requests because `testing.md` asks an author to edit the
 coverage baseline in the same PR that moves it, and that rule needs a per-PR
@@ -153,10 +149,9 @@ above, 11 were cancelled mid-flight.
 
 ### Smaller changes
 
-- Every `rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml` saves
-  only on `refs/heads/master`. PR runs restore master's caches and write none,
-  which keeps the cache under its 10 GB limit. `extended.yml`'s nightly schedule
-  runs on `master`, so it still saves. `engine-integration.yml` is exempt: it
+- Every `rust-cache` step in `quality.yml` and `ci.yml` saves only on
+  `refs/heads/master`. PR runs restore master's caches and write none, which
+  keeps the cache under its 10 GB limit. `engine-integration.yml` is exempt: it
   never runs on a master push, so a master-only save would leave it cold
   forever.
 - pr-title and both agent-session-url checks move into `ci-ok` as steps. The
@@ -168,10 +163,7 @@ above, 11 were cancelled mid-flight.
   codeql legs, so that default changes in the same PR as the matrix. The new
   leg's name has no comma because `release.yml` splits the list on commas. An
   admin deletes the `RELEASE_REQUIRED_CHECKS` repository variable first; it
-  equals the default today, so deleting it changes nothing. The shared leg runs
-  one `init` and one `analyze` for the three languages, then uploads each
-  language's SARIF under its old `/language:<name>` category, so code scanning
-  keeps the same four configurations and none goes stale.
+  equals the default today, so deleting it changes nothing.
 - The `helm chart` renders run the checker with `uv run --script`, which
   installs only the pyyaml pinned in the script's inline metadata (#1901), so
   the job stops building the wheel (#2038). That accidental build was the gate's
@@ -279,9 +271,9 @@ Re-running one failed check re-runs every check in its job.
 One failing tool no longer has a runner to itself. `!cancelled()` keeps the
 other steps running after a failure, but a hung step or a lost runner takes its
 siblings' verdicts down with it until the job is re-run. The layout gives only
-`ui, storybook, docs` (25 min) and `nextest / doctests` (30 min) a job timeout
-and the semver check a step timeout, so `static checks`, `rust lint` and
-`rust build` fall back to GitHub's 360-minute default unless their PRs set one.
+`ui, storybook, docs` a job timeout (25 min) and the semver check a step
+timeout, so `static checks`, `rust lint` and `rust build` fall back to GitHub's
+360-minute default unless their PRs set one.
 
 The critical path can move. `rust lint` takes about 450-560 s cold against 488 s
 for `codeql (rust)`, so on a `Cargo.lock` bump it can become the longest job.

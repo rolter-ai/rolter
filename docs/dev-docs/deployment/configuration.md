@@ -312,8 +312,6 @@ Output masking requires the whole completion. A match can straddle any number of
 - `reject` (default) — refuse with a `400` carrying code `guardrail_streaming_unsupported`, counted in `rolter_guardrail_stream_rejections_total`. The default fails closed: a masking rule that silently stops applying because the client passed `"stream": true` is the failure mode worth ruling out.
 - `passthrough` — serve the stream with output rules not applied. `pre_call` rules still run on the request.
 
-The dashboard's Guardrail Rules screen reads the effective value from `GET /api/v1/config` and states its consequence beside the **Before response** stage and on every `post_call` rule's card, or says the value could not be read. It has no control for the setting.
-
 Non-streamed responses are buffered by the gateway when (and only when) a `post_call` rule applies to the route, so a route without them keeps its existing forwarding behaviour. Cached responses are stored as the upstream returned them and masked on every delivery, not once at store time — so a rule added after an entry was cached still applies to it, and an entry shared by two routes is masked per the route serving it. Output metrics: `rolter_guardrail_output_redactions_total` and `rolter_guardrail_output_blocks_total`.
 
 ### `[guardrail_webhook]`

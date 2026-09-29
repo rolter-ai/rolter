@@ -2,8 +2,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-// data-driven table: pass columns + rows (mono/align/render column options,
-// hover rows)
+// data-driven table: pass columns + rows. mirrors the Rolter Design System
+// display/Table (mono/align/render column options, hover rows).
 export interface TableColumn<T> {
   key: string;
   header?: React.ReactNode;

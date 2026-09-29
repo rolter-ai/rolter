@@ -1,7 +1,8 @@
 import { useFormat } from "@/lib/i18n/format";
 
 // vertical bars (doubles as a histogram) with an optional horizontal ranked
-// mode for 10+ categories
+// mode for 10+ categories. ported from the Rolter Design System
+// components/charts/BarChart.jsx
 export interface BarChartProps extends React.HTMLAttributes<HTMLDivElement> {
   data: number[];
   labels?: (string | number)[];

@@ -57,7 +57,7 @@ The guardrail registry is deployment-wide:
 - `guardrail_rules` stores the ordered built-in and bounded-regex policy managed by the dashboard. Exactly one of `builtin` or `pattern` is present on every row.
 - `guardrail_providers` stores external webhook endpoints and environment-variable credential references. A partial unique index permits at most one enabled provider because the gateway exposes one vendor-neutral webhook contract.
 
-Both tables bump `config_version` in the write transaction. File-owned rules remain immutable and win name collisions; database rules extend that policy. An enabled file-owned webhook remains authoritative, otherwise the active registry provider supplies the snapshot webhook. The Guardrail Providers screen reports that merged webhook from `GET /api/v1/config` rather than the registry's `enabled` flag (#2162). It tells the two sources apart by comparing the webhook field by field with the enabled row (`ui/src/lib/guardrail-enforcement.ts`), so a file webhook identical to that row is credited to the row until the API reports the source (#2249). A `post_call` webhook is reported as not enforcing, since the gateway runs only the pre-call stage.
+Both tables bump `config_version` in the write transaction. File-owned rules remain immutable and win name collisions; database rules extend that policy. An enabled file-owned webhook remains authoritative, otherwise the active registry provider supplies the snapshot webhook.
 
 Several deployment-wide settings are stored as **singleton tables**: one row keyed by `id boolean primary key default true check (id)`, seeded by their own migration, so a read never has to handle "not configured yet". `runtime_policy`, `compatibility_policy`, `security_settings`, `logging_settings`, `client_settings` and `model_defaults` all follow this shape and all bump `config_version` in the write transaction. `logging_settings` also holds `ui_events` (#1748), the deployment-level opt-out for the dashboard UX stream; the control plane reads it rather than the gateway, and the table's existing per-statement trigger covers the column.
 
@@ -135,10 +135,9 @@ green and breaks deployments later. Never edit, delete or rename a file under
 append-only and never reused, even where the sequence has a gap.
 
 `scripts/check-migrations-immutable.sh` enforces this. It runs as the
-`migrations append-only` step of the `static checks` job in `quality.yml`
-(inside the `ci-ok` gate) and as a `prek` hook locally, rejecting any
-modified, deleted or renamed migration relative to the branch's fork point
-from `master`.
+`migrations append-only` job in `quality.yml` (inside the `ci-ok` gate) and as a
+`prek` hook locally, rejecting any modified, deleted or renamed migration relative
+to the branch's fork point from `master`.
 
 ## Mapping to the gateway
 

@@ -445,10 +445,7 @@ follow, and both have bitten:
 A comment saying "runs in its own process (nextest)" is true of every job except
 this one, which is what makes the trap easy to walk into.
 
-CI runs coverage in the `coverage` job of `quality.yml` on every pull request
-(and on no other event), and again nightly on `master` in
-[`extended.yml`](#nightly-extended-checks), whose run also saves the Rust cache
-the PR job restores under the shared key `coverage`. Both enforce a
+CI runs coverage in the `coverage` job of `quality.yml` and enforces a
 **ratcheting baseline**: the committed baseline lives in
 [`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
 [`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
@@ -463,134 +460,16 @@ Policy (ROL-246):
   PR and explain why.
 - When coverage climbs well above the baseline, raise the baseline to lock in
   the gain (the ratchet only goes up).
-- The PR job is **informational** (`continue-on-error: true`) until the
-  baseline is trusted; promote it to blocking by removing that flag on the
-  `coverage` job in `quality.yml`. The nightly copy carries no such flag, so a
-  ratchet failure on `master` opens the tracking issue described below.
+- The job is **informational** (`continue-on-error: true`) until the baseline is
+  trusted; promote it to blocking by removing that flag on the `coverage` job.
 
 ## CI
 
-`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix (`cargo hack`), `cargo doc` (warnings as errors), the publish verify build, the gateway smoke, cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
-
-### The static checks job
-
-The checks that read the tree and build nothing run as steps of one job,
-`static checks` (`static` in `quality.yml`): gitleaks over the working tree and
-the branch history, the session-url check over the PR's commits, migrations
-append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
-release handoff checker, its self-test and the release gate scripts' fixture
-test, the board automation retry policy, and the helm chart's appVersion check,
-lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
-of work apiece and then waited a median 86-200 s for a runner, since every job
-a push starts draws on the same 20 concurrent slots. The decision and its
-trade-offs are in
-[the CI runner budget ADR](../adr/2026-09-29-ci-runner-budget.md).
-
-The merge changed how a failure looks, not what can fail:
-
-- Every step runs under `!cancelled()`, so a typo and a taplo drift in the same
-  push fail as two steps, each named after the job it used to be. A step keeps
-  its old job's event guard: the branch-history gitleaks pass runs on pull
-  requests and merge-queue runs, the session-url commit check on pull requests
-  only.
-- A step that reads a tool the job installs (taplo, cargo-deny and cargo-machete
-  from `taiki-e/install-action`, uv, helm) is guarded on that install as well,
-  so a failed download shows up as a skipped check rather than as
-  `command not found` under the check's name.
-- The gitleaks steps run before any setup step, so the working-tree scan never
-  sees a tool unpacked into the workspace.
-- The last step, `report`, writes every step's outcome to the job summary and
-  emits one error annotation per failed step, titled with the former job's name
-  and carrying the command that reproduces it locally, usually the prek hook of
-  the same name (`prek run typos --all-files`). It also fails the job when a
-  step that must run on the event was skipped. A skipped step reads as a pass,
-  and that is how `ci-ok` once went green without reading a commit message
-  (#1562).
-- The job times out after 20 minutes. It does about 90 s of work, and a hung
-  step would otherwise hold every other check's verdict for GitHub's 360-minute
-  default.
-
-The report is the one place that knows which step must run on which event. A
-check added to the job therefore needs three things: its step, an `OUTCOME_*`
-line in the report's `env`, and a `row` call in the report's script. A step
-without a row runs unreported, and a row whose step id is misspelled reads an
-empty outcome, which the report counts as a failure.
-
-### The rust lint and rust build jobs
-
-The Rust checks outside nextest run as steps of two jobs, split by whether they
-link. `rust lint` holds fmt, clippy (default features and `postgres`),
-`cargo doc` with warnings as errors, `cargo hack` over each feature and the
-cross-crate feature combination. None of them invokes the linker, so the job
-skips the wild linker. `rust build` holds the publish verify build
-(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, and
-last the three advisory `semver-checks` steps. Until #2025 these were six jobs:
-`fmt / clippy`, `feature matrix`, `cargo doc (warnings = errors)`,
-`package (publish verify)`, `gateway smoke (fake-llm)` and
-`semver-checks (advisory)`.
-
-They follow the rules of the static checks job above: every check step runs
-under `!cancelled()` and is guarded on the setup it reads, and a `report` step
-titles each failure with the former job's name and the command that reproduces
-it. Every blocking step must run on every event, so a skip fails the job. Two
-things differ:
-
-- The flags that used to be job env are step env now. `RUSTDOCFLAGS` sits on
-  the `cargo doc` step. `RUSTFLAGS=-D warnings` sits on the two `cargo hack`
-  steps, which build into `target/hack`, because a different `RUSTFLAGS` would
-  otherwise rebuild the clippy steps' dependency tree on every run.
-  `rust build` sets no `RUSTFLAGS` at all: the variable replaces every
-  `rustflags` entry in cargo's config, the wild linker's `--ld-path` included.
-- The semver steps are `continue-on-error`, the install and the baseline tag
-  lookup included, and the semver check has a 20-minute step limit. The report
-  turns their failure into a warning. `ci-ok` never goes red over the semver
-  check, as [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
-  requires; see [API stability](api-stability.md).
-
-`rust lint` times out after 30 minutes and `rust build` after 45, so a hung
-build fails the gate well before GitHub's 360-minute default.
-
-### The Rust cache is saved from `master` only
-
-Every `Swatinem/rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml`
-sets `save-if: ${{ github.ref == 'refs/heads/master' }}`. A pull request run
-restores the cache its job last saved on `master` and writes nothing back, and
-so do a release-PR dispatch, a merge-queue run and a `workflow_dispatch` on a
-branch. Only the `master` push run and the nightly `extended.yml` run, which
-GitHub starts on `master`, save.
-
-A cache belongs to the ref that saved it. One saved on `master` is visible to
-every pull request; one saved on `refs/pull/<n>/merge` is visible to that pull
-request alone. Every PR and the release-PR branch used to save its own copy of
-each Rust job's target directory, roughly 0.1-0.9 GB apiece. On 09-29 the cache
-held 40 entries and about 14.4 GB against the repository's 10 GB limit, two
-thirds of it on PR and release-PR refs, and GitHub evicts the least recently
-used entries until the total fits, `master`'s included
-([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)).
-
-The cost lands on the PR that changes `Cargo.lock` or the toolchain. A lockfile
-change misses `master`'s exact key, so rust-cache restores the entry saved for
-the old lockfile and the job rebuilds what changed, on every push until the PR
-merges. A toolchain change alters the key's environment hash and starts cold.
-The first `master` push after the merge saves the new cache. The
-`nextest / doctests` job carries a 30-minute timeout with that in mind: warm
-runs take 6-10 minutes, so a cold build fits inside the limit, and a hung test
-no longer holds the gate for GitHub's 360-minute default.
-
-A new `rust-cache` step takes the same `save-if` line. Two workflows go without
-it. `engine-integration.yml` runs only on path-filtered pull requests and on
-dispatch, never on a `master` push, so a master-only save would leave it cold
-forever. `gemini-interactions-smoke.yml` runs on its weekly schedule, which
-already runs on `master`. To see what the cache holds:
-
-```bash
-gh api repos/rolter-ai/rolter/actions/cache/usage
-gh cache list -R rolter-ai/rolter --sort size_in_bytes --limit 50
-```
+`.github/workflows/ci.yml` delegates to the shared `quality.yml` gate, which runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run --workspace --all-features` plus a `cargo test --doc` pass, the feature matrix, `cargo doc` (warnings as errors), cargo-deny, gitleaks, the zizmor workflow audit, and the UI lint/build on every push and PR. `ci.yml`'s `ci-ok` job then checks the pull request itself: the title is one valid Conventional Commit line, and neither the body nor, on a dispatched or merge-queue run, the commit range carries a coding-agent session url (see [the `ci-ok` gate](ci-gating.md#what-runs-inside-ci-ok)).
 
 ### The rustdoc gate is the one CI check nothing local reproduces
 
-`cargo doc (warnings = errors)`, a step of `rust lint`, is the gate that most often turns a
+`cargo doc (warnings = errors)` is the gate that most often turns a
 locally-clean branch red, because `cargo fmt`, `cargo clippy` and
 `cargo nextest` are all silent about it. Run it before pushing:
 
@@ -606,7 +485,7 @@ span reads the same) or make the target public if it deserves to be.
 
 ### UI dependencies and the lockfile
 
-The `ui, storybook, docs` job installs with `bun install --frozen-lockfile`,
+The `ui` and `storybook` jobs both install with `bun install --frozen-lockfile`,
 for everyone — dependabot included. That was not always true, and the reason it
 is now is worth recording.
 
@@ -739,24 +618,21 @@ permission typo in the workflow still fails the check.
 
 ### Secret scanning
 
-The two gitleaks steps of the `static checks` job run the gitleaks **CLI** from
-a digest-pinned container, not `gitleaks-action`. The action gates org-owned
-repositories behind a license key, and license secrets are invisible to both
-dependabot runs (a separate secret store) and fork PRs (no secrets at all), so
-every such PR failed the check and with it `ci-ok`. The CLI is free and
-unrestricted, so `quality.yml` now takes no secrets and behaves identically for
-forks, dependabot and direct pushes.
+The `gitleaks` job runs the gitleaks **CLI** from a digest-pinned container, not
+`gitleaks-action`. The action gates org-owned repositories behind a license key,
+and license secrets are invisible to both dependabot runs (a separate secret
+store) and fork PRs (no secrets at all), so every such PR failed the job and with
+it `ci-ok`. The CLI is free and unrestricted, so `quality.yml` now takes no
+secrets and behaves identically for forks, dependabot and direct pushes.
 
 Two passes run with the shared `.github/config/gitleaks.toml` policy: `gitleaks
 dir` over the working tree (everything the commit ships) and, on PRs and
 merge-queue runs, `gitleaks git --log-opts base..head` over the branch history.
 That second pass catches a secret added and then removed inside the same PR; on
 a queue run the range is every commit the queue is about to write to `master`
-(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). Both
-passes run before any setup step, so the working-tree scan sees the checkout and
-nothing a later step unpacked into it. The pinned digest is v8.30.1 — the
-version `prek.toml` already uses for the staged-content hook, so local and CI
-scans agree.
+(see [ci-gating](ci-gating.md#what-runs-and-what-is-allowed-to-skip)). The
+pinned digest is v8.30.1 — the version `prek.toml` already uses for the
+staged-content hook, so local and CI scans agree.
 
 Reproduce a CI run locally:
 
@@ -768,10 +644,9 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 
 ### Workflow security (zizmor)
 
-The `zizmor` step of the `static checks` job audits `.github/workflows/` and
-`.github/actions/` for workflow security smells — unpinned or impostor action
-refs, template injection into `run:`, over-broad `GITHUB_TOKEN` scopes, cache
-poisoning, dangerous triggers.
+The `zizmor` job audits `.github/workflows/` and `.github/actions/` for workflow
+security smells — unpinned or impostor action refs, template injection into
+`run:`, over-broad `GITHUB_TOKEN` scopes, cache poisoning, dangerous triggers.
 It is a **merge gate** (#1456): a finding fails `quality`, which fails `ci-ok`.
 
 It ran as informational (`continue-on-error: true`) until the baseline was
@@ -854,7 +729,7 @@ The four suppressions in the tree today are:
 
 ### Storybook play tests
 
-The `ui, storybook, docs` job builds the static Storybook, serves it, and runs the
+The `storybook` job builds the static Storybook, serves it, and runs the
 interaction (play) tests with `@storybook/test-runner` against a headless
 chromium. It is a **merge gate** (#753): a failing play test fails `quality`,
 which fails `ci-ok`. Locally:
@@ -946,7 +821,7 @@ await waitFor(() => expect(canvas.getByRole("button", { name: "open" })).toHaveF
 ```
 
 `bun run check:focus` (`ui/scripts/check-story-focus.ts`) fails on the unwrapped
-shape and runs in the `ui, storybook, docs` job, so this cannot reach a PR again. An
+shape and runs in the `ui lint / build` job, so this cannot reach a PR again. An
 assertion straight after `.focus()`, a `userEvent` call or another `expect(…)`
 needs no waiter — those have already settled where focus is, and the check
 allows them.
@@ -1014,31 +889,6 @@ at story level: `atMobile` (375×812), `atTablet` (768×1024) and `atShort`
 reflow at). A story that also needs the Russian catalog merges the two globals:
 `globals: { ...atMobile.globals, locale: "ru" }`.
 
-#### Stories are drawn in the fonts the app ships (#2051)
-
-Geist and Geist Mono are vendored through fontsource, and the one place that
-imports the packages is `ui/src/lib/fonts.ts`. Both `ui/src/main.tsx` and
-`.storybook/preview.ts` import that module. Until #2051 the preview imported
-only `index.css`, so every story fell through to the browser's fallbacks: a
-Courier-like mono, and in `ru` a serif for the "мс" unit in mono cells, because
-that fallback has no Cyrillic. Overflow and truncation stories measured those
-metrics, and screen reviews judged type the product never ships.
-
-The faces are `font-display: swap`, so a face is fetched only when text first
-asks for it and the fallback is drawn until it arrives. The preview's
-`beforeAll` therefore loads every face of `--font-sans` and `--font-mono`
-before the first story renders, and a story that measures text sees Geist's
-metrics from its first paint.
-
-Two checks keep it that way. `Behaviour/Fonts` (`ui/src/lib/fonts.stories.tsx`)
-asserts in `en` and `ru` that each character of a sans sentence and a mono
-latency has a loaded Geist face covering it and is measured differently from
-the fallback, which fails when the preview loses the import. `ui/src/lib/fonts.test.ts`
-fails when either entry stops importing `lib/fonts.ts`, when any other file
-imports a fontsource package directly, or when a package's family is not the
-first one the tokens name. A new face goes into `lib/fonts.ts`, never into
-`main.tsx`.
-
 #### How long a story waits (#1279)
 
 `.storybook/preview.ts` calls `configure({ asyncUtilTimeout: 5000 })`, which
@@ -1104,7 +954,7 @@ probe is the harness's and never the dashboard's: no production component
 learns a test-only attribute.
 
 `bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces all three
-shapes, in the same `ui, storybook, docs` job as `check:focus` and on the same
+shapes, in the same `ui lint / build` job as `check:focus` and on the same
 grep-level terms:
 
 - a `toBeDisabled()` outside a waiter, in a story whose harness carries a
@@ -1373,47 +1223,11 @@ Two more habits keep such a story from passing for the wrong reason:
 changes the lifecycle of every story in the tree, which is a larger decision
 than one assertion needs.
 
-### Nightly extended checks
-
-[`.github/workflows/extended.yml`](../../.github/workflows/extended.yml) holds
-the informational checks that need a full build and gate nothing. It runs nightly
-at 01:41 UTC and on `workflow_dispatch`, rather than on every push, so none of
-them takes a slot from the 20-job runner pool while PRs wait
-([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)):
-
-| Job             | What it checks                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `macos check`   | `cargo check --workspace --all-features` on `macos-latest`                                                                          |
-| `compose smoke` | the full Docker Compose topology, described below                                                                                   |
-| `msrv build`    | `cargo +<rust-version> check --workspace --all-features`, with the version read from the root `Cargo.toml`                          |
-| `coverage`      | the PR coverage job on `master`, same services, toolchain and cache key, so it gives a daily number and seeds the cache PRs restore |
-
-The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
-and outranks the default a toolchain action sets, so a plain `cargo check` would
-test stable and never the declared version. It is red until #2026 settles
-`rust-version` against a lockfile that already needs 1.88.
-
-None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
-failure has to reach the `report failure` job as `failure`. On `master` that
-job opens an issue titled `extended.yml: nightly checks failing`, labelled `ci`,
-the first time a run fails, and comments on it with the run link and each job's
-result while it stays open. Close it once the fix lands; the next failure opens
-a new one. It is the only job in the workflow with a write scope, `issues: write`
-at job level with no checkout, and an issue it opens does not trigger
-`project-automation`, so add it to the board by hand. Breakage in these checks
-therefore shows up up to a day late, on that issue, rather than on the PR that
-caused it. To check a branch before merging, dispatch the workflow on it; a
-failure there shows in that run and leaves the issue alone:
-
-```bash
-gh workflow run extended.yml --ref <branch>
-```
-
 ### Full-stack compose smoke
 
-The `compose smoke` job in `extended.yml` boots the production-shaped Docker
-Compose topology (Postgres, Redis, ClickHouse, gateway, control) and exercises
-it end-to-end. Run it locally with the same script CI uses:
+The `compose-smoke` job boots the production-shaped Docker Compose topology
+(Postgres, Redis, ClickHouse, gateway, control) and exercises it end-to-end. Run
+it locally with the same script CI uses:
 
 ```bash
 bash docker/smoke/smoke.sh
@@ -1426,9 +1240,8 @@ keyless open gateway config) so the built-in `fake-llm` model answers without an
 provider secret. The script waits for both `/healthz` endpoints, checks
 `/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
 postgres-backed `/internal/snapshot` on the control plane, then always dumps
-compose logs and runs `down -v`. It runs nightly rather than on every push,
-because its cold Docker release build costs about five minutes of a runner
-(ROL-245, ADR-0034).
+compose logs and runs `down -v`. It is **informational** (`continue-on-error`)
+until the image-build cost and flake profile are trusted (ROL-245).
 
 ### Published-port image smoke
 
@@ -1447,7 +1260,6 @@ docker build -f docker/Dockerfile --target runtime -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
-It needs no secrets and no compose stack, so unlike the compose smoke it runs
-on every push and is blocking. The release workflow's `smoke image` job runs the
-same script against each architecture's pushed digest before anything is
-published.
+It needs no secrets and no compose stack, so unlike `compose-smoke` it is
+blocking. The release workflow's `smoke image` job runs the same script against
+each architecture's pushed digest before anything is published.

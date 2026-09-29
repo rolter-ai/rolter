@@ -1,31 +1,36 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Route, Tag } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
-import { ModelSheet } from "@/components/ModelSheet";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
-import { PageBody, Toolbar } from "@/components/screen";
+import { CardGridSkeleton } from "@/components/LoadingState";
+import { PageBody, StatusDot, Toolbar } from "@/components/screen";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Skeleton } from "@/components/ui/skeleton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
+  createRoute,
+  createRouteTarget,
   deleteRoute,
-  fetchModels,
   fetchProviders,
   fetchRoutes,
   fetchRouteTargets,
+  STRATEGIES,
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { StrategyHint } from "@/components/StrategyHint";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { strategyTone, usesWeights } from "@/lib/strategies";
+import { strategyOptions, strategyTone } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -36,23 +41,11 @@ const TARGET_BARS = [
   "var(--status-success)",
 ];
 
-/**
- * What is known about one route's targets.
- *
- * `loading` and `failed` are the absence of an answer. Folding either into an
- * empty list said "No targets yet" and "0 targets" about a route whose targets
- * were never read (#2133), the mistake #1461 fixed for complexity policies.
- */
-type TargetsState =
-  | { kind: "loading" }
-  | { kind: "failed"; error: unknown; retry: () => void }
-  | { kind: "loaded"; targets: RouteTargetRow[] };
-
-// routing rules: one card per route with its strategy pill, its targets (and
-// their weight shares where the strategy reads weights), and label/delete
-// actions
+// routing rules from the design prototype: one card per route with its
+// strategy pill, per-target weight bars, and edit/delete actions
 export default function RoutingRules() {
   const { t } = useTranslation();
+  const fmt = useFormat();
   const queryClient = useQueryClient();
   const toast = useToast();
   const scope = useScope();
@@ -64,6 +57,13 @@ export default function RoutingRules() {
     enabled: !!scope.projectId,
   });
 
+  // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
+
+  // `routes` is the query the user is actually waiting on for this screen
+
+  useScreenReady(!routes.isLoading);
+
+  useErrorState(!!routes.error, "routing-rules");
   const providers = useQuery({
     queryKey: ["providers", scope.orgId],
     queryFn: () => fetchProviders(scope.orgId as string),
@@ -76,29 +76,10 @@ export default function RoutingRules() {
       queryFn: () => fetchRouteTargets(r.id),
     })),
   });
-  // one read per route, so each card says which answer it holds. pending
-  // rather than loading: a retry parked in a hidden tab is still not an answer
-  const targetsByRoute = new Map<string, TargetsState>();
+  const targetsByRoute = new Map<string, RouteTargetRow[]>();
   (routes.data ?? []).forEach((r, i) => {
-    const query = targetQueries[i];
-    let state: TargetsState;
-    if (!query || query.isPending) state = { kind: "loading" };
-    else if (query.error) {
-      state = { kind: "failed", error: query.error, retry: () => void query.refetch() };
-    } else state = { kind: "loaded", targets: query.data ?? [] };
-    targetsByRoute.set(r.id, state);
+    targetsByRoute.set(r.id, targetQueries[i]?.data ?? []);
   });
-  const targetStates = [...targetsByRoute.values()];
-
-  // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
-  // the route list is what the reader waits on first and the target reads
-  // decide what every card says, so readiness and the error signal follow both
-  useScreenReady(!routes.isLoading && !targetStates.some((s) => s.kind === "loading"));
-  useErrorState(!!routes.error, "routing-rules");
-  useErrorState(
-    targetStates.some((s) => s.kind === "failed"),
-    "route-targets",
-  );
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
@@ -106,7 +87,6 @@ export default function RoutingRules() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
     queryClient.invalidateQueries({ queryKey: ["models"] });
-    queryClient.invalidateQueries({ queryKey: ["config"] });
   };
 
   const remove = useMutation({
@@ -114,12 +94,7 @@ export default function RoutingRules() {
     onSuccess: invalidate,
   });
 
-  // a route is created through the model sheet, the same one Model Catalog
-  // opens, so the strategy, the targets and everything else about a new model
-  // are set in one place rather than in two forms that disagreed (#1979). the
-  // catalog is read only for the sheet's name-conflict check
   const [addOpen, setAddOpen] = React.useState(false);
-  const models = useQuery({ queryKey: ["models"], queryFn: fetchModels, enabled: addOpen });
   // a route is the public name clients call; deleting one breaks them silently,
   // so it is confirmed by name before anything leaves (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<RouteRow | null>(null);
@@ -139,13 +114,9 @@ export default function RoutingRules() {
   return (
     <PageBody>
       <Toolbar>
-        {/* a count needs an answer: "0 routes" while the list was still out,
-            or under a 403, stated an empty project nobody had seen (#2133) */}
-        {routes.isSuccess && (
-          <span className="text-sm text-muted-foreground">
-            {t("pages.routing.summary", { count: routes.data.length })}
-          </span>
-        )}
+        <span className="text-sm text-muted-foreground">
+          {t("pages.routing.summary", { count: routes.data?.length ?? 0 })}
+        </span>
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
         <GatedButton
           gate="route:create"
@@ -158,12 +129,7 @@ export default function RoutingRules() {
         </GatedButton>
       </Toolbar>
 
-      {/* pending, not loading, so a retry parked in a hidden tab keeps the
-          skeleton; the project guard keeps it off a scope with no project,
-          where the query never runs */}
-      {routes.isPending && !!scope.projectId && (
-        <CardGridSkeleton cards={3} height={196} min={360} />
-      )}
+      {routes.isLoading && <CardGridSkeleton cards={3} height={196} min={360} />}
       {routes.error && (
         <LoadError
           error={routes.error}
@@ -171,7 +137,7 @@ export default function RoutingRules() {
           onRetry={() => void routes.refetch()}
         />
       )}
-      {routes.isSuccess && shown.length === 0 && (
+      {routes.data && shown.length === 0 && (
         // a label filter that matches nothing is not a project with no routes:
         // the copy blames the narrowing and offers to clear it rather than
         // offering to add the first route to a project that already has some
@@ -200,7 +166,8 @@ export default function RoutingRules() {
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr))]">
         {shown.map((r) => {
-          const targets: TargetsState = targetsByRoute.get(r.id) ?? { kind: "loading" };
+          const targets = targetsByRoute.get(r.id) ?? [];
+          const totalWeight = targets.reduce((a, t) => a + t.weight, 0) || 1;
           const tone = strategyTone(r.strategy);
           return (
             <div
@@ -222,15 +189,45 @@ export default function RoutingRules() {
                   </span>
                 )}
               </div>
-              <RouteTargets route={r} state={targets} providerName={providerName} />
-              <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
-                {/* the count needs an answer too: a pending or failed read is
-                    not a route with no targets */}
-                {targets.kind === "loaded" && (
-                  <span className="text-xs text-[color:var(--text-subtle)]">
-                    {t("pages.routing.targetCount", { count: targets.targets.length })}
-                  </span>
+              <div className="flex flex-col gap-2.5">
+                {targets.length === 0 && (
+                  <p className="text-xs text-muted-foreground">{t("pages.routing.noTargets")}</p>
                 )}
+                {targets.map((t, i) => {
+                  const share = t.weight / totalWeight;
+                  return (
+                    <div key={t.id} className="flex flex-col gap-[5px]">
+                      <div className="flex items-center gap-2 font-mono text-xs">
+                        <StatusDot color="var(--status-success)" className="h-1.5 w-1.5" />
+                        <span className="text-[color:var(--text-secondary)]">
+                          {providerName(t.provider_id)}
+                        </span>
+                        <span className="text-[color:var(--text-subtle)]">→</span>
+                        <span className="min-w-0 truncate text-muted-foreground">
+                          {t.upstream_model || r.model}
+                        </span>
+                        <span className="ml-auto text-[color:var(--text-secondary)]">
+                          {fmt.percent(share, 0)}
+                        </span>
+                      </div>
+                      <div className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]">
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            // a CSS length, never a localized percentage
+                            width: `${Math.round(share * 100)}%`,
+                            background: TARGET_BARS[i % TARGET_BARS.length],
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+                <span className="text-xs text-[color:var(--text-subtle)]">
+                  {t("pages.routing.targetCount", { count: targets.length })}
+                </span>
                 {/* the label names the route, so a grid of cards does not
                     expose N buttons a screen reader cannot tell apart (#1214) */}
                 <Button
@@ -299,123 +296,131 @@ export default function RoutingRules() {
         }}
       />
 
-      <ModelSheet
-        open={addOpen}
-        mode="add"
-        onOpenChange={setAddOpen}
-        projectId={scope.projectId ?? null}
-        orgId={scope.orgId ?? null}
-        providers={providers.data ?? []}
-        models={models.data ?? []}
-        routes={routes.data ?? []}
-        onDone={invalidate}
-      />
+      {scope.projectId && (
+        <AddRouteDialog
+          open={addOpen}
+          onOpenChange={setAddOpen}
+          projectId={scope.projectId}
+          providers={providers.data?.map((p) => ({ id: p.id, name: p.name })) ?? []}
+          onDone={invalidate}
+        />
+      )}
     </PageBody>
   );
 }
 
-/**
- * The target half of a route card, for whichever answer the card holds.
- *
- * No health is drawn. Nothing on this screen reads it, and the dot that stood
- * here was always green, so a target behind an open breaker read as healthy
- * (#2133). A share of the route is drawn only under a strategy that reads
- * weights; under any other the balancer never consults them, so the card says
- * that once instead of printing a split the gateway does not make.
- */
-function RouteTargets({
-  route,
-  state,
-  providerName,
+function AddRouteDialog({
+  open,
+  onOpenChange,
+  projectId,
+  providers,
+  onDone,
 }: {
-  route: RouteRow;
-  state: TargetsState;
-  providerName: (id: string) => string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projectId: string;
+  providers: { id: string; name: string }[];
+  onDone: () => void;
 }) {
   const { t } = useTranslation();
-  const fmt = useFormat();
-  const weighted = usesWeights(route.strategy);
+  const toast = useToast();
+  const [model, setModel] = React.useState("");
+  const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
+  const [providerId, setProviderId] = React.useState("");
+  const [weight, setWeight] = React.useState("100");
 
-  if (state.kind === "loading") {
-    // shaped like the rows it stands in for, so the card holds its height
-    return (
-      <LoadingRegion className="flex flex-col gap-2.5" testId="route-targets-loading">
-        {[72, 56].map((width) => (
-          <div key={width} className="flex flex-col gap-[5px]">
-            <Skeleton width={`${width}%`} height={16} radius={4} />
-            {weighted && <Skeleton height={5} radius={9999} />}
-          </div>
-        ))}
-      </LoadingRegion>
-    );
-  }
-  if (state.kind === "failed") {
-    return (
-      <LoadError
-        error={state.error}
-        resource={t("errors.resources.routeTargets")}
-        onRetry={state.retry}
-      />
-    );
-  }
+  React.useEffect(() => {
+    if (open) {
+      setModel("");
+      setStrategy(STRATEGIES[0]);
+      setProviderId(providers[0]?.id ?? "");
+      setWeight("100");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  const { targets } = state;
-  if (targets.length === 0) {
-    return <p className="text-xs text-muted-foreground">{t("pages.routing.noTargets")}</p>;
-  }
-  const totalWeight = targets.reduce((a, tg) => a + tg.weight, 0) || 1;
+  const create = useMutation({
+    mutationFn: async () => {
+      const route = await createRoute(projectId, { model, strategy });
+      if (providerId) {
+        await createRouteTarget(route.id, {
+          provider_id: providerId,
+          weight: Number(weight) || 1,
+        });
+      }
+    },
+    onSuccess: () => {
+      // the dialog closes on success, so the outcome is announced somewhere
+      // that outlives it (#1197)
+      toast.push({ tone: "success", title: t("toast.created", { what: model }) });
+      onDone();
+      onOpenChange(false);
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: model }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+
+  const dirty = !!(model.trim() || strategy !== STRATEGIES[0] || weight !== "100");
+
   return (
-    <div className="flex flex-col gap-2.5">
-      {!weighted && targets.length > 1 && (
-        <p className="text-xs leading-snug text-muted-foreground">
-          <Trans
-            i18nKey="routeTargets.weightsIgnored"
-            values={{ strategy: route.strategy }}
-            components={[<span key="strategy" className="font-mono text-foreground" />]}
+    <EditorSheet
+      name="route-create"
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t("pages.routing.emptyAction")}
+      subtitle={t("pages.routing.addSubtitle")}
+      dirty={dirty}
+      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      saveLabel={t("common.create")}
+      canSave={!!model.trim()}
+      saving={create.isPending}
+      onSave={() => create.mutate()}
+    >
+      <div className="space-y-3">
+        <Field label={t("pages.routing.form.modelName")}>
+          <Input
+            className="font-mono"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="gpt-4o"
           />
-        </p>
-      )}
-      <ul
-        aria-label={t("routeTargets.listLabel", { model: route.model })}
-        className="flex flex-col gap-2.5"
-      >
-        {targets.map((tg, i) => {
-          const share = tg.weight / totalWeight;
-          return (
-            <li key={tg.id} className="flex flex-col gap-[5px]">
-              <div className="flex items-center gap-2 font-mono text-xs">
-                <span className="text-[color:var(--text-secondary)]">
-                  {providerName(tg.provider_id)}
-                </span>
-                <span className="text-[color:var(--text-subtle)]">→</span>
-                <span className="min-w-0 truncate text-muted-foreground">
-                  {tg.upstream_model || route.model}
-                </span>
-                {weighted && (
-                  <span className="ml-auto text-[color:var(--text-secondary)]">
-                    {fmt.percent(share, 0)}
-                  </span>
-                )}
-              </div>
-              {weighted && (
-                <div
-                  data-testid="target-share"
-                  className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"
-                >
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      // a CSS length, never a localized percentage
-                      width: `${Math.round(share * 100)}%`,
-                      background: TARGET_BARS[i % TARGET_BARS.length],
-                    }}
-                  />
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+        </Field>
+        {/* the select plus its caveat, so the label is bound by hand (#1264) */}
+        <Field label={t("pages.routing.form.strategy")} htmlFor="route-strategy">
+          <Combobox
+            id="route-strategy"
+            value={strategy}
+            onChange={setStrategy}
+            options={strategyOptions(strategy).map((s) => ({ value: s, label: s }))}
+          />
+          <StrategyHint strategy={strategy} />
+        </Field>
+        <Field label={t("pages.routing.form.firstTarget")}>
+          <Combobox
+            value={providerId}
+            onChange={setProviderId}
+            options={[
+              { value: "", label: t("pages.routing.form.noTarget") },
+              ...providers.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+          />
+        </Field>
+        {providerId && (
+          <Field label={t("pages.routing.form.weight")}>
+            <Input
+              type="number"
+              min={1}
+              value={weight}
+              onChange={(e) => setWeight(e.target.value)}
+            />
+          </Field>
+        )}
+      </div>
+    </EditorSheet>
   );
 }

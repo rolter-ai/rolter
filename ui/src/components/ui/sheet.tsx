@@ -6,8 +6,8 @@ import { useTranslation } from "react-i18next";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { cn } from "@/lib/utils";
 
-// minimal dependency-free right-side slide-over (no radix) — scrim + panel.
-// Controlled via `open`/`onOpenChange`;
+// minimal dependency-free right-side slide-over (no radix) — scrim + panel,
+// mirrors the Rolter Design System sheet. Controlled via `open`/`onOpenChange`;
 // `onDismiss` intercepts scrim/Escape closes (return false to keep it open),
 // used for unsaved-changes guards. focus management, the Tab trap and Escape
 // come from useModalA11y; SheetHeader registers its title as the panel's label

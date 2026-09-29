@@ -3,7 +3,8 @@ import * as React from "react";
 import { useFormat } from "@/lib/i18n/format";
 
 // points in an X/Y plane (latency vs cost, p50 vs p95) with an interactive
-// hover tooltip
+// hover tooltip. ported from the Rolter Design System
+// components/charts/ScatterPlot.jsx
 export interface ScatterPoint {
   x: number;
   y: number;

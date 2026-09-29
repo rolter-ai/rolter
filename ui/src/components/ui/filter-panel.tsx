@@ -6,7 +6,8 @@ import { cn } from "@/lib/utils";
 
 // secondary filter rail: a stack of collapsible sections next to the nav
 // sidebar. sections hold check rows or arbitrary content; checked state is
-// controlled by the caller
+// controlled by the caller. mirrors the Rolter Design System
+// navigation/FilterPanel.
 export interface FilterOption {
   value: string;
   label: React.ReactNode;

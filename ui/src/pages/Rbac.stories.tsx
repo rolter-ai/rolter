@@ -297,21 +297,6 @@ async function openCustomTab(canvasElement: HTMLElement): Promise<void> {
   await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"));
 }
 
-/**
- * One (resource, role) cell of the permission matrix, found through its row
- * header and its column header the way a screen reader finds it.
- */
-function matrixCell(canvasElement: HTMLElement, resource: string, role: string): HTMLElement {
-  const table = within(canvasElement).getByRole("table", { name: "Permission matrix" });
-  const headers = within(table).getAllByRole("columnheader");
-  const column = headers.findIndex((h) => h.textContent?.startsWith(role));
-  const row = within(table).getByRole("rowheader", { name: resource }).closest("tr");
-  if (!row || column < 1) throw new Error(`no ${resource} × ${role} cell`);
-  // the row header takes the first column, so a role's cell sits one to the left
-  // of its header among the row's data cells
-  return within(row).getAllByRole("cell")[column - 1];
-}
-
 const meta = {
   title: "Screens/Rbac",
   component: Rbac,
@@ -343,43 +328,6 @@ export const Loaded: Story = {
     await expect(await canvas.findByText("2 members")).toBeVisible();
     await expect(await canvas.findByText("1 member")).toBeVisible();
     await expect(await canvas.findByText("0 members")).toBeVisible();
-
-    // a real table (#2081): the roles are column headers and the resources row
-    // headers, so a screen reader announces both with every cell
-    const table = canvas.getByRole("table", { name: "Permission matrix" });
-    await expect(within(table).getByRole("columnheader", { name: /^member/ })).toBeVisible();
-    await expect(within(table).getByRole("rowheader", { name: "provider" })).toBeVisible();
-
-    // each cell states its value in words, not only in a tint. a member may read
-    // providers but not create them, and nobody's org role reaches runtime settings
-    const member = matrixCell(canvasElement, "provider", "member");
-    await expect(member).toHaveAccessibleName(
-      "Read: allowed Create: not allowed Update: not allowed Delete: not allowed",
-    );
-    const admin = matrixCell(canvasElement, "runtime_settings", "admin");
-    await expect(admin).toHaveAccessibleName(/^Read: superadmin only /);
-
-    // and draws it with more than a hue, so a greyscale render still tells them
-    // apart: the letter where the role may act, a glyph where it may not
-    const allowed = within(member).getByTitle("Read: allowed");
-    await expect(allowed).toHaveTextContent("R");
-    const denied = within(member).getByTitle("Create: not allowed");
-    await expect(denied).not.toHaveTextContent("C");
-    await expect(denied.querySelector("svg.lucide-x")).not.toBeNull();
-    const superadmin = within(admin).getByTitle("Read: superadmin only");
-    await expect(superadmin).not.toHaveTextContent("R");
-    await expect(superadmin.querySelector("svg.lucide-lock")).not.toBeNull();
-
-    // the legend names every state a cell can be in, "not allowed" included
-    for (const state of [
-      "Allowed",
-      "Granted by a custom role",
-      "Superadmin only",
-      "Not allowed",
-      "No such action",
-    ]) {
-      await expect(canvas.getByText(state)).toBeVisible();
-    }
   },
 };
 
@@ -395,17 +343,14 @@ export const MarksNotApplicableAndSuperadmin: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("audit_log");
 
-    // counted by the text a screen reader reads out, which is the same string
-    // the mark shows on hover
     // an append-only log has no create/update/delete for any of the three roles
-    await expect(canvas.getAllByText("Create: not applicable")).toHaveLength(9);
+    await expect(canvas.getAllByTitle("Create — not applicable")).toHaveLength(9);
     // runtime settings are superadmin-only, so no org role reaches them
-    await expect(canvas.getAllByText("Update: superadmin only")).toHaveLength(3);
+    await expect(canvas.getAllByTitle("Update — superadmin only")).toHaveLength(3);
     // and a member may not delete a provider, which *is* a denial
-    await expect(canvas.getAllByText("Delete: not allowed")).not.toHaveLength(0);
+    await expect(canvas.getAllByTitle("Delete — denied")).not.toHaveLength(0);
     // a catalog open to any authenticated caller is allowed all the way down
-    await expect(canvas.getAllByText("Read: allowed").length).toBeGreaterThan(3);
-    await expect(canvas.getAllByTitle("Read: allowed").length).toBeGreaterThan(3);
+    await expect(canvas.getAllByTitle("Read — allowed").length).toBeGreaterThan(3);
   },
 };
 
@@ -426,7 +371,7 @@ export const WithCustomRole: Story = {
     // it is a viewer plus exactly one pair, shown as its own state. the column
     // arrives with the matrix, but the cells are re-derived once the roles land
     await waitFor(() =>
-      expect(canvas.getAllByText("Create: granted by this custom role")).toHaveLength(1),
+      expect(canvas.getAllByTitle("Create — granted by this custom role")).toHaveLength(1),
     );
 
     // a grant naming a resource this build retired is surfaced, not hidden

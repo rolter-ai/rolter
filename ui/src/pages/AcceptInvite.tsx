@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { acceptInvitation, previewInvitation, type InvitationPreview } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { useDocumentTitle } from "@/lib/document-title";
 
 // the invitee has no account yet, so this screen renders outside the signed-in
 // shell. the token in the url is the only credential it has.
@@ -20,13 +19,6 @@ export default function AcceptInvite({ token }: { token: string }) {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [pending, setPending] = useState(false);
-  // outside the shell, so the page names the tab itself (#2002); the org is
-  // only known once the preview answers, and a dead link never names one
-  useDocumentTitle(
-    invite
-      ? t("pages.acceptInvite.title", { org: invite.org_name })
-      : t("pages.acceptInvite.genericTitle"),
-  );
 
   useEffect(() => {
     let live = true;

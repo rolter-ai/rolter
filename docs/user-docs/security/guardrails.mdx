@@ -16,13 +16,6 @@ Choose `annotate` to count a match without changing traffic, `block` to reject m
 
 A response rule that blocks runs after the provider has generated and billed the answer. The caller gets a `403 guardrail_blocked`, but the request is still billed and counts toward budgets. Its log row is marked `withheld` and names the rule, and the blocked text is never stored. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
 
-A response rule (stage **Before response**) needs the whole answer, so it cannot act on a streamed one. The deployment-wide `streaming_post_call` setting in the `[guardrails]` block of `rolter.toml` decides what happens instead:
-
-- `reject` (the default) — while the rule is enforced, a request with `"stream": true` on a route the rule covers is refused with `400 guardrail_streaming_unsupported`. Chat clients and coding agents usually stream, so one response rule can refuse most interactive traffic.
-- `passthrough` — the stream is served and the rule does not see it. Only non-streamed responses are checked.
-
-The rule dialog shows which of the two applies as soon as **Before response** is picked, and each response rule's card repeats it in one line. Both read the value from the effective configuration (`GET /api/v1/config`). When that cannot be read, they say so and describe both outcomes rather than assuming the default. The dashboard shows the setting but does not change it.
-
 The deployment-wide `guardrails` feature flag remains the kill switch. Turning it off pauses every built-in and custom rule without deleting the registry.
 
 ## External providers
@@ -36,13 +29,9 @@ Choose the failure policy deliberately:
 
 Rolter stores only an environment variable name for bearer or shared-secret authentication. Put the secret value in every gateway's environment; it is never returned by the control-plane API.
 
-Only the **Before upstream** stage (`pre_call`) is enforced today. The gateway does not run the **Before response** stage (`post_call`) yet, so the dashboard does not let you pick it. A provider already saved at that stage is marked **not enforcing** on its card and in the banner. Activating one pauses the active provider and puts nothing in its place.
-
-The banner at the top of **Guardrails → Providers** reports the webhook the control plane hands to gateways, read from the effective configuration (`GET /api/v1/config`), not which registry row is switched on. It is green only when requests go to a guardrail service before they go upstream, and it names that service: a registry provider, or the config-file webhook by its URL. It says so when no webhook is on, and it shows the status as unknown when the effective configuration cannot be read or contradicts the registry.
-
 ## Hot reload and config files
 
-Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden.
+Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled.
 
 ## API endpoints
 
