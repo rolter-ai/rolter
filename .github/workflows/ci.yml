@@ -109,26 +109,73 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # the rust leg of a pull_request run diffs the merge commit against
+          # its first parent (the base), so it needs both parents
+          fetch-depth: ${{ matrix.language == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
+      # on a pull request that changes no rust source, cargo manifest, lockfile,
+      # toolchain pin or codeql config, the rust analysis would extract the same
+      # rust code master was already analysed with. the rust leg then skips its
+      # setup, extract and analyze steps and still reports success: codeql never
+      # fails on alerts, so the skip cannot change a verdict (ADR-0034). only
+      # `pull_request` skips. push, merge_group and workflow_dispatch always
+      # analyse, so the merge queue still runs this leg in full before anything
+      # lands, which is also what catches a pr that breaks the leg itself. the
+      # step fails open: any doubt about the diff means `analyze=true`, and a
+      # step error leaves the output unset, which the guards below read as run
+      - if: matrix.language == 'rust' && github.event_name == 'pull_request'
+        id: scope
+        name: detect rust changes
+        continue-on-error: true
+        shell: bash
+        run: |
+          analyze() {
+            echo "$1"
+            echo "analyze=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          git rev-parse --verify --quiet 'HEAD^2' > /dev/null \
+            || analyze "HEAD is not a pull request merge commit; running the rust analysis"
+          changed=$(git diff --no-renames --name-only 'HEAD^1' HEAD) \
+            || analyze "could not diff the pull request against its base; running the rust analysis"
+          pattern='(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/codeql/)'
+          rc=0
+          matched=$(printf '%s\n' "$changed" | grep -E "$pattern") || rc=$?
+          case "$rc" in
+            0)
+              echo "rust-relevant files changed:"
+              printf '%s\n' "$matched" | sed 's/^/  /'
+              echo "analyze=true" >> "$GITHUB_OUTPUT"
+              ;;
+            1)
+              echo "::notice title=codeql (rust)::no rust-relevant change in this pull request, skipping extract and analyze"
+              echo "analyze=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              analyze "grep failed (exit ${rc}); running the rust analysis"
+              ;;
+          esac
       # make the dependency sources available so the rust extractor resolves
       # calls into crates instead of leaving them unresolved
-      - if: matrix.language == 'rust'
+      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
-      - if: matrix.language == 'rust'
+      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - if: matrix.language == 'rust'
+      - if: matrix.language == 'rust' && steps.scope.outputs.analyze != 'false'
         name: fetch dependencies for analysis
         run: cargo fetch --locked
       - name: initialize codeql
+        if: matrix.language != 'rust' || steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/init@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
           languages: ${{ matrix.language }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
       - name: analyze
+        if: matrix.language != 'rust' || steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
         with:
           category: "/language:${{ matrix.language }}"
