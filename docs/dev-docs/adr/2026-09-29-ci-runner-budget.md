@@ -169,6 +169,9 @@ above, 11 were cancelled mid-flight.
   the job stops building the wheel (#2038). That accidental build was the gate's
   only pass over `pyproject.toml`, so the package step gains a `maturin sdist`
   that checks the PyPI packaging in seconds without compiling.
+- Outside the gate, `engine-integration.yml` cancels a superseded sim smoke run
+  per ref on pull requests, and `docs.yml` uploads the Pages artifact only on
+  the events that deploy it (#2036).
 
 Each item ships as its own PR under #2025. The helm fix goes first as the
 cheapest, then the release gate as the largest single cut (about 98 jobs per
@@ -267,10 +270,10 @@ Re-running one failed check re-runs every check in its job.
 
 One failing tool no longer has a runner to itself. `!cancelled()` keeps the
 other steps running after a failure, but a hung step or a lost runner takes its
-siblings' verdicts down with it until the job is re-run. Of the merged jobs
-only `ui, storybook, docs` carries a job timeout (25 min), and the semver check
-has a step timeout. `static checks`, `rust lint` and `rust build` fall back to
-GitHub's 360-minute default.
+siblings' verdicts down with it until the job is re-run. The layout gives only
+`ui, storybook, docs` a job timeout (25 min) and the semver check a step
+timeout, so `static checks`, `rust lint` and `rust build` fall back to GitHub's
+360-minute default unless their PRs set one.
 
 The critical path can move. `rust lint` takes about 450-560 s cold against 488 s
 for `codeql (rust)`, so on a `Cargo.lock` bump it can become the longest job.
@@ -329,6 +332,9 @@ this decision depends on are linked above.
   run, into a cache that is already over its limit.
 - Merging the docs build and deploy jobs: the build tools would then run with
   `pages: write`.
+- Running the labeler only on `opened` and `reopened`: its rules match changed
+  files, so a PR whose later push first touches `ui/` would never get its area
+  label (#2036).
 - Folding `image smoke` into `static checks`: the simulation, run before the
   `release:ready` change was added to the layout, gives the same latency either
   way (PR median 8.3 min in both, burst 15.1 min folded against 15.4 separate)
