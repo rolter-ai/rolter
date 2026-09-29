@@ -1030,6 +1030,14 @@ asks for it and the fallback is drawn until it arrives. The preview's
 before the first story renders, and a story that measures text sees Geist's
 metrics from its first paint.
 
+Storybook builds its story store only after that hook resolves, so the test
+runner's `preVisit` in `.storybook/test-runner.ts` awaits
+`__STORYBOOK_PREVIEW__.ready()` before it reads a story's context. Without the
+wait, a slow font load made `getStoryContext` read the store too early, and
+every story in that suite failed with `SB_PREVIEW_API_0011` (#2275). A new
+async step in the preview gets the same protection as long as it runs inside
+`beforeAll`.
+
 Two checks keep it that way. `Behaviour/Fonts` (`ui/src/lib/fonts.stories.tsx`)
 asserts in `en` and `ru` that each character of a sans sentence and a mono
 latency has a loaded Geist face covering it and is measured differently from
