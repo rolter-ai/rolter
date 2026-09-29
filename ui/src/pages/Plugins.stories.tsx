@@ -14,6 +14,7 @@ import {
   Harness as ScreenHarness,
   json,
   NEEDS_ADMIN,
+  pickOption,
   recording,
   Toasted,
   type FetchStub,
@@ -53,6 +54,26 @@ const PLUGINS: PluginInstanceRow[] = [
     position: 20,
     failure_mode: "fail_open",
     endpoint: "https://plugins.internal/audit",
+    secret_env: null,
+    config: {},
+    created_at: "2026-08-02T00:00:00Z",
+    updated_at: "2026-08-02T00:00:00Z",
+  },
+  // post-response and fail closed: the one shape that refuses streamed
+  // requests, so the card carries the warning (#2178)
+  {
+    id: "plugin-policy",
+    org_id: "org-1",
+    project_id: null,
+    name: "Response policy",
+    slug: "response-policy",
+    description: "Blocks responses that fail the internal content policy.",
+    kind: "webhook",
+    stage: "post_response",
+    enabled: true,
+    position: 30,
+    failure_mode: "fail_closed",
+    endpoint: "https://plugins.internal/policy",
     secret_env: null,
     config: {},
     created_at: "2026-08-02T00:00:00Z",
@@ -213,6 +234,83 @@ export const RejectsInvalidConfiguration: Story = {
     await expect(within(dialog).getByRole("alert")).toHaveTextContent(
       "Configuration must be a JSON object.",
     );
+  },
+};
+
+const REFUSES_STREAMS = "Refuses streamed requests in its scope while enabled";
+// each note also names the other policy's option, as the way out of its outcome
+const REFUSED_NOTE =
+  /streamed requests in its scope are refused with 400 plugin_streaming_unsupported\..*choose Fail open/;
+const SKIPPED_NOTE =
+  /Streamed responses skip this plugin and reach the client unchecked.*Under Fail closed/;
+
+const card = async (canvasElement: HTMLElement, name: string) => {
+  const heading = await within(canvasElement).findByRole("heading", { name: new RegExp(name) });
+  return heading.closest("article") as HTMLElement;
+};
+
+/**
+ * A post-response plugin that fails closed refuses every streamed request in
+ * its scope with a 400 `plugin_streaming_unsupported` (#1776), and nothing on
+ * the card used to say so beyond `fail-closed` (#2178).
+ *
+ * Only that combination carries the line: a fail-open post-response plugin
+ * lets streams through, and a fail-closed plugin at an earlier stage sees the
+ * request, which a stream does not change. Configuring the plugin opens the
+ * dialog with the full note already showing.
+ */
+export const WarnsThatAFailClosedPostResponsePluginRefusesStreams: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const policy = await card(canvasElement, "Response policy");
+    await expect(within(policy).getByText(REFUSES_STREAMS)).toBeVisible();
+    for (const name of ["Response audit", "PII redaction"]) {
+      await expect(
+        within(await card(canvasElement, name)).queryByText(REFUSES_STREAMS),
+      ).not.toBeInTheDocument();
+    }
+
+    await userEvent.click(canvas.getByRole("button", { name: "Configure plugin Response policy" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("note")).toHaveTextContent(REFUSED_NOTE);
+  },
+};
+
+/**
+ * The dialog states what streamed requests get before the plugin is saved
+ * (#2178). The note appears once Post-response is picked, follows the failure
+ * policy (refused when closed, unchecked when open), goes when another stage
+ * is picked, and is the description of both pickers while it shows, so a
+ * screen reader hears it from either one.
+ */
+export const DialogNoteTracksStageAndFailurePolicy: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const stage = dialog.getByLabelText("Pipeline stage");
+    const failure = dialog.getByLabelText("Failure policy");
+    await expect(dialog.queryByRole("note")).not.toBeInTheDocument();
+
+    // a new plugin starts fail open
+    await pickOption(stage, "Post-response");
+    const note = await dialog.findByRole("note");
+    await expect(note).toHaveTextContent(SKIPPED_NOTE);
+    await expect(stage).toHaveAttribute("aria-describedby", note.id);
+    await expect(failure).toHaveAttribute("aria-describedby", note.id);
+
+    await pickOption(failure, "Fail closed");
+    await waitFor(() => expect(dialog.getByRole("note")).toHaveTextContent(REFUSED_NOTE));
+    await expect(
+      within(dialog.getByRole("note")).getByText("400 plugin_streaming_unsupported"),
+    ).toBeVisible();
+
+    await pickOption(stage, "Pre-upstream");
+    await waitFor(() => expect(dialog.queryByRole("note")).not.toBeInTheDocument());
+    await expect(stage).not.toHaveAttribute("aria-describedby");
+    await expect(failure).not.toHaveAttribute("aria-describedby");
   },
 };
 

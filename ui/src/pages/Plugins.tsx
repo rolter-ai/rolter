@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, Loader2, Plus, Puzzle, Webhook } from "lucide-react";
+import { AlertTriangle, ArrowDown, Loader2, Plus, Puzzle, Webhook } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
@@ -37,12 +37,37 @@ import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 type Stage = PluginInstanceRow["stage"];
+type FailureMode = PluginInstanceRow["failure_mode"];
 
 const STAGE_KEYS: Stage[] = ["pre_route", "pre_upstream", "post_response"];
 
 // stage labels and descriptions are catalog-backed, so they are resolved
 // through `t` rather than held in a module-level constant
 type StageCopy = { key: Stage; label: string; description: string };
+
+/**
+ * What a post-response plugin does to a streamed request (#2178).
+ *
+ * A post-response plugin judges a whole response, which a stream never is, so
+ * the gateway settles a streamed request by the plugin's failure policy: fail
+ * closed refuses it with a 400 `plugin_streaming_unsupported`, fail open
+ * serves the stream with the plugin skipped (#1776). Both follow from the
+ * plugin's own fields, so the note needs nothing from the deployment config.
+ * Each note names the other policy's option, the way out of its outcome.
+ */
+const STREAMING_NOTE: Record<FailureMode, { key: string; option: string }> = {
+  fail_closed: {
+    key: "pages.plugins.streaming.noteRefused",
+    option: "pages.plugins.failOpenOption",
+  },
+  fail_open: {
+    key: "pages.plugins.streaming.noteSkipped",
+    option: "pages.plugins.failClosedOption",
+  },
+};
+
+const refusesStreams = (plugin: Pick<PluginInstanceRow, "stage" | "failure_mode">) =>
+  plugin.stage === "post_response" && plugin.failure_mode === "fail_closed";
 
 const asInput = (plugin: PluginInstanceRow): PluginInstanceInput => ({
   project_id: plugin.project_id,
@@ -344,6 +369,12 @@ function StageLane({
                 </Badge>
                 {plugin.secret_env && <Badge tone="info">{t("pages.plugins.secretRef")}</Badge>}
               </div>
+              {refusesStreams(plugin) && (
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
+                  <AlertTriangle className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />
+                  <span>{t("pages.plugins.streaming.cardRefused")}</span>
+                </p>
+              )}
               <div className="mt-4 flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="plugin:delete"
@@ -401,12 +432,15 @@ function PluginDialog({
     stage: initial?.stage ?? ("pre_route" as Stage),
     enabled: initial?.enabled ?? false,
     position: String(initial?.position ?? 0),
-    failure_mode: initial?.failure_mode ?? ("fail_open" as PluginInstanceRow["failure_mode"]),
+    failure_mode: initial?.failure_mode ?? ("fail_open" as FailureMode),
     endpoint: initial?.endpoint ?? "https://plugins.internal/hook",
     secret_env: initial?.secret_env ?? "",
     config: JSON.stringify(initial?.config ?? {}, null, 2),
   });
   const [localError, setLocalError] = React.useState<string | null>(null);
+  // shown before saving, and read out with both pickers it depends on
+  const streamingNoteId = React.useId();
+  const streaming = form.stage === "post_response" ? form.failure_mode : undefined;
   const mutation = useMutation({
     mutationFn: (body: PluginInstanceInput) =>
       initial ? updatePlugin(initial.id, body) : createPlugin(orgId, body),
@@ -519,6 +553,7 @@ function PluginDialog({
           <Field label={t("pages.plugins.fieldStage")} htmlFor="plugin-stage">
             <Combobox
               id="plugin-stage"
+              aria-describedby={streaming ? streamingNoteId : undefined}
               value={form.stage}
               onChange={(stage) => set({ stage: stage as Stage })}
               options={stages.map((stage) => ({ value: stage.key, label: stage.label }))}
@@ -550,12 +585,9 @@ function PluginDialog({
           <Field label={t("pages.plugins.fieldFailure")} htmlFor="plugin-failure">
             <Combobox
               id="plugin-failure"
+              aria-describedby={streaming ? streamingNoteId : undefined}
               value={form.failure_mode}
-              onChange={(picked) =>
-                set({
-                  failure_mode: picked as PluginInstanceRow["failure_mode"],
-                })
-              }
+              onChange={(picked) => set({ failure_mode: picked as FailureMode })}
               options={[
                 { value: "fail_open", label: t("pages.plugins.failOpenOption") },
                 { value: "fail_closed", label: t("pages.plugins.failClosedOption") },
@@ -563,6 +595,7 @@ function PluginDialog({
             />
           </Field>
         </div>
+        {streaming && <StreamingNote id={streamingNoteId} failureMode={streaming} />}
         <Field
           label={t("pages.plugins.fieldSecret")}
           htmlFor="plugin-secret"
@@ -619,5 +652,26 @@ function PluginDialog({
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+function StreamingNote({ id, failureMode }: { id: string; failureMode: FailureMode }) {
+  const { t } = useTranslation();
+  const copy = STREAMING_NOTE[failureMode];
+  return (
+    <p
+      id={id}
+      role="note"
+      className="flex items-start gap-2 rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs leading-relaxed text-[color:var(--status-warning-text)]"
+    >
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" aria-hidden />
+      <span>
+        <Trans
+          i18nKey={copy.key}
+          values={{ option: t(copy.option) }}
+          components={[<code key="code" className="font-mono" />]}
+        />
+      </span>
+    </p>
   );
 }
