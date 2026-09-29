@@ -5,26 +5,24 @@ import {
   ChevronRight,
   CircleAlert,
   Filter,
+  FilterX,
   ScrollText,
   X,
 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { CopyButton } from "@/components/CopyButton";
-import {
-  FilterCheckList,
-  FilterPanel,
-  FilterSearchList,
-  FilterSection,
-} from "@/components/ui/filter-panel";
+import { FilterPanel, FilterSearchList, FilterSection } from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
@@ -79,6 +77,65 @@ function isUnavailable(error: unknown): boolean {
   return error instanceof AnalyticsUnavailableError;
 }
 
+// an unknown value would be a 400 from the control plane, so an address that
+// carries one reads as no status filter rather than as a failed screen
+function readStatus(raw: string | null): StatusFilter {
+  return raw === "error" || raw === "success" ? raw : "all";
+}
+
+type FilterParam = "status" | "model" | "business_unit" | "customer";
+
+/**
+ * The rail's filters, kept in the address rather than in component state
+ * (#1985).
+ *
+ * A view of the log can then be reloaded, bookmarked or pasted to someone else,
+ * and it comes back filtered the same way. The parameters carry the control
+ * plane's own names, so the address reads like the query the screen sends.
+ * Every write replaces the history entry, so the back button leaves the screen
+ * instead of stepping back through each click in the rail.
+ */
+function useLogFilters() {
+  const [params, setParams] = useSearchParams();
+  const status = readStatus(params.get("status"));
+  const model = params.get("model") ?? "";
+  const unitParam = params.get("business_unit") ?? "";
+  const customerParam = params.get("customer") ?? "";
+  // memoised on the raw value: a fresh array every render would look like a
+  // changed filter to anything that depends on it
+  const units = React.useMemo(() => unitParam.split(",").filter(Boolean), [unitParam]);
+  const customers = React.useMemo(() => customerParam.split(",").filter(Boolean), [customerParam]);
+  const update = React.useCallback(
+    (patch: Partial<Record<FilterParam, string>>) =>
+      setParams(
+        (prev) => {
+          // other parameters are left alone, since the address is not only the rail's
+          const next = new URLSearchParams(prev);
+          for (const [name, value] of Object.entries(patch)) {
+            if (value) next.set(name, value);
+            else next.delete(name);
+          }
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+  return {
+    status,
+    model,
+    units,
+    customers,
+    /** changes whenever any filter does */
+    key: [status, model, unitParam, customerParam].join("|"),
+    setStatus: (next: StatusFilter) => update({ status: next === "all" ? "" : next }),
+    setModel: (next: string) => update({ model: next }),
+    setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
+    setCustomers: (next: string[]) => update({ customer: next.join(",") }),
+    clear: () => update({ status: "", model: "", business_unit: "", customer: "" }),
+  };
+}
+
 const TH =
   "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-2.5 text-left text-xs font-medium text-muted-foreground";
 const TD = "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono text-xs";
@@ -93,10 +150,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const fmt = useFormat();
   const currency = useCurrencyCode();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
-  const [status, setStatus] = React.useState<StatusFilter>("all");
-  const [modelSel, setModelSel] = React.useState<string[]>([]);
-  const [unitSel, setUnitSel] = React.useState<string[]>([]);
-  const [customerSel, setCustomerSel] = React.useState<string[]>([]);
+  const filters = useLogFilters();
+  const { status, model, units: unitSel, customers: customerSel } = filters;
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
   // "previous" has to return to a cursor it was handed rather than compute a
@@ -149,14 +204,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
 
   useErrorState(!!models.error, "logs");
 
-  React.useEffect(() => setCursors([]), [status, modelSel, unitSel, customerSel]);
+  React.useEffect(() => setCursors([]), [filters.key]);
 
   const query = useQuery({
     queryKey: [
       "invocations",
       window.since,
       status,
-      modelSel[0] ?? "",
+      model,
       unitSel.join(","),
       customerSel.join(","),
       cursors[page - 1] ?? "",
@@ -164,7 +219,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     queryFn: () =>
       fetchInvocationsPage({
         since: window.since,
-        model: modelSel[0] || undefined,
+        model: model || undefined,
         // the rail allows several of each, so the whole selection travels
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
@@ -206,13 +261,15 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const cost = (row: InvocationRow) =>
     isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =
-    (status === "all" ? 0 : 1) + modelSel.length + unitSel.length + customerSel.length;
-  const clearFilters = () => {
-    setStatus("all");
-    setModelSel([]);
-    setUnitSel([]);
-    setCustomerSel([]);
-  };
+    (status === "all" ? 0 : 1) + (model ? 1 : 0) + unitSel.length + customerSel.length;
+  // the list the model filter picks from. a model the address names but the
+  // catalogue no longer lists still filters the log, so it is offered too:
+  // otherwise the control would read as unset while the rows are narrowed
+  const modelOptions = React.useMemo(() => {
+    const names = (models.data ?? []).map((m) => m.model);
+    if (model && !names.includes(model)) names.push(model);
+    return names.map((name) => ({ value: name, label: name }));
+  }, [models.data, model]);
 
   // a deployment with no analytics store is a shape rolter supports, not a
   // failure, so it gets a calm panel naming the setting rather than the red
@@ -253,8 +310,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             { count: rows.length },
           )}`,
         };
-
-  const statusSelected = status === "all" ? [] : [status];
 
   const ms = (value: number | string) =>
     t("analytics.ms", { value: fmt.number(Math.round(num(value))) });
@@ -373,25 +428,51 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           {...(railOverlays ? filterA11y : {})}
         >
           <FilterPanel title={t("common.filters")} onHide={() => setFiltersOpen(false)}>
-            <FilterSection title={t("pages.logs.status")} defaultOpen count={statusSelected.length}>
-              <FilterCheckList
+            {/* always drawn, so the sections below never move when the first
+                filter is picked; it only enables once there is one to clear */}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={filterCount === 0}
+              onClick={filters.clear}
+              className="w-full justify-start px-2 text-muted-foreground"
+            >
+              <FilterX aria-hidden className="h-3.5 w-3.5" />
+              {t("pages.logs.clearFilters")}
+            </Button>
+            {/* one choice of three rather than a pair of checkboxes, which
+                cleared both ticks without a word when a reader checked both
+                (#1985) */}
+            <FilterSection
+              title={t("pages.logs.status")}
+              defaultOpen
+              count={status === "all" ? 0 : 1}
+            >
+              <Segmented
+                ariaLabel={t("pages.logs.status")}
+                value={status}
+                onChange={filters.setStatus}
                 options={[
-                  { value: "success", label: t("pages.logs.statusOk") },
+                  { value: "all", label: t("pages.logs.statusAll") },
                   { value: "error", label: t("pages.logs.statusErrors") },
+                  { value: "success", label: t("pages.logs.statusOk") },
                 ]}
-                selected={statusSelected}
-                onChange={(sel) => setStatus(sel.length === 1 ? (sel[0] as StatusFilter) : "all")}
               />
+              {/* the control plane's `success` is any status from 1 to 399,
+                  so the label cannot promise a 2xx */}
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t("pages.logs.statusOkHint")}
+              </p>
             </FilterSection>
-            <FilterSection title={t("pages.logs.model")} defaultOpen count={modelSel.length}>
-              <FilterSearchList
-                options={(models.data ?? []).map((m) => ({
-                  value: m.model,
-                  label: m.model,
-                }))}
-                selected={modelSel}
-                onChange={(sel) => setModelSel(sel.slice(-1))}
-                placeholder={t("pages.logs.filterModels")}
+            {/* the control plane filters on one exact model, so this picks one */}
+            <FilterSection title={t("pages.logs.model")} defaultOpen count={model ? 1 : 0}>
+              <Combobox
+                aria-label={t("pages.logs.model")}
+                options={modelOptions}
+                value={model}
+                onChange={filters.setModel}
+                placeholder={t("pages.logs.allModels")}
+                clearable
               />
             </FilterSection>
             {(units.data ?? []).length > 0 && (
@@ -402,7 +483,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     label: u.name,
                   }))}
                   selected={unitSel}
-                  onChange={setUnitSel}
+                  onChange={filters.setUnits}
                   placeholder={t("pages.logs.filterBusinessUnits")}
                 />
               </FilterSection>
@@ -415,7 +496,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     label: c.name,
                   }))}
                   selected={customerSel}
-                  onChange={setCustomerSel}
+                  onChange={filters.setCustomers}
                   placeholder={t("pages.logs.filterCustomers")}
                 />
               </FilterSection>
@@ -641,8 +722,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               description={filterCount ? t("pages.logs.noMatchBody") : t("pages.logs.emptyBody")}
               actions={
                 filterCount ? (
-                  <Button variant="outline" onClick={clearFilters}>
-                    {t("common.clearSearch")}
+                  <Button variant="outline" onClick={filters.clear}>
+                    {t("pages.logs.clearFilters")}
                   </Button>
                 ) : undefined
               }
