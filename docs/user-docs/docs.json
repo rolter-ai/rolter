@@ -163,6 +163,7 @@
               "api/stability",
               "api/ui-events",
               "api/version",
+              "api/public-url",
               "api/org-projects",
               "api/project-settings",
               "api/budgets-and-rate-limits",

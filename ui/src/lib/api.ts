@@ -2006,6 +2006,27 @@ export function fetchStability(): Promise<SubsystemStability[]> {
 }
 
 /**
+ * `GET /api/v1/public-url`: the control plane's own public base URL (#2083).
+ *
+ * Every address rolter hands an identity provider is built from it on the
+ * server — the SSO redirect and login URLs, the SCIM base URL — never from the
+ * request, so a screen that needs one before the server has built it appends
+ * the path to this rather than to `window.location.origin`, which is wrong
+ * behind a proxy or under a second hostname. `configured` is false when
+ * `ROLTER_PUBLIC_URL` is unset and the default, `http://localhost:4001`, is
+ * standing in for it. Held by every signed-in caller.
+ */
+export interface PublicUrl {
+  /** no trailing slash, so an absolute path can be appended as-is */
+  public_url: string;
+  configured: boolean;
+}
+
+export function fetchPublicUrl(): Promise<PublicUrl> {
+  return getJson<PublicUrl>("/api/v1/public-url");
+}
+
+/**
  * Whether `code` can be converted into the settlement currency.
  *
  * A price already stored in a code the rate table no longer carries must still
@@ -4033,6 +4054,14 @@ export interface SsoProviderRow {
   default_role: string | null;
   enabled: boolean;
   created_at: string;
+  /**
+   * the callback to register in the identity provider, built from the
+   * deployment's public URL by the same function the login flow uses, so it is
+   * returned rather than assembled from the browser's origin (#2083)
+   */
+  redirect_uri: string;
+  /** where a user's sign-in through this provider starts; what users follow */
+  login_url: string;
 }
 
 export interface CreateSsoProviderInput {
@@ -4131,15 +4160,17 @@ export function deleteSsoGroupMapping(id: string): Promise<void> {
 }
 
 /**
- * Where a provider's "Continue with …" button points.
+ * The redirect URI a provider with this slug will have, for the add sheet.
  *
- * The same string `auth_policy.rs` builds for `GET /api/v1/auth/methods`, from
- * the slug alone — the admin screen has to show the URL for a provider it just
- * created, which that unauthenticated endpoint only lists once the login screen
- * next reloads.
+ * Mirrors `redirect_uri` in crates/rolter-control/src/sso.rs: the public base
+ * from `fetchPublicUrl`, then `/auth/sso/{slug}/callback`, with nothing
+ * encoded — the server does not encode it either, and the slug's charset is
+ * url-safe by constraint. The identity provider wants this before it issues
+ * the client id and secret the sheet asks for, so it cannot wait for the row;
+ * a saved provider carries the server's own `redirect_uri` instead.
  */
-export function ssoStartPath(slug: string): string {
-  return `/auth/sso/${slug}/start`;
+export function ssoRedirectUri(base: string, slug: string): string {
+  return `${base}/auth/sso/${slug}/callback`;
 }
 
 // --- org sign-in policy (crates/rolter-control/src/auth_policy.rs, #240) ---

@@ -136,6 +136,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Stability](/api/stability): GET /api/v1/stability lists the subsystems this build marks experimental — the ones that may change shape or be removed in a minor release. Absence means stable.
 - [UX Events](/api/ui-events): POST /api/v1/ui-events records structural dashboard usability telemetry — screen views, time-to-interactive, form abandons and error states — into ClickHouse alongside request logs.
 - [Version](/api/version): GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint.
+- [Public URL](/api/public-url): GET /api/v1/public-url reports the base URL the control plane builds every address it hands an identity provider from, and whether ROLTER_PUBLIC_URL set it or the default is standing in.
 - [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
 - [Project settings](/api/project-settings): GET and PUT /api/v1/projects/{id}/settings read and change a project's own settings — today, whether the project's viewers may read the request and response bodies payload capture stored for it.
 - [Budgets & rate limits](/api/budgets-and-rate-limits): List, create, edit in place and delete spend budgets and rate limits through the control plane. PATCH changes a cap without a window where the scope has none.

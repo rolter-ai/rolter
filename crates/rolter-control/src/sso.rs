@@ -202,11 +202,46 @@ fn api_error_message(err: ApiError) -> String {
 /// It is resolved once when the state is built, so every read within a login
 /// flow sees the same value; see [`crate::ControlState::public_url`].
 pub(crate) fn public_base_url(state: &ControlState) -> &str {
-    &state.public_url
+    &state.public_url.base
 }
 
+/// The callback a provider sends the authorization code to, and so the value
+/// an operator registers with the identity provider.
 fn redirect_uri(base: &str, slug: &str) -> String {
     format!("{base}/auth/sso/{slug}/callback")
+}
+
+/// Where a user's sign-in through a provider starts: the address the login
+/// screen's button points at, absolute so it can be bookmarked or linked.
+fn login_url(base: &str, slug: &str) -> String {
+    format!("{base}/auth/sso/{slug}/start")
+}
+
+/// A provider as the admin API returns it: the stored row, plus the two
+/// addresses derived from the deployment's public base URL (#2083).
+///
+/// Both are built by the same functions the login flow uses, so the redirect
+/// URI an operator copies into the identity provider is byte for byte the one
+/// [`start_login`] sends. The dashboard used to assemble them from the
+/// browser's own origin, which disagrees with the configured base behind a
+/// proxy or under a second hostname, and the IdP then refuses the login with a
+/// redirect mismatch.
+#[derive(Debug, Serialize)]
+struct ProviderView {
+    #[serde(flatten)]
+    provider: SsoProvider,
+    redirect_uri: String,
+    login_url: String,
+}
+
+impl ProviderView {
+    fn new(provider: SsoProvider, base: &str) -> Self {
+        Self {
+            redirect_uri: redirect_uri(base, &provider.slug),
+            login_url: login_url(base, &provider.slug),
+            provider,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +772,7 @@ async fn create_provider(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateSsoProvider>,
-) -> ApiResult<Json<SsoProvider>> {
+) -> ApiResult<Json<ProviderView>> {
     authorize(
         &state,
         &principal,
@@ -789,7 +824,7 @@ async fn create_provider(
         json!({"slug": provider.slug, "issuer": provider.issuer}),
     )
     .await;
-    Ok(Json(provider))
+    Ok(Json(ProviderView::new(provider, public_base_url(&state))))
 }
 
 /// The roles a group mapping may grant. Shared with
@@ -807,7 +842,7 @@ async fn list_providers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<SsoProvider>>> {
+) -> ApiResult<Json<Vec<ProviderView>>> {
     authorize(
         &state,
         &principal,
@@ -815,7 +850,14 @@ async fn list_providers(
         cap!("sso_provider", Read),
     )
     .await?;
-    Ok(Json(SsoRepo(pool(&state)).list_providers(org_id).await?))
+    let base = public_base_url(&state);
+    let providers = SsoRepo(pool(&state)).list_providers(org_id).await?;
+    Ok(Json(
+        providers
+            .into_iter()
+            .map(|provider| ProviderView::new(provider, base))
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -855,7 +897,7 @@ async fn update_provider(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateSsoProvider>,
-) -> ApiResult<Json<SsoProvider>> {
+) -> ApiResult<Json<ProviderView>> {
     let repo = SsoRepo(pool(&state));
     let existing = repo.get_provider(id).await?;
     authorize(
@@ -930,7 +972,7 @@ async fn update_provider(
         }),
     )
     .await;
-    Ok(Json(provider))
+    Ok(Json(ProviderView::new(provider, public_base_url(&state))))
 }
 
 async fn delete_provider(
@@ -1205,6 +1247,45 @@ mod tests {
         // in rather than derived from anything the caller sent
         let uri = redirect_uri("https://rolter.example.com", "keycloak");
         assert_eq!(uri, "https://rolter.example.com/auth/sso/keycloak/callback");
+    }
+
+    /// The admin API advertises the two addresses an operator needs, built by
+    /// the same functions the flow itself uses (#2083), and the flattened row
+    /// still hides the sealed secret behind `has_client_secret`.
+    #[test]
+    fn a_provider_row_carries_the_uris_the_flow_uses() {
+        let provider = SsoProvider {
+            id: Uuid::nil(),
+            org_id: Uuid::nil(),
+            name: "Keycloak".into(),
+            slug: "keycloak".into(),
+            issuer: "https://idp.example.com".into(),
+            client_id: "rolter".into(),
+            secret_ciphertext: Some(vec![1, 2, 3]),
+            secret_nonce: Some(vec![4, 5, 6]),
+            scopes: vec!["openid".into()],
+            group_claim: "groups".into(),
+            default_role: None,
+            enabled: true,
+            created_at: Utc::now(),
+        };
+        let base = "https://rolter.example.com";
+        let row = serde_json::to_value(ProviderView::new(provider, base)).expect("serializes");
+
+        assert_eq!(row["redirect_uri"], redirect_uri(base, "keycloak"));
+        assert_eq!(
+            row["redirect_uri"],
+            "https://rolter.example.com/auth/sso/keycloak/callback"
+        );
+        assert_eq!(
+            row["login_url"],
+            "https://rolter.example.com/auth/sso/keycloak/start"
+        );
+        // flattened, so a client reading the old fields finds them where they were
+        assert_eq!(row["slug"], "keycloak");
+        assert_eq!(row["has_client_secret"], true);
+        assert!(row.get("secret_ciphertext").is_none());
+        assert!(row.get("secret_nonce").is_none());
     }
 
     #[test]
