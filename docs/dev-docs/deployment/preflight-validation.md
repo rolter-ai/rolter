@@ -271,7 +271,13 @@ It renders with the **exact** env block the workload container gets — both com
 from one shared template, because three deployment paths that each re-implement
 "is this configured safely" will drift, and the one that drifts is the one
 nobody notices until a credential was stored unencrypted. A `helm chart` CI job
-lints the chart and renders every branch of that template.
+lints the chart and renders every branch of that template, and parses each
+render with a strict YAML loader that rejects a duplicate mapping key (#1090).
+The same check runs locally on a chart change:
+
+```bash
+helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+```
 
 If you are writing your own manifests, prefer an init container so the failure
 is visible as a distinct pod status rather than a crash-looping main container:
