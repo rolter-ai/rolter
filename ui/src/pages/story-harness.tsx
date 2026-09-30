@@ -8,7 +8,7 @@ import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
 import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
-import { expectInViewport } from "@/lib/story-viewport";
+import { expectInFrame, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
@@ -702,6 +702,52 @@ export async function expectListStateInViewport(
   await waitFor(() => expect(inTable.getByText(says)).toBeVisible());
   await expectInViewport(inTable.getByText(says));
   if (cta) await expectInViewport(inTable.getByRole("button", { name: cta }));
+}
+
+/**
+ * The native `Table` counterpart of `expectListStateInViewport` (#2420): assert
+ * what the table shows in place of rows sits inside the frame its scroller
+ * shows, and is centred in it.
+ *
+ * A native table has no accessible name to look it up by, so the empty title is
+ * the way in: `says` is that title, `body` the description under it and `cta`
+ * the button, which is read inside the table because the toolbar repeats the
+ * same action. They are measured against the scroller's own frame and not the
+ * window (`expectInViewport`): the frame is narrower than the window by the page
+ * gutters, so an empty title the card's edge had clipped still sat inside the
+ * window. The title and the description are measured by their text, through a
+ * `Range`, because the block that holds a line of centred text is as wide as
+ * its row whether or not the text fits.
+ *
+ * Centred is asserted as well, since a placeholder that was merely inside the
+ * frame could sit off to one side of it: it was centred on the whole table, so
+ * a narrower frame left it where the reader's eye is not. The scroller is
+ * scrolled into view and never the state, for the reason
+ * `expectListStateInViewport` gives.
+ */
+export async function expectTableStateInFrame(
+  canvasElement: HTMLElement,
+  { says, body, cta }: { says: RegExp; body?: RegExp; cta?: RegExp },
+): Promise<void> {
+  const table = (await within(canvasElement).findByText(says)).closest("table");
+  if (!table?.parentElement) throw new Error(`no native table holds the text ${says}`);
+  const frame = table.parentElement;
+  frame.scrollIntoView({ block: "start" });
+  await expect(frame.scrollLeft).toBe(0);
+  const inTable = within(table);
+  await waitFor(() => expect(inTable.getByText(says)).toBeVisible());
+  const textOf = (el: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range;
+  };
+  const title = textOf(inTable.getByText(says));
+  await expectInFrame(title, frame);
+  const { left: from, right: to } = title.getBoundingClientRect();
+  const centre = frame.getBoundingClientRect().left + frame.clientLeft + frame.clientWidth / 2;
+  await expect(Math.abs((from + to) / 2 - centre)).toBeLessThanOrEqual(1.5);
+  if (body) await expectInFrame(textOf(inTable.getByText(body)), frame);
+  if (cta) await expectInFrame(inTable.getByRole("button", { name: cta }), frame);
 }
 
 /** The open editor sheet. Sheets portal to the body, not into the canvas. */
