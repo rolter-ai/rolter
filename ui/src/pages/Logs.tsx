@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChartNoAxesColumn,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
@@ -10,9 +9,10 @@ import {
   X,
 } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { CopyButton } from "@/components/CopyButton";
 import { FilterPanel, FilterSearchList, FilterSection } from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
@@ -278,7 +278,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   if (isUnavailable(query.error)) {
     return (
       <div className="p-[22px]">
-        <AnalyticsUnavailable error={query.error} />
+        <AnalyticsUnavailable error={query.error} i18nKey="pages.logs.noAnalytics" />
       </div>
     );
   }
@@ -851,45 +851,6 @@ function PayloadBlock({
               {t("pages.logs.payloadSettingsLink")}
             </Link>
           ))}
-      </div>
-    </div>
-  );
-}
-
-/**
- * What the screen shows on a deployment with no analytics store (#1984).
- *
- * That deployment answered, and the answer will not change until someone sets
- * `CLICKHOUSE_URL`: it is a configuration rolter supports, not an outage. It
- * used to render `LoadError`, whose red `role="alert"` put it in the same voice
- * as a 500 and had a screen reader announce it as urgent on every visit. This
- * is the same information, stated calmly as a `status`: the cause, the setting
- * in monospace, and the control plane's own words under it (#962). There is
- * no retry, because no retry can help.
- */
-function AnalyticsUnavailable({ error }: { error: unknown }) {
-  const { t } = useTranslation();
-  const detail = error instanceof Error ? error.message : null;
-  return (
-    <div
-      role="status"
-      className="flex max-w-[72ch] items-start gap-3 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-3.5"
-    >
-      <ChartNoAxesColumn
-        aria-hidden
-        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-info-text)]"
-      />
-      <div className="flex min-w-0 flex-col gap-2">
-        <p className="text-sm font-medium text-foreground">{t("pages.logs.noAnalytics.title")}</p>
-        <p className="text-sm leading-relaxed text-muted-foreground">
-          <Trans
-            i18nKey="pages.logs.noAnalytics.body"
-            components={[<code key="env" className="font-mono text-xs text-foreground" />]}
-          />
-        </p>
-        {detail && (
-          <p className="break-words font-mono text-xs text-[color:var(--text-subtle)]">{detail}</p>
-        )}
       </div>
     </div>
   );

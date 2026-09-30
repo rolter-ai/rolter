@@ -178,6 +178,11 @@
       "gettingStarted": "the setup checklist",
       "labels": "labels",
       "analytics": "analytics",
+      "dashboardFigures": "the overview figures",
+      "dashboardSpend": "hourly spend",
+      "dashboardTrafficShare": "the traffic share",
+      "dashboardByModel": "requests by model",
+      "dashboardRecent": "recent requests",
       "requestLogs": "request logs",
       "routes": "routes",
       "routeTargets": "this route's targets",
@@ -503,6 +508,8 @@
       "statSpend": "Spend (24h)",
       "statAvgLatency": "Avg latency",
       "statErrorRate": "Error rate",
+      "notMeasured": "—",
+      "noRequestsInWindow": "No requests in this window",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
       "last24h": "Last 24h",
@@ -512,7 +519,7 @@
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
       },
       "spendTitle": "Spend",
-      "spendSub": "Hourly gateway spend, USD",
+      "spendSub": "Hourly gateway spend, {{currency}}",
       "noSpendRecorded": "No spend recorded for this window. Requests were served, but none of them were priced — add pricing for the models in use to see cost here.",
       "trafficTitle": "Traffic share",
       "trafficSub": "Requests by model",
@@ -531,7 +538,11 @@
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
       },
-      "spendChartAria": "Spend over the last 24 hours"
+      "spendChartAria": "Spend over the last 24 hours",
+      "noAnalytics": {
+        "title": "Traffic and spend need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
+      }
     },
     "models": {
       "unpriced": {

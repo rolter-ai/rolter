@@ -41,6 +41,10 @@ The card is for whoever sets the deployment up. If your role can add none of a p
 
 The Dashboard's first row is four figures for the last 24 hours: requests, spend, average latency and error rate. Under the error rate, the number of failed requests turns red once errors pass 1% of requests and stays grey below that. None of the four carries an up or down arrow, because none of them is compared with an earlier window.
 
+Average latency and error rate are measured over the window's requests, so a window with none has nothing to average. Both read **—** with _No requests in this window_ under them, instead of `0 ms` and `0.00 %`, which would read as a measurement of a quiet deployment. The request count and the spend stay real zeros. The line under the spend chart's title names the currency the deployment is configured in, the same one the amounts are written in.
+
+Without ClickHouse the Dashboard has no traffic to count. It shows one note in place of the figures and charts, naming `CLICKHOUSE_URL` as the setting to add. The note is information about the deployment rather than an error, so it offers no retry and stays on screen until the setting changes. The setup checklist above it is unaffected.
+
 "Last 24 hours" means the 24 hours before each read, not before you opened the page. The Dashboard reads again on its own, so a tab left open for an afternoon still reports a single day, and so does the refresh button in the header.
 
 ## The left rail
@@ -120,7 +124,9 @@ The refresh button in every screen header re-reads everything on the screen. Scr
 
 The Dashboard's **Recent requests** card is labelled **Live** and asks for new requests every 15 seconds. The four figures and the charts above it are aggregates over a day, so they are read once a minute. Both pause while the browser tab is hidden and read again when you come back.
 
-**Live** is only shown while the last read of the card succeeded. If a refresh fails while the Dashboard is showing, the page keeps the figures it has, and the label turns red and reads _Refresh failed at 15:34:56, retrying_ until a refresh succeeds. If the first read of the card fails, the label reads _Load failed at 15:34:56_ and the card stops refreshing until you press the header's refresh button. If the first read of the figures fails, the screen shows the error with **Try again** and stops refreshing until you press it.
+Every card on the Dashboard reads for itself: the four figures, the spend chart, the traffic share, requests by model and the recent requests. While a card's first read is out it shows placeholders in its own shape, and it never says there is no traffic or nothing logged about a read that has not answered. If that read fails, only that card shows the error, with its own **Try again**, and the cards that loaded stay as they are. A card whose first read failed stops refreshing until you press its **Try again** or the header's refresh button.
+
+If a refresh fails after a card has shown data, the card keeps what it has and says so underneath it, in red: _Refresh failed at 15:34:56, retrying_, until a refresh succeeds. The Recent requests card says it in its label instead, where **Live** gives way to the same sentence. **Live** is only shown while the last read of the card succeeded. If the first read of the recent requests fails, the label reads _Load failed at 15:34:56_.
 
 LLM Logs says **Streaming** only after a read that succeeded. While the first page loads, its toolbar says it is loading, and when a read fails it gives the time of the failure instead. If the very first read fails, the screen stops refreshing and keeps the error on screen until you press **Try again**. If a later refresh fails while rows are already showing, the rows stay, and the toolbar reads _Refresh failed at 15:34:56, retrying_ until a refresh succeeds or you pause the stream.
 
