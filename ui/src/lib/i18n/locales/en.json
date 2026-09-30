@@ -633,8 +633,21 @@
       "editOne": "Edit provider {{name}}",
       "confirm": {
         "deleteTitle": "Delete provider {{name}}?",
-        "deleteBody": "It stops being usable as a route target. This cannot be undone.",
+        "deleteBody": "Requests addressed to <code>{{slug}}/model</code> stop working. This cannot be undone.",
         "deleteConfirm": "Delete provider"
+      },
+      "usage": {
+        "resource": "the routes and groups that use it",
+        "none": "No route or group uses it.",
+        "inUse": "Still in use. The control plane refuses to delete a provider that a route or group still points at, so take it out of those first.",
+        "routes_one": "Target of {{count}} route",
+        "routes_other": "Target of {{count}} routes",
+        "groups_one": "Member of {{count}} group",
+        "groups_other": "Member of {{count}} groups",
+        "onlyTarget": "only target",
+        "onlyMember": "only member",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more"
       }
     },
     "plugins": {
@@ -3258,7 +3271,10 @@
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
       "resolvesTo": "Requests resolve to"
     },
+    "created": "{{name}} is created but not tested yet",
+    "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",
     "testConnection": "Test connection",
+    "testSavedOnly": "Test connection checks the saved provider, not the edits in this form. Save first, then test.",
     "testAnswered": "Answered, but not with a model list",
     "testFailed": "Could not reach this provider",
     "testOk_one": "Reachable · {{count}} model · {{ms}} ms",
@@ -3268,6 +3284,7 @@
       "add": "Providers are scoped to the current org and used as route targets and provider-group members.",
       "edit": "Leave the provider key blank to keep the stored credential unchanged. Clear the env var or egress proxy field to unset it.",
       "name": "Name",
+      "nameHint": "Fixed once the provider is created.",
       "slugOptional": "Slug (optional)",
       "slugOptionalHint": "URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create",
       "slug": "Slug",
@@ -3281,6 +3298,7 @@
       "providerKeyEnv": "Provider key env var (optional)",
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
+      "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
       "apiKeyUnchanged": "unchanged"
     },
     "title": {

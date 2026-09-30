@@ -30,6 +30,12 @@ test("provider create → edit → delete", async ({ page }) => {
     .getByLabel(t("providerSheet.fields.apiBase"), { exact: true })
     .fill("http://sim-a:8000");
   await sheet.getByRole("button", { name: t("providerSheet.cta.create"), exact: true }).click();
+  // a create leaves the sheet open on the new provider, with the connection test
+  // one click away (#2142); Done closes it
+  await expect(
+    sheet.getByRole("button", { name: t("providerSheet.testConnection"), exact: true }),
+  ).toBeEnabled();
+  await sheet.getByRole("button", { name: t("common.done"), exact: true }).click();
   await expect(sheet).toHaveCount(0);
 
   // the new provider's row actions are named after it
