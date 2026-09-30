@@ -38,7 +38,8 @@ config section an operator is about to paste into a ticket.
 ## The gateway address in a snippet
 
 A surface that hands out a gateway URL (the Getting started request, the
-Playground's copy-as-code, the Client Settings example and its placeholder)
+Playground's copy-as-code, the Client Settings example and its placeholder, the
+next step under a freshly minted key)
 never builds that URL itself. `gatewayBase()` in `ui/src/lib/gateway.ts` is the
 one place (#2218):
 

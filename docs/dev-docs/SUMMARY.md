@@ -79,6 +79,7 @@
 - [Dashboard error states](development/error-states.md)
 - [Dashboard loading and empty states](development/loading-and-empty-states.md)
 - [Dashboard destructive actions](development/destructive-actions.md)
+- [Dashboard one-time secrets](development/secret-reveal.md)
 - [Dashboard capability gating](development/rbac-gating.md)
 - [Dashboard navigation rail](development/dashboard-navigation.md)
 - [Dashboard theme](development/dashboard-theme.md)

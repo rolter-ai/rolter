@@ -28,7 +28,9 @@ Issuing, listing, and revoking tokens all require the **admin** role on the org 
   <Step title="Copy the token and the base URL">
     The plaintext value is displayed exactly once, in the panel that opens right after creation. Rolter stores only a peppered SHA-256 digest of it, so **the value cannot be displayed or recovered later** — not by you, not by support, not from a database dump. If you lose it, issue a new token and revoke the old one.
 
-    The same panel shows the **SCIM base URL** under the token, with its own copy button, so the two values the connector needs are in one place. The URL stays on the screen above the token list afterwards, and is the same for every token in the org.
+    Closing the panel before you have copied the token asks "Close without copying?", since the token cannot be shown again; Cancel keeps it open. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the panel says the copy failed in a message that stays, and the token stays on screen, selected, so you can copy it by hand with Ctrl+C or Cmd+C.
+
+The same panel shows the **SCIM base URL** under the token, with its own copy button, so the two values the connector needs are in one place. The URL stays on the screen above the token list afterwards, and is the same for every token in the org.
 
   </Step>
 

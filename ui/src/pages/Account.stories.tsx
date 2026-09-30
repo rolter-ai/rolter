@@ -5,6 +5,7 @@ import Account from "./Account";
 import {
   Harness,
   NEEDS_MEMBER,
+  answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
@@ -18,7 +19,9 @@ import {
   pickOption,
   recording,
   scoped,
+  secretClosePrompt,
   sheet,
+  stubClipboard,
   answerDiscardPrompt,
   type FetchStub,
   expectEmptyState,
@@ -556,26 +559,138 @@ export const UsageFailed: Story = {
   },
 };
 
+/** a control plane that answers a mint with the plaintext key */
+const minting = () => account((init) => (init?.method === "POST" ? json(MINTED, 201) : json(KEYS)));
+
+/** Fill the mint sheet in and submit it, returning the reveal dialog. */
+async function mintAKey(canvasElement: HTMLElement) {
+  await clickWhenEnabled(canvasElement, /generate virtual key/i);
+  const form = sheet();
+  await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
+  await userEvent.click(within(form).getByRole("button", { name: "Mint" }));
+  return within(document.body).findByRole("dialog", { name: "Virtual key ready" });
+}
+
 export const MintsAKey: Story = {
   render: () => (
-    <Harness
-      fetchStub={account((init) => (init?.method === "POST" ? json(MINTED, 201) : json(KEYS)))}
-    >
+    <Harness fetchStub={minting()}>
       <Account />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /generate virtual key/i);
-    const form = sheet();
-    await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
-    await userEvent.click(within(form).getByRole("button", { name: "Mint" }));
+    const dialog = await mintAKey(canvasElement);
     // the plaintext is shown exactly once, right here; losing this dialog means
     // the user never gets the secret they just created
-    await waitFor(() => expect(within(document.body).getByText(MINTED.key)).toBeInTheDocument());
-    await userEvent.click(within(document.body).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(within(dialog).getByText(MINTED.key)).toBeInTheDocument());
+
+    // the step after it (#2217). this key may reach every route, so the
+    // request names the gateway's built-in model; the address is the
+    // dashboard's own proxy, and the key is referenced, never written out
+    const origin = window.location.origin;
+    await expect(
+      await within(dialog).findByRole("region", { name: /Gateway URL/ }),
+    ).toHaveTextContent(`${origin}/gw/v1`);
+    const request = within(dialog).getByRole("region", { name: /First request/ });
+    await waitFor(() => expect(request).toHaveTextContent(`curl ${origin}/gw/v1/chat/completions`));
+    await expect(request).toHaveTextContent(`"model":"fake-llm"`);
+    await expect(request).not.toHaveTextContent(MINTED.key);
+
+    // nobody copied the key, so closing asks, and only the confirm closes it
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(true);
     await waitFor(() =>
       expect(within(document.body).queryByText(MINTED.key)).not.toBeInTheDocument(),
     );
+  },
+};
+
+/** A key that reached the clipboard closes without a question. */
+export const ACopiedKeyClosesWithoutAsking: Story = {
+  beforeEach: stubClipboard(async () => {}),
+  render: () => (
+    <Harness fetchStub={minting()}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    const copy = await within(dialog).findByRole("button", { name: /^Copy: / });
+    await userEvent.click(copy);
+    await waitFor(() => expect(copy).toHaveAttribute("title", en.common.copied));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+/**
+ * Escape, the scrim and the close button used to drop the key with nothing to
+ * bring it back; each asks now, and cancelling keeps the key on screen (#2217).
+ */
+export const AnUncopiedKeyAsksBeforeClosing: Story = {
+  render: () => (
+    <Harness fetchStub={minting()}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    await userEvent.keyboard("{Escape}");
+    await expect(await secretClosePrompt()).toHaveAccessibleDescription(en.common.secret.closeBody);
+    await answerSecretClosePrompt(false);
+    await expect(within(dialog).getByText(MINTED.key)).toBeVisible();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: en.common.close }));
+    await answerSecretClosePrompt(true);
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+/**
+ * A plain-http dashboard has no clipboard: the copy says so in a line that
+ * stays, and the key stays selectable on screen (#2327).
+ */
+export const AFailedCopyKeepsTheKeyAndSaysSo: Story = {
+  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
+  render: () => (
+    <Harness fetchStub={minting()}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    await userEvent.click(await within(dialog).findByRole("button", { name: /^Copy: / }));
+    await expect(await within(dialog).findByRole("alert")).toHaveTextContent(en.common.copyFailed);
+    await expect(within(dialog).getByText(MINTED.key)).toBeVisible();
+    await expect(window.getSelection()?.toString()).toBe(MINTED.key);
+  },
+};
+
+/** The reveal, its question and the next step follow the locale. */
+export const TheRevealIsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={minting()}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, new RegExp(ru.account.keys.generate, "i"));
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText(ru.keyMint.name), "ci runner");
+    await userEvent.click(within(form).getByRole("button", { name: ru.account.keys.mint.save }));
+    const dialog = await within(document.body).findByRole("dialog", {
+      name: ru.account.keys.revealed.title,
+    });
+    await expect(
+      await within(dialog).findByRole("heading", { name: ru.common.secret.nextStep.title }),
+    ).toBeVisible();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: ru.account.keys.revealed.done }),
+    );
+    const prompt = await within(document.body).findByRole("dialog", {
+      name: ru.common.secret.closeTitle,
+    });
+    await expect(within(prompt).getByText(ru.common.secret.closeBody)).toBeVisible();
   },
 };
 
