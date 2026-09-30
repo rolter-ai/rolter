@@ -103,10 +103,18 @@ export function CodeSnippetDialog({
   );
 }
 
-/** The trigger, so a caller only has to own the request it describes. */
-export function CopyAsCodeButton({ request }: { request: SnippetRequest }) {
+/**
+ * The trigger, so a caller only has to own the request it describes.
+ *
+ * `label` names what the button acts on, for a screen that repeats it: two
+ * columns each have one, and "Copy as code" twice tells a screen reader user
+ * nothing about which request they would get. It has to start with the visible
+ * words, so the name still contains the text on the button.
+ */
+export function CopyAsCodeButton({ request, label }: { request: SnippetRequest; label?: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
+  const name = label ?? t("playground.copyAsCode");
   return (
     <>
       {/* a labelled control, not a bare glyph: the dialog behind this is the
@@ -119,8 +127,8 @@ export function CopyAsCodeButton({ request }: { request: SnippetRequest }) {
         variant="ghost"
         className="h-8 gap-1.5"
         onClick={() => setOpen(true)}
-        aria-label={t("playground.copyAsCode")}
-        title={t("playground.copyAsCode")}
+        aria-label={name}
+        title={name}
       >
         <Code2 className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">{t("playground.copyAsCode")}</span>

@@ -71,12 +71,12 @@ The debugging loop, in the order an engineer should be able to walk it.
 
 ## E6 — "my MCP tool call failed"
 
-| #    | step                                   | where                                       | expect                                         | status                        |
-| ---- | -------------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------------------------- |
-| E6.1 | connect an MCP server that needs OAuth | **MCP Gateway → MCP Catalog**, then consent | a session of their own under **Auth Sessions** | works                         |
-| E6.2 | call a tool through the gateway        | the agent, via `<gateway>/mcp/{server}`     | the tool answers                               | works                         |
-| E6.3 | see the failed tool call               | **Observability → MCP Logs**                | the engineer's own tool-call rows              | gap — #1831 (superadmin-only) |
-| E6.4 | a session expired                      | **Auth Sessions**                           | the session's state and a way to renew it      | works                         |
+| #    | step                                   | where                                       | expect                                         | status                                                 |
+| ---- | -------------------------------------- | ------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------ |
+| E6.1 | connect an MCP server that needs OAuth | **MCP Gateway → MCP Catalog**, then consent | a session of their own under **Auth Sessions** | works                                                  |
+| E6.2 | call a tool through the gateway        | the agent, via `<gateway>/mcp/{server}`     | the tool answers                               | works                                                  |
+| E6.3 | see the failed tool call               | **Observability → MCP Logs**                | the engineer's own tool-call rows              | gap — #1831 (api scoped, screen still superadmin-only) |
+| E6.4 | a session expired                      | **Auth Sessions**                           | the session's state and a way to renew it      | works                                                  |
 
 ## E7 — "my local MCP server misbehaves"
 

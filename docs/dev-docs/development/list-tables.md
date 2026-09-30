@@ -84,6 +84,20 @@ the header and the rows. It tells the header apart by type, which means the
   width must not come from its content, which is true in a block or a column
   flex (every list screen today) and is not in a row flex, where the table
   needs `flex-1 min-w-0`.
+- **The native `Table` holds its placeholder to the frame too.** The data-driven
+  `Table` in `ui/src/components/ui/table.tsx` is a real `<table>` inside a
+  scrolling `div`, and its `empty` placeholder is one `<td colSpan>` the width
+  of the whole table. Below its columns' width the table scrolls sideways and
+  that cell was centred on a band wider than the card: at 375px Cluster's title
+  ran 18px past the card's edge, and Audit Log's and User Provisioning's sat off
+  to one side (#2420). The scroller is a size container and the cell holds a
+  `sticky left-0` box `100cqw` wide, the same answer as `ListStateRow`: the
+  placeholder is centred on what the reader sees and stays there while the
+  columns scroll beneath it. The header and the body rows are untouched, so
+  the columns stay aligned, and at desktop width the box is exactly as wide as
+  the table. The same rule applies: the scroller's width must not come from its
+  content, which holds while it keeps `w-full` and does not in a row flex with
+  that swapped for `w-auto`.
 - **Hand the state rows the query, not a condition.** Write the skeleton as
   `<ListLoadingRow read={query}>` and the empty state as
   `<ListEmptyRow read={query} rows={rows.length}>`, where `query` is the
@@ -124,6 +138,23 @@ the table into view and never the state, because scrolling the title into view
 would slide the table sideways and pass on the fault. Pair it with an `atMobile`
 story: Users, Providers and the primitive stories below do.
 
+`expectTableStateInFrame(canvasElement, { says, body, cta })` is the same check
+for the native `Table` (#2420), which has no accessible name to look it up by:
+`says` is the empty title and the helper finds the table from it. It measures
+the title, the description and the button against the scroller's own frame with
+`expectInFrame` (`ui/src/lib/story-viewport.ts`) and not against the window,
+because the frame is narrower than the window by the page gutters and a title the
+card's edge had clipped still sat inside the window. The title and the
+description are measured by their text, through a `Range`, since the block that
+holds a line of centred text is as wide as its row whether or not the text
+fits, and the title must also be centred in the frame, which catches a
+placeholder that is inside it and off to one side. Cluster, Audit Log and User
+Provisioning each assert it at 375px in `en` and `ru` (`EmptyFitsThePhone`,
+`EmptyFitsThePhoneInRussian`), and the primitive's stories under **Display/Table**
+hold the placeholder in the frame while the table scrolls
+(`EmptyStaysInFrameWhenTheTableScrolls`) and as wide as the table and its header
+row at desktop width (`EmptySpansTheTableAtDesktopWidth`).
+
 The primitive's own stories, under **Display/ScreenPrimitives**, assert the
 roles (`TableSemantics`), the `aria-sort` cycle and the hidden arrow
 (`SortIsAnnouncedOnTheHeader`), the loading and empty rows
@@ -137,7 +168,14 @@ checks the state has not moved while the header band has, and
 body share one left edge and one width when nothing scrolls.
 
 The Logs screen is not built from these primitives: it renders a native
-`<table>` and gets its semantics from the elements. So does the Roles &
+`<table>` and gets its semantics from the elements. It does not scroll to fit
+its columns either. Its scroll area is a size container, and Provider, Tokens
+and Latency are `display: none` below 840, 720 and 600px of the table's own
+width (`@min-[…]` variants on the `th`, the `td` and the `col`), so Time, Model,
+Status and Cost are in the frame however much the sidebar, the filter rail and
+the detail drawer have taken. The width that decides is the table's, not the
+window's (#1986). `TheColumnsFollowTheWidthTheTableHas` and the 375px stories
+read the drawn columns and assert no cell sits past the frame. So does the Roles &
 Permissions matrix (#2081), which needs what the list primitives do not have: a
 row header per resource (`th scope="row"`) and a `tbody` per scope under its own
 full-width header. Each of its chips pairs an `aria-hidden` mark with the same

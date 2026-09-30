@@ -3053,6 +3053,7 @@ impl GatewayConfig {
     /// dropping one of two colliding rows would be worse than refusing.
     pub fn sanitize_for_snapshot(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
+        self.prune_invalid_prompt_templates(&mut warnings);
 
         // a provider whose own definition is invalid cannot serve traffic, but
         // it is exactly one row: withholding the other fourteen providers and
@@ -3133,6 +3134,37 @@ impl GatewayConfig {
             }
         }
         warnings
+    }
+
+    /// Drop each prompt template that fails validation on its own, saying why
+    /// in `warnings` (#2279).
+    ///
+    /// `validate` rejects the whole config over one malformed template, which
+    /// made a single bad published version stop `/internal/snapshot` for every
+    /// tenant. Granularity is one `(id, version)` entry, which is what the
+    /// snapshot carries. Nothing else references a template (scopes live on the
+    /// template itself and `validate` does not cross-check them against
+    /// routes), so dropping one leaves no dangling reference. A duplicated
+    /// `(id, version)` is a cross-entry defect and is left for `validate`.
+    fn prune_invalid_prompt_templates(&mut self, warnings: &mut Vec<String>) {
+        let before = self.prompt_templates.templates.len();
+        self.prompt_templates.templates.retain(|template| {
+            let problems =
+                crate::prompt_templates::PromptTemplatesConfig::template_problems(template);
+            if problems.is_empty() {
+                return true;
+            }
+            warnings.push(format!(
+                "prompt template '{}' version {} omitted from the snapshot: {}",
+                template.id.trim(),
+                template.version,
+                problems.join("; ")
+            ));
+            false
+        });
+        if before != 0 && self.prompt_templates.templates.is_empty() {
+            self.prompt_templates.enabled = false;
+        }
     }
 
     /// Every problem with `provider` considered on its own — everything
@@ -3792,6 +3824,46 @@ impl EgressPolicy {
                 allowed == *host || host_ip(&allowed).is_some_and(|allowed| allowed == ip)
             })
         })
+    }
+
+    /// Drop the resolved addresses this policy denies, for a connect-time
+    /// resolver: `host` is the name that was resolved and `addrs` what DNS
+    /// answered.
+    ///
+    /// A partial denial still connects: a multi-homed upstream with one denied
+    /// address is reachable on the others, and refusing the whole name would
+    /// take down a legitimate provider. Only a name left with *nothing* is an
+    /// error, and rebinding to a denied address leaves exactly nothing. An
+    /// empty answer is not a denial; that is the resolver's own failure to
+    /// report.
+    pub fn filter_resolved(
+        &self,
+        host: &str,
+        addrs: Vec<std::net::SocketAddr>,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, String> {
+        if self.host_is_allowed(host) {
+            return Ok(addrs);
+        }
+        let mut denied: Option<&'static str> = None;
+        let allowed: Vec<std::net::SocketAddr> = addrs
+            .into_iter()
+            .filter(|addr| match self.deny_reason(addr.ip()) {
+                Some(reason) => {
+                    denied = Some(reason);
+                    false
+                }
+                None => true,
+            })
+            .collect();
+        if allowed.is_empty() {
+            if let Some(reason) = denied {
+                return Err(format!(
+                    "'{host}' resolves only to {reason} addresses, which the egress policy denies \
+                     (allow it explicitly via egress.allow_hosts if this is intentional)"
+                ));
+            }
+        }
+        Ok(allowed)
     }
 
     /// Whether `host` is exempt from every check, matched against
@@ -5534,6 +5606,55 @@ mod tests {
         // "created the route, haven't added targets yet" state
         cfg.routes[1].targets.clear();
         cfg
+    }
+
+    #[test]
+    fn sanitize_prunes_only_the_invalid_prompt_template() {
+        use crate::prompt_templates::{Decorator, PromptTemplate, TemplateVariable};
+        let template = |id: &str, content: &str, vars: Vec<TemplateVariable>| PromptTemplate {
+            id: id.to_string(),
+            version: 1,
+            routes: Vec::new(),
+            scopes: Vec::new(),
+            variables: vars,
+            decorators: vec![Decorator {
+                role: Default::default(),
+                position: Default::default(),
+                content: content.to_string(),
+            }],
+        };
+        let mut cfg = config_with_a_good_and_a_targetless_route();
+        cfg.routes.pop();
+        cfg.prompt_templates.enabled = true;
+        cfg.prompt_templates.templates = vec![
+            template("good", "plain", Vec::new()),
+            template("undeclared", "hi {{ who }}", Vec::new()),
+            template(
+                "both",
+                "x",
+                vec![TemplateVariable {
+                    name: "v".into(),
+                    required: true,
+                    default: Some("d".into()),
+                }],
+            ),
+        ];
+        assert!(cfg.validate().is_err(), "precondition: config invalid");
+
+        let warnings = cfg.sanitize_for_snapshot();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'undeclared'") && w.contains("undeclared variable 'who'")));
+        assert!(warnings.iter().any(|w| w.contains("'both'")));
+        let ids: Vec<_> = cfg
+            .prompt_templates
+            .templates
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["good"]);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
     }
 
     #[test]

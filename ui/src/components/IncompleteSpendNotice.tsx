@@ -21,9 +21,12 @@ export function IncompleteSpendNotice({
   const { t } = useTranslation();
   if (requests <= 0) return null;
   return (
+    // one tone: the amber warning pair, fill for the wash and border and the
+    // `-text` half for the glyph. the wash used to be the red tint, which set
+    // an amber icon on red and said two things at once (#1994)
     <div
       role="status"
-      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--red-tint)] px-4 py-3"
+      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-4 py-3"
     >
       <CircleDollarSign
         aria-hidden

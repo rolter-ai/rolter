@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Pencil, Plus, Key } from "lucide-react";
+import { Pencil, Plus, Key } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -36,6 +36,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
+import { KeyNextStep } from "@/components/KeyNextStep";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   ListActionsHeader,
@@ -53,14 +54,7 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
+import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { Tag } from "@/components/ui/tag";
 import {
   PLAYGROUND_PURPOSE,
@@ -486,7 +480,20 @@ export default function Keys() {
         }}
       />
 
-      <CreatedKeyDialog created={created} onOpenChange={(open) => !open && setCreated(null)} />
+      {/* the plaintext is shown once; `created` is dropped on close, so it is
+          never re-fetchable */}
+      <SecretRevealDialog
+        name="virtual-key-created"
+        open={!!created}
+        onOpenChange={(open) => !open && setCreated(null)}
+        title={t("pages.virtualKeys.createdTitle")}
+        description={t("pages.virtualKeys.createdBody")}
+        secret={created?.key ?? ""}
+        copyLabel={t("common.copy")}
+        size="lg"
+      >
+        <KeyNextStep models={created?.models ?? []} />
+      </SecretRevealDialog>
     </PageBody>
   );
 }
@@ -718,58 +725,5 @@ function EditKeyDialog({
         />
       </div>
     </EditorSheet>
-  );
-}
-
-// shows the plaintext secret exactly once, right after creation; state is
-// local to this dialog and is discarded on close, never re-fetchable
-function CreatedKeyDialog({
-  created,
-  onOpenChange,
-}: {
-  created: CreatedVirtualKey | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = React.useState(false);
-
-  React.useEffect(() => {
-    if (created) setCopied(false);
-  }, [created]);
-
-  const copy = async () => {
-    if (!created) return;
-    try {
-      await navigator.clipboard.writeText(created.key);
-      setCopied(true);
-    } catch {
-      // clipboard unavailable — user can still select/copy the text manually
-    }
-  };
-
-  return (
-    <Dialog open={!!created} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>{t("pages.virtualKeys.createdTitle")}</DialogTitle>
-        <DialogDescription>{t("pages.virtualKeys.createdBody")}</DialogDescription>
-      </DialogHeader>
-      <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
-        <div className="flex items-center justify-between gap-2">
-          <code className="break-all text-sm">{created?.key}</code>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={copy}
-            aria-label={copied ? t("common.copied") : t("common.copy")}
-            title={copied ? t("common.copied") : t("common.copy")}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </Button>
-        </div>
-      </div>
-      <DialogFooter>
-        <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
-      </DialogFooter>
-    </Dialog>
   );
 }

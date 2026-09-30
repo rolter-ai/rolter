@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, KeyRound, Plus, RotateCw } from "lucide-react";
+import { KeyRound, Plus, RotateCw } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -19,6 +19,7 @@ import {
   ttlToDays,
   type CacheMode,
 } from "@/components/KeyMintFields";
+import { KeyNextStep } from "@/components/KeyNextStep";
 import { KeyProvidersField } from "@/components/KeyAttributionFields";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -31,14 +32,8 @@ import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
+import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { Tag } from "@/components/ui/tag";
 import {
   AnalyticsUnavailableError,
@@ -295,7 +290,21 @@ export default function Account() {
         }}
       />
 
-      <RevealedKeyDialog minted={minted} onOpenChange={(open) => !open && setMinted(null)} />
+      {/* the plaintext is shown once, after a mint or a rotation, and dropped
+          on close */}
+      <SecretRevealDialog
+        name="account-key-revealed"
+        open={!!minted}
+        onOpenChange={(open) => !open && setMinted(null)}
+        title={t("account.keys.revealed.title")}
+        description={t("account.keys.revealed.body")}
+        secret={minted?.key ?? ""}
+        copyLabel={t("common.copy")}
+        doneLabel={t("account.keys.revealed.done")}
+        size="lg"
+      >
+        <KeyNextStep models={minted?.models ?? []} />
+      </SecretRevealDialog>
     </PageBody>
   );
 }
@@ -496,57 +505,5 @@ function MintKeyDialog({
         <KeyReachSummary project={project} models={models} providers={providerSel} ttl={ttl} />
       </div>
     </EditorSheet>
-  );
-}
-
-// shows the plaintext secret exactly once after mint/rotate; discarded on close
-function RevealedKeyDialog({
-  minted,
-  onOpenChange,
-}: {
-  minted: MintedKey | null;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = React.useState(false);
-
-  React.useEffect(() => {
-    if (minted) setCopied(false);
-  }, [minted]);
-
-  const copy = async () => {
-    if (!minted) return;
-    try {
-      await navigator.clipboard.writeText(minted.key);
-      setCopied(true);
-    } catch {
-      // clipboard unavailable — user can still select/copy the text manually
-    }
-  };
-
-  return (
-    <Dialog open={!!minted} onOpenChange={onOpenChange}>
-      <DialogHeader>
-        <DialogTitle>{t("account.keys.revealed.title")}</DialogTitle>
-        <DialogDescription>{t("account.keys.revealed.body")}</DialogDescription>
-      </DialogHeader>
-      <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
-        <div className="flex items-center justify-between gap-2">
-          <code className="break-all text-sm">{minted?.key}</code>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={copy}
-            aria-label={copied ? t("common.copied") : t("common.copy")}
-            title={copied ? t("common.copied") : t("common.copy")}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </Button>
-        </div>
-      </div>
-      <DialogFooter>
-        <Button onClick={() => onOpenChange(false)}>{t("account.keys.revealed.done")}</Button>
-      </DialogFooter>
-    </Dialog>
   );
 }

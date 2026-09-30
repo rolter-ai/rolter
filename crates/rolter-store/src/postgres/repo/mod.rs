@@ -37,8 +37,8 @@ use super::models::{
     ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
     Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
     ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
-    SsoLoginState, SsoProvider, Team, User, VirtualKey,
+    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode,
+    SsoGroupMapping, SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -1688,6 +1688,50 @@ impl SsoRepo<'_> {
              returning state, provider_id, code_verifier, nonce, redirect_uri, created_at",
         )
         .bind(state)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Record a one-time exchange code for a completed browser sign-in. Only
+    /// the digest of the code is stored; `ttl_secs` counts from the database
+    /// clock, like every other expiry here.
+    pub async fn issue_exchange(
+        &self,
+        code_hash: &str,
+        user_id: Uuid,
+        provider_id: Uuid,
+        granted_roles: &[String],
+        ttl_secs: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "insert into sso_exchange_codes (code_hash, user_id, provider_id, granted_roles, expires_at) \
+             values ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)",
+        )
+        .bind(code_hash)
+        .bind(user_id)
+        .bind(provider_id)
+        .bind(granted_roles)
+        .bind(ttl_secs.to_string())
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Redeem an exchange code exactly once. An unknown, already-redeemed or
+    /// expired code yields `None`; the delete is the single-use guarantee, so
+    /// two concurrent redemptions cannot both succeed.
+    pub async fn redeem_exchange(&self, code_hash: &str) -> Result<Option<SsoExchangeCode>> {
+        // opportunistic sweep, as for login states
+        let _ = sqlx::query("delete from sso_exchange_codes where expires_at < now()")
+            .execute(self.0)
+            .await;
+        sqlx::query_as(
+            "delete from sso_exchange_codes where code_hash = $1 and expires_at > now() \
+             returning user_id, provider_id, granted_roles",
+        )
+        .bind(code_hash)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
@@ -4163,7 +4207,7 @@ impl AuditLogRepo<'_> {
                  order by at asc, id asc limit $9")
             }
         };
-        let mut entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
             .bind(org_id)
             .bind(filter.actor_user_id)
             .bind(filter.action.as_deref())
@@ -4176,6 +4220,16 @@ impl AuditLogRepo<'_> {
             .fetch_all(self.0)
             .await
             .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Trim the probe row and restore newest-first order after a `Previous`
+    /// scan, shared by the per-org and the deployment-wide read.
+    fn finish_page(
+        mut entries: Vec<AuditLogEntry>,
+        filter: &AuditLogFilter,
+        limit: i64,
+    ) -> AuditLogPage {
         let has_more = entries.len() as i64 > limit;
         if has_more {
             entries.pop();
@@ -4183,7 +4237,70 @@ impl AuditLogRepo<'_> {
         if matches!(filter.direction, AuditLogDirection::Previous) {
             entries.reverse();
         }
-        Ok(AuditLogPage { entries, has_more })
+        AuditLogPage { entries, has_more }
+    }
+
+    /// Query one cursor page across the whole deployment: every row, org-less
+    /// account events included. Same ordering, filters and cursor as
+    /// [`Self::list_page`], minus the org scoping.
+    pub async fn list_page_all(&self, filter: &AuditLogFilter, limit: i64) -> Result<AuditLogPage> {
+        let query = match filter.direction {
+            AuditLogDirection::Next => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) < ($6, $7))
+                 order by at desc, id desc limit $8"
+            }
+            AuditLogDirection::Previous => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) > ($6, $7))
+                 order by at asc, id asc limit $8"
+            }
+        };
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+            .bind(filter.actor_user_id)
+            .bind(filter.action.as_deref())
+            .bind(filter.target_type.as_deref())
+            .bind(filter.start_at)
+            .bind(filter.end_at)
+            .bind(filter.cursor.map(|cursor| cursor.at))
+            .bind(filter.cursor.map(|cursor| cursor.id))
+            .bind(limit + 1)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Count matching records across the deployment, ignoring the cursor.
+    pub async fn count_all(&self, filter: &AuditLogFilter) -> Result<i64> {
+        sqlx::query_scalar(
+            "select count(*) from audit_log
+             where ($1::uuid is null or actor_user_id = $1)
+               and ($2::text is null or action = $2)
+               and ($3::text is null or target_type = $3)
+               and ($4::timestamptz is null or at >= $4)
+               and ($5::timestamptz is null or at <= $5)",
+        )
+        .bind(filter.actor_user_id)
+        .bind(filter.action.as_deref())
+        .bind(filter.target_type.as_deref())
+        .bind(filter.start_at)
+        .bind(filter.end_at)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Count matching records without applying a cursor. Callers opt in to
