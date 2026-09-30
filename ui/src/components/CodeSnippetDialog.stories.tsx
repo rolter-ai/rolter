@@ -201,6 +201,25 @@ export const AnAdminKeepsTheProxy: Story = {
   },
 };
 
+/**
+ * A screen that repeats the button says what each one is for (#2330): the
+ * accessible name and the tooltip carry it, the words on the button stay
+ * "Copy as code", and the name still contains them, so a voice-control user
+ * saying what they see reaches it.
+ */
+export const NamesWhatItActsOn: Story = {
+  args: { label: "Copy as code for llama-3.1-8b, column 2" },
+  play: async () => {
+    const trigger = await screen().findByRole("button", {
+      name: "Copy as code for llama-3.1-8b, column 2",
+    });
+    await expect(trigger).toHaveAttribute("title", "Copy as code for llama-3.1-8b, column 2");
+    await expect(trigger).toHaveTextContent(/^Copy as code$/);
+    // a caller that names nothing keeps the plain label
+    await expect(screen().queryByRole("button", { name: "Copy as code" })).toBeNull();
+  },
+};
+
 // the entry point shipped as a bare `</>` glyph, so the dialog behind it was
 // undiscoverable without clicking an anonymous icon (#963)
 export const TriggerIsLabelled: Story = {
