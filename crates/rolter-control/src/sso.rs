@@ -41,8 +41,8 @@ use uuid::Uuid;
 use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{Membership, SsoGroupMapping, SsoProvider, User};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, MembershipRepo, OrgAuthPolicyRepo, SecretUpdate, SessionRepo, SsoProviderUpdate,
-    SsoRepo, UserRepo,
+    AuditLogRepo, LockoutGuard, MembershipRepo, OrgAuthPolicyRepo, SecretUpdate, SessionRepo,
+    SsoProviderUpdate, SsoRepo, UserRepo,
 };
 
 use crate::auth::session_pepper;
@@ -1237,6 +1237,19 @@ fn default_enabled() -> bool {
     true
 }
 
+/// The refusal for a write that would leave the org with no sign-in method.
+///
+/// The mirror of the guard in `auth_policy.rs` that refuses turning passwords
+/// off before a provider exists: together they keep "password sign-in off and
+/// no enabled provider" from ever being reachable (#2233). Only a superadmin,
+/// who is exempt from the password setting, could still sign in.
+fn last_sign_in_method(verb: &str) -> ApiError {
+    ApiError::Conflict(format!(
+        "cannot {verb} the last enabled sso provider while password sign-in is off: no member \
+         could sign in. Enable password sign-in or another sso provider first"
+    ))
+}
+
 /// Edit a registered provider in place.
 ///
 /// `slug` is not accepted: it is in the login URL, so renaming it would break
@@ -1283,7 +1296,7 @@ async fn update_provider(
     };
     let scopes = body.scopes.clone().unwrap_or(existing.scopes.clone());
     let issuer = body.issuer.trim_end_matches('/');
-    let provider = repo
+    let provider = match repo
         .update_provider(
             id,
             SsoProviderUpdate {
@@ -1300,7 +1313,11 @@ async fn update_provider(
                 enabled: body.enabled,
             },
         )
-        .await?;
+        .await?
+    {
+        LockoutGuard::Done(provider) => provider,
+        LockoutGuard::WouldLockOut => return Err(last_sign_in_method("disable")),
+    };
     // the audit line says what moved, never what the secret is: whether it was
     // rotated is the interesting fact, and the only one safe to record
     log_audit(
@@ -1339,7 +1356,9 @@ async fn delete_provider(
         cap!("sso_provider", Delete),
     )
     .await?;
-    repo.delete_provider(id).await?;
+    if repo.delete_provider(id).await? == LockoutGuard::WouldLockOut {
+        return Err(last_sign_in_method("delete"));
+    }
     log_audit(
         &state,
         &principal,
