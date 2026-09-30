@@ -13719,7 +13719,8 @@ async fn a_scim_managed_display_name_is_read_only_but_the_bio_is_not() {
         .json()
         .await
         .unwrap();
-    let user_id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let user_id: uuid::Uuid = scim_id.parse().unwrap();
     let token = seed_session(&pool, user_id, "profilescimuser").await;
 
     let me = || async {
@@ -13767,7 +13768,7 @@ async fn a_scim_managed_display_name_is_read_only_but_the_bio_is_not() {
 
     // a later SCIM replace moves the name
     let replaced = client
-        .put(format!("{base}/scim/v2/Users/{user_id}"))
+        .put(format!("{base}/scim/v2/Users/{scim_id}"))
         .bearer_auth(&secret)
         .json(&json!({
             "userName": "hopper@example.com",
