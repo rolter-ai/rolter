@@ -1354,6 +1354,175 @@ async fn an_orgs_audit_log_shows_its_own_peoples_account_events() {
     );
 }
 
+/// The deployment-wide read returns the rows no org read can: a superadmin's
+/// own events and an attempt against an unregistered address. It is
+/// superadmin-only, and pages and filters like the per-org read (#1858).
+#[tokio::test]
+async fn the_deployment_audit_log_is_a_superadmins_and_returns_org_less_rows() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let operator = seed_user(&pool, "operator@deploy.test", true).await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(org), None, None, "admin").await;
+    // oldest first; none of them carries an org
+    for (minutes_ago, actor, action, target) in [
+        (4, Some(operator), "auth.login", Some(operator)),
+        (3, None, "auth.login_failed", None),
+        (2, Some(operator), "auth.mfa_enrolled", Some(operator)),
+        (1, Some(operator), "auth.login", Some(operator)),
+    ] {
+        sqlx::query(
+            "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail, at)
+             values (null, $1, $2, case when $3::uuid is null then null else 'user' end, $3, '{}',
+                     now() - make_interval(mins => $4))",
+        )
+        .bind(actor)
+        .bind(action)
+        .bind(target)
+        .bind(minutes_ago)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let operator_session = seed_session(&pool, operator, "deploy_operator").await;
+    let admin_session = seed_session(&pool, org_admin, "deploy_org_admin").await;
+    let url = format!("http://{addr}/api/v1/audit-log");
+
+    // an org admin does not read the deployment's log
+    let denied = client
+        .get(&url)
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let page: Value = client
+        .get(&url)
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actions: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions.iter().filter(|a| **a == "auth.login").count(), 2);
+    let unknown = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["action"] == "auth.login_failed")
+        .expect("the unknown-address attempt is returned");
+    assert!(unknown["actor_user_id"].is_null(), "{unknown}");
+    assert!(unknown["org_id"].is_null(), "{unknown}");
+    // the per-org read still cannot see the operator's events
+    let per_org: Value = client
+        .get(format!("http://{addr}/api/v1/orgs/{org}/audit-log"))
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(per_org["items"].as_array().unwrap().is_empty(), "{per_org}");
+
+    // filters
+    let filtered: Value = client
+        .get(format!("{url}?action=auth.mfa_enrolled&include_total=true"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 1, "{filtered}");
+    assert_eq!(filtered["total"], 1);
+    let by_actor: Value = client
+        .get(format!("{url}?actor={operator}"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(by_actor["items"].as_array().unwrap().len(), 3, "{by_actor}");
+
+    // cursor: pages of two, newest first, then back
+    let first: Value = client
+        .get(format!("{url}?limit=2&include_total=true"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["total"], 4);
+    assert_eq!(first["has_next"], true);
+    assert_eq!(first["has_previous"], false);
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let second: Value = client
+        .get(&url)
+        .query(&[("limit", "2"), ("cursor", cursor.as_str())])
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["items"].as_array().unwrap().len(), 2);
+    assert_eq!(second["has_next"], false);
+    assert_eq!(second["has_previous"], true);
+    let mut seen: Vec<String> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 4, "the pages overlap or skip a row");
+    assert_eq!(second["items"][0]["action"], "auth.login_failed");
+    let back: Value = client
+        .get(&url)
+        .query(&[
+            ("limit", "2"),
+            ("direction", "previous"),
+            ("cursor", second["previous_cursor"].as_str().unwrap()),
+        ])
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(back["items"], first["items"]);
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();

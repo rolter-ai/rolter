@@ -322,6 +322,14 @@
       "delete": null
     },
     {
+      "resource": "deployment_audit_log",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
       "resource": "invitation",
       "scope": "org",
       "read": "admin",

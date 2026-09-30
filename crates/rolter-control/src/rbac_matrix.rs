@@ -517,6 +517,15 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // org-less account events belong to no org, so no org read returns them
+    Capability {
+        resource: "deployment_audit_log",
+        scope: "deployment",
+        read: SUPER,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
     Capability {
         resource: "invitation",
         scope: "org",

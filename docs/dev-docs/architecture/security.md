@@ -517,12 +517,17 @@ joined, and stops seeing someone's once they hold no role in it. Deactivation
 keeps memberships, so a deactivated leaver stays visible; `user.delete`, which
 removes them, is written per org for that reason.
 
-Rows no org can claim are still not readable through the API: the account
-events of someone with no membership anywhere — above all a superadmin's own
-sign-ins — and attempts against an address nobody registered, which are
-recorded with no actor and otherwise reach only the logs and
-`rolter_control_login_attempts`. A deployment-wide read for the superadmin (and
-the security-auditor role of #1834) is #1858.
+Rows no org can claim — the account events of someone with no membership
+anywhere, above all a superadmin's own sign-ins, and attempts against an address
+nobody registered, which are recorded with no actor — are read through
+`GET /api/v1/audit-log` (#1858). It returns every row in `audit_log`, org-less
+ones included, and is guarded by the superadmin-only `deployment_audit_log:read`
+capability. It is the same keyset-paged read as the per-org one: the handlers
+share the query-string parsing (`audit_log_filter`), the `(at, id)` cursor and
+the response builder, and differ only in the store call (`list_page_all` /
+`count_all` have no org predicate). A security-auditor role (#1834) does not
+exist yet, so the endpoint admits superadmins alone; that role is to be added
+at the guard in `list_deployment_audit_log`.
 
 ## Three credentials, one word (#943)
 

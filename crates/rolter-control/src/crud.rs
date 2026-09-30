@@ -28,8 +28,8 @@ use rolter_store::postgres::models::{
     VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, BusinessUnitRepo,
-    CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
+    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
+    BusinessUnitRepo, CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
     PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
     RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
@@ -205,6 +205,7 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/memberships/{id}", delete(delete_membership))
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
+        .route("/api/v1/audit-log", get(list_deployment_audit_log))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -501,12 +502,47 @@ async fn list_audit_log(
         cap!("audit_log", Read),
     )
     .await?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page(org_id, &filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count(org_id, &filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Every audit row in the deployment, org-less account events included. Those
+/// are the ones no org read returns: a superadmin's own sign-ins, attempts
+/// against an unregistered address and the events of someone removed from
+/// every org (#1858).
+// a security-auditor role (#1834) would be admitted here alongside superadmin
+async fn list_deployment_audit_log(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(query): Query<AuditLogQuery>,
+) -> ApiResult<Json<AuditLogPageResponse>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_audit_log", Read))?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page_all(&filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count_all(&filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Parse the audit-log query string into a store filter and a clamped page
+/// size; shared by the per-org and the deployment-wide read.
+fn audit_log_filter(query: &AuditLogQuery) -> ApiResult<(AuditLogFilter, i64)> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let direction = query.direction.unwrap_or_default();
     let filter = AuditLogFilter {
         actor_user_id: query.actor,
-        action: normalized_filter(query.action, "action")?,
-        target_type: normalized_filter(query.target_type, "target_type")?,
+        action: normalized_filter(query.action.clone(), "action")?,
+        target_type: normalized_filter(query.target_type.clone(), "target_type")?,
         start_at: query.start_at,
         end_at: query.end_at,
         cursor: query
@@ -514,7 +550,7 @@ async fn list_audit_log(
             .as_deref()
             .map(parse_audit_cursor)
             .transpose()?,
-        direction: direction.into(),
+        direction: query.direction.unwrap_or_default().into(),
     };
     if filter
         .start_at
@@ -524,16 +560,24 @@ async fn list_audit_log(
             "start_at must be before or equal to end_at".to_string(),
         )));
     }
-    let page = AuditLogRepo(pool(&state))
-        .list_page(org_id, &filter, limit)
-        .await?;
-    let has_next = match direction {
-        AuditLogQueryDirection::Next => page.has_more,
-        AuditLogQueryDirection::Previous => !page.entries.is_empty(),
+    Ok((filter, limit))
+}
+
+fn audit_log_response(
+    page: AuditLogPage,
+    filter: &AuditLogFilter,
+    total: Option<i64>,
+) -> AuditLogPageResponse {
+    let previous = matches!(filter.direction, AuditLogDirection::Previous);
+    let has_next = if previous {
+        !page.entries.is_empty()
+    } else {
+        page.has_more
     };
-    let has_previous = match direction {
-        AuditLogQueryDirection::Next => filter.cursor.is_some(),
-        AuditLogQueryDirection::Previous => page.has_more,
+    let has_previous = if previous {
+        page.has_more
+    } else {
+        filter.cursor.is_some()
     };
     let next_cursor = has_next
         .then(|| page.entries.last().map(encode_audit_cursor))
@@ -541,19 +585,14 @@ async fn list_audit_log(
     let previous_cursor = has_previous
         .then(|| page.entries.first().map(encode_audit_cursor))
         .flatten();
-    let total = if query.include_total {
-        Some(AuditLogRepo(pool(&state)).count(org_id, &filter).await?)
-    } else {
-        None
-    };
-    Ok(Json(AuditLogPageResponse {
+    AuditLogPageResponse {
         items: page.entries,
         next_cursor,
         previous_cursor,
         has_next,
         has_previous,
         total,
-    }))
+    }
 }
 
 #[derive(Deserialize)]
