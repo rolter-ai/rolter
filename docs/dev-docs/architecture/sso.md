@@ -121,6 +121,28 @@ somewhere the IdP does not gate.
 Register the redirect URI `"$ROLTER_PUBLIC_URL/auth/sso/{slug}/callback"` with
 the identity provider.
 
+A provider's slug is in that URI, so it is fixed at creation (`PUT` does not
+accept one) and has one rule, `^[a-z0-9][a-z0-9-]{0,62}$`: lowercase letters,
+digits and hyphens, starting with a letter or digit, at most 63 characters. It
+is enforced in three places that have to agree (#2304):
+
+- the `sso_providers_slug_charset` check constraint in
+  `0047_sso_providers.sql`, which is the rule itself;
+- `validate_slug()` in `sso.rs`, which `create_provider` runs before the insert
+  so a bad slug is a `400` that states the rule and not a store error carrying
+  the constraint name. The slug is checked as sent, never trimmed or lowercased;
+- `ui/src/lib/sso-slug.ts`, which the add sheet uses to mark the field, hide the
+  redirect URI preview and block Save. It never rewrites the input, because the
+  slug is registered at the identity provider and the admin has to see exactly
+  what will be saved; it only suggests a corrected value.
+
+`sso_slug_outside_the_charset_is_a_400_that_states_the_rule` in
+`crates/rolter-control/tests/control_integration.rs` asks the store and the
+endpoint about the same table of slugs and requires the same answer, and
+`sso-slug.test.ts` reads the migration and compares the pattern, so a change to
+one is caught by the others. Widening the rule means a new migration (the
+applied one is never edited) plus both mirrors.
+
 The dashboard never assembles that URI, or the login URL, from the browser's
 origin (#2083). Every provider row the admin API returns carries both, built by
 `redirect_uri()` and `login_url()` in `sso.rs` (the functions `start_login`
