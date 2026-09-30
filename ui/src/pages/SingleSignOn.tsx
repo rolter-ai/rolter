@@ -26,6 +26,7 @@ import {
 } from "@/components/OrgScopePicker";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +59,7 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { distinctPeople, locksOutMembers, secretGap, type SecretGap } from "@/lib/sso-lockout";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -119,6 +121,29 @@ function Detail({
 }
 
 /**
+ * A warning with a title and the lines that explain it: the screen's one
+ * callout shape, for the notice above the list and for the ones a confirmation
+ * carries.
+ */
+function WarningNote({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div
+      role="note"
+      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-4 py-3"
+    >
+      <AlertTriangle
+        aria-hidden
+        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
+      />
+      <div className="min-w-0 space-y-1 text-sm">
+        <p className="font-medium text-foreground">{title}</p>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Said once above the provider list when `ROLTER_PUBLIC_URL` is unset (#2083).
  *
  * Every URL on this screen is built from the control plane's public base, and
@@ -130,25 +155,68 @@ function Detail({
 function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
   const { t } = useTranslation();
   return (
-    <div
-      role="note"
-      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-4 py-3"
+    <WarningNote title={t("pages.sso.publicUrl.title")}>
+      <p className="text-muted-foreground">
+        <Trans
+          i18nKey="pages.sso.publicUrl.body"
+          values={{ url: publicUrl.public_url }}
+          components={{ code: <code className="font-mono text-xs text-foreground" /> }}
+        />
+      </p>
+    </WarningNote>
+  );
+}
+
+/**
+ * What a change to a provider would leave nobody able to do (#2084).
+ *
+ * Raised inside the confirmation for taking the last enabled provider out of
+ * service or deleting it while password sign-in is off. It says who still gets
+ * in, and only from what the control plane enforces: superadmins are exempt
+ * from `allow_password_login = false` (`auth_policy.rs`), and an account that
+ * signed up through a provider was created with no password, so turning
+ * password sign-in back on does not bring it back.
+ */
+function LockoutNotice({ name }: { name: string }) {
+  const { t } = useTranslation();
+  return (
+    <WarningNote title={t("pages.sso.lockout.title")}>
+      <p className="text-muted-foreground">{t("pages.sso.lockout.body", { name })}</p>
+      <p className="text-muted-foreground">{t("pages.sso.lockout.noPassword")}</p>
+    </WarningNote>
+  );
+}
+
+/**
+ * The enabled providers that carry the "No client secret" badge, named inside
+ * the confirmation for turning password sign-in off (#2084).
+ *
+ * The control plane refuses that change when no provider is enabled, but not
+ * when the only one that is cannot finish a token exchange. A provider with no
+ * secret is legitimate for a public client, so the copy states the condition
+ * rather than the failure.
+ */
+function NoSecretNotice({ gap }: { gap: SecretGap }) {
+  const { t } = useTranslation();
+  return (
+    <WarningNote
+      title={t("pages.sso.policy.passwordConfirm.noSecret.title", { count: gap.missing.length })}
     >
-      <AlertTriangle
-        aria-hidden
-        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
-      />
-      <div className="min-w-0 space-y-1 text-sm">
-        <p className="font-medium text-foreground">{t("pages.sso.publicUrl.title")}</p>
+      <ul className="flex flex-col gap-0.5">
+        {gap.missing.map((provider) => (
+          <li key={provider.id} className="flex flex-wrap items-baseline gap-x-2 text-foreground">
+            <span>{provider.name}</span>
+            <code className="font-mono text-xs text-muted-foreground">{provider.slug}</code>
+          </li>
+        ))}
+      </ul>
+      <p className="text-muted-foreground">{t("pages.sso.policy.passwordConfirm.noSecret.body")}</p>
+      {gap.all && (
         <p className="text-muted-foreground">
-          <Trans
-            i18nKey="pages.sso.publicUrl.body"
-            values={{ url: publicUrl.public_url }}
-            components={{ code: <code className="font-mono text-xs text-foreground" /> }}
-          />
+          {t("pages.sso.policy.passwordConfirm.noSecret.all")}
         </p>
-      </div>
-    </div>
+      )}
+    </WarningNote>
   );
 }
 
@@ -277,13 +345,26 @@ function graceDeadline(grace: string, pending: string | null): string | null {
  * can see for themselves.
  *
  * `mfa_policy` travels with them (#1078), and with it the grace window
- * (#1852). It is the one setting here that changes what every member meets at
- * sign-in — a `required_*` value sends anyone without an armed factor through
- * enrolment before they get a session — so it is the one that confirms first,
- * and the confirmation says when it starts and names the way back in for a
- * lost device.
+ * (#1852). A `required_*` value sends anyone without an armed factor through
+ * enrolment before they get a session, so tightening it confirms first, and
+ * the confirmation says when it starts and names the way back in for a lost
+ * device.
+ *
+ * Turning password sign-in off confirms as well (#2084): from then on every
+ * member but a superadmin signs in through an identity provider. The control
+ * plane refuses it with no enabled provider, but accepts it when the only one
+ * has no client secret, so the confirmation names any enabled provider that
+ * would fail its token exchange.
  */
-function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPolicy }) {
+function SignInPolicyCard({
+  orgId,
+  policy,
+  providers,
+}: {
+  orgId: string;
+  policy: OrgAuthPolicy;
+  providers: SsoProviderRow[];
+}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -293,7 +374,9 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   const pending = pendingWindow(policy);
   const initialGrace = pending ? "keep" : "now";
   const [grace, setGrace] = React.useState(initialGrace);
-  const [confirming, setConfirming] = React.useState(false);
+  // which confirmation is up. turning passwords off and tightening the second
+  // factor in one save raises both, the password one first
+  const [confirming, setConfirming] = React.useState<"password" | "mfa" | null>(null);
   const fmt = useFormat();
 
   // re-seed when the server's copy moves under us — another admin, or our own
@@ -319,6 +402,10 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
   // later binds nobody sooner, and a dialog in front of it would be the
   // click-through that teaches people to dismiss the one that matters
   const tightens = requires && (mfa !== policy.mfa_policy || pullsIn);
+  // only the switch going from on to off: a policy saved with passwords already
+  // off, for some other field, takes nobody's route away
+  const turnsPasswordOff = policy.allow_password_login && !password;
+  const gap = secretGap(providers);
 
   // how many accounts the tightening would bind. Best-effort: a caller who may
   // not read the org's memberships still gets the warning, just without a
@@ -341,7 +428,7 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
         mfa_enforce_after: requires ? graceDeadline(grace, pending) : null,
       }),
     onSuccess: (next) => {
-      setConfirming(false);
+      setConfirming(null);
       queryClient.setQueryData([POLICY_KEY, orgId], next);
       void queryClient.invalidateQueries({ queryKey: [POLICY_KEY, orgId] });
       toast.push({
@@ -463,7 +550,8 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
           disabled={!dirty || bothOff || save.isPending}
           onClick={() => {
             save.reset();
-            if (tightens) setConfirming(true);
+            if (turnsPasswordOff) setConfirming("password");
+            else if (tightens) setConfirming("mfa");
             else save.mutate();
           }}
         >
@@ -473,14 +561,32 @@ function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPol
       </footer>
 
       <ConfirmDialog
+        name="sso-password-off"
+        open={confirming === "password"}
+        onOpenChange={(open) => !open && setConfirming(null)}
+        title={t("pages.sso.policy.passwordConfirm.title")}
+        description={t("pages.sso.policy.passwordConfirm.body")}
+        confirmLabel={t("pages.sso.policy.passwordConfirm.confirm")}
+        // the press only moves on to the second-factor confirmation when that
+        // is also raised, and runs no request then
+        pending={tightens ? undefined : save.isPending}
+        error={save.error}
+        onConfirm={() => (tightens ? setConfirming("mfa") : save.mutate())}
+      >
+        {gap.missing.length > 0 && <NoSecretNotice gap={gap} />}
+      </ConfirmDialog>
+
+      <ConfirmDialog
         name="sso-mfa-policy"
-        open={confirming}
-        onOpenChange={(open) => !open && setConfirming(false)}
+        open={confirming === "mfa"}
+        onOpenChange={(open) => !open && setConfirming(null)}
         title={t("pages.sso.policy.mfaConfirm.title")}
         description={
           members.data
             ? t("pages.sso.policy.mfaConfirm.bodyWithCount", {
-                count: members.data.length,
+                // a person with a role on the org and another on a team is two
+                // rows, and one member
+                count: distinctPeople(members.data),
               })
             : t("pages.sso.policy.mfaConfirm.body")
         }
@@ -776,14 +882,18 @@ function ProviderCard({
         </div>
         {/* taking a provider out of service is a routine act — an IdP
             migration, a broken secret — and used to require deleting it,
-            which took its group mappings with it (#1233) */}
-        <Switch
+            which took its group mappings with it (#1233). it is an update, the
+            same capability as the edit beside it (#2084) */}
+        <GatedSwitch
+          gate="sso_provider:update"
+          control="sso-provider-toggle"
           checked={provider.enabled}
           disabled={toggling}
           onCheckedChange={(next) => onToggle(provider, next)}
           aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
         />
         <RowIconButton
+          gate="sso_provider:update"
           control="sso-provider-edit"
           title={t("pages.sso.providers.edit")}
           aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
@@ -1244,6 +1354,17 @@ export default function SingleSignOn() {
     remove.reset();
     setDeleteTarget(provider);
   };
+  // the provider a switch was flipped off on, waiting for the confirmation.
+  // turning one back on restores a route and sends at once (#2084)
+  const [disableTarget, setDisableTarget] = React.useState<SsoProviderRow | null>(null);
+  const switchProvider = (provider: SsoProviderRow, enabled: boolean) => {
+    if (enabled) {
+      toggle.mutate({ provider, enabled });
+      return;
+    }
+    toggle.reset();
+    setDisableTarget(provider);
+  };
   const [secretTarget, setSecretTarget] = React.useState<SsoProviderRow | null>(null);
   const startClearSecret = (provider: SsoProviderRow) => {
     clearSecret.reset();
@@ -1264,6 +1385,12 @@ export default function SingleSignOn() {
   // no org means nothing to hang a provider on, and an unreadable list means
   // this principal may not manage them either
   const canManage = !!orgId && !providers.isError;
+  // against the saved policy: with it unread there is nothing to warn from, and
+  // the plain confirmation still stands
+  const locksOut = (target: SsoProviderRow | null) =>
+    !!target && !!policy.data && locksOutMembers(rows, target, policy.data);
+  const disableLocksOut = locksOut(disableTarget);
+  const deleteLocksOut = locksOut(deleteTarget);
 
   return (
     <PageBody>
@@ -1274,7 +1401,9 @@ export default function SingleSignOn() {
           onRetry={() => policy.refetch()}
         />
       )}
-      {policy.data && orgId && <SignInPolicyCard orgId={orgId} policy={policy.data} />}
+      {policy.data && orgId && (
+        <SignInPolicyCard orgId={orgId} policy={policy.data} providers={rows} />
+      )}
 
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-sm font-medium text-foreground">{t("pages.sso.providers.title")}</h2>
@@ -1338,7 +1467,7 @@ export default function SingleSignOn() {
                 onClearSecret={startClearSecret}
                 onDelete={startDelete}
                 onEdit={openEdit}
-                onToggle={(target, enabled) => toggle.mutate({ provider: target, enabled })}
+                onToggle={switchProvider}
               />
             ))}
           </div>
@@ -1387,6 +1516,35 @@ export default function SingleSignOn() {
         }}
       />
 
+      {/* out of service is reversible with one flip, so it confirms as a
+          default-tone action; it turns destructive only when it would leave
+          members no way in. the mutation is reset on close so a refusal for one
+          provider does not greet the next */}
+      <ConfirmDialog
+        name="sso-provider-disable"
+        open={!!disableTarget}
+        onOpenChange={(open) => {
+          if (open) return;
+          setDisableTarget(null);
+          toggle.reset();
+        }}
+        title={t("pages.sso.disable.title", { name: disableTarget?.name })}
+        description={t("pages.sso.disable.body")}
+        confirmLabel={t("pages.sso.disable.confirm")}
+        tone={disableLocksOut ? "danger" : "default"}
+        pending={toggle.isPending}
+        error={toggle.error}
+        onConfirm={() => {
+          if (!disableTarget) return;
+          toggle.mutate(
+            { provider: disableTarget, enabled: false },
+            { onSuccess: () => setDisableTarget(null) },
+          );
+        }}
+      >
+        {disableLocksOut && disableTarget && <LockoutNotice name={disableTarget.name} />}
+      </ConfirmDialog>
+
       <ConfirmDialog
         name="sso-connection-delete"
         open={!!deleteTarget}
@@ -1413,7 +1571,9 @@ export default function SingleSignOn() {
             },
           });
         }}
-      />
+      >
+        {deleteLocksOut && deleteTarget && <LockoutNotice name={deleteTarget.name} />}
+      </ConfirmDialog>
     </PageBody>
   );
 }

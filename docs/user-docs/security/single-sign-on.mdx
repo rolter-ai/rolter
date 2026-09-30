@@ -145,9 +145,18 @@ from the login screen and from `GET /api/v1/auth/methods`, and its `/start` URL
 stops resolving — but the registration, its secret and its group mappings all
 stay. Flip it back and sign-in resumes.
 
+Switching a provider off asks first, because the people signing in through it
+lose that route immediately. Switching it back on sends at once. The switch and
+the pencil beside it take the same admin role as the rest of the card, and are
+disabled, naming the role they need, for anyone without it.
+
 This is what you want during an IdP migration or while a broken secret is being
 chased down. Deleting the provider would also stop the logins, and would take
 the group mappings with it.
+
+<Warning>
+If password sign-in is off for the org and this is its only enabled provider, the confirmation adds a lockout warning and its button turns red. No member could sign in afterwards. Only superadmins still can, because the password setting does not apply to them, and they can turn password sign-in back on from this screen. An account created by signing in through a provider has no password, so turning password sign-in back on does not bring it back: a superadmin has to set one with `PUT /api/v1/users/{id}`. The warning informs the change and does not block it. With another provider enabled, or with password sign-in on, the confirmation carries no warning.
+</Warning>
 
 ## Map groups to roles
 
@@ -180,6 +189,8 @@ Two combinations are refused, with the reason shown inline:
 - **Both off** is an outage rather than a policy, so the dashboard will not send it.
 - **Password sign-in off with no enabled provider** would lock every non-superadmin out. Register the provider first, then turn passwords off.
 
+Turning password sign-in **off** confirms before it saves. From then on every member except a superadmin signs in through an identity provider, and the confirmation says so. It also lists every enabled provider that has no client secret stored. That is a warning rather than a refusal, because a provider that relies on PKCE alone has no secret on purpose. If your identity provider does expect one, sign-ins through that provider fail at the token exchange, and when every enabled provider is on the list no member could complete a sign-in until a secret is stored. Turning password sign-in on, or saving another field while it is already off, asks nothing.
+
 <Info>
 The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped issuer or an outage at the identity provider would otherwise leave nobody able to sign in and fix it. That exemption is what makes the switch safe to use.
 </Info>
@@ -196,5 +207,5 @@ The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped iss
 Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
 
 <Warning>
-If the org's policy has password sign-in turned off, deleting its only enabled provider leaves nobody but the superadmin able to sign in. Turn password sign-in back on first.
+If the org's policy has password sign-in turned off, deleting its only enabled provider leaves nobody but the superadmin able to sign in. The confirmation carries the same lockout warning as [taking the provider out of service](#taking-a-provider-out-of-service). Turn password sign-in back on first, or register the replacement provider before you delete this one.
 </Warning>
