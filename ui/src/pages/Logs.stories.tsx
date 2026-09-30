@@ -21,7 +21,14 @@ import {
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  atMobile,
+  atTablet,
+  expectInViewport,
+  expectNoHorizontalOverflow,
+} from "@/lib/story-viewport";
 
 // the formatter the screen itself uses, so a story asserts the house format
 // rather than a second copy of it
@@ -1466,5 +1473,362 @@ export const ALaterPageFails: Story = {
     await expectLoadError(canvasElement, /failed to return request logs/i);
     // the way back is still there
     await expect(canvas.getByRole("button", { name: "Previous page" })).toBeEnabled();
+  },
+};
+
+// the lookup's copy, read out of the catalog so rewording it cannot leave a
+// story asserting a sentence the screen no longer says
+const lookupCopy = en.pages.logs.lookup;
+
+// a recent request the feed shows, a request from long before the feed's 24
+// hours, and three requests that share one trace. stamped against now rather
+// than against a fixed date, so the feed's window keeps holding them
+const nowMinus = (ms: number) => new Date(Date.now() - ms).toISOString();
+const FEED: InvocationRow[] = [
+  row({ request_id: "req-feed-1", ts: nowMinus(60_000) }),
+  row({
+    request_id: "req-feed-2",
+    ts: nowMinus(90_000),
+    model: "internal-llama",
+    provider: "vllm",
+  }),
+];
+const ARCHIVED = row({
+  request_id: "req-archived-7d41",
+  trace_id: "",
+  ts: "2025-01-15T09:30:00.000Z",
+  status: 502,
+  error: "upstream reset the connection",
+});
+const TRACE = "0af7651916cd43dd8448eb211c80319c";
+const TRACED: InvocationRow[] = [
+  row({ request_id: "req-trace-a", trace_id: TRACE, ts: nowMinus(200_000) }),
+  row({
+    request_id: "req-trace-b",
+    trace_id: TRACE,
+    ts: nowMinus(190_000),
+    model: "internal-llama",
+    provider: "vllm",
+    status: 500,
+    error: "replica 3 ran out of memory",
+  }),
+  row({ request_id: "req-trace-c", trace_id: TRACE, ts: nowMinus(180_000) }),
+];
+
+/**
+ * The control plane as a lookup meets it: `request_id` and `trace_id` match
+ * exactly, `since` bounds the read when it is sent, and the status class and
+ * the model narrow it like any other filter. A stub that ignored `since` would
+ * let a screen that kept the 24 hour window find the old request anyway.
+ */
+const archive = (rows: InvocationRow[]): FetchStub =>
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") {
+      const q = url.searchParams;
+      const since = q.get("since");
+      const data = rows.filter(
+        (r) =>
+          (!q.get("request_id") || r.request_id === q.get("request_id")) &&
+          (!q.get("trace_id") || r.trace_id === q.get("trace_id")) &&
+          (!since || Date.parse(r.ts) >= Date.parse(since)) &&
+          (!q.get("model") || r.model === q.get("model")) &&
+          inStatusClass(Number(r.status), q.get("status") ?? "all"),
+      );
+      return json({ data });
+    }
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models") return json(MODELS);
+    return json([]);
+  });
+
+/** every read of the log the screen sent, as the parameters it carried */
+const logReadsOf = (recorder: Recorder) =>
+  recorder.calls
+    .filter((c) => c.url.includes("/analytics/invocations"))
+    .map((c) => new URL(c.url, "http://localhost").searchParams);
+
+const lookupField = (canvas: ReturnType<typeof within>, name: string = lookupCopy.label) =>
+  canvas.getByRole("textbox", { name });
+
+const pasteLookup = async (canvasElement: HTMLElement, text: string) => {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("textbox", { name: lookupCopy.label }));
+  await userEvent.paste(text);
+  await userEvent.keyboard("{Enter}");
+};
+
+const pasted = recording(archive([...FEED, ARCHIVED, ...TRACED]));
+
+/**
+ * #1861: a request id pasted into the field finds its row wherever it sits in
+ * the log and opens its drawer. The request carries the id and no window, so
+ * a row from long before the feed's 24 hours is found rather than answered with
+ * an empty page; the drawer opens because exactly one row came back. The feed
+ * stopped for the lookup, since nothing in an answer streams.
+ */
+export const APastedRequestIdOpensItsRow: Story = {
+  render: () => (
+    <Harness fetchStub={pasted.stub}>
+      <Logs pollMs={FAST_POLL_MS} />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await expect(canvas.getByRole("button", { name: "Pause" })).toBeVisible();
+    // a pasted id keeps what the clipboard put around it out of the request
+    await pasteLookup(canvasElement, `  ${ARCHIVED.request_id}\n`);
+
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(within(panel).getByText(ARCHIVED.request_id)).toBeVisible());
+    await expect(within(panel).getByText("502")).toBeVisible();
+    await expect(modelsOnScreen(canvasElement)).toEqual([ARCHIVED.model]);
+    await expect(canvasElement.querySelector("tbody tr")).toHaveAttribute("aria-selected", "true");
+
+    const sent = lastLogQuery(pasted);
+    await expect(sent.get("request_id")).toBe(ARCHIVED.request_id);
+    await expect(sent.has("trace_id")).toBe(false);
+    await expect(sent.has("since")).toBe(false);
+    await expect(sent.has("until")).toBe(false);
+    await expect(addressOf(canvasElement).get("request_id")).toBe(ARCHIVED.request_id);
+    await expect(lookupField(canvas)).toHaveValue(ARCHIVED.request_id);
+
+    // the lookup is stated as what the list is, and there is no feed to pause
+    await expect(canvas.getByText(`${lookupCopy.feedRequest} · 1 request`)).toBeVisible();
+    await expect(canvas.queryByText(/Streaming/)).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Pause" })).toBeNull();
+
+    // and it does not poll: the control plane reads every retained row for it
+    const reads = logReads(pasted);
+    await sleep(FAST_POLL_MS * 3);
+    await expect(logReads(pasted)).toBe(reads);
+  },
+};
+
+const missing = recording(archive([...FEED, ARCHIVED]));
+
+/**
+ * #1861: an id nothing matches says so in one message, as an empty result and
+ * not as an alert. The control plane filters by what the caller may read inside
+ * the query, so an id from a project the caller cannot see comes back the same
+ * way and reads the same; the message names both causes. Clearing the lookup
+ * returns to the feed, with its window again.
+ */
+export const AnIdThatMatchesNothingSaysSo: Story = {
+  render: () => (
+    <Harness fetchStub={missing.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await pasteLookup(canvasElement, "req-unknown-5150");
+
+    await expectEmptyState(canvasElement, new RegExp(lookupCopy.missTitle), /Clear lookup/);
+    await expect(canvas.getByText(lookupCopy.missBody)).toBeVisible();
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+    await expect(canvas.queryByRole("complementary", { name: "Details" })).toBeNull();
+    await expect(canvas.queryByText(/Nothing logged yet/)).toBeNull();
+    await expect(canvas.getByText(`${lookupCopy.feedRequest} · 0 requests`)).toBeVisible();
+    await expect(lastLogQuery(missing).get("request_id")).toBe("req-unknown-5150");
+
+    await userEvent.click(canvas.getByRole("button", { name: lookupCopy.clear }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(FEED.length));
+    await expect(canvas.queryByText(lookupCopy.missTitle)).toBeNull();
+    await expect(lookupField(canvas)).toHaveValue("");
+    await waitFor(() => expect(lookupField(canvas)).toHaveFocus());
+    await expect(addressOf(canvasElement).has("request_id")).toBe(false);
+    const back = lastLogQuery(missing);
+    await expect(back.has("since")).toBe(true);
+    await expect(back.has("request_id")).toBe(false);
+    await expect(canvas.getByText("Streaming · 2 requests")).toBeVisible();
+  },
+};
+
+const traced = recording(archive([...FEED, ...TRACED]));
+
+/**
+ * #1861: a trace id is told from a request id by its shape, and a `traceparent`
+ * header pasted whole is reduced to the trace id inside it. Several requests
+ * can share a trace, so they come back as the list and no drawer opens; the
+ * lookup is stated as what the list is, and the field's clear control returns
+ * to the feed.
+ */
+export const ATraceIdListsEveryRequestOnIt: Story = {
+  render: () => (
+    <Harness fetchStub={traced.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await pasteLookup(canvasElement, `00-${TRACE}-b7ad6b7169203331-01`);
+
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(TRACED.length));
+    await expect(lookupField(canvas)).toHaveValue(TRACE);
+    await expect(canvas.getByText(`${lookupCopy.feedTrace} · 3 requests`)).toBeVisible();
+    // more than one row, so none is the one that was asked for
+    await expect(canvas.queryByRole("complementary", { name: "Details" })).toBeNull();
+    await expect(canvasElement.querySelectorAll('tbody tr[aria-selected="true"]')).toHaveLength(0);
+    const sent = lastLogQuery(traced);
+    await expect(sent.get("trace_id")).toBe(TRACE);
+    await expect(sent.has("request_id")).toBe(false);
+    await expect(sent.has("since")).toBe(false);
+    await expect(addressOf(canvasElement).get("trace_id")).toBe(TRACE);
+
+    // a row of the trace still opens on a click, like any other
+    await userEvent.click(
+      canvas.getByRole("button", { name: /Open request details for internal-llama/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(within(panel).getByText("req-trace-b")).toBeVisible());
+
+    // the feed holds the trace's requests too, since they are recent
+    await userEvent.click(canvas.getByRole("button", { name: lookupCopy.clearField }));
+    await waitFor(() =>
+      expect(modelsOnScreen(canvasElement)).toHaveLength(FEED.length + TRACED.length),
+    );
+    await expect(lookupField(canvas)).toHaveValue("");
+    await expect(canvas.queryByRole("complementary", { name: "Details" })).toBeNull();
+    await expect(addressOf(canvasElement).has("trace_id")).toBe(false);
+    await expect(lastLogQuery(traced).has("since")).toBe(true);
+    await expect(canvas.getByRole("button", { name: "Pause" })).toBeVisible();
+  },
+};
+
+const linked = recording(archive([...FEED, ARCHIVED]));
+
+/**
+ * #1861: `/logs?request_id=…` opens that request. The screen reads the address
+ * before its first request, so no unfiltered feed page is fetched first, and
+ * the field shows the id the link carried. This is also the address the command
+ * palette navigates to.
+ */
+export const ALinkOpensTheRequest: Story = {
+  parameters: { address: `/logs?request_id=${ARCHIVED.request_id}` },
+  render: () => (
+    <Harness fetchStub={linked.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(within(panel).getByText(ARCHIVED.request_id)).toBeVisible());
+    await expect(lookupField(canvas)).toHaveValue(ARCHIVED.request_id);
+    await expect(modelsOnScreen(canvasElement)).toEqual([ARCHIVED.model]);
+    const reads = logReadsOf(linked);
+    await expect(reads.length).toBeGreaterThan(0);
+    for (const sent of reads) {
+      await expect(sent.get("request_id")).toBe(ARCHIVED.request_id);
+      await expect(sent.has("since")).toBe(false);
+    }
+
+    // the drawer closes and stays closed: the row was opened once, not kept open
+    await userEvent.click(canvas.getByRole("button", { name: "Close details" }));
+    await waitFor(() =>
+      expect(canvas.queryByRole("complementary", { name: "Details" })).toBeNull(),
+    );
+    await expect(modelsOnScreen(canvasElement)).toEqual([ARCHIVED.model]);
+  },
+};
+
+const held = recording(archive([...FEED, ARCHIVED]));
+
+/**
+ * #1861: an id names one request, so the picks the rail holds do not narrow
+ * it. The view was filtered to OK requests on one model and the request asked
+ * for was a 502 on another; a lookup that kept the picks would have answered
+ * "not found" for an id that exists. Starting one drops them from the address
+ * and from the request.
+ */
+export const AnIdLookupStartsFromTheWholeLog: Story = {
+  parameters: { address: "/logs?status=success&model=internal-llama" },
+  render: () => (
+    <Harness fetchStub={held.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(canvas.getByRole("button", { name: "Filters · 2" })).toBeVisible();
+    await pasteLookup(canvasElement, ARCHIVED.request_id);
+
+    await canvas.findByRole("complementary", { name: "Details" });
+    await expect(modelsOnScreen(canvasElement)).toEqual([ARCHIVED.model]);
+    const sent = lastLogQuery(held);
+    await expect(sent.get("request_id")).toBe(ARCHIVED.request_id);
+    await expect(sent.get("status")).toBe("all");
+    await expect(sent.has("model")).toBe(false);
+    const address = addressOf(canvasElement);
+    await expect(address.has("status")).toBe(false);
+    await expect(address.has("model")).toBe(false);
+    await expect(canvas.getByRole("button", { name: "Filters" })).toBeVisible();
+  },
+};
+
+const lookupFailing = recording(refusing());
+
+/**
+ * #1861: a lookup the control plane could not answer is a failure, not a miss.
+ * A 5xx shows the load error with its retry; "no request found" is reserved for
+ * an answer that came back empty.
+ */
+export const ALookupThatFailsIsAnError: Story = {
+  parameters: { address: "/logs?request_id=req-5xx-0001" },
+  render: () => (
+    <Harness fetchStub={lookupFailing.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return request logs/i);
+    await expect(canvas.queryByText(lookupCopy.missTitle)).toBeNull();
+    await expect(canvas.queryByText(lookupCopy.missBody)).toBeNull();
+    await expect(lookupField(canvas)).toHaveValue("req-5xx-0001");
+  },
+};
+
+const russian = recording(archive([...FEED, ARCHIVED]));
+const ruLookup = ru.pages.logs.lookup;
+
+/**
+ * The lookup at 375px in Russian, the longest copy it carries: the field and
+ * its button share a row inside the viewport, a long id fits in the field, and
+ * the miss reads in Russian without pushing the page sideways.
+ */
+export const TheLookupFitsAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={russian.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const field = await canvas.findByRole("textbox", { name: ruLookup.label });
+    await expectInViewport(field);
+    await expectInViewport(canvas.getByRole("button", { name: ruLookup.find }));
+    await expectNoHorizontalOverflow();
+
+    await userEvent.click(field);
+    await userEvent.paste("3f2c9a1e-7b4d-4f10-9c2e-0a1b2c3d4e5f-retry-0042");
+    await userEvent.keyboard("{Enter}");
+    await expectEmptyState(canvasElement, new RegExp(ruLookup.missTitle), /Сбросить поиск/);
+    await expect(canvas.getByText(ruLookup.missBody)).toBeVisible();
+    await expectInViewport(canvas.getByRole("button", { name: ruLookup.clearField }));
+    await expectInViewport(canvas.getByRole("button", { name: ruLookup.find }));
+    await expectNoHorizontalOverflow();
   },
 };

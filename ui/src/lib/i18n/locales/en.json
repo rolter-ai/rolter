@@ -2525,6 +2525,18 @@
         "refreshFailed": "Refresh failed at {{time}}",
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
       },
+      "lookup": {
+        "label": "Request ID or trace ID",
+        "placeholder": "Request ID or trace ID",
+        "find": "Find",
+        "clear": "Clear lookup",
+        "clearField": "Clear the ID field",
+        "feedRequest": "Request ID lookup",
+        "feedTrace": "Trace ID lookup",
+        "missTitle": "No request found",
+        "missBody": "No retained request has this ID, or it belongs to a project your role cannot read.",
+        "missFilteredBody": "No retained request with this ID passes the active filters, or it belongs to a project your role cannot read."
+      },
       "noAnalytics": {
         "title": "Request logs need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no request log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is logged here."
@@ -3630,9 +3642,9 @@
     "noNavMatches": "No screens match",
     "palette": {
       "title": "Command palette",
-      "description": "Jump to a screen, or to a key, provider or route by name.",
+      "description": "Jump to a screen, or to a key, provider or route by name. Paste a request ID or trace ID to open it in LLM Logs.",
       "label": "Search screens and records",
-      "placeholder": "Type a screen or record name…",
+      "placeholder": "Type a name, or paste a request ID…",
       "open": "Search screens and records ({{chord}})",
       "noMatches": "No screens match",
       "noMatchesBody": "Nothing here is called “{{query}}”. Try fewer letters, or a word from the screen's name.",
@@ -3641,12 +3653,17 @@
       "sections": {
         "recent": "Recent",
         "screens": "Screens",
+        "lookup": "Find a request",
         "records": "Records"
       },
+      "openRequest": "Open request {{id}} in LLM Logs",
+      "openTrace": "Open trace {{id}} in LLM Logs",
       "kinds": {
         "virtualKey": "Virtual key",
         "provider": "Provider",
-        "route": "Route"
+        "route": "Route",
+        "requestId": "Request ID",
+        "traceId": "Trace ID"
       }
     },
     "shortcuts": {

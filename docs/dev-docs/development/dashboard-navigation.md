@@ -181,6 +181,22 @@ with the same endpoints their screens use, only once the palette is open and
 only for a caller whose capabilities do not say no. There is no search
 endpoint, and the palette must not grow one without one being built first.
 
+The one thing the palette looks up rather than lists is a pasted request or trace
+id (#1861). `pastedIdLookup` in `ui/src/lib/command-palette.ts` reads the query
+with `parseLogLookup` from `ui/src/lib/log-lookup.ts`, the same rule LLM Logs
+applies to its own field: 32 lowercase hex characters, or a `traceparent` value
+holding them, is a trace id, and anything else is a request id. A request id
+also has to be one token of at least `MIN_PASTED_ID_LENGTH` characters with a
+digit, so a typed word is never mistaken for one. The offer is a `lookup`
+section with one entry, shown only when no screen and no record matched (a
+route called `gpt-4o-mini` still opens Routing Rules), only when `logs` is in
+the caller's nav, and for a request id only once the scope and the record
+lists have settled (the lists are not fetching while the scope resolves, so
+waiting on them alone would show the offer and then take it away). Its
+`PaletteEntry` carries a `search`, which `onNavigate(screen, search)` appends, so the palette opens `/logs?request_id=…`. The records' own
+skeleton and error sit beside the `listbox` rather than in it: a `listbox` may
+hold options only.
+
 Ranking lives in `ui/src/lib/command-palette.ts` and is unit-tested there:
 subsequence matching, so "rr" reaches Routing Rules, with word-boundary and
 head-of-label bonuses that keep initialisms above incidental hits. Recently
@@ -189,7 +205,9 @@ storage is passed in rather than reached for, so the same test covers a browser
 that refuses it.
 
 Stories: `CommandPaletteShortcut`, `NavSearchShortcut` and `SkipLink` in
-`App.stories.tsx` pin the three keys against the assembled shell;
+`App.stories.tsx` pin the three keys against the assembled shell, and
+`APastedIdInThePaletteOpensLlmLogs` follows a pasted id from the palette into
+the open drawer;
 `Shell/CommandPalette` pins the palette's own keyboard, its records, and its
 loading, error and empty states; `SearchMatchesGroupLabel` and
 `SearchMatchesNothing` in `nav-sidebar.stories.tsx` pin the two nav-search bugs

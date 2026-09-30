@@ -8,7 +8,8 @@ import {
   shellStub,
   shellStubWithStability,
 } from "./pages/shell-harness";
-import { expectForbidden, withCapabilities } from "./pages/story-harness";
+import { expectForbidden, recording, withCapabilities } from "./pages/story-harness";
+import type { InvocationRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -271,6 +272,90 @@ export const CommandPaletteShortcut: Story = {
     await waitFor(() =>
       expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull(),
     );
+  },
+};
+
+// the one request the palette story looks up: a failed call whose id a client
+// quoted, from outside the log's default window
+const LOGGED: InvocationRow = {
+  ts: "2025-01-15T09:30:00.000Z",
+  request_id: "3f2c9a1e-7b4d-4f10-9c2e-0a1b2c3d4e5f",
+  trace_id: "",
+  org_id: "org-1",
+  team_id: "team-1",
+  project_id: "project-1",
+  virtual_key_id: "vk-1",
+  business_unit_id: "",
+  customer_id: "",
+  model: "gpt-4o",
+  provider: "openai",
+  target: "openai/gpt-4o",
+  variant: "",
+  status: 502,
+  stream: 0,
+  cache_hit: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+  prompt_tokens: 800,
+  completion_tokens: 0,
+  total_tokens: 800,
+  cost_usd: 0,
+  unpriced: 0,
+  latency_ms: 842,
+  ttft_ms: 0,
+  error: "upstream reset the connection",
+};
+const logged = recording(
+  shellStub([["/api/v1/analytics/invocations", () => ({ data: [LOGGED] })]]),
+);
+
+/**
+ * A request id pasted into the palette (#1861) goes through the whole shell: the
+ * palette offers the lookup, Enter navigates to `/logs?request_id=…`, the screen
+ * reads its lookup from that address, asks the control plane for the id with no
+ * window, and opens the row it finds. The palette and the screen are two
+ * components that only meet here.
+ */
+export const APastedIdInThePaletteOpensLlmLogs: Story = {
+  render: () => <AppShell route="/dashboard" fetchStub={logged.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    await railOf(canvasElement);
+
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    const field = await body.findByRole("combobox", { name: en.shell.palette.label });
+    await waitFor(() => expect(field).toHaveFocus());
+    await userEvent.paste(LOGGED.request_id);
+    await body.findByRole("option", {
+      name: new RegExp(en.shell.palette.openRequest.replace("{{id}}", LOGGED.request_id)),
+    });
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(canvas.getByRole("heading", { level: 1, name: screens.logs.title })).toBeVisible(),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(within(panel).getByText(LOGGED.request_id)).toBeVisible());
+    await expect(canvas.getByRole("textbox", { name: en.pages.logs.lookup.label })).toHaveValue(
+      LOGGED.request_id,
+    );
+    await waitFor(() =>
+      expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull(),
+    );
+
+    // the dashboard the shell booted on asked for its own recent rows before the
+    // palette was opened; the reads that count are the log screen's, which name
+    // a status class
+    const reads = logged.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams)
+      .filter((q) => q.has("status"));
+    await expect(reads.length).toBeGreaterThan(0);
+    for (const sent of reads) {
+      await expect(sent.get("request_id")).toBe(LOGGED.request_id);
+      await expect(sent.has("since")).toBe(false);
+    }
   },
 };
 
