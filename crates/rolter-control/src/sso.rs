@@ -767,6 +767,45 @@ struct CreateSsoProvider {
     default_role: Option<String>,
 }
 
+/// Longest slug the store accepts, in characters.
+const SLUG_MAX_LEN: usize = 63;
+
+/// Whether `slug` satisfies the store's `sso_providers_slug_charset`
+/// constraint, `^[a-z0-9][a-z0-9-]{0,62}$` (migration `0047`).
+///
+/// Written out byte by byte rather than as a regex: the rule is ASCII-only, so
+/// a byte is a character wherever it can pass, and any non-ASCII byte fails the
+/// charset test anyway.
+fn slug_is_valid(slug: &str) -> bool {
+    let bytes = slug.as_bytes();
+    let starts_alphanumeric = bytes
+        .first()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    starts_alphanumeric
+        && bytes.len() <= SLUG_MAX_LEN
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// Refuse a slug the store's check constraint would, with a message that states
+/// the rule (#2304).
+///
+/// Without this the insert fails and the caller reads a store error carrying
+/// the constraint's name, which says nothing about what to type instead. The
+/// slug is registered at the identity provider as part of the redirect URI, so
+/// it is checked exactly as sent and never trimmed or lowercased on the way in.
+fn validate_slug(slug: &str) -> ApiResult<()> {
+    if slug_is_valid(slug) {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "slug must be lowercase letters, digits and hyphens, start with a letter or digit, \
+             and be at most {SLUG_MAX_LEN} characters"
+        )))
+    }
+}
+
 async fn create_provider(
     principal: Principal,
     State(state): State<ControlState>,
@@ -782,6 +821,7 @@ async fn create_provider(
     .await?;
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
+    validate_slug(&body.slug)?;
     require_non_empty(&body.issuer, "issuer")?;
     require_non_empty(&body.client_id, "client_id")?;
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
@@ -1286,6 +1326,75 @@ mod tests {
         assert_eq!(row["has_client_secret"], true);
         assert!(row.get("secret_ciphertext").is_none());
         assert!(row.get("secret_nonce").is_none());
+    }
+
+    #[test]
+    fn a_slug_inside_the_charset_is_accepted() {
+        let longest = "a".repeat(SLUG_MAX_LEN);
+        for slug in [
+            "okta",
+            "a",
+            "0",
+            "9lives",
+            "entra-staging",
+            "a--b",
+            // a trailing hyphen is inside the store's rule, so it is inside this one
+            "okta-",
+            longest.as_str(),
+        ] {
+            assert!(validate_slug(slug).is_ok(), "{slug:?} should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_slug_outside_the_charset_is_refused() {
+        let too_long = "a".repeat(SLUG_MAX_LEN + 1);
+        for slug in [
+            "",
+            "Okta",
+            "OKTA",
+            "acme okta",
+            "-okta",
+            "okta_prod",
+            "okta.prod",
+            "okta/callback",
+            "okta%2Fcallback",
+            // whitespace is not trimmed away: the slug is checked as sent
+            " okta",
+            "okta ",
+            "okta\n",
+            // a Cyrillic "о" looks like the Latin one and is not
+            "\u{43e}kta",
+            "r\u{e9}sum\u{e9}",
+            too_long.as_str(),
+        ] {
+            assert!(validate_slug(slug).is_err(), "{slug:?} should be refused");
+        }
+    }
+
+    /// The message is what the caller reads in place of the store's constraint
+    /// name, so it has to carry the whole rule.
+    #[test]
+    fn the_refusal_states_the_rule_and_is_a_bad_request() {
+        let err = validate_slug("Okta").expect_err("an uppercase slug is refused");
+        assert!(
+            matches!(err, ApiError::Core(rolter_core::Error::Config(_))),
+            "a refused slug is a 400, not a store error: {err:?}"
+        );
+        let message = api_error_message(err);
+        for part in [
+            "lowercase letters",
+            "digits",
+            "hyphens",
+            "start with a letter or digit",
+            "at most 63 characters",
+        ] {
+            assert!(message.contains(part), "{part:?} missing from {message:?}");
+        }
+        assert!(
+            !message.contains("sso_providers_slug_charset"),
+            "the constraint name is an implementation detail: {message:?}"
+        );
     }
 
     #[test]

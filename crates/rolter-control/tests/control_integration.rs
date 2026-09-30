@@ -5279,6 +5279,139 @@ mod stub_idp {
     }
 }
 
+/// #2304: the slug's charset is a check constraint in the database
+/// (`sso_providers_slug_charset`), and the handler used to let a bad one reach
+/// the insert, so the caller read a store error carrying the constraint's name
+/// rather than a 400 that says what to type. The endpoint and the constraint
+/// are compared on a table of slugs instead of trusted to agree: for each one
+/// the store is asked directly, then the endpoint, and the answers must match.
+#[tokio::test]
+async fn sso_slug_outside_the_charset_is_a_400_that_states_the_rule() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "SlugOrg", "slug": "slug-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let longest = "a".repeat(63);
+    let too_long = "a".repeat(64);
+    let accepted = [
+        "okta",
+        "a",
+        "0",
+        "9lives",
+        "entra-staging",
+        "a--b",
+        "okta-",
+        longest.as_str(),
+    ];
+    let refused = [
+        "",
+        "Okta",
+        "acme okta",
+        "-okta",
+        "okta_prod",
+        "okta.prod",
+        " okta",
+        "okta ",
+        "okta\n",
+        // a Cyrillic "о", which looks like the Latin one
+        "\u{43e}kta",
+        "r\u{e9}sum\u{e9}",
+        too_long.as_str(),
+    ];
+
+    for slug in accepted.iter().chain(refused.iter()).copied() {
+        // the store's own answer, with the probe row taken out again so the
+        // handler's insert of the same slug below cannot collide with it
+        let stored = sqlx::query(
+            "insert into sso_providers (org_id, name, slug, issuer, client_id) \
+             values ($1::uuid, 'probe', $2, 'https://idp.example.com', 'probe')",
+        )
+        .bind(&org_id)
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .is_ok();
+        if stored {
+            sqlx::query("delete from sso_providers where org_id = $1::uuid and slug = $2")
+                .bind(&org_id)
+                .bind(slug)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let response = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": "Probe",
+                "slug": slug,
+                "issuer": "https://idp.example.com",
+                "client_id": "probe"
+            }))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value = response.json().await.unwrap();
+
+        assert_eq!(
+            status == 200,
+            stored,
+            "slug {slug:?}: the endpoint answered {status} but the store {} it: {body}",
+            if stored { "accepts" } else { "refuses" }
+        );
+        if stored {
+            assert_eq!(body["slug"], slug);
+        } else {
+            assert_eq!(status, 400, "slug {slug:?} must be a 400: {body}");
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                !message.contains("sso_providers_slug_charset"),
+                "slug {slug:?}: the constraint name reached the caller: {message}"
+            );
+            if !slug.trim().is_empty() {
+                assert!(
+                    message.contains("lowercase letters, digits and hyphens")
+                        && message.contains("start with a letter or digit")
+                        && message.contains("at most 63 characters"),
+                    "slug {slug:?}: the 400 does not state the rule: {message}"
+                );
+            }
+        }
+    }
+
+    // only the accepted ones were registered; a refused slug left nothing behind
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), accepted.len());
+}
+
 /// #1233: a provider is editable in place. Before this, rotating a client
 /// secret or taking a provider out of service meant deleting it and
 /// registering it again, which dropped every group mapping hanging off it and

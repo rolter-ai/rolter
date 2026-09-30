@@ -32,6 +32,8 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
   <Step title="Pick a slug and copy the redirect URI">
     Open **Governance → Single Sign-On** and choose **Add provider**. Type the **Slug** first: the short name the provider will have in Rolter's URLs. The **Redirect URI** row under it fills in as you type, `https://your-rolter-host/auth/sso/<slug>/callback`, with a copy button beside it.
 
+    A slug is lowercase letters, digits and hyphens, starts with a letter or digit, and is at most 63 characters: `okta`, `acme-entra`, `keycloak-2`. The hint under the field says so. Anything else is marked as you type, with a corrected value suggested when one can be worked out (`Acme Okta` becomes `acme-okta`), the redirect URI row says the slug is not valid instead of showing an address, and **Add provider** stays disabled. Nothing is rewritten for you: the slug is part of the redirect URI you register in your identity provider, so what you see is exactly what is saved.
+
     The host part is the control plane's public URL, `ROLTER_PUBLIC_URL`, as the server reports it through [`GET /api/v1/public-url`](/api/public-url), not the address your browser happens to be using. Rolter builds the redirect URI from that configured base and never from the incoming request, so a crafted link cannot send an authorization code somewhere else, and the value in the sheet is exactly the one the login flow will send.
 
     <Warning>
@@ -52,7 +54,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
     </ParamField>
 
     <ParamField path="Slug" type="string" required>
-      The short name in the login URL. It cannot be changed later; registering the provider again is the only way to change it.
+      The short name in the login URL: lowercase letters, digits and hyphens, starting with a letter or digit, at most 63 characters. It cannot be changed later; registering the provider again is the only way to change it.
     </ParamField>
 
     <ParamField path="Issuer URL" type="string" required>
@@ -88,6 +90,20 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
 
   </Step>
 </Steps>
+
+## Registering through the API
+
+`POST /api/v1/orgs/{org_id}/sso-providers` takes the same fields as the sheet and applies the same slug rule. A slug outside it is refused with `400` before anything is stored, and the message states the rule:
+
+```json
+{
+  "error": {
+    "message": "config error: slug must be lowercase letters, digits and hyphens, start with a letter or digit, and be at most 63 characters"
+  }
+}
+```
+
+The slug is checked exactly as sent. It is not trimmed or lowercased, so `Okta` and `okta ` are both refused rather than quietly turned into something else. An empty slug is a `400` too, with its own message, `slug must not be empty`.
 
 ## Editing a provider
 
