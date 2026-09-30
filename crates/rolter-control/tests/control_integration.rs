@@ -3020,6 +3020,189 @@ async fn virtual_key_cost_attribution_round_trip() {
     assert!(orphaned[0]["business_unit_id"].is_null());
 }
 
+/// #2279: a prompt template version `PromptTemplatesConfig::validate` rejects
+/// used to be stored and published, after which the snapshot refused to be
+/// served at all and config propagation froze for every tenant. The endpoint
+/// now refuses such a version, and a row that got in some other way is pruned
+/// from the snapshot and listed under `/api/v1/config/problems`.
+#[tokio::test]
+async fn an_invalid_prompt_template_version_cannot_freeze_the_snapshot() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> (u16, Value) {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status().as_u16();
+        (status, resp.json().await.unwrap_or(Value::Null))
+    }
+
+    let (_, org) = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id: uuid::Uuid = org["id"].as_str().expect("org id").parse().unwrap();
+    let (_, template) = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/prompt-templates"),
+        json!({"name": "support"}),
+    )
+    .await;
+    let template_id = template["id"].as_str().expect("template id").to_string();
+    let versions = format!("{base}/api/v1/prompt-templates/{template_id}/versions");
+
+    // each way validate() rejects content is a 400 that names the problem
+    let bad = [
+        (
+            json!({"variables": [], "decorators": [{"content": "hi {{ who }}"}]}),
+            "undeclared variable 'who'",
+        ),
+        (
+            json!({
+                "variables": [{"name": "v", "required": true, "default": "d"}],
+                "decorators": [{"content": "{{ v }}"}]
+            }),
+            "both required and defaulted",
+        ),
+        (
+            json!({
+                "variables": [{"name": "v"}, {"name": "v"}],
+                "decorators": [{"content": "{{ v }}"}]
+            }),
+            "duplicate variable 'v'",
+        ),
+        (
+            json!({"variables": [], "decorators": []}),
+            "has no decorators",
+        ),
+    ];
+    for (body, expected) in bad {
+        let (status, error) = post(&client, versions.clone(), body).await;
+        assert_eq!(status, 400, "{error}");
+        let message = error["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(expected),
+            "{message} should say {expected}"
+        );
+    }
+    let stored: i64 = sqlx::query_scalar("select count(*) from prompt_template_versions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 0, "a refused version is not stored");
+
+    // a valid version, published and scoped to the org, is served
+    let (status, created) = post(
+        &client,
+        versions,
+        json!({
+            "variables": [{"name": "tone", "required": true}],
+            "decorators": [{"content": "tone={{ tone }}"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    let scoped = client
+        .put(format!(
+            "{base}/api/v1/prompt-templates/{template_id}/versions/1/scopes"
+        ))
+        .json(&json!({"scopes": [{"scope_type": "org", "scope_id": org_id}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(scoped.status(), 204);
+    let published = client
+        .put(format!(
+            "{base}/api/v1/prompt-templates/{template_id}/publish"
+        ))
+        .json(&json!({"version": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(published.status().is_success());
+
+    // a row the endpoint would have refused, written straight to the store as
+    // legacy data would be
+    let legacy: uuid::Uuid = sqlx::query_scalar(
+        "insert into prompt_templates (org_id, name, slug) values ($1, 'legacy', 'legacy')
+         returning id",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into prompt_template_versions (template_id, version, variables, decorators)
+         values ($1, 1, '[]', '[{\"content\": \"hi {{ ghost }}\"}]')",
+    )
+    .bind(legacy)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into prompt_template_scopes (template_id, version, scope_type, scope_id, org_id)
+         values ($1, 1, 'org', $2, $2)",
+    )
+    .bind(legacy)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update prompt_templates set published_version = 1 where id = $1")
+        .bind(legacy)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the snapshot must still be served");
+    let snap: Value = resp.json().await.unwrap();
+    let ids: Vec<&str> = snap["config"]["prompt_templates"]["templates"]
+        .as_array()
+        .expect("templates")
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, [format!("{org_id}:support")], "{snap}");
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines = problems["problems"].as_array().expect("problems");
+    assert_eq!(lines.len(), 1, "{problems}");
+    let line = lines[0].as_str().unwrap();
+    assert!(line.contains(&format!("{org_id}:legacy")), "{line}");
+    assert!(line.contains("undeclared variable 'ghost'"), "{line}");
+
+    // publishing the malformed legacy version is refused as well
+    let republish = client
+        .put(format!("{base}/api/v1/prompt-templates/{legacy}/publish"))
+        .json(&json!({"version": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(republish.status(), 400);
+}
+
 #[tokio::test]
 async fn prompt_template_crud_publish_and_scope_round_trip() {
     skip_without_db!();
@@ -3117,7 +3300,7 @@ async fn prompt_template_crud_publish_and_scope_round_trip() {
     let version2 = post(
         &client,
         format!("{base}/api/v1/prompt-templates/{template_id}/versions"),
-        json!({"variables": [], "decorators": []}),
+        json!({"variables": [], "decorators": [{"content": "be brief"}]}),
     )
     .await;
     assert_eq!(version2["version"], 2);
