@@ -1,11 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MemoryRouter } from "react-router";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import {
   Harness,
+  LOADING_LABEL,
   expectGateAnswered,
+  expectLoadError,
   expectSkeleton,
   json,
   pending,
@@ -110,10 +113,10 @@ const errorCount = (n: number) => en.pages.dashboard.errors_other.replace("{{cou
 
 // the first-run checklist the screen now opens with links to four screens, so
 // the dashboard's stories need a router around them (#1585)
-const render = (stub: FetchStub, role?: StoryRole) => (
+const render = (stub: FetchStub, role?: StoryRole, pollMs?: number) => (
   <MemoryRouter>
     <Harness fetchStub={stub} role={role}>
-      <Dashboard />
+      <Dashboard pollMs={pollMs} />
     </Harness>
   </MemoryRouter>
 );
@@ -331,5 +334,220 @@ export const AsAdmin: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(en.pages.gettingStarted.subtitle)).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+/**
+ * A polling cadence a play can watch several intervals of (#1975). The recent
+ * requests card asks every 15s and the figures every minute, and the
+ * test-runner gives a whole story 15s, so the screen takes `pollMs` from a
+ * story and both run at this pace. The cadence is the only thing that changes.
+ */
+const FAST_POLL_MS = 300;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const DAY_MS = 86_400_000;
+
+const ENDPOINTS = [
+  "/api/v1/analytics/summary",
+  "/api/v1/analytics/timeseries",
+  "/api/v1/analytics/by-model",
+  "/api/v1/analytics/invocations",
+];
+
+/** every `since` the screen has sent to `endpoint`, oldest first */
+const sinceOf = (recorder: Recorder, endpoint: string): number[] =>
+  recorder.calls
+    .filter((c) => new URL(c.url, "http://localhost").pathname === endpoint)
+    .map((c) => Date.parse(new URL(c.url, "http://localhost").searchParams.get("since") ?? ""));
+
+/** how many times the screen has asked `endpoint` */
+const readsOf = (recorder: Recorder, endpoint: string) => sinceOf(recorder, endpoint).length;
+
+const rolling = recording(loaded);
+
+/**
+ * #1975: "Last 24h" is the 24 hours before each read, not before the page was
+ * opened. `since` used to be worked out once when the module loaded, so every
+ * poll and every refresh sent the same lower bound and a tab left open for an
+ * afternoon reported the last 24 hours plus the afternoon. Four endpoints read
+ * the window, and each one's second read starts later than its first.
+ */
+export const TheWindowRollsForwardWithEveryRead: Story = {
+  render: () => render(rolling.stub, undefined, FAST_POLL_MS),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findAllByText(fmt.number(132));
+    for (const endpoint of ENDPOINTS) {
+      await waitFor(() => expect(readsOf(rolling, endpoint)).toBeGreaterThan(1));
+      const [first, second] = sinceOf(rolling, endpoint);
+      await expect(second).toBeGreaterThan(first);
+    }
+    // and a read's `since` is 24 hours behind the moment it was sent, not
+    // behind some earlier instant
+    const sent = sinceOf(rolling, ENDPOINTS[0]);
+    const behind = Date.now() - sent[sent.length - 1];
+    await expect(behind).toBeGreaterThanOrEqual(DAY_MS);
+    await expect(behind).toBeLessThan(DAY_MS + 10_000);
+  },
+};
+
+const refreshed = recording(loaded);
+
+/**
+ * The header's refresh button still re-reads everything, polling or not: the
+ * intervals here are the real ones (15s and a minute), so the second read of
+ * each endpoint can only have come from the click, and it starts later too.
+ */
+export const TheHeaderRefreshStillReadsTheWindowAgain: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={refreshed.stub}>
+        <ScreenHeader title={en.screens.dashboard.title} subtitle={en.screens.dashboard.subtitle} />
+        <Dashboard />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await waitFor(() => ENDPOINTS.forEach((e) => expect(readsOf(refreshed, e)).toBe(1)));
+    // its name reads "refreshing" while anything is in flight, so finding it by
+    // the idle name waits for the page to settle
+    await userEvent.click(await canvas.findByRole("button", { name: en.shell.refreshData }));
+    await waitFor(() => ENDPOINTS.forEach((e) => expect(readsOf(refreshed, e)).toBe(2)));
+    for (const endpoint of ENDPOINTS) {
+      const [first, second] = sinceOf(refreshed, endpoint);
+      await expect(second).toBeGreaterThan(first);
+    }
+  },
+};
+
+const NEWER = {
+  ...RECENT[0],
+  ts: "2026-10-05T12:35:30.000Z",
+  request_id: "req-2",
+  model: "gemini-2.5-flash",
+  status: 429,
+};
+
+// the log answers with one request, then with that one and a newer one
+let recentReads = 0;
+const arriving = recording(
+  scoped(async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/analytics/invocations") {
+      recentReads += 1;
+      return json({ data: recentReads > 1 ? [NEWER, ...RECENT] : RECENT });
+    }
+    return loaded(input);
+  }),
+);
+
+/**
+ * #1975: the card says "Live", so a request that lands after the page opened
+ * shows up without the header's refresh button. Nothing on the Dashboard
+ * polled before, so the word described a card that never moved.
+ */
+export const TheLiveCardShowsNewRequestsByItself: Story = {
+  beforeEach: () => {
+    recentReads = 0;
+  },
+  render: () => render(arriving.stub, undefined, FAST_POLL_MS),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(canvas.queryByText("gemini-2.5-flash")).toBeNull();
+    // no click: the poll alone brings the newer request in
+    await expect(await canvas.findByText("gemini-2.5-flash")).toBeVisible();
+    await expect(canvas.getByText(en.pages.dashboard.live)).toBeVisible();
+  },
+};
+
+// refuses every analytics read, and leaves the rest of the control plane
+// answering: the setup checklist reads its own lists and has its own error
+const analyticsRefused = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname.startsWith("/api/v1/analytics");
+
+// answers well until the play says otherwise, so a story can watch a screen
+// that loaded lose its analytics store and get it back
+let upstream: "ok" | "failing" = "ok";
+const flaky = recording(
+  scoped(async (input, init) =>
+    upstream === "failing" && analyticsRefused(input)
+      ? json({ error: { message: "clickhouse refused" } }, 500)
+      : loaded(input, init),
+  ),
+);
+
+/**
+ * A poll that fails after the page loaded must not take the page down with it:
+ * the alert that replaces the screen when the first read fails would otherwise
+ * appear on every blip. The figures stay, the card stops saying "Live" and
+ * says when the refresh failed instead, and the next poll that lands brings the
+ * word back.
+ */
+export const AFailedPollKeepsWhatLoaded: Story = {
+  beforeEach: () => {
+    upstream = "ok";
+  },
+  render: () => render(flaky.stub, undefined, FAST_POLL_MS),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+
+    upstream = "failing";
+    const failed = await canvas.findByText(/^Refresh failed at .*, retrying$/);
+    await expect(failed).toBeVisible();
+    // it is a failure, so it reads as one, and "Live" is not said over it
+    await expect(getComputedStyle(failed).color).toBe(resolveColorToken("--status-danger-text"));
+    await expect(canvas.queryByText(en.pages.dashboard.live)).toBeNull();
+    // the page that loaded is still there: no alert, and the figures are not blanked
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvas.getAllByText(fmt.number(132))).not.toHaveLength(0);
+    await expect(canvas.getByText("gpt-4o", { selector: "td" })).toBeVisible();
+
+    // the poll goes on, so a control plane that comes back is noticed
+    upstream = "ok";
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(canvas.queryByText(/^Refresh failed at /)).toBeNull();
+  },
+};
+
+const failing = recording(
+  scoped(async (input, init) =>
+    analyticsRefused(input)
+      ? json({ error: { message: "clickhouse refused" } }, 500)
+      : loaded(input, init),
+  ),
+);
+
+/**
+ * A first read that fails stays failed until someone retries it. Polling a
+ * query that never held data sends it back to pending on every refetch, which
+ * unmounts its error: the alert and a skeleton would take turns, and a screen
+ * reader would hear the alert again each cycle (#1984 found it on LLM Logs).
+ */
+export const AFirstLoadThatFailsStopsPolling: Story = {
+  render: () => render(failing.stub, undefined, FAST_POLL_MS),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    const alert = canvas
+      .getAllByRole("alert")
+      .find((a) => /failed to return analytics/i.test(a.textContent ?? ""));
+    const reads = ENDPOINTS.map((e) => readsOf(failing, e));
+
+    // three intervals later it is the same alert node, and nothing was asked:
+    // a poll would have sent the query to pending and unmounted it
+    await sleep(FAST_POLL_MS * 3);
+    await expect(alert?.isConnected).toBe(true);
+    await expect(canvas.queryAllByLabelText(LOADING_LABEL)).toHaveLength(0);
+    await expect(ENDPOINTS.map((e) => readsOf(failing, e))).toEqual(reads);
+
+    // the retry the alert offers asks all four again, the recent log included
+    await userEvent.click(within(alert!).getByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      ENDPOINTS.forEach((e, i) => expect(readsOf(failing, e)).toBeGreaterThan(reads[i])),
+    );
   },
 };
