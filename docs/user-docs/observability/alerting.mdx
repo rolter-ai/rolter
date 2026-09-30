@@ -60,13 +60,22 @@ labels.
 
 ### Signals
 
-| Signal                  | Value                                                                                                                                                                                           | Table                    |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `error_rate`            | Share of logged requests in the window with an HTTP status of 500 or above, from `0` to `1` (`0.05` is 5%). 4xx responses, `429` included, do not count.                                        | `request_logs`           |
-| `p95_latency_ms`        | 95th-percentile request latency in milliseconds, from ClickHouse's approximate `quantile`.                                                                                                      | `request_logs`           |
-| `spend_velocity`        | Spend in the window scaled to US dollars per hour: `sum(cost_usd) × 3600 / window_secs`.                                                                                                        | `request_logs`           |
-| `request_volume`        | Number of logged requests in the window.                                                                                                                                                        | `request_logs`           |
-| `provider_health_flaps` | Number of provider health observations in the window whose outcome was not `ok` (an error or a timeout), across every target and every source, active probes and passive request results alike. | `provider_health_events` |
+Each signal's value is in its own unit, and a rule's `threshold` is in the same
+unit. The API stores and returns the value as the query computes it; the
+dashboard shows it under a translated name and in that unit.
+
+| Signal                  | Value                                                                                                                                                                                                                                           | Unit (API)                      | Dashboard                                                     | Table                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------- | ------------------------ |
+| `error_rate`            | Share of logged requests in the window with an HTTP status of 500 or above. 4xx responses, `429` included, do not count.                                                                                                                        | a fraction from `0` to `1`      | **Error rate**, a percentage: `0.05` shows as `5%`            | `request_logs`           |
+| `p95_latency_ms`        | 95th-percentile request latency, from ClickHouse's approximate `quantile`.                                                                                                                                                                      | milliseconds                    | **p95 latency**: `840 ms`                                     | `request_logs`           |
+| `spend_velocity`        | Spend in the window scaled to an hourly rate, `sum(cost_usd) × 3600 / window_secs`, so a 5-minute and a 1-hour window give comparable figures.                                                                                                  | settlement currency per hour    | **Spend rate**: `€12.50/h`                                    | `request_logs`           |
+| `request_volume`        | Number of logged requests in the window. A count, not a rate: the same traffic reads twice as high over a window twice as long.                                                                                                                 | requests per window             | **Request volume**: `340 requests in 5m`                      | `request_logs`           |
+| `provider_health_flaps` | Number of provider health observations in the window whose outcome was not `ok` (an error or a timeout), across every target and every source, active probes and passive request results alike. Despite the name it counts failures, not flaps. | failed health events per window | **Provider health failures**: `10 failed health events in 5m` | `provider_health_events` |
+
+Spend is in the deployment's settlement currency, the `base` of the
+[`[currency]` table](/security/budgets-and-rate-limits#pricing-in-another-currency)
+(USD unless configured). The `cost_usd` column name is historic and does not
+mean dollars.
 
 An empty window reads `0` for every signal.
 
@@ -178,8 +187,8 @@ The endpoint is stored as the HTTP client parses it, so
 
 The **Add channel** sheet asks for a name, the endpoint URL and the optional
 secret, and creates the channel enabled. Each channel card shows its kind, a
-**secret set** badge when a secret is stored, an enable switch and a delete
-button.
+**secret set** badge when a secret is stored, an enable switch, an edit button
+and a delete button.
 
 ### Delivery
 
@@ -211,6 +220,11 @@ one `POST` to the endpoint with a JSON body:
 | `window_secs`  | The trailing window the value was read over.                                                     |
 | `evaluated_at` | When the evaluation that took the reading ran, RFC 3339 in UTC.                                  |
 | `text`         | The same facts as one line, for a relay or a chat tool to display as-is.                         |
+
+`value` and `threshold` are in the signal's API unit, so an `error_rate` of 7%
+arrives as `0.07`, and `text` repeats them the same way, with the window in
+seconds. Units in `text`, and a unit field beside `value`, are tracked in
+[#2301](https://github.com/rolter-ai/rolter/issues/2301).
 
 The request carries `Content-Type: application/json`, a `User-Agent` of
 `rolter/<version>`, and, when the channel stores a secret,
@@ -311,32 +325,73 @@ waits for that delivery to finish, at most 10 seconds.
 The server also returns `state`, `last_value`, `last_evaluated_at` and
 `last_error`.
 
-The **Add rule** sheet starts from `error_rate`, a threshold of `0.05` and a
-300-second window, with the first channel selected; pick **none (record only)**
-for a rule without one. It will not save a window outside 60 to 86400 seconds.
-The rule is created enabled. Each rule card shows its
-state, signal, threshold, window, last value, when it was last evaluated and
-its channel, with an enable switch, **Evaluate now** and a delete button. A
-rule in `error` shows its `last_error` under the figures.
+The **Add rule** sheet lists each signal by its dashboard name, with a line
+under the picker saying what it counts and over what. The threshold field's
+label names the unit it is typed in, such as **Threshold (%)** or
+**Threshold (EUR per hour)**, and the field starts from that signal's own
+default: `5` (%) for `error_rate`, `8000` ms for `p95_latency_ms`, `50` per
+hour for `spend_velocity`, `1000` requests for `request_volume` and `10` failed
+health events for `provider_health_flaps`. Choosing another signal resets the
+threshold to that signal's default, since a number typed in one unit means
+nothing in another.
 
-Some starting points:
+`error_rate` is typed as a percentage from 0 to 100 and sent as the fraction
+the API stores: typing `5` sends `0.05`. The sheet will not save a percentage
+over 100, which the fraction can never reach, a negative threshold, or a window
+outside 60 to 86400 seconds. The window starts at 300 seconds and the first
+channel is selected; pick **none (record only)** for a rule without one. The
+rule is created enabled.
 
-| Signal                  | Threshold | Window | Fires when                                            |
-| ----------------------- | --------- | ------ | ----------------------------------------------------- |
-| `error_rate`            | `0.05`    | `300`  | 5% or more of the last five minutes' requests are 5xx |
-| `p95_latency_ms`        | `8000`    | `600`  | p95 latency over ten minutes reaches 8 seconds        |
-| `spend_velocity`        | `50`      | `3600` | the last hour spent 50 USD or more                    |
-| `provider_health_flaps` | `10`      | `300`  | ten or more failed health observations in 5 minutes   |
+Each rule card shows its state, signal, threshold, window, last value, when it
+was last evaluated and its channel, with an enable switch, **Evaluate now**, an
+edit button and a delete button. The threshold and last value are in the signal's unit
+(`5%`, `840 ms`, `€12.50/h`, `340 requests in 5m`) and the window is a
+duration (`5m`). When it was last evaluated reads as how long ago (`3 min. ago`),
+with the full date and time on hover. A rule in `error` shows its `last_error`
+under the figures, in the same amber as its state. A rule that could not be
+evaluated has no reading to compare, so it does not borrow the red of `firing`.
+The state, like the delivery statuses below, is shown in the dashboard's
+language rather than as the stored identifier.
+
+Some starting points, with the threshold as the API takes it and as the
+dashboard shows it:
+
+| Signal                  | Threshold (API) | Dashboard                       | Window | Fires when                                                        |
+| ----------------------- | --------------- | ------------------------------- | ------ | ----------------------------------------------------------------- |
+| `error_rate`            | `0.05`          | `5%`                            | `300`  | 5% or more of the last five minutes' requests are 5xx             |
+| `p95_latency_ms`        | `8000`          | `8,000 ms`                      | `600`  | p95 latency over ten minutes reaches 8 seconds                    |
+| `spend_velocity`        | `50`            | `$50.00/h`                      | `3600` | the last hour spent 50 or more in the settlement currency         |
+| `request_volume`        | `1000`          | `1,000 requests in 5m`          | `300`  | a thousand or more requests in five minutes, about three a second |
+| `provider_health_flaps` | `10`            | `10 failed health events in 5m` | `300`  | ten or more failed health observations in 5 minutes               |
+
+Tune `request_volume` to your own traffic: a rule only fires on a high value, so
+it catches a surge, never a drop.
 
 ### Changing a rule or channel
 
-The dashboard can enable, disable and delete, but not yet edit (tracked in
-[#1873](https://github.com/rolter-ai/rolter/issues/1873)). Change a threshold,
-window, signal, channel or endpoint through the API instead of deleting and
-recreating, because deleting a rule also deletes its history.
+The edit button on a rule or channel card opens the sheet that adds one, filled
+in from the row. Change the threshold, window, signal, channel or endpoint and
+choose **Save**. Do not delete and recreate instead: deleting a rule also deletes
+its history, and deleting a channel clears it from every rule that delivers
+through it. An edited rule keeps its state and history, and the change applies
+from its next evaluation.
 
-`PUT` replaces the whole row, so send every field. A body without `enabled`
-turns the rule or channel off.
+Saving sends the enable switch back as it was, so editing a rule or channel that
+is switched off leaves it off. The edit button follows the same permission as
+the switch, `alert_rule` or `alert_channel` update.
+
+An existing rule opens on its own threshold, in the signal's unit: a stored
+`0.05` for `error_rate` opens as `5`. Only choosing another signal resets it to
+that signal's default.
+
+A channel's secret field opens empty, because a stored secret is never read
+back. Leave it blank to keep the stored secret, or type one to replace it. A
+secret belongs to the endpoint's origin, so pointing the channel at another
+scheme, host or port without typing a new secret drops the stored one. The
+sheet says so beside the field before you save.
+
+The same change through the API is a `PUT`, which replaces the whole row, so
+send every field. A body without `enabled` turns the rule or channel off.
 
 ```bash
 curl -X PUT https://control.example.com/api/v1/alert-rules/$RULE_ID \
@@ -358,8 +413,21 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 ## History
 
 **Alerting → History** lists the 200 most recent rows, newest first, with the
-time, rule, state (`firing` or `resolved`), delivery status and detail. Every
-change of state has a row, including those of rules with no channel.
+state (`firing` or `resolved`), delivery status, time, rule and detail. The state
+and delivery columns come first so they stay in view on a phone. Every change of
+state has a row, including those of rules with no channel.
+
+When the control plane returns a full 200, older rows exist that the screen does
+not reach, and a note above the list says so. The toolbar narrows the list:
+
+- **Rule** is sent to the API as `rule_id`, so it lists that rule's own newest
+  200 rows, which can reach further back than the same rule's rows in the
+  all-rules list.
+- **State** and **Delivery** filter the rows already loaded, because the API has
+  no filter for either. When the list is capped they search those rows only.
+
+The `detail` text comes from the control plane as it is stored, in English, in
+every language.
 
 | Delivery status | Detail                                                                                                                                                                                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -24,7 +24,8 @@ name: ui-security-updates
 # scope that lists dependabot alerts, and the repository already lets actions
 # open pull requests (release-plz relies on the same setting). a pull request
 # the token opens triggers no `pull_request` run, so ci.yml is dispatched
-# against the branch, the way release-plz.yml gates the release PR (#1025).
+# against the branch, the way release-plz.yml gates the release PR (#1025),
+# and project-automation.yml is dispatched to put it on the board (#2245).
 on:
   schedule:
     # every day at 06:30 UTC, half an hour ahead of the cargo audit in audit.yml
@@ -56,7 +57,7 @@ jobs:
       vulnerability-alerts: read # list the open dependabot alerts
       contents: write # push the update branch
       pull-requests: write # open, update or close its pull request
-      actions: write # dispatch ci.yml, since a token-opened pull request triggers nothing
+      actions: write # dispatch ci.yml and project-automation.yml, since a token-opened pull request triggers nothing
     env:
       BRANCH: security/ui-dependencies
       REPO: ${{ github.repository }}
@@ -237,10 +238,20 @@ jobs:
             # `gh pr create` then failed: its branch is here, unchanged, with
             # neither an open nor a declined pull request. station:mac owns
             # ui/, so the pull request has an owner the way any other does
-            gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
+            url="$(gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
               --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${RUNNER_TEMP}/body.md" \
               --label dependencies --label javascript --label security --label ui-dashboard \
-              --label station:mac
+              --label station:mac)"
+            echo "opened ${url}"
+            # a pull request this token opens raises no `pull_request_target`
+            # event either, so project-automation never adds it to the board.
+            # dispatch it with the number instead, the one event the token may
+            # start (#2245). best-effort: the pull request is what matters
+            number="${url##*/}"
+            if ! gh workflow run project-automation.yml --repo "${REPO}" --ref master \
+              -f number="${number}" -f area=ui; then
+              echo "::warning title=ui-security-updates::could not dispatch project-automation for #${number}; add it by hand: gh workflow run project-automation.yml -f number=${number} -f area=ui"
+            fi
           fi
           {
             echo "sha=${head_sha}"

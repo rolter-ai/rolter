@@ -28,7 +28,7 @@ offered, even when the refusal is correct.
 | #    | step                                               | where                                                                     | expect                                                                  | status                                           |
 | ---- | -------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
 | T2.1 | create a project for a new workstream              | scope switcher **+** under the team · `POST /api/v1/teams/{id}/projects`  | the project, owned by the team                                          | verified (API); the switcher's **+** needs #1846 |
-| T2.2 | invite engineers as members of that project        | **Governance → Users → Invite user**, scope = the project, role = member  | a link per person; authorized at the project, so no org admin is needed | verified                                         |
+| T2.2 | invite engineers as members of that project        | **Governance → Users → Invite user**, scope = the project, role = member  | a link per person; authorized at the project, so no org admin is needed | works — #2054 adds the scope picker              |
 | T2.3 | get the links to people                            | by hand                                                                   | —                                                                       | partial — #1828                                  |
 | T2.4 | with SSO or SCIM instead, map the team's IdP group | done by an org admin once ([platform-admin A1-b/A1-d](platform-admin.md)) | new joiners land in the project with no invitation                      | works                                            |
 
@@ -60,8 +60,8 @@ offered, even when the refusal is correct.
 
 ## T6 — someone leaves
 
-| #    | step                                             | where                                                    | expect                                                   | status                                                    |
-| ---- | ------------------------------------------------ | -------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------- |
-| T6.1 | remove their membership                          | **Governance → Users**, the person's role at the project | they lose the project in the dashboard at once           | partial — #1850 (the lead cannot list the team's members) |
-| T6.2 | their personal keys stop working                 | the gateway                                              | a key they minted for themselves is refused              | bug — #1841                                               |
-| T6.3 | shared keys they minted as an admin keep working | the gateway                                              | the team's services do not go down because a person left | verified                                                  |
+| #    | step                                             | where                                                                 | expect                                                   | status                                                        |
+| ---- | ------------------------------------------------ | --------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- |
+| T6.1 | remove their membership                          | **Governance → Users**, the × beside the person's role at the project | they lose the project in the dashboard at once           | works — #1850 lists the team's members, #2053 adds the revoke |
+| T6.2 | their personal keys stop working                 | the gateway                                                           | a key they minted for themselves is refused              | bug — #1841                                                   |
+| T6.3 | shared keys they minted as an admin keep working | the gateway                                                           | the team's services do not go down because a person left | verified                                                      |

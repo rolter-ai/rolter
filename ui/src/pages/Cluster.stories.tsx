@@ -6,6 +6,7 @@ import {
   cancelConfirmation,
   confirmDestructive,
   expectForbidden,
+  expectNoFalseEmpty,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -85,6 +86,7 @@ export const Loading: Story = {
   render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No nodes have reported in/);
   },
 };
 
@@ -102,6 +104,7 @@ export const Forbidden: Story = {
   render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No nodes have reported in/);
   },
 };
 

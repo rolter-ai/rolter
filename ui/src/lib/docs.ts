@@ -116,6 +116,8 @@ export const DOCS_PAGES = {
   whichKey: "security/which-key",
   /** virtual keys: what they are, budgets, rotation */
   virtualKeys: "concepts/virtual-keys",
+  /** cache-aware strategies and the telemetry sources two of them need (#2137) */
+  cacheAwareRouting: "concepts/cache-aware-routing",
 } as const;
 
 export type DocsPage = keyof typeof DOCS_PAGES;

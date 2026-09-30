@@ -1,5 +1,6 @@
-import { useIsMutating, useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, type UseMutationResult } from "@tanstack/react-query";
 import {
+  Check,
   GitCompare,
   ImageIcon,
   Mic,
@@ -14,14 +15,17 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
 import { DocsLink } from "@/components/DocsLink";
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Markdown } from "@/components/Markdown";
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
@@ -30,7 +34,15 @@ import { StatusRow } from "@/components/ui/status-row";
 import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { fetchConfigProblems, fetchModels, mintPlaygroundKey, unservedRoutes } from "@/lib/api";
+import {
+  ApiError,
+  fetchConfigProblems,
+  fetchModels,
+  mintPlaygroundKey,
+  unservedRoutes,
+  type MintedKey,
+} from "@/lib/api";
+import { useCan, useCapabilities } from "@/lib/can";
 import {
   awaitingMintedKey,
   chatCompletion,
@@ -38,6 +50,7 @@ import {
   fetchGatewayModels,
   generateImages,
   getPlaygroundKeyState,
+  isKeyRefusal,
   keyPropagationDelay,
   realtimeUrl,
   setPlaygroundKey,
@@ -50,15 +63,12 @@ import {
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the built-in fake-llm always works with no upstream/secrets, so it's a safe
 // default for every modality in local dev.
 const FAKE = "fake-llm";
-
-// the mint's mutation key, so the model catalog can tell "a key is on its way"
-// from "there is no key"
-const MINT_KEY = ["playground-key"];
 
 /** One selectable address, with whatever the gateway said owns it. */
 export interface ModelOption {
@@ -72,9 +82,10 @@ export interface ModelOption {
  * two sources do not list the same things, and quietly swapping one for the
  * other is what #946 is about. `waiting` is the stretch between minting a key
  * and the gateway accepting it, which is neither a gateway list nor a failure
- * (#1853).
+ * (#1853). `asking` is the one keyless call that finds out whether the gateway
+ * wants a key at all (#2061).
  */
-export type ModelSource = "gateway" | "waiting" | "no-key" | "unreachable";
+export type ModelSource = "gateway" | "waiting" | "asking" | "no-key" | "unreachable";
 
 /** What the model pickers offer, and what the chat column should open on. */
 interface ModelCatalog {
@@ -89,6 +100,10 @@ interface ModelCatalog {
   preferred: string | null;
   /** configured routes left out of a fallback list because they are not served */
   hidden: number;
+  /** the gateway turned down the key in hand, rather than failing for its own reasons */
+  rejected: boolean;
+  /** there is no key, and the gateway answered without one */
+  keyless: boolean;
 }
 
 /**
@@ -110,24 +125,32 @@ interface ModelCatalog {
  * nothing is preselected from it until `/api/v1/config/problems` has said
  * which ones they are: opening on a route the gateway does not serve made the
  * first message an operator sent fail with "no route" (#1853).
+ *
+ * With no key and none on its way, the gateway is asked once without one. A
+ * gateway no control plane manages, holding no keys, serves anybody
+ * (`authenticate` in crates/rolter-gateway/src/handlers.rs) — the
+ * no-database `rolter easy-up` — and there the screen works with no key at
+ * all. While a mint is due that call could only be refused, so it waits
+ * (#2061).
  */
-function useModelCatalog(): ModelCatalog {
+function useModelCatalog(session: KeySession): ModelCatalog {
   // the key is read through the store rather than once at render, so the list
   // re-fetches the moment the screen mints one (#944)
-  const { key, minted } = usePlaygroundKeyState();
+  const { key, minted } = session.state;
   // a mint in flight is a key about to arrive, not a screen without one
-  const minting = useIsMutating({ mutationKey: MINT_KEY }) > 0;
+  const minting = session.pending;
+  const keyless = !key && !minting;
   const routes = useQuery({ queryKey: ["models"], queryFn: fetchModels });
   // the same query the Providers screen lists, so the two share one answer
   const problems = useQuery({ queryKey: ["config-problems"], queryFn: fetchConfigProblems });
   const gateway = useQuery({
     queryKey: ["gateway-models", key],
     queryFn: ({ signal }) => fetchGatewayModels(signal),
-    enabled: !!key,
+    enabled: !!key || keyless,
     // a key minted a moment ago answers 401 until the gateway's next snapshot
     // poll picks it up, so that refusal is waited out, with backoff and a
-    // bound, before the screen falls back (#1853). a pasted key gets a single
-    // attempt: nothing about it is on its way
+    // bound, before the screen falls back (#1853). a pasted key, or none, gets
+    // a single attempt: nothing about it is on its way
     retry: minted ? awaitingMintedKey : false,
     retryDelay: keyPropagationDelay,
   });
@@ -140,7 +163,9 @@ function useModelCatalog(): ModelCatalog {
         : "unreachable"
       : minting
         ? "waiting"
-        : "no-key";
+        : gateway.isPending
+          ? "asking"
+          : "no-key";
 
   // one entry per public name: several projects can route the same model
   const configured = [...new Set((routes.data ?? []).map((m) => m.model))];
@@ -168,15 +193,17 @@ function useModelCatalog(): ModelCatalog {
 
   // the catalog is what the screen waits on before anything can be sent, so
   // it is the query `time_to_interactive` should be measured against. the
-  // gateway probe only counts when there is a key to make it with — an
-  // `enabled: false` query stays pending forever and would suppress the event
-  const ready = !routes.isPending && (!key || !gateway.isPending);
+  // gateway probe only counts while it is being made — an `enabled: false`
+  // query stays pending forever and would suppress the event
+  const ready = !routes.isPending && (!(key || keyless) || !gateway.isPending);
   return {
     options: withFake,
     source,
     ready,
     preferred,
     hidden: gateway.data ? 0 : configured.length - served.length,
+    rejected: !!key && gateway.isError && isKeyRefusal(gateway.error),
+    keyless: !key && !!gateway.data,
   };
 }
 
@@ -238,7 +265,9 @@ function ModelSelect({
  */
 function ModelSourceNotice({ source, hidden }: { source: ModelSource; hidden: number }) {
   const { t } = useTranslation();
-  if (source === "gateway") return null;
+  // while the gateway is being asked whether it wants a key there is nothing
+  // to say yet, and a notice that flashes up and away says it badly
+  if (source === "gateway" || source === "asking") return null;
   const message =
     source === "waiting"
       ? t("pages.playground.modelsWaiting")
@@ -293,28 +322,84 @@ function useNow(intervalMs = 15_000): number {
 }
 
 /**
- * Mints the Playground's key and says what state it is in.
+ * Whether a minted key has run out, flipped by a timer at the instant it does.
+ *
+ * Kept apart from `useNow` so the screen as a whole re-renders once, at the
+ * expiry, rather than on every tick of the band's countdown.
+ */
+function useExpired(expiresAt: string | null): boolean {
+  const at = expiresAt === null ? null : new Date(expiresAt).getTime();
+  const [, wake] = React.useReducer((n: number) => n + 1, 0);
+  React.useEffect(() => {
+    if (at === null) return;
+    const left = at - Date.now();
+    if (left <= 0) return;
+    const id = setTimeout(wake, left);
+    return () => clearTimeout(id);
+  }, [at]);
+  return at !== null && at <= Date.now();
+}
+
+/**
+ * Whether a mint was refused because the project routes nothing.
+ *
+ * The mint takes no body, so the one client error it answers is that one:
+ * `mint_playground_key` in crates/rolter-control/src/me.rs returns `400`
+ * exactly when the project has no routes, and `control_integration.rs` pins
+ * the status. The message is prose and free to be reworded, so it is not read
+ * (#2061).
+ */
+function isRouteless(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 400;
+}
+
+/**
+ * What the screen knows about the key it sends, and whether it can get one
+ * itself. One hook, because the key band, the model catalog and every Send on
+ * the screen have to agree on it.
+ */
+interface KeySession {
+  state: PlaygroundKeyState;
+  /** a minted key past its expiry */
+  expired: boolean;
+  projectId: string | null;
+  /** a key is on its way: the scope, the role check or the mint is still out */
+  pending: boolean;
+  /** the caller's role is explicitly refused `my_virtual_key:create` here */
+  refused: boolean;
+  /** a project is in scope and the role is not refused, so a mint can be asked for */
+  canMint: boolean;
+  mint: UseMutationResult<MintedKey, Error, void>;
+  /** the last mint was refused because the project routes nothing */
+  routeless: boolean;
+}
+
+/**
+ * Mints the Playground's key on arrival, once per project.
  *
  * Opening the screen as a signed-in operator mints a key scoped by the control
  * plane to the routes of the project in scope, so the five-second smoke test
  * this screen exists for does not start with a trip to the Keys screen and a
- * paste. The secret is never rendered: the key is held in memory and shown only
- * as its state, because there is nothing an operator does with the string that
- * the screen is not already doing for them.
+ * paste.
  *
- * The paste field stays, for testing one specific key on purpose — the case
- * automatic minting cannot serve.
+ * Minting is `my_virtual_key:create`, which takes the member role (#2061). The
+ * automatic mint waits for the capability answer and does not go out on an
+ * explicit "no", so a viewer lands on the paste field rather than on a
+ * refusal. An unanswered gate falls open, as everywhere else, and the `403`
+ * stays the backstop.
  */
-function SessionKeyBar() {
-  const { t } = useTranslation();
-  const fmt = useFormat();
+function useKeySession(): KeySession {
   const scope = useScope();
   const state = usePlaygroundKeyState();
-  const now = useNow();
-  const projectId = scope.projectId;
+  const expired = useExpired(state.minted ? state.expiresAt : null);
+  const projectId = scope.projectId ?? null;
+  const capabilities = useCapabilities();
+  const can = useCan();
+  const refused = can("my_virtual_key", "create") === false;
+  // with no provider above (a story, a test) there is no answer to wait for
+  const gateSettled = !capabilities || capabilities.resolved;
 
   const mint = useMutation({
-    mutationKey: MINT_KEY,
     mutationFn: () => mintPlaygroundKey(projectId as string),
     onSuccess: (minted) =>
       setPlaygroundKey(minted.key, { expiresAt: minted.expires_at ?? null, minted: true }),
@@ -322,16 +407,134 @@ function SessionKeyBar() {
 
   // one automatic attempt per project, not one per render: a refusal — a
   // project with no routes answers 400 — must not turn into a mint loop, and
-  // the operator renews by hand from here on
+  // the operator mints by hand from here on
   const { mutate } = mint;
   const asked = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!projectId || state.key || asked.current === projectId) return;
+    if (!projectId || state.key || !gateSettled || refused || asked.current === projectId) return;
     asked.current = projectId;
     mutate();
-  }, [projectId, state.key, mutate]);
+  }, [projectId, state.key, gateSettled, refused, mutate]);
 
-  const expired = state.expiresAt !== null && new Date(state.expiresAt).getTime() <= now;
+  // the automatic mint is due and has not gone out yet, which is a key on its
+  // way rather than a screen without one
+  const due = !!projectId && !state.key && !refused && asked.current !== projectId;
+
+  return {
+    state,
+    expired,
+    projectId,
+    // a scope still resolving only means a key is coming when there is none
+    pending: mint.isPending || (!state.key && scope.isLoading) || due,
+    refused,
+    canMint: !!projectId && !refused,
+    mint,
+    routeless: isRouteless(mint.error),
+  };
+}
+
+/**
+ * The one thing the key band says, picked by what the screen is waiting on.
+ *
+ * The band used to stack its lines — the no-project hint, the minted-key hint
+ * for a key that did not exist, and the fallback notice — so a first visit
+ * read three competing instructions (#2061). Each state now has exactly one.
+ * `pending` and `failed` say nothing in the band: the skeleton and the
+ * `LoadError` below it carry those.
+ */
+type KeyMessage =
+  | "pending"
+  | "failed"
+  | "routeless"
+  | "expired"
+  | "rejected"
+  | "active"
+  | "pasted"
+  | "keyless"
+  | "noProject"
+  | "refused"
+  | "idle";
+
+function keyMessage(
+  session: KeySession,
+  gateway: { rejected: boolean; keyless: boolean },
+): KeyMessage {
+  const { state } = session;
+  if (session.pending) return "pending";
+  if (session.mint.error) return session.routeless ? "routeless" : "failed";
+  if (state.key) {
+    if (state.minted && session.expired) return "expired";
+    if (gateway.rejected) return "rejected";
+    return state.minted ? "active" : "pasted";
+  }
+  if (gateway.keyless) return "keyless";
+  if (!session.projectId) return "noProject";
+  if (session.refused) return "refused";
+  return "idle";
+}
+
+/** the states in which the screen could not get a key itself, so pasting one is the way on */
+const OFFERS_PASTE: ReadonlySet<KeyMessage> = new Set([
+  "failed",
+  "routeless",
+  "rejected",
+  "noProject",
+  "refused",
+]);
+
+/**
+ * The key band: what the screen is sending, and the one thing to know about it.
+ *
+ * The secret is never rendered: the key is held in memory and shown only as
+ * its state, because there is nothing an operator does with the string that
+ * the screen is not already doing for them.
+ *
+ * The paste field stays, for testing one specific key on purpose — the case
+ * automatic minting cannot serve — and it opens on its own whenever the
+ * screen could not get a key itself.
+ */
+function SessionKeyBar({
+  session,
+  rejected,
+  keyless,
+}: {
+  session: KeySession;
+  rejected: boolean;
+  keyless: boolean;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const now = useNow();
+  const can = useCan();
+  const { state, expired, mint, pending, projectId } = session;
+  const message = keyMessage(session, { rejected, keyless });
+
+  const text = (() => {
+    switch (message) {
+      case "active":
+        return t("playground.key.mintedHint");
+      case "expired":
+        return t("playground.key.expiredHint");
+      case "rejected":
+        return session.canMint
+          ? t("playground.key.rejectedHint")
+          : t("playground.key.rejectedPasteHint");
+      case "pasted":
+        return t("playground.key.pastedHint");
+      case "keyless":
+        return t("playground.key.keyless");
+      case "noProject":
+        return t("playground.key.noProject");
+      case "refused":
+        return t("playground.key.refused");
+      case "idle":
+        return t("playground.key.idle");
+      case "routeless":
+        return t("playground.key.routeless");
+      default:
+        return null;
+    }
+  })();
 
   return (
     // the failure sits outside the band rather than inside it: `LoadError`
@@ -343,17 +546,19 @@ function SessionKeyBar() {
           <span className="text-xs font-medium text-muted-foreground">
             {t("playground.key.title")}
           </span>
-          {mint.isPending ? (
+          {pending ? (
             <ControlSkeleton width={132} />
           ) : (
-            <KeyStatus state={state} expired={expired} />
+            <KeyStatus state={state} expired={expired} rejected={rejected} />
           )}
-          {!mint.isPending && state.minted && !expired && state.expiresAt && (
+          {!pending && message === "active" && state.expiresAt && (
             <span className="text-xs text-[color:var(--text-subtle)]">
               {t("playground.key.expires", { when: fmt.relative(state.expiresAt, now) })}
             </span>
           )}
-          <Button
+          <GatedButton
+            gate="my_virtual_key:create"
+            control="playground-key-mint"
             size="sm"
             variant="outline"
             className="ml-auto"
@@ -361,23 +566,39 @@ function SessionKeyBar() {
             onClick={() => mint.mutate()}
           >
             {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {t("playground.key.renew")}
-          </Button>
+            {/* nothing to renew until rolter has minted one: a pasted key is
+                replaced, not renewed */}
+            {state.key && state.minted ? t("playground.key.renew") : t("playground.key.mint")}
+          </GatedButton>
         </div>
-        {/* the project chain has to resolve before there is anything to mint
-          against, and an operator who belongs to no project needs to hear that
-          rather than watch a button do nothing */}
-        {!projectId && !scope.isLoading && (
-          <p className="text-xs text-[color:var(--text-subtle)]">{t("playground.key.noProject")}</p>
-        )}
-        {!mint.isPending && !mint.error && (
-          <p className="text-xs leading-snug text-[color:var(--text-subtle)]">
-            {expired ? t("playground.key.expiredHint") : t("playground.key.mintedHint")}
+        {text && (
+          <p role="status" className="text-xs leading-snug text-[color:var(--text-subtle)]">
+            {text}
+            {/* the fix for a routeless project is a route, so the band points
+                at the screen that makes one. only an explicit "no" on reading
+                routes hides it, the rule the rail follows for that leaf */}
+            {message === "routeless" && can("route", "read") !== false && (
+              <>
+                {" "}
+                <Link
+                  to="/routing-rules"
+                  className="rounded-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {t("playground.key.routelessLink", { screen: t("nav.routing-rules") })}
+                </Link>
+              </>
+            )}
           </p>
         )}
-        <ManualKeyField pasted={state.key !== "" && !state.minted} />
+        <ManualKeyField
+          offered={(state.key !== "" && !state.minted) || OFFERS_PASTE.has(message)}
+          // a pasted key supersedes whatever the last mint said
+          onSaved={() => mint.reset()}
+        />
       </div>
-      {mint.error != null && (
+      {/* a routeless project has its own line above and no retry: minting
+          again cannot succeed until the project routes something */}
+      {message === "failed" && (
         <LoadError
           error={mint.error}
           resource={t("errors.resources.playgroundKey")}
@@ -389,40 +610,58 @@ function SessionKeyBar() {
 }
 
 /** What the screen is currently sending, in one badge. */
-function KeyStatus({ state, expired }: { state: PlaygroundKeyState; expired: boolean }) {
+function KeyStatus({
+  state,
+  expired,
+  rejected,
+}: {
+  state: PlaygroundKeyState;
+  expired: boolean;
+  rejected: boolean;
+}) {
   const { t } = useTranslation();
   if (!state.key) return <Badge tone="neutral">{t("playground.key.none")}</Badge>;
-  if (!state.minted)
+  if (state.minted && expired)
     return (
-      <Badge tone="info" dot>
-        {t("playground.key.pasted")}
+      <Badge tone="warning" dot>
+        {t("playground.key.expired")}
       </Badge>
     );
-  return expired ? (
-    <Badge tone="warning" dot>
-      {t("playground.key.expired")}
-    </Badge>
-  ) : (
+  // a key the gateway turned down is not active, whoever chose it (#2061)
+  if (rejected)
+    return (
+      <Badge tone="warning" dot>
+        {t("playground.key.rejected")}
+      </Badge>
+    );
+  return state.minted ? (
     <Badge tone="success" dot>
       {t("playground.key.active")}
+    </Badge>
+  ) : (
+    <Badge tone="info" dot>
+      {t("playground.key.pasted")}
     </Badge>
   );
 }
 
 /**
- * The manual paste field, collapsed by default.
+ * The manual paste field, collapsed unless the screen needs it.
  *
  * Kept because testing one particular key — a customer's, a key that is about
  * to expire — is a real thing to do here, and automatic minting cannot do it.
- * Collapsed because it is now the exception: the screen arrives with a key.
+ * Collapsed while the screen arrives with a key; `offered` opens it when it
+ * could not get one, and an operator's own toggle wins over either.
  */
-function ManualKeyField({ pasted }: { pasted: boolean }) {
+function ManualKeyField({ offered, onSaved }: { offered: boolean; onSaved: () => void }) {
   const { t } = useTranslation();
-  const [open, setOpen] = React.useState(pasted);
+  const [toggled, setToggled] = React.useState<boolean | null>(null);
+  const open = toggled ?? offered;
   const [key, setKey] = React.useState("");
   const [saved, setSaved] = React.useState(false);
   const save = () => {
     setPlaygroundKey(key.trim());
+    onSaved();
     setSaved(true);
     setTimeout(() => setSaved(false), 1400);
   };
@@ -434,7 +673,7 @@ function ManualKeyField({ pasted }: { pasted: boolean }) {
         className="self-start px-1 text-xs text-muted-foreground"
         aria-expanded={open}
         aria-controls="playground-manual-key"
-        onClick={() => setOpen((was) => !was)}
+        onClick={() => setToggled(!open)}
       >
         {t("playground.key.manual")}
       </Button>
@@ -454,6 +693,7 @@ function ManualKeyField({ pasted }: { pasted: boolean }) {
               aria-label={t("playground.key.label")}
             />
             <Button size="sm" variant="outline" onClick={save}>
+              {saved && <Check className="h-3.5 w-3.5" />}
               {saved ? t("playground.key.saved") : t("playground.key.save")}
             </Button>
           </div>
@@ -471,13 +711,95 @@ function ManualKeyField({ pasted }: { pasted: boolean }) {
   );
 }
 
+/**
+ * Whether the screen holds a key the gateway will take, and if not, why not.
+ *
+ * Every button that sends through the gateway reads this, because sending
+ * without one only bought a `401` on the first message (#2061).
+ */
+interface SendGate {
+  blocked: boolean;
+  /** the title a held-back button carries */
+  reason?: string;
+  /** a key is on its way, rather than missing */
+  waiting: boolean;
+}
+
+const SendGateContext = React.createContext<SendGate>({ blocked: false, waiting: false });
+
+function useSendGate(session: KeySession, catalog: ModelCatalog): SendGate {
+  const { t } = useTranslation();
+  const { state, expired, pending } = session;
+  // a key in hand is held back only once the gateway refused it or is still
+  // learning it. a gateway that fails for its own reasons says so in the
+  // column, in its own words, which is more than a disabled button would
+  const usable = state.key
+    ? !(state.minted && expired) && !catalog.rejected && catalog.source !== "waiting"
+    : catalog.keyless;
+  const waiting =
+    !usable && (pending || catalog.source === "waiting" || catalog.source === "asking");
+  const reason = usable
+    ? undefined
+    : waiting
+      ? t("pages.playground.sendWaiting")
+      : t("pages.playground.sendNeedsKey");
+  return React.useMemo(() => ({ blocked: !usable, reason, waiting }), [usable, reason, waiting]);
+}
+
+/**
+ * A button that sends a request through the gateway, held back while the
+ * screen has no key the gateway will take (#2061).
+ *
+ * A real `disabled`, with the reason in the `title` the way a refused
+ * `GatedButton` carries its role: the button variants drop pointer events when
+ * disabled, which would hide the tooltip too, so they come back through an
+ * inline style, and `disabled` still swallows the click. `hold` is off for the
+ * one state of a button that sends nothing, such as stopping a live session.
+ */
+function GatewayButton({
+  hold = true,
+  disabled,
+  title,
+  style,
+  className,
+  ...props
+}: ButtonProps & { hold?: boolean }) {
+  const gate = React.useContext(SendGateContext);
+  const held = hold && gate.blocked;
+  return (
+    <Button
+      {...props}
+      className={cn(held && "cursor-not-allowed", className)}
+      style={held ? { ...style, pointerEvents: "auto" } : style}
+      disabled={disabled || held}
+      title={held ? gate.reason : title}
+    />
+  );
+}
+
+// an error arrives after an action, so it is announced the moment it appears
 function ErrorNote({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <p className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]">
+    <p
+      role="alert"
+      className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
+    >
       {error}
     </p>
   );
+}
+
+/**
+ * Whether a keydown is the Enter that sends.
+ *
+ * Shift+Enter is left alone so a multi-line box can take a newline. The Enter
+ * that confirms an IME candidate belongs to the composition, not to the send:
+ * `isComposing` says so in most browsers, and Safari reports that Enter after
+ * the composition has ended, with the legacy keyCode 229.
+ */
+function isSendKey(e: React.KeyboardEvent): boolean {
+  return e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229;
 }
 
 /* ---------------- chat column ---------------- */
@@ -513,7 +835,21 @@ function ChatColumn({
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
+  // the finished reply, for the live region: `id` makes a reply identical to
+  // the last one a new node, so it is announced again
+  const [announced, setAnnounced] = React.useState<{ id: number; text: string } | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const composer = React.useRef<HTMLTextAreaElement>(null);
+  const gate = React.useContext(SendGateContext);
+
+  // the composer grows with the draft up to its max height, then scrolls. a
+  // column under another mode tab measures 0 and is left as it was
+  React.useLayoutEffect(() => {
+    const el = composer.current;
+    if (!el || el.offsetParent === null) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }, [draft]);
 
   const attach = (f: File) => {
     const reader = new FileReader();
@@ -522,7 +858,8 @@ function ChatColumn({
   };
 
   const send = async () => {
-    if (!draft.trim() || busy) return;
+    // Enter reaches here without the button, so the gate is checked here too
+    if (!draft.trim() || busy || gate.blocked) return;
     const userText = draft;
     setLastPrompt(userText);
     const attached = image;
@@ -547,6 +884,10 @@ function ChatColumn({
       setMsgs((m) =>
         m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
       );
+      setAnnounced((a) => ({
+        id: (a?.id ?? 0) + 1,
+        text: t("pages.playground.replyAnnounce", { model, reply }),
+      }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
       setError((e as Error).message);
@@ -556,7 +897,7 @@ function ChatColumn({
   };
 
   return (
-    <div className="flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
+    <div className="relative flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
       <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] p-2">
         <ModelSelect models={models} value={model} onChange={onModel} />
         {/* the last thing sent, so the snippet reproduces a call that is known
@@ -593,7 +934,11 @@ function ChatColumn({
       <div className="flex flex-1 flex-col gap-2.5 overflow-auto p-4">
         {msgs.length === 0 && (
           <p className="m-auto text-center text-xs text-muted-foreground">
-            {t("pages.playground.sendMessageTo", { model })}
+            {/* the invitation waits for a key, rather than inviting a message
+                the gateway is going to refuse */}
+            {gate.blocked && !gate.waiting
+              ? t("pages.playground.sendMessageNeedsKey", { model })
+              : t("pages.playground.sendMessageTo", { model })}
           </p>
         )}
         {msgs.map((m, i) => (
@@ -606,7 +951,7 @@ function ChatColumn({
             }
           >
             <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[color:var(--text-subtle)]">
-              {m.role}
+              {t(`pages.playground.roles.${m.role}`)}
             </span>
             {/* markdown, unless the operator asked for the characters. the
                 renderer takes a partial reply as readily as a finished one, so
@@ -627,6 +972,12 @@ function ChatColumn({
           </div>
         ))}
       </div>
+      {/* the reply is read out once it is whole, not as it arrives: the thread
+          is not the live region, so neither the message just typed nor the
+          placeholder that holds the reply's place is announced */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {announced && <p key={announced.id}>{announced.text}</p>}
+      </div>
       {(error || image) && (
         <div className="px-3 pb-1">
           {image && (
@@ -644,7 +995,7 @@ function ChatColumn({
           <ErrorNote error={error} />
         </div>
       )}
-      <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
+      <div className="flex items-end gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
         {multimodal && (
           <>
             <input
@@ -665,14 +1016,22 @@ function ChatColumn({
             </Button>
           </>
         )}
-        <Input
+        <Textarea
+          ref={composer}
+          rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
+          onKeyDown={(e) => {
+            if (!isSendKey(e)) return;
+            // held back or empty, Enter still must not land a newline in the box
+            e.preventDefault();
+            void send();
+          }}
           placeholder={t("pages.playground.messagePlaceholder")}
-          className="h-8 flex-1 text-sm"
+          aria-label={t("pages.playground.messageAria", { model })}
+          className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
         />
-        <Button
+        <GatewayButton
           size="icon"
           className="h-8 w-8"
           onClick={send}
@@ -680,7 +1039,7 @@ function ChatColumn({
           aria-label={t("pages.playground.send")}
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-        </Button>
+        </GatewayButton>
       </div>
     </div>
   );
@@ -688,7 +1047,11 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
-  const [cols, setCols] = React.useState<{ model: string }[]>([{ model: FAKE }]);
+  // a column's thread lives in the column, so a column needs an identity that
+  // outlasts its position: removing the first of two must not hand its thread
+  // to the one that moved up
+  const nextId = React.useRef(1);
+  const [cols, setCols] = React.useState<{ id: number; model: string }[]>([{ id: 0, model: FAKE }]);
   const [multimodal, setMultimodal] = React.useState(false);
   // the list arrives after the first render, and can be replaced once — the
   // fallback first, then the gateway's own when a renewed or pasted key
@@ -701,14 +1064,19 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
     if (touched.current || !preferred) return;
     const previous = auto.current;
     auto.current = preferred;
-    setCols((c) => (c.length === 1 && c[0].model === previous ? [{ model: preferred }] : c));
+    setCols((c) =>
+      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferred }] : c,
+    );
   }, [preferred]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
-    setCols((c) => c.map((col, j) => (j === i ? { model: v } : col)));
+    setCols((c) => c.map((col, j) => (j === i ? { ...col, model: v } : col)));
   };
-  const add = () => setCols((c) => [...c, { model: models[c.length % models.length]?.id ?? FAKE }]);
+  const add = () => {
+    const id = nextId.current++;
+    setCols((c) => [...c, { id, model: models[c.length % models.length]?.id ?? FAKE }]);
+  };
   const remove = (i: number) => setCols((c) => c.filter((_, j) => j !== i));
 
   return (
@@ -742,7 +1110,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
       >
         {cols.map((c, i) => (
           <div
-            key={i}
+            key={c.id}
             style={{
               minWidth: cols.length > 2 ? 340 : 0,
               flex: cols.length > 2 ? "none" : 1,
@@ -856,6 +1224,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 value={row}
                 onChange={(e) => setText(i, e.target.value)}
                 placeholder={t("pages.playground.textPlaceholder")}
+                aria-label={t("pages.playground.textRowAria", { n: i + 1 })}
                 className="h-8 text-sm"
               />
               <Button
@@ -874,14 +1243,14 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           <Button size="sm" variant="outline" onClick={addField}>
             <Plus className="h-3.5 w-3.5" /> {t("pages.playground.addText")}
           </Button>
-          <Button size="sm" onClick={run} disabled={busy}>
+          <GatewayButton size="sm" onClick={run} disabled={busy}>
             {busy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}{" "}
             {t("pages.playground.embedProject")}
-          </Button>
+          </GatewayButton>
         </div>
         <ErrorNote error={error} />
       </div>
@@ -937,6 +1306,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          aria-label={t("pages.playground.imagePromptAria")}
           className="min-h-[120px] text-sm"
         />
         <div className="flex gap-2.5">
@@ -961,14 +1331,14 @@ function ImageMode({ models }: { models: ModelOption[] }) {
               { value: "4", label: "n=4" },
             ]}
           />
-          <Button size="sm" onClick={gen} disabled={busy}>
+          <GatewayButton size="sm" onClick={gen} disabled={busy}>
             {busy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <ImageIcon className="h-3.5 w-3.5" />
             )}{" "}
             {t("pages.playground.generate")}
-          </Button>
+          </GatewayButton>
         </div>
         <ErrorNote error={error} />
       </div>
@@ -1057,6 +1427,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
             <Textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
+              aria-label={t("pages.playground.speechTextAria")}
               className="min-h-[100px] text-sm"
             />
             <div className="flex gap-2.5">
@@ -1074,14 +1445,14 @@ function AudioMode({ models }: { models: ModelOption[] }) {
                   },
                 ]}
               />
-              <Button size="sm" onClick={speak} disabled={busy}>
+              <GatewayButton size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Mic className="h-3.5 w-3.5" />
                 )}{" "}
                 {t("pages.playground.synthesize")}
-              </Button>
+              </GatewayButton>
             </div>
             <ErrorNote error={error} />
           </div>
@@ -1109,7 +1480,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
               hidden
               onChange={(e) => e.target.files?.[0] && doTranscribe(e.target.files[0])}
             />
-            <Button
+            <GatewayButton
               size="sm"
               variant="outline"
               onClick={() => fileRef.current?.click()}
@@ -1121,7 +1492,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
                 <Upload className="h-3.5 w-3.5" />
               )}{" "}
               {t("pages.playground.uploadAudio")}
-            </Button>
+            </GatewayButton>
             <ErrorNote error={error} />
           </div>
           <div className="rounded-lg border border-[color:var(--border-default)] bg-card p-4">
@@ -1194,14 +1565,17 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
       <div className="flex flex-wrap items-center gap-2.5">
         <ModelSelect models={models} value={model} onChange={setModel} />
         <span className="ml-auto">
-          <Button
+          {/* stopping a live session sends nothing, so only starting one waits
+              for a key */}
+          <GatewayButton
+            hold={!live}
             size="sm"
             variant={live ? "destructive" : "default"}
             onClick={live ? stop : start}
           >
             <Mic className="h-3.5 w-3.5" />{" "}
             {live ? t("pages.playground.stopSession") : t("pages.playground.startSession")}
-          </Button>
+          </GatewayButton>
         </span>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -1242,8 +1616,9 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
               <Input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && send()}
+                onKeyDown={(e) => isSendKey(e) && send()}
                 placeholder={t("pages.playground.framePlaceholder")}
+                aria-label={t("pages.playground.frameAria")}
                 className="h-8 text-sm"
                 disabled={!live}
               />
@@ -1268,7 +1643,10 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
 export default function Playground() {
   const { t } = useTranslation();
   const [mode, setMode] = React.useState("chat");
-  const { options: models, source, ready, preferred, hidden } = useModelCatalog();
+  const session = useKeySession();
+  const catalog = useModelCatalog(session);
+  const { options: models, source, ready, preferred, hidden } = catalog;
+  const sendGate = useSendGate(session, catalog);
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
   // Playground is the screen an evaluator spends the most time in, so its
@@ -1276,25 +1654,32 @@ export default function Playground() {
   useScreenReady(ready);
 
   return (
-    <div className="flex flex-col gap-5 p-[22px]">
-      <SessionKeyBar />
-      <ModelSourceNotice source={source} hidden={hidden} />
-      <Tabs
-        value={mode}
-        onChange={setMode}
-        tabs={[
-          { value: "chat", label: t("pages.playground.modes.chat") },
-          { value: "embeddings", label: t("pages.playground.modes.embeddings") },
-          { value: "image", label: t("pages.playground.modes.image") },
-          { value: "audio", label: t("pages.playground.modes.audio") },
-          { value: "realtime", label: t("pages.playground.modes.realtime") },
-        ]}
-      />
-      {mode === "chat" && <ChatMode models={models} preferred={preferred} />}
-      {mode === "embeddings" && <EmbeddingsMode models={models} />}
-      {mode === "image" && <ImageMode models={models} />}
-      {mode === "audio" && <AudioMode models={models} />}
-      {mode === "realtime" && <RealtimeMode models={models} />}
-    </div>
+    <SendGateContext.Provider value={sendGate}>
+      <PageBody>
+        <SessionKeyBar session={session} rejected={catalog.rejected} keyless={catalog.keyless} />
+        <ModelSourceNotice source={source} hidden={hidden} />
+        <Tabs
+          value={mode}
+          onChange={setMode}
+          tabs={[
+            { value: "chat", label: t("pages.playground.modes.chat") },
+            { value: "embeddings", label: t("pages.playground.modes.embeddings") },
+            { value: "image", label: t("pages.playground.modes.image") },
+            { value: "audio", label: t("pages.playground.modes.audio") },
+            { value: "realtime", label: t("pages.playground.modes.realtime") },
+          ]}
+        />
+        {/* chat stays mounted under the other tabs, so every column's thread,
+            draft and reply still in flight survive a switch. the other modes
+            hold a prompt and one result, and start over */}
+        <div hidden={mode !== "chat"}>
+          <ChatMode models={models} preferred={preferred} />
+        </div>
+        {mode === "embeddings" && <EmbeddingsMode models={models} />}
+        {mode === "image" && <ImageMode models={models} />}
+        {mode === "audio" && <AudioMode models={models} />}
+        {mode === "realtime" && <RealtimeMode models={models} />}
+      </PageBody>
+    </SendGateContext.Provider>
   );
 }

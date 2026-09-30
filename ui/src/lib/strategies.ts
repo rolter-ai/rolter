@@ -13,6 +13,7 @@
 // the operator had no way to know the screen was lying to them.
 
 import { STRATEGIES } from "@/lib/api";
+import type { DocsPage } from "@/lib/docs";
 
 export type Strategy = (typeof STRATEGIES)[number];
 
@@ -35,6 +36,13 @@ const NOT_OFFERED: readonly string[] = ["adaptive"];
  * dashboard cannot tell from here whether they did. The caveat is carried as a
  * hint instead, since the failure mode is a quiet degrade to least-load rather
  * than an error.
+ *
+ * A provider added in the dashboard cannot carry either source: the store
+ * loads every database provider with neither, and the provider sheet has no
+ * field for them. The hint therefore names `rolter.toml` as the place the
+ * source is set, rather than leaving an operator to look for a provider
+ * setting that does not exist (#2137). #2236 stores both on database
+ * providers; when it lands, that caveat goes from the copy.
  */
 export const NEEDS_TELEMETRY: readonly string[] = ["precise_cache_aware", "lmcache_aware"];
 
@@ -58,6 +66,19 @@ export function usesWeights(strategy: string): boolean {
 export function strategyHintKey(strategy: string): string | null {
   if (NEEDS_TELEMETRY.includes(strategy)) return "pages.routing.strategyHints.needsTelemetry";
   if (NOT_OFFERED.includes(strategy)) return "pages.routing.strategyHints.deploymentWide";
+  return null;
+}
+
+/**
+ * The documentation page that explains `strategy`'s caveat at length, or
+ * `null` when the hint says all there is to say.
+ *
+ * The hint has to stand on its own: `DocsLink` renders nothing when the
+ * deployment configured no documentation host, which is the air-gapped
+ * default.
+ */
+export function strategyDocsPage(strategy: string): DocsPage | null {
+  if (NEEDS_TELEMETRY.includes(strategy)) return "cacheAwareRouting";
   return null;
 }
 

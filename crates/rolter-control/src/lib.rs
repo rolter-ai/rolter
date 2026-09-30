@@ -83,6 +83,8 @@ mod openapi;
 mod plugins;
 mod proxy;
 #[cfg(feature = "postgres")]
+mod public_url;
+#[cfg(feature = "postgres")]
 mod rbac;
 #[cfg(feature = "postgres")]
 mod rbac_matrix;
@@ -410,18 +412,36 @@ impl ConfigOwned {
 /// Default externally reachable base URL when `ROLTER_PUBLIC_URL` is unset.
 const DEFAULT_PUBLIC_URL: &str = "http://localhost:4001";
 
+/// The control plane's externally reachable base URL, as resolved at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+struct PublicUrl {
+    /// no trailing slash, so a caller can always append an absolute path
+    base: String,
+    /// whether `ROLTER_PUBLIC_URL` supplied `base`. When it did not, `base` is
+    /// [`DEFAULT_PUBLIC_URL`], which an identity provider can only send a
+    /// browser back to on the control plane's own host — the dashboard says so
+    /// next to every URL it hands out for an IdP to call (#2083)
+    configured: bool,
+}
+
 /// Normalize a configured public base URL: blank counts as unset, and the
 /// trailing slash is dropped so callers can always append an absolute path.
-fn normalize_public_url(configured: Option<String>) -> String {
-    configured
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_PUBLIC_URL.to_string())
-        .trim_end_matches('/')
-        .to_string()
+fn normalize_public_url(configured: Option<String>) -> PublicUrl {
+    match configured.filter(|u| !u.trim().is_empty()) {
+        Some(url) => PublicUrl {
+            base: url.trim_end_matches('/').to_string(),
+            configured: true,
+        },
+        None => PublicUrl {
+            base: DEFAULT_PUBLIC_URL.to_string(),
+            configured: false,
+        },
+    }
 }
 
 /// Read `ROLTER_PUBLIC_URL` once, at startup, for [`ControlState::public_url`].
-fn public_url_from_env() -> Arc<String> {
+fn public_url_from_env() -> Arc<PublicUrl> {
     Arc::new(normalize_public_url(
         std::env::var("ROLTER_PUBLIC_URL").ok(),
     ))
@@ -470,7 +490,7 @@ struct ControlState {
     /// life of a flow, and a value that can change between two reads of the
     /// same request is one more thing that can disagree (#1418)
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
-    public_url: Arc<String>,
+    public_url: Arc<PublicUrl>,
     /// set when `--database-url` is configured; backs the CRUD API, which
     /// needs direct repository access beyond what `ConfigStore` exposes
     #[cfg(feature = "postgres")]
@@ -1044,6 +1064,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(crud::router())
             .merge(me::router())
             .merge(plugins::router())
+            .merge(public_url::router())
             .merge(mcp_logs::router())
             .merge(ui_events::router())
             .merge(mcp_oauth::router())
@@ -2731,7 +2752,7 @@ mod tests {
             internal_token: internal.map(|t| Arc::new(t.to_string())),
             http: reqwest::Client::new(),
             gateway_url: Arc::new("http://localhost:4000".to_string()),
-            public_url: Arc::new(DEFAULT_PUBLIC_URL.to_string()),
+            public_url: Arc::new(normalize_public_url(None)),
             cors: Arc::default(),
             metrics: Default::default(),
             login_throttle: Default::default(),
@@ -2748,22 +2769,34 @@ mod tests {
     /// (#1418).
     #[test]
     fn the_public_url_is_normalized_once_from_the_value_it_is_given() {
+        let configured = |base: &str| PublicUrl {
+            base: base.to_string(),
+            configured: true,
+        };
+        let default = PublicUrl {
+            base: DEFAULT_PUBLIC_URL.to_string(),
+            configured: false,
+        };
         // a trailing slash would double up against the paths appended to it
         assert_eq!(
             normalize_public_url(Some("https://rolter.example.com/".to_string())),
-            "https://rolter.example.com"
+            configured("https://rolter.example.com")
         );
         assert_eq!(
             normalize_public_url(Some("https://rolter.example.com".to_string())),
-            "https://rolter.example.com"
+            configured("https://rolter.example.com")
         );
         // blank is a misconfiguration, not an origin: it must not build
         // `"/auth/sso/x/callback"` and call that a redirect uri
+        assert_eq!(normalize_public_url(Some("   ".to_string())), default);
+        // unset falls back to the default and says so, so the dashboard can
+        // tell an operator which address an IdP is being handed (#2083)
+        assert_eq!(normalize_public_url(None), default);
+        // naming the default explicitly is still a choice the operator made
         assert_eq!(
-            normalize_public_url(Some("   ".to_string())),
-            DEFAULT_PUBLIC_URL
+            normalize_public_url(Some(DEFAULT_PUBLIC_URL.to_string())),
+            configured(DEFAULT_PUBLIC_URL)
         );
-        assert_eq!(normalize_public_url(None), DEFAULT_PUBLIC_URL);
     }
 
     /// #947: the dashboard has to state, per kind, whether `/v1` belongs in

@@ -6,7 +6,7 @@ description: "Issue an org-scoped SCIM token, wire it into your identity provide
 
 Rolter speaks SCIM 2.0, so your identity provider can create, update, and deactivate Rolter accounts — and push its groups — without anyone touching the dashboard. You issue a provisioning token for the org, paste it into the IdP's SCIM connector, and the IdP does the rest on its own schedule.
 
-The direction of control matters: **the identity provider drives provisioning, Rolter receives it.** The dashboard never calls the SCIM endpoints. What you manage in **Governance → User Provisioning** is the credential the IdP authenticates with — issuing one, seeing when it last synced, and revoking it.
+The direction of control matters: **the identity provider drives provisioning, Rolter receives it.** The dashboard never calls the SCIM endpoints. What you manage in **Governance → User Provisioning** is the credential the IdP authenticates with — issuing one, seeing when it last synced, and revoking it — and the address it connects to, which the screen shows so you never assemble it by hand.
 
 ## What a provisioning token is
 
@@ -25,16 +25,26 @@ Issuing, listing, and revoking tokens all require the **admin** role on the org 
     Open **Governance → User Provisioning** and choose **Issue token**. Name it after the connector it will live in — `Okta production`, `Entra staging` — because that name is the only thing that identifies it afterwards.
   </Step>
 
-  <Step title="Copy the token immediately">
+  <Step title="Copy the token and the base URL">
     The plaintext value is displayed exactly once, in the panel that opens right after creation. Rolter stores only a peppered SHA-256 digest of it, so **the value cannot be displayed or recovered later** — not by you, not by support, not from a database dump. If you lose it, issue a new token and revoke the old one.
+
+    The same panel shows the **SCIM base URL** under the token, with its own copy button, so the two values the connector needs are in one place. The URL stays on the screen above the token list afterwards, and is the same for every token in the org.
+
   </Step>
 
   <Step title="Configure the connector">
-    In your identity provider, set the SCIM base URL to `https://your-rolter-host/scim/v2` and the authentication mode to HTTP header / bearer token, using the value you just copied. Enable *create users*, *update user attributes*, and *deactivate users* — and *push groups* if you plan to drive roles from group membership.
+    In your identity provider, set the SCIM base URL to the value you copied, which looks like `https://rolter.example.com/scim/v2`, and the authentication mode to HTTP header / bearer token, using the token. Enable *create users*, *update user attributes*, and *deactivate users* — and *push groups* if you plan to drive roles from group membership.
+
+    The host part is the control plane's public URL, `ROLTER_PUBLIC_URL`, as the server reports it through [`GET /api/v1/public-url`](/api/public-url). It is not the address your browser happens to be using: the identity provider calls Rolter from outside, often under a different name than the one you open the dashboard at, and a wrong base URL fails in the provider's own test console without any hint from Rolter.
+
+    <Warning>
+    If `ROLTER_PUBLIC_URL` is not set, the control plane falls back to `http://localhost:4001`, which an identity provider can reach only if it runs on the control plane's own host. The screen shows that default with a warning under the URL and under the URL in the token panel. Set `ROLTER_PUBLIC_URL` to an address your identity provider can call and restart the control plane before you paste the URL into the connector.
+    </Warning>
+
   </Step>
 
   <Step title="Push a test user">
-    Assign one person to the Rolter application in the IdP and run a sync. They appear under **Governance → Users**, and the token's **Last sync** column updates on the next request.
+    Assign one person to the Rolter application in the IdP and run a sync. They appear under **Governance → Users**, and the token's **Last sync** column changes from *never used* to today's date on the next request. The token list shows dates only; hover one for the exact time.
   </Step>
 </Steps>
 
@@ -70,7 +80,7 @@ Every provisioning action is written to the [audit log](/observability/logs-and-
 
 A group arriving from your identity provider grants nothing on its own. **You** decide what it is worth, by writing a mapping — the identity provider never gets to name a role.
 
-**Governance → User Provisioning** carries a **Group mappings** panel under the token list. Type the group's display name, pick where the role applies — the whole organization, a team, or a project — pick the role, and press **Map group**. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team it belongs to, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself. The panel lists every mapping the org has with its scope and role, and removing one asks first, because it withdraws that role from everyone in the group. A mapping whose team or project cannot be named — the row was deleted, or the account reading the page cannot see it, or the list failed to load — is marked **Unresolved scope** rather than shown as a bare id, and hovering it gives the stored id to quote in a support request. Until a mapping exists the panel says so plainly: the groups your IdP pushes grant nothing, and every provisioned account stays a viewer.
+**Governance → User Provisioning** carries a **Group mappings** panel under the token list. Type the group's display name, pick where the role applies — the whole organization, a team, or a project — pick the role, and press **Map group**. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team it belongs to, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself. **Role to grant** starts on `viewer`, the least powerful role, and the scope starts on the whole organization. A mapping that grants `admin`, or grants at the whole organization, is confirmed before it is written: the dialog names the group, the role and the scope, says that everyone in that group at your identity provider gets the role straight away, and lists what raised it (the role, the scope, or both). A `member` or `viewer` mapping on one team or one project saves without asking. Once a mapping is written, the form goes back to `viewer` on the whole organization. The panel lists every mapping the org has with its scope and role, and removing one asks first, because it withdraws that role from everyone in the group. A mapping whose team or project cannot be named — the row was deleted, or the account reading the page cannot see it, or the list failed to load — is marked **Unresolved scope** rather than shown as a bare id, and hovering it gives the stored id to quote in a support request. Until a mapping exists the panel says so plainly: the groups your IdP pushes grant nothing, and every provisioned account stays a viewer.
 
 The same thing over the API:
 
@@ -119,7 +129,7 @@ To rotate without a gap in coverage:
 
 1. Issue a second token and copy it.
 2. Update the connector in the identity provider to use the new value.
-3. Run a sync and confirm the new token's **Last sync** timestamp moves.
+3. Run a sync and confirm the new token's **Last sync** moves from _never used_ to a date (hover it for the exact time).
 4. Revoke the old token.
 
 If you need to cut off an identity provider immediately — a compromised connector, for example — revoke the token first and deactivate the affected accounts from **Governance → Users** separately. Revocation alone is not a way to lock people out.

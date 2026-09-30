@@ -170,6 +170,14 @@
       "delete": null
     },
     {
+      "resource": "public_url",
+      "scope": "deployment",
+      "read": "authenticated",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "read": "viewer",

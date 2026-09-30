@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { isEmptyAnswer, type ReadState } from "@/lib/read-state";
 import { cn } from "@/lib/utils";
 
 // data-driven table: pass columns + rows (mono/align/render column options,
@@ -13,21 +14,38 @@ export interface TableColumn<T> {
   render?: (value: unknown, row: T, index: number) => React.ReactNode;
 }
 
-export interface TableProps<T> extends React.HTMLAttributes<HTMLDivElement> {
+interface TableBaseProps<T> extends React.HTMLAttributes<HTMLDivElement> {
   columns: TableColumn<T>[];
   data: T[];
   hover?: boolean;
   rowKey?: keyof T;
-  /**
-   * What to show instead of the rows when `data` is empty (#1180).
-   *
-   * Without it the table renders its header over nothing at all, which reads
-   * as a screen that is still loading rather than one that loaded and found
-   * no rows. Rendered in a single full-width cell so the placeholder stays
-   * inside the table's border instead of floating beneath it.
-   */
-  empty?: React.ReactNode;
 }
+
+// `empty` comes with the read it describes, or not at all: the type is what
+// stops a new caller from handing over the placeholder alone
+type TableEmptyProps =
+  | { empty?: undefined; read?: undefined }
+  | {
+      /**
+       * What to show instead of the rows once the read answered with none
+       * (#1180).
+       *
+       * Without it the table renders its header over nothing at all, which
+       * reads as a screen that is still loading rather than one that loaded and
+       * found no rows. Rendered in a single full-width cell so the placeholder
+       * stays inside the table's border instead of floating beneath it.
+       */
+      empty: React.ReactNode;
+      /**
+       * The read `data` came from — a `useQuery` result as it stands. `empty`
+       * renders only once it succeeded: a failed or pending read holds no rows
+       * either, and an empty state under its `LoadError` states an outage as a
+       * deployment with nothing in it (#2211).
+       */
+      read: ReadState;
+    };
+
+export type TableProps<T> = TableBaseProps<T> & TableEmptyProps;
 
 const ALIGN: Record<string, string> = {
   left: "text-left",
@@ -41,6 +59,7 @@ export function Table<T extends Record<string, unknown>>({
   hover = true,
   rowKey,
   empty,
+  read,
   className,
   ...props
 }: TableProps<T>) {
@@ -75,7 +94,7 @@ export function Table<T extends Record<string, unknown>>({
           </tr>
         </thead>
         <tbody>
-          {data.length === 0 && empty && (
+          {empty && read && isEmptyAnswer(read, data.length) && (
             <tr>
               <td colSpan={columns.length} className="p-0">
                 {empty}

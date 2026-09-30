@@ -95,6 +95,9 @@ not silently gain a second, weaker credential.
   password form.
 - `allow_sso` — when false, callbacks for this org's providers are refused
   without deleting the provider rows, so an IdP can be cut off in one request.
+  An account a provider created has no password, so while this is off those
+  members cannot sign in at all, whatever `allow_password_login` says. The
+  dashboard confirms the change when the org has an enabled provider (#2326).
 
 Two guard rails, both returning `409`:
 
@@ -117,6 +120,32 @@ somewhere the IdP does not gate.
 
 Register the redirect URI `"$ROLTER_PUBLIC_URL/auth/sso/{slug}/callback"` with
 the identity provider.
+
+The dashboard never assembles that URI, or the login URL, from the browser's
+origin (#2083). Every provider row the admin API returns carries both, built by
+`redirect_uri()` and `login_url()` in `sso.rs` (the functions `start_login`
+itself uses), so the value on the card is byte for byte the one the flow sends:
+
+```json
+{
+  "slug": "okta",
+  "redirect_uri": "https://rolter.example.com/auth/sso/okta/callback",
+  "login_url": "https://rolter.example.com/auth/sso/okta/start"
+}
+```
+
+The identity provider wants the redirect URI before the provider exists in
+rolter, since it issues the client id and secret the add form asks for. So the
+add sheet previews it from the slug as it is typed, on the base
+`GET /api/v1/public-url` returns (`public_url.rs`, capability `public_url`,
+readable by any authenticated caller), with `ssoRedirectUri()` in
+`ui/src/lib/api.ts` mirroring the Rust path. One read serves every keystroke.
+The endpoint also reports `configured: false` when `ROLTER_PUBLIC_URL` is unset,
+and the screen warns that the default only reaches rolter from a browser on the
+control plane's own host. It is deployment-wide rather than SSO-specific so the
+User Provisioning screen can build its SCIM base URL from the same value (#2079).
+Both screens read it through `usePublicUrl()` (`ui/src/lib/use-public-url.ts`),
+the one place its query key and options are written, so they share one request.
 
 ## Testing
 

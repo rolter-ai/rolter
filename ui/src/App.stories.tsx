@@ -311,6 +311,8 @@ export const ShortcutReference: Story = {
 
     await userEvent.keyboard("?");
     const dialog = await body.findByRole("dialog", { name: shortcuts.title });
+    // it animates in, so the first visibility read is polled (#2287)
+    await waitFor(() => expect(dialog).toBeVisible());
     const items = shortcuts.items as Record<string, string>;
     for (const shortcut of SHORTCUTS) {
       await expect(within(dialog).getByText(items[shortcut.id]!)).toBeVisible();
@@ -433,6 +435,8 @@ export const ShortcutReferenceFromRail: Story = {
     // clicking it opens the reference `?` opens, listing the same table
     await userEvent.click(trigger);
     const dialog = await body.findByRole("dialog", { name: shortcuts.title });
+    // it animates in, so the first visibility read is polled (#2287)
+    await waitFor(() => expect(dialog).toBeVisible());
     const items = shortcuts.items as Record<string, string>;
     for (const shortcut of SHORTCUTS) {
       await expect(within(dialog).getByText(items[shortcut.id]!)).toBeVisible();

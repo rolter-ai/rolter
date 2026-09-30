@@ -156,9 +156,9 @@ above, 11 were cancelled mid-flight.
 - Every `rust-cache` step in `quality.yml`, `ci.yml` and `extended.yml` saves
   only on `refs/heads/master`. PR runs restore master's caches and write none,
   which keeps the cache under its 10 GB limit. `extended.yml`'s nightly schedule
-  runs on `master`, so it still saves. `engine-integration.yml` is exempt: it
-  never runs on a master push, so a master-only save would leave it cold
-  forever.
+  runs on `master`, so it still saves. `engine-integration.yml` never runs on
+  a master push, so it restores `rust build`'s cache through a shared key and
+  saves none (#2203).
 - pr-title and both agent-session-url checks move into `ci-ok` as steps. The
   PR-body check reads the live body from the API on `pull_request` instead of
   the frozen event payload, which closes the gap in #2035 where a body edited
@@ -278,15 +278,18 @@ Re-running one failed check re-runs every check in its job.
 
 One failing tool no longer has a runner to itself. `!cancelled()` keeps the
 other steps running after a failure, but a hung step or a lost runner takes its
-siblings' verdicts down with it until the job is re-run. The layout gives only
-`ui, storybook, docs` (25 min) and `nextest / doctests` (30 min) a job timeout
-and the semver check a step timeout, so `static checks`, `rust lint` and
-`rust build` fall back to GitHub's 360-minute default unless their PRs set one.
+siblings' verdicts down with it until the job is re-run. Every merged job
+carries a job timeout, `static checks` 20 min (#2132), `ui, storybook, docs` 25,
+`rust lint` and `nextest / doctests` 30 and `rust build` 45, and the semver
+check has a 20-minute step timeout of its own, so a hung step fails its job
+long before GitHub's 360-minute default.
 
 The critical path can move. `rust lint` takes about 450-560 s cold against 488 s
 for `codeql (rust)`, so on a `Cargo.lock` bump it can become the longest job.
-The same bump builds cold on every PR that carries it, because PR runs no
-longer save caches; the next master push saves one.
+PR runs no longer save caches, so every push of the PR that carries the bump
+misses `master`'s exact key. rust-cache then restores the entry saved for the
+old lockfile and rebuilds only what changed; only a toolchain change starts
+fully cold. The next master push saves the new key.
 
 PR title feedback arrives when `ci-ok` runs, about 8 min after the push. The
 separate `pr-title` job used to answer within about half a minute on a quiet

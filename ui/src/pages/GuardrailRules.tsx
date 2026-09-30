@@ -1,15 +1,30 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  ChevronRight,
+  Loader2,
+  Lock,
+  Plus,
+  ShieldOff,
+  ShieldQuestion,
+} from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
+import {
+  GuardrailBanner,
+  GuardrailEmpty,
+  GuardrailLoading,
+  PolicyCard,
+} from "@/components/GuardrailPanel";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogBody,
@@ -23,16 +38,27 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
 import { Switch } from "@/components/ui/switch";
+import { Tag } from "@/components/ui/tag";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createGuardrailRule,
   deleteGuardrailRule,
+  fetchConfig,
   fetchGuardrailRules,
   updateGuardrailRule,
   type GuardrailRuleInput,
   type GuardrailRuleRow,
 } from "@/lib/api";
+import {
+  readEffectivePolicy,
+  resolvePolicy,
+  type EffectiveRule,
+  type RowState,
+} from "@/lib/guardrail-policy";
+import { defaultToken, replacementToken, ruleBody, withSource } from "@/lib/guardrail-replacement";
+import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const EMPTY: GuardrailRuleInput = {
@@ -43,10 +69,44 @@ const EMPTY: GuardrailRuleInput = {
   pattern: null,
   stage: "pre_call",
   action: "redact",
-  replacement: "[REDACTED:EMAIL]",
+  // empty, so the gateway writes the detector's own token (#2160)
+  replacement: null,
   include_system: false,
   position: 0,
 };
+
+/**
+ * What a post-call rule does to a streamed request on this deployment (#2156).
+ *
+ * A post-call rule masks the buffered response, which a stream never is, so
+ * the gateway settles it with the deployment-wide
+ * `[guardrails] streaming_post_call`: `reject` refuses the request with a 400,
+ * `passthrough` serves the stream with the rule skipped. That is a property
+ * of the deployment rather than of the rule, so it is read from the effective
+ * config, and `unknown` stands for a config that could not be read or did not
+ * say.
+ */
+type StreamingMode = "reject" | "passthrough" | "unknown";
+
+/** the parts of a rule a card shows, shared by dashboard rows and file rules */
+type RuleShape = Pick<GuardrailRuleRow, "stage" | "action" | "include_system"> & {
+  builtin?: GuardrailRuleRow["builtin"];
+  pattern?: string | null;
+  replacement?: string | null;
+};
+
+const STREAMING_COPY = {
+  card: {
+    reject: "pages.guardrailRules.streaming.cardReject",
+    passthrough: "pages.guardrailRules.streaming.cardPassthrough",
+    unknown: "pages.guardrailRules.streaming.cardUnknown",
+  },
+  note: {
+    reject: "pages.guardrailRules.streaming.noteReject",
+    passthrough: "pages.guardrailRules.streaming.notePassthrough",
+    unknown: "pages.guardrailRules.streaming.noteUnknown",
+  },
+} as const;
 
 function GuardrailRulesScreen() {
   const { t } = useTranslation();
@@ -58,17 +118,66 @@ function GuardrailRulesScreen() {
     retry: false,
   });
 
+  // the same cache entry the Effective config and Models screens read, fetched
+  // afresh on every visit: a flag flipped on Feature Flags a moment ago must
+  // not be reported from a cached copy
+  const config = useQuery({
+    queryKey: ["config"],
+    queryFn: fetchConfig,
+    retry: false,
+    staleTime: 0,
+  });
+  // every card compares the list with the effective policy, so both are read
+  // as one settled pair. A refetch of one against a stale copy of the other
+  // would flash a rule just edited as overridden, or a rule just deleted as
+  // the config file's (#2157)
+  const settled =
+    query.isSuccess &&
+    !query.isFetching &&
+    !config.isFetching &&
+    (config.isSuccess || config.isError);
+  const [shown, setShown] = React.useState<{
+    rows: GuardrailRuleRow[];
+    config: unknown;
+    failed: boolean;
+  }>();
+  if (
+    settled &&
+    (shown?.rows !== query.data || shown.config !== config.data || shown.failed !== config.isError)
+  ) {
+    setShown({ rows: query.data, config: config.data, failed: config.isError });
+  }
+  const resolution = React.useMemo(
+    () =>
+      shown && resolvePolicy(shown.rows, shown.failed ? null : readEffectivePolicy(shown.config)),
+    [shown],
+  );
+  const policy = resolution?.policy ?? null;
+  const loading = query.isLoading || (query.isSuccess && !resolution);
+  // undefined until the pair settles, so a note never says "could not be read"
+  // about a request still in flight
+  const streaming: StreamingMode | undefined = resolution
+    ? (policy?.streaming ?? "unknown")
+    : undefined;
+
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
-  useScreenReady(!query.isLoading);
+  useScreenReady(!loading);
   useErrorState(!!query.error, "guardrail-rules");
   const [editing, setEditing] = React.useState<GuardrailRuleRow | null | undefined>();
+  const fileHeadingId = React.useId();
+
+  // a change to a row changes the effective policy too, and the cards need both
+  const refresh = () => {
+    void client.invalidateQueries({ queryKey: ["guardrail-rules"] });
+    void client.invalidateQueries({ queryKey: ["config"] });
+  };
 
   const save = useMutation({
     mutationFn: (body: GuardrailRuleInput) =>
       editing ? updateGuardrailRule(editing.id, body) : createGuardrailRule(body),
     onSuccess: (_result, body) => {
-      void client.invalidateQueries({ queryKey: ["guardrail-rules"] });
+      refresh();
       // the dialog closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       toast.push(
@@ -92,7 +201,7 @@ function GuardrailRulesScreen() {
   });
   const remove = useMutation({
     mutationFn: deleteGuardrailRule,
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["guardrail-rules"] }),
+    onSuccess: refresh,
   });
 
   // was a bare window.confirm: unstyled, untranslatable, and invisible to the
@@ -118,8 +227,36 @@ function GuardrailRulesScreen() {
     }
   };
 
+  const describe = (rule: RuleShape) =>
+    rule.builtin
+      ? builtinDescription(rule.builtin)
+      : (rule.pattern ?? t("pages.guardrailRules.customRegex"));
+
+  const notEnforced = {
+    tone: "neutral" as const,
+    label: t("pages.guardrailRules.status.notEnforced"),
+  };
+  // enforced and paused keep the card's own badge
+  const rowStatus = (state: RowState | undefined) => {
+    switch (state?.state) {
+      case "off":
+        return notEnforced;
+      case "overridden":
+        return { tone: "warning" as const, label: t("pages.guardrailRules.status.overridden") };
+      case "unknown":
+        return { tone: "neutral" as const, label: t("pages.guardrailRules.status.unknown") };
+      default:
+        return undefined;
+    }
+  };
+
   const open = editing !== undefined;
-  const rules = query.data ?? [];
+  const rules = shown?.rows ?? [];
+  const fileRules = resolution?.fileRules ?? [];
+  // the routes that switch an effective rule off, by its name. A row credited
+  // with that rule shows them; an overridden row does not run, so the file
+  // rule's card carries them, and a paused row is in no policy to be off in
+  const offRoutes = (name: string) => resolution?.offRoutes.get(name) ?? [];
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -143,7 +280,43 @@ function GuardrailRulesScreen() {
         </GatedButton>
       </div>
 
-      {query.isLoading ? (
+      {/* the cards list what is stored; these two say it is not what runs */}
+      {resolution && !query.isError && !policy && (
+        <GuardrailBanner
+          tone="neutral"
+          icon={<ShieldQuestion className="h-5 w-5 text-muted-foreground" aria-hidden />}
+          title={t("pages.guardrailRules.unknownPolicy.title")}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void config.refetch()}>
+              {t("errors.load.retry")}
+            </Button>
+          }
+        >
+          <p>{t("pages.guardrailRules.unknownPolicy.body")}</p>
+        </GuardrailBanner>
+      )}
+      {resolution && !query.isError && policy && !policy.on && (
+        <GuardrailBanner
+          tone="warning"
+          icon={
+            <ShieldOff className="h-5 w-5 text-[color:var(--status-warning-text)]" aria-hidden />
+          }
+          title={t("pages.guardrailRules.flagOff.title")}
+          action={
+            <Link
+              to="/feature-flags"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              {t("pages.guardrailRules.flagOff.link")}
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+            </Link>
+          }
+        >
+          <p>{t("pages.guardrailRules.flagOff.body")}</p>
+        </GuardrailBanner>
+      )}
+
+      {loading ? (
         <GuardrailLoading />
       ) : query.isError ? (
         // never hand-rolled: a 403 is what a non-superadmin gets on this
@@ -154,87 +327,143 @@ function GuardrailRulesScreen() {
           resource={t("errors.resources.guardrailRules")}
           onRetry={() => void query.refetch()}
         />
-      ) : rules.length === 0 ? (
-        <GuardrailEmpty
-          title={t("pages.guardrailRules.emptyTitle")}
-          description={t("pages.guardrailRules.emptyBody")}
-          action={
-            <GatedButton
-              gate="guardrail_rule:create"
-              control="guardrail-rule-new-empty"
-              onClick={() => setEditing(null)}
-            >
-              {t("pages.guardrailRules.addFirst")}
-            </GatedButton>
-          }
-        />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2">
-          {rules.map((rule) => (
-            <PolicyCard
-              key={rule.id}
-              title={`${rule.position.toString().padStart(2, "0")} · ${rule.name}`}
+        <>
+          {rules.length === 0 ? (
+            // with config-file rules below, "no rules" would misstate the policy
+            <GuardrailEmpty
+              title={
+                fileRules.length > 0
+                  ? t("pages.guardrailRules.emptyFileTitle")
+                  : t("pages.guardrailRules.emptyTitle")
+              }
               description={
-                rule.source_type === "builtin"
-                  ? builtinDescription(rule.builtin)
-                  : (rule.pattern ?? t("pages.guardrailRules.customRegex"))
+                fileRules.length > 0
+                  ? t("pages.guardrailRules.emptyFileBody")
+                  : t("pages.guardrailRules.emptyBody")
               }
-              enabled={rule.enabled}
-              badges={
-                <>
-                  <Badge
-                    tone={
-                      rule.action === "block"
-                        ? "danger"
-                        : rule.action === "redact"
-                          ? "warning"
-                          : "info"
-                    }
-                  >
-                    {rule.action}
-                  </Badge>
-                  <Badge tone="outline">{rule.stage.replace("_", "-")}</Badge>
-                  {rule.include_system && (
-                    <Badge tone="accent">{t("pages.guardrailRules.systemBadge")}</Badge>
-                  )}
-                </>
-              }
-              details={
-                rule.replacement
-                  ? t("pages.guardrailRules.replacementDetail", {
-                      token: rule.replacement,
-                    })
-                  : t("pages.guardrailRules.noRewrite")
-              }
-              actions={
-                <>
-                  <GatedButton
-                    gate="guardrail_rule:delete"
-                    control="guardrail-rule-delete"
-                    variant="ghost"
-                    aria-label={t("pages.guardrailRules.deleteAria", { name: rule.name })}
-                    onClick={() => startDelete(rule)}
-                    disabled={remove.isPending && remove.variables === rule.id}
-                  >
-                    {remove.isPending && remove.variables === rule.id && (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    )}
-                    {t("common.delete")}
-                  </GatedButton>
-                  <GatedButton
-                    gate="guardrail_rule:update"
-                    control="guardrail-rule-edit"
-                    variant="outline"
-                    aria-label={t("pages.guardrailRules.editAria", { name: rule.name })}
-                    onClick={() => setEditing(rule)}
-                  >
-                    {t("pages.guardrailRules.editRule")}
-                  </GatedButton>
-                </>
+              action={
+                <GatedButton
+                  gate="guardrail_rule:create"
+                  control="guardrail-rule-new-empty"
+                  onClick={() => setEditing(null)}
+                >
+                  {t("pages.guardrailRules.addFirst")}
+                </GatedButton>
               }
             />
-          ))}
-        </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {rules.map((rule) => {
+                const state = resolution?.rows.get(rule.id);
+                return (
+                  <PolicyCard
+                    key={rule.id}
+                    title={`${rule.position.toString().padStart(2, "0")} · ${rule.name}`}
+                    description={describe(rule)}
+                    enabled={rule.enabled}
+                    status={rowStatus(state)}
+                    badges={<RuleBadges rule={rule} />}
+                    details={
+                      <>
+                        {/* an overridden row does not run, so what it would do to a
+                            stream is beside the point; the file rule's card says it */}
+                        <RuleDetails
+                          rule={rule}
+                          streaming={state?.state === "overridden" ? undefined : streaming}
+                        />
+                        {(state?.state === "enforced" || state?.state === "off") && (
+                          <OffRoutes routes={offRoutes(rule.name)} />
+                        )}
+                        {state?.state === "overridden" && (
+                          <FileRuleNote
+                            i18nKey="pages.guardrailRules.overriddenDetail"
+                            rule={state.by}
+                            warning
+                          />
+                        )}
+                        {state?.state === "paused" && state.clash && (
+                          <FileRuleNote
+                            i18nKey="pages.guardrailRules.pausedClashDetail"
+                            rule={state.clash}
+                          />
+                        )}
+                      </>
+                    }
+                    actions={
+                      <>
+                        <GatedButton
+                          gate="guardrail_rule:delete"
+                          control="guardrail-rule-delete"
+                          variant="ghost"
+                          aria-label={t("pages.guardrailRules.deleteAria", { name: rule.name })}
+                          onClick={() => startDelete(rule)}
+                          disabled={remove.isPending && remove.variables === rule.id}
+                        >
+                          {remove.isPending && remove.variables === rule.id && (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          )}
+                          {t("common.delete")}
+                        </GatedButton>
+                        <GatedButton
+                          gate="guardrail_rule:update"
+                          control="guardrail-rule-edit"
+                          variant="outline"
+                          aria-label={t("pages.guardrailRules.editAria", { name: rule.name })}
+                          onClick={() => setEditing(rule)}
+                        >
+                          {t("pages.guardrailRules.editRule")}
+                        </GatedButton>
+                      </>
+                    }
+                  />
+                );
+              })}
+            </div>
+          )}
+
+          {/* the rest of the policy: file-owned, read-only, and run first */}
+          {policy && fileRules.length > 0 && (
+            <section aria-labelledby={fileHeadingId} className="flex flex-col gap-3 pt-2">
+              <div>
+                <h2 id={fileHeadingId} className="text-base font-semibold">
+                  {t("pages.guardrailRules.file.heading")}
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                  <Trans
+                    i18nKey="pages.guardrailRules.file.intro"
+                    components={[<code key="key" className="font-mono text-xs" />]}
+                  />
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {fileRules.map((rule) => (
+                  <PolicyCard
+                    key={rule.name}
+                    headingLevel="h3"
+                    title={rule.name}
+                    description={describe(rule)}
+                    enabled
+                    status={policy.on ? undefined : notEnforced}
+                    badges={<RuleBadges rule={rule} />}
+                    details={
+                      <>
+                        <RuleDetails rule={rule} streaming={streaming} />
+                        <OffRoutes routes={offRoutes(rule.name)} />
+                      </>
+                    }
+                    actions={
+                      <p className="flex items-center gap-1.5 text-xs text-[color:var(--text-subtle)]">
+                        <Lock className="h-3.5 w-3.5" aria-hidden />
+                        {t("pages.guardrailRules.file.readOnly")}
+                      </p>
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+        </>
       )}
 
       <ConfirmDialog
@@ -269,6 +498,8 @@ function GuardrailRulesScreen() {
         key={editing?.id ?? (editing === null ? "new" : "closed")}
         open={open}
         initial={editing ?? null}
+        streaming={streaming}
+        fileNames={fileRules.map((rule) => rule.name)}
         pending={save.isPending}
         error={save.isError ? (save.error as Error).message : null}
         onClose={() => setEditing(undefined)}
@@ -281,6 +512,8 @@ function GuardrailRulesScreen() {
 function RuleDialog({
   open,
   initial,
+  streaming,
+  fileNames,
   pending,
   error,
   onClose,
@@ -288,16 +521,30 @@ function RuleDialog({
 }: {
   open: boolean;
   initial: GuardrailRuleRow | null;
+  streaming: StreamingMode | undefined;
+  /** names the config file already uses; a row under one of them never runs */
+  fileNames: string[];
   pending: boolean;
   error: string | null;
   onClose: () => void;
   onSave: (body: GuardrailRuleInput) => void;
 }) {
   const { t } = useTranslation();
-  const [form, setForm] = React.useState<GuardrailRuleInput>(initial ?? EMPTY);
+  // a stored block or annotate row can still hold a token it never wrote, so
+  // the field starts empty should the action become redact (#2160)
+  const [form, setForm] = React.useState<GuardrailRuleInput>(() =>
+    initial ? ruleBody(initial) : EMPTY,
+  );
   const set = (patch: Partial<GuardrailRuleInput>) => setForm((value) => ({ ...value, ...patch }));
+  // a token the user never edited follows the detector
+  const setSource = (patch: Parameters<typeof withSource>[1]) =>
+    setForm((value) => withSource(value, patch));
+  const fallback = defaultToken(form.builtin);
   const valid =
     form.name.trim() !== "" && (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
+  // shown before saving, and read out with the stage it depends on
+  const noteId = React.useId();
+  const streamingNote = form.stage === "post_call" ? streaming : undefined;
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
@@ -309,7 +556,13 @@ function RuleDialog({
         <DialogDescription>{t("pages.guardrailRules.dialogBody")}</DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <Field label={t("pages.guardrailRules.fieldName")} htmlFor="rule-name">
+        <Field
+          label={t("pages.guardrailRules.fieldName")}
+          htmlFor="rule-name"
+          hint={
+            fileNames.includes(form.name.trim()) ? t("pages.guardrailRules.nameClash") : undefined
+          }
+        >
           <Input
             id="rule-name"
             value={form.name}
@@ -322,7 +575,7 @@ function RuleDialog({
               id="rule-source"
               value={form.source_type}
               onChange={(picked) =>
-                set({
+                setSource({
                   source_type: picked as GuardrailRuleInput["source_type"],
                   builtin: picked === "builtin" ? "email" : null,
                   pattern: picked === "pattern" ? "" : null,
@@ -354,7 +607,7 @@ function RuleDialog({
               id="rule-builtin"
               value={form.builtin ?? "email"}
               onChange={(picked) =>
-                set({
+                setSource({
                   builtin: picked as GuardrailRuleInput["builtin"],
                 })
               }
@@ -384,6 +637,7 @@ function RuleDialog({
           <Field label={t("pages.guardrailRules.fieldStage")} htmlFor="rule-stage">
             <Combobox
               id="rule-stage"
+              aria-describedby={streamingNote ? noteId : undefined}
               value={form.stage}
               onChange={(picked) =>
                 set({
@@ -413,11 +667,23 @@ function RuleDialog({
             />
           </Field>
         </div>
+        {streamingNote && <StreamingEffect id={noteId} mode={streamingNote} variant="note" />}
         {form.action === "redact" && (
-          <Field label={t("pages.guardrailRules.fieldReplacement")} htmlFor="rule-replacement">
+          <Field
+            label={t("pages.guardrailRules.fieldReplacement")}
+            htmlFor="rule-replacement"
+            hint={
+              <Trans
+                i18nKey="pages.guardrailRules.replacementHint"
+                values={{ token: fallback }}
+                components={[<code key="token" className="font-mono" />]}
+              />
+            }
+          >
             <Input
               id="rule-replacement"
               value={form.replacement ?? ""}
+              placeholder={fallback}
               onChange={(event) => set({ replacement: event.target.value || null })}
             />
           </Field>
@@ -444,11 +710,179 @@ function RuleDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(form)}>
+        <Button disabled={!valid || pending} onClick={() => onSave(ruleBody(form))}>
           {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+function RuleBadges({ rule }: { rule: RuleShape }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <Badge
+        tone={rule.action === "block" ? "danger" : rule.action === "redact" ? "warning" : "info"}
+      >
+        {rule.action}
+      </Badge>
+      <Badge tone="outline">{rule.stage.replace("_", "-")}</Badge>
+      {rule.include_system && <Badge tone="accent">{t("pages.guardrailRules.systemBadge")}</Badge>}
+    </>
+  );
+}
+
+function RuleDetails({
+  rule,
+  streaming,
+}: {
+  rule: RuleShape;
+  streaming: StreamingMode | undefined;
+}) {
+  const { t } = useTranslation();
+  // the token the gateway writes, so a block rule with a stale one says none
+  const token = replacementToken(rule);
+  return (
+    <>
+      <p>
+        {token !== null
+          ? t("pages.guardrailRules.replacementDetail", { token })
+          : t("pages.guardrailRules.noRewrite")}
+      </p>
+      {rule.stage === "post_call" && streaming && (
+        <StreamingEffect mode={streaming} variant="card" />
+      )}
+    </>
+  );
+}
+
+/** a line on a dashboard card naming the config-file rule under its name */
+function FileRuleNote({
+  i18nKey,
+  rule,
+  warning,
+}: {
+  i18nKey: "pages.guardrailRules.overriddenDetail" | "pages.guardrailRules.pausedClashDetail";
+  rule: EffectiveRule;
+  warning?: boolean;
+}) {
+  return (
+    <p
+      className={cn(
+        "mt-1 flex items-start gap-1.5",
+        warning && "text-[color:var(--status-warning-text)]",
+      )}
+    >
+      <Lock className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />
+      <span>
+        <Trans
+          i18nKey={i18nKey}
+          values={{ name: rule.name }}
+          components={[<code key="name" className="font-mono" />]}
+        />
+      </span>
+    </p>
+  );
+}
+
+/** how many route names a card lists before it folds them behind a disclosure */
+const INLINE_ROUTES = 3;
+
+/**
+ * The routes whose `advanced.guardrails.disable` switches the rule off (#2283).
+ *
+ * The card's status stays what it was: the rule still runs everywhere else, so
+ * this is a line under it rather than a different badge. A few names are
+ * listed in the open; more fold behind a disclosure that keeps the count.
+ */
+function OffRoutes({ routes }: { routes: string[] }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const summaryId = React.useId();
+  if (routes.length === 0) return null;
+  const count = routes.length;
+  const summary = t("pages.guardrailRules.offRoutes.summary", { count, value: fmt.number(count) });
+  const icon = <ShieldOff className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />;
+  const body = (
+    <>
+      <ul aria-labelledby={summaryId} className="flex flex-wrap gap-1">
+        {routes.map((route) => (
+          <li key={route} className="min-w-0 max-w-full">
+            <Tag className="max-w-full" title={route}>
+              <span className="truncate">{route}</span>
+            </Tag>
+          </li>
+        ))}
+      </ul>
+      <p>
+        <Trans
+          i18nKey="pages.guardrailRules.offRoutes.source"
+          count={count}
+          components={[<code key="key" className="font-mono" />]}
+        />
+      </p>
+    </>
+  );
+  if (count <= INLINE_ROUTES) {
+    return (
+      <div className="mt-1 flex items-start gap-1.5">
+        <span className="text-[color:var(--status-warning-text)]">{icon}</span>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <p id={summaryId} className="text-[color:var(--status-warning-text)]">
+            {summary}
+          </p>
+          {body}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details className="group mt-1">
+      <summary className="flex w-fit cursor-pointer list-none items-start gap-1.5 rounded-sm text-[color:var(--status-warning-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        {icon}
+        <span id={summaryId}>{summary}</span>
+        <ChevronRight
+          className="mt-px h-3.5 w-3.5 flex-none group-open:rotate-90 motion-safe:transition-transform"
+          aria-hidden
+        />
+      </summary>
+      <div className="mt-1.5 space-y-1.5 pl-5">{body}</div>
+    </details>
+  );
+}
+
+function StreamingEffect({
+  id,
+  mode,
+  variant,
+}: {
+  id?: string;
+  mode: StreamingMode;
+  /** one line on the rule's card, or the full note under the dialog's stage */
+  variant: "card" | "note";
+}) {
+  const text = (
+    <Trans
+      i18nKey={STREAMING_COPY[variant][mode]}
+      components={[<code key="setting" className="inline-block font-mono" />]}
+    />
+  );
+  const icon = <AlertTriangle className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />;
+  return variant === "card" ? (
+    <p className="mt-1 flex items-start gap-1.5 text-[color:var(--status-warning-text)]">
+      {icon}
+      <span>{text}</span>
+    </p>
+  ) : (
+    <p
+      id={id}
+      role="note"
+      className="flex items-start gap-2 rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
+    >
+      {icon}
+      <span>{text}</span>
+    </p>
   );
 }
 

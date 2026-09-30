@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cable, FileCode2, FlaskConical, Loader2 } from "lucide-react";
+import { Cable, FileCode2, FlaskConical, Loader2, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,7 +11,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
-import { PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -34,14 +34,19 @@ import {
   type ConnectorRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { parseSamplingPercent } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
+
+// the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
+const statusTint = (hue: "success" | "danger" | "info") =>
+  `color-mix(in srgb, var(--status-${hue}) 15%, transparent)`;
 
 // `[label, tint]`: the label colour is the -text half of the hue, because a
 // health pill is a glyph on a tint rather than a shape (#1181)
 const HEALTH_TONE: Record<string, [string, string]> = {
-  healthy: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
-  unhealthy: ["var(--status-danger-text)", "var(--red-tint)"],
+  healthy: ["var(--status-success-text)", statusTint("success")],
+  unhealthy: ["var(--status-danger-text)", statusTint("danger")],
   unknown: ["var(--text-secondary)", "var(--surface-subtle)"],
 };
 
@@ -181,7 +186,22 @@ function ConnectorsScreen() {
       });
     },
   });
-  const test = useMutation({ mutationFn: testConnector, onSuccess: invalidate });
+  // a probe that ran reports its verdict either way. a rejected one is written
+  // on the card it belongs to; one that got through has no card line to appear
+  // on (the pill only changes after the refetch, and not at all for a connector
+  // that was already healthy), so it says so in a toast
+  const test = useMutation({
+    mutationFn: (c: ConnectorRow) => testConnector(c.id),
+    onSuccess: (result, c) => {
+      invalidate();
+      if (result.delivered) {
+        toast.push({
+          tone: "success",
+          title: t("pages.connectors.testDelivered", { name: c.name }),
+        });
+      }
+    },
+  });
   const remove = useMutation({ mutationFn: deleteConnector, onSuccess: invalidate });
 
   const [addOpen, setAddOpen] = React.useState(false);
@@ -196,20 +216,41 @@ function ConnectorsScreen() {
   // a connector has no tenancy scope, so its row controls are the superadmin's
   // exactly as the add button is (#1258)
 
+  // what went wrong with this card's own test or delete, for the line under it.
+  // a failed delete reports in the confirmation while that is open, so the card
+  // takes over once it is closed. the list carries the probe's reason too once
+  // it is refetched, and the same sentence twice says nothing new
+  const problemWith = (c: ConnectorRow): string | null => {
+    const probed = test.variables?.id === c.id;
+    if (probed && test.data && !test.data.delivered) {
+      const reason = test.data.health_error ?? test.data.health_status;
+      return reason === c.health_error
+        ? null
+        : t("pages.connectors.testFailed", { message: reason });
+    }
+    if (probed && test.isError) {
+      return t("pages.connectors.testError", { message: errorDetail(test.error) ?? "" });
+    }
+    if (remove.isError && remove.variables === c.id && !deleteTarget) {
+      return t("pages.connectors.deleteError", { message: errorDetail(remove.error) ?? "" });
+    }
+    return null;
+  };
+
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.connectors.summary", {
-            count: connectors.data?.length ?? 0,
-          })}
-        </span>
+        <ListSummary data={connectors.data}>
+          {(rows) => t("pages.connectors.summary", { count: rows.length })}
+        </ListSummary>
         {/* the config sits beside "add", because it is the other half of the
             job: a connector row does nothing until a collector runs this */}
         <Button
           className="ml-auto"
           variant="outline"
-          disabled={connectors.isError}
+          // the dialog says "no connectors" when handed none, so it waits for
+          // a list that answered rather than one still loading or failed
+          disabled={!connectors.isSuccess}
           onClick={() => setConfigOpen(true)}
         >
           <FileCode2 className="h-4 w-4" aria-hidden />
@@ -220,7 +261,8 @@ function ConnectorsScreen() {
           control="connector-new"
           onClick={() => setAddOpen(true)}
         >
-          + {t("pages.connectors.add")}
+          <Plus className="h-4 w-4" aria-hidden />
+          {t("pages.connectors.add")}
         </GatedButton>
       </Toolbar>
 
@@ -235,6 +277,8 @@ function ConnectorsScreen() {
           onRetry={() => void connectors.refetch()}
         />
       )}
+      {/* the empty state offers the same create as the toolbar, which stays
+          where it sits on every other list */}
       {connectors.data && connectors.data.length === 0 && (
         <EmptyState
           uxTarget="connectors"
@@ -255,9 +299,14 @@ function ConnectorsScreen() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
         {(connectors.data ?? []).map((c) => {
           const tone = healthTone(c.health_status);
+          const problem = problemWith(c);
           return (
             <div
               key={c.id}
+              // named after the connector, so the card's own test, delete and
+              // error line read as belonging to it
+              role="group"
+              aria-label={c.name}
               className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
@@ -266,7 +315,11 @@ function ConnectorsScreen() {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="font-mono text-sm font-semibold">{c.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
+                  {/* wraps rather than truncating: at 375 px a cut-off URL has no
+                      other way to be read, and a host is checked by its end */}
+                  <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {c.endpoint}
+                  </div>
                 </div>
                 <GatedSwitch
                   gate="connector:update"
@@ -285,9 +338,11 @@ function ConnectorsScreen() {
                   <StatusDot color={tone[0]} className="h-1.5 w-1.5" />
                   {c.health_status}
                 </Pill>
-                <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
+                <Pill color="var(--status-info-text)" tint={statusTint("info")}>
+                  {/* a rate is not always a whole percent, and 0.4 % rounded to
+                      "0% sampled" says nothing is sent while something is */}
                   {t("pages.connectors.sampled", {
-                    percent: Math.round(c.sampling_rate * 100),
+                    percent: fmt.number(c.sampling_rate * 100, { maximumFractionDigits: 2 }),
                   })}
                 </Pill>
                 {c.auth_secret_configured && (
@@ -303,14 +358,12 @@ function ConnectorsScreen() {
                   invalidated list comes back. saying why delivery failed at the
                   moment the operator pressed the button is the whole point of
                   the test (#1178) */}
-              {test.data && test.variables === c.id && !test.data.delivered && (
-                <p className="text-xs text-[color:var(--status-danger-text)]">
-                  {t("pages.connectors.testFailed", {
-                    message: test.data.health_error ?? test.data.health_status,
-                  })}
+              {problem && (
+                <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                  {problem}
                 </p>
               )}
-              <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* the probe writes the connector's health back, so the
                     control plane guards it as an update */}
                 <GatedButton
@@ -319,20 +372,26 @@ function ConnectorsScreen() {
                   size="sm"
                   variant="outline"
                   aria-label={t("pages.connectors.testAria", { name: c.name })}
-                  disabled={test.isPending && test.variables === c.id}
-                  onClick={() => test.mutate(c.id)}
+                  disabled={test.isPending && test.variables?.id === c.id}
+                  onClick={() => test.mutate(c)}
                 >
-                  {test.isPending && test.variables === c.id ? (
+                  {test.isPending && test.variables?.id === c.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <FlaskConical className="h-3.5 w-3.5" />
                   )}
                   {t("pages.connectors.testDelivery")}
                 </GatedButton>
+                {/* a probe from last week must not read as one from today, so the
+                    row says how long ago and keeps the full stamp for the hover */}
                 {c.health_checked_at && (
-                  <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-                    {t("pages.connectors.checkedAt", { time: fmt.time(c.health_checked_at) })}
-                  </span>
+                  <time
+                    dateTime={c.health_checked_at}
+                    title={fmt.dateTime(c.health_checked_at)}
+                    className="text-[0.6875rem] text-[color:var(--text-subtle)]"
+                  >
+                    {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
+                  </time>
                 )}
                 <DeleteIconButton
                   gate="connector:delete"
@@ -347,11 +406,6 @@ function ConnectorsScreen() {
           );
         })}
       </div>
-      {(test.isError || (remove.isError && !deleteTarget)) && (
-        <p className="text-xs text-[color:var(--status-danger-text)]">
-          {((test.error ?? remove.error) as Error).message}
-        </p>
-      )}
 
       <ConfirmDialog
         name="connector-delete"
@@ -417,14 +471,26 @@ function AddConnectorDialog({
     }
   }, [open]);
 
+  // the field is read as typed: 0 is a rate (nothing is sent), and a blank,
+  // non-numeric or out-of-range value blocks Create instead of becoming one
+  // (#2104). the control plane accepts 0 to 1 inclusive, so 0 is not refused
+  const parsed = parseSamplingPercent(sampling);
+  const samplingError = parsed.ok
+    ? undefined
+    : t(
+        parsed.problem === "range"
+          ? "pages.connectors.form.samplingRange"
+          : "pages.connectors.form.samplingInvalid",
+      );
+
   const create = useMutation({
-    mutationFn: () =>
+    mutationFn: (rate: number) =>
       createConnector({
         name,
         kind: "otlp_http",
         endpoint,
         enabled: true,
-        sampling_rate: Math.min(100, Math.max(0, Number(sampling) || 100)) / 100,
+        sampling_rate: rate,
         ...(secret.trim() ? { managed_auth_secret: secret } : {}),
       }),
     onSuccess: () => {
@@ -455,9 +521,11 @@ function AddConnectorDialog({
       dirty={dirty}
       errorMessage={create.isError ? (create.error as Error).message : undefined}
       saveLabel={t("common.create")}
-      canSave={!!name.trim() && !!endpoint.trim()}
+      canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
       saving={create.isPending}
-      onSave={() => create.mutate()}
+      onSave={() => {
+        if (parsed.ok) create.mutate(parsed.rate);
+      }}
     >
       <div className="space-y-3">
         <Field label={t("pages.connectors.form.name")}>
@@ -471,12 +539,18 @@ function AddConnectorDialog({
             placeholder="https://otlp.example.com/v1/logs"
           />
         </Field>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.connectors.form.sampling")}>
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
+          <Field
+            label={t("pages.connectors.form.sampling")}
+            hint={t("pages.connectors.form.samplingHint")}
+            error={samplingError}
+          >
             <Input
               type="number"
+              inputMode="decimal"
               min={0}
               max={100}
+              step="any"
               value={sampling}
               onChange={(e) => setSampling(e.target.value)}
             />

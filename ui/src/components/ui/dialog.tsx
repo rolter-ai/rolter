@@ -54,9 +54,12 @@ export function Dialog({ open, onOpenChange, children, initialFocus, size = "md"
   // the one that scrolls. the scrim sits inside the scrolled content rather
   // than being fixed itself: a wheel or a drag over a fixed element scrolls the
   // window, not the overlay it belongs to. a press that starts in the panel
-  // and ends on the scrim clicks their common parent, which closes nothing
+  // and ends on the scrim clicks their common parent, which closes nothing.
+  // the layer paints above an editor sheet (z-80) and below the toaster (z-90):
+  // a confirmation raised from a sheet, the discard prompt included, sat under
+  // the sheet's own scrim at z-50 with its action half covered by the panel
   return createPortal(
-    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain">
+    <div className="fixed inset-0 z-[85] overflow-y-auto overscroll-contain">
       <div className="relative flex min-h-full p-4">
         <div className="absolute inset-0 bg-black/60" onClick={close} aria-hidden />
         <div

@@ -140,6 +140,9 @@ struct Op {
     query: &'static [QueryParam],
     /// reachable without a credential
     public: bool,
+    /// what a `303 See Other` from this operation points at, for an endpoint
+    /// a browser lands on and is sent onwards from
+    see_other: Option<&'static str>,
 }
 
 impl Op {
@@ -159,6 +162,7 @@ impl Op {
             ok: Payload::Open,
             query: &[],
             public: false,
+            see_other: None,
         }
     }
 
@@ -203,6 +207,11 @@ impl Op {
         self
     }
 
+    fn see_other(mut self, description: &'static str) -> Self {
+        self.see_other = Some(description);
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -234,6 +243,15 @@ impl Op {
             None => ("204", json!({"description": "deleted"})),
         };
         responses.insert(code.to_string(), success);
+        if let Some(description) = self.see_other {
+            responses.insert(
+                "303".into(),
+                json!({
+                    "description": description,
+                    "headers": {"Location": {"schema": {"type": "string"}}}
+                }),
+            );
+        }
         responses.insert(
             "default".into(),
             json!({"$ref": "#/components/responses/Error"}),
@@ -560,6 +578,11 @@ fn operations() -> Vec<Op> {
                 "Subsystems this build marks experimental; absence means stable",
             )
             .ok(Payload::List("SubsystemStability")),
+            Op::get(
+                "/api/v1/public-url",
+                "getPublicUrl",
+                "The control plane's public base URL, and whether it was configured",
+            ),
             Op::post(
                 "/api/v1/ui-events",
                 "ingestUiEvent",
@@ -1454,7 +1477,13 @@ fn operations() -> Vec<Op> {
                 "mcpOauthCallback",
                 "OAuth redirect target for the MCP consent flow",
             )
-            .public(),
+            .public()
+            .see_other(
+                "sent to a browser (`Accept: text/html`): the dashboard's Auth Sessions screen, \
+                 with `consent=completed&session=&server=` on success or \
+                 `consent=failed&reason=` (plus `server=` once known) on a failure. Any other \
+                 caller gets the JSON body or the error",
+            ),
             Op::get(
                 "/api/v1/orgs/{org_id}/mcp/library",
                 "listMcpLibrary",
@@ -3126,6 +3155,28 @@ mod tests {
         assert!(doc["paths"]["/api/v1/routes/{id}"]["delete"]["responses"]["204"].is_object());
         // the probes are reachable without a credential
         assert_eq!(doc["paths"]["/healthz"]["get"]["security"], json!([]));
+    }
+
+    /// #2166: a browser landing on the MCP consent callback is sent to the
+    /// dashboard, and the reference says so beside the JSON answer it keeps.
+    #[test]
+    fn the_mcp_consent_callback_documents_its_redirect() {
+        let doc = document();
+        let responses = &doc["paths"]["/auth/mcp/callback"]["get"]["responses"];
+        assert!(responses["200"].is_object());
+        assert!(responses["303"]["headers"]["Location"].is_object());
+        assert!(responses["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("reason=")));
+        // and nothing else grew one
+        let redirects = doc["paths"]
+            .as_object()
+            .expect("paths")
+            .values()
+            .flat_map(|item| item.as_object().expect("path item").values())
+            .filter(|op| op["responses"]["303"].is_object())
+            .count();
+        assert_eq!(redirects, 1);
     }
 
     #[test]

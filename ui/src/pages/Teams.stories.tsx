@@ -6,6 +6,7 @@ import {
   clickWhenEnabled,
   expectEmptyState,
   expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
   expectToast,
@@ -68,6 +69,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No teams yet/);
   },
 };
 
@@ -93,6 +95,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return teams/i);
+    await expectNoFalseEmpty(canvasElement, /No teams yet/);
   },
 };
 
@@ -105,6 +108,7 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to teams/);
+    await expectNoFalseEmpty(canvasElement, /No teams yet/);
   },
 };
 

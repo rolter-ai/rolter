@@ -76,6 +76,13 @@ deliver nothing.
 | `auth_secret_ref`     | A reference into your external secret manager            |
 | `managed_auth_secret` | Write-only bearer token, sealed before storage           |
 
+The dashboard's **Add connector** sheet takes sampling as a percentage from 0 to 100 and
+stores it as that rate (25 becomes `0.25`). `0` is kept as `0`: the connector is created and
+sends nothing, which is a way to park one without deleting it. A blank field, text, or a number
+outside 0 to 100 is refused with a message under the field and **Create** stays disabled, rather
+than being read as 100. Fractions are fine, so `0.5` samples one request in two hundred. A
+connector's card reads the stored rate back the same way, for example "0.4% sampled".
+
 ### Credentials are write-only
 
 A `managed_auth_secret` is encrypted with the deployment KEK before it reaches
@@ -111,6 +118,11 @@ The result is stored as the connector's health (`healthy` / `unhealthy`, with a
 timestamp and, on failure, a short reason) and shown in the connector list.
 Failure reasons are the HTTP status or the transport failure class, never the
 sink's response body — an error body can echo the credential it just rejected.
+
+In the dashboard the card reads "checked 3 days ago" and shows the full date and time when you
+hover it. A delivered test also announces itself in a notification, since a connector that was
+already healthy would otherwise show nothing new. A rejected test, a test that could not run, and
+a delete that failed print their reason on the card they belong to.
 
 Test delivery runs whether or not the connector is enabled. That is the point:
 check it before you turn it on.

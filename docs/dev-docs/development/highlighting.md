@@ -35,6 +35,34 @@ of the document text, so a selection dragged across a numbered block copies the
 code and not the numbers — which is why `lineNumbers` is safe to turn on for a
 config section an operator is about to paste into a ticket.
 
+## The gateway address in a snippet
+
+A surface that hands out a gateway URL (the Getting started request, the
+Playground's copy-as-code, the Client Settings example and its placeholder)
+never builds that URL itself. `gatewayBase()` in `ui/src/lib/gateway.ts` is the
+one place (#2218):
+
+- it prefers the public base URL saved on Client Settings, trimmed of trailing
+  slashes and of one trailing `/v1`, which an operator copying an OpenAI SDK
+  example would otherwise double into `/v1/v1/chat/completions`
+- without one it falls back to `/gw` on the dashboard's origin. Never the bare
+  origin: the control plane serves the gateway only under `/gw/*`, so
+  `origin/v1/…` is a 404 (#2075)
+- it returns `{ url, configured }`. `url` is the root without `/v1`, which the
+  snippet appends; `configured` says which branch won, and the copy-as-code
+  snippets add their "this is the dashboard's gateway proxy" comment only when
+  it is `false`
+
+A component reads it through `useGatewayBase()` in
+`ui/src/lib/use-gateway-base.ts`. The hook loads the saved value through the
+Client Settings screen's own query (`CLIENT_SETTINGS_QUERY_KEY`), so any number
+of snippets share one request and a save on that screen reaches every snippet
+already rendered. Client settings are superadmin-only, so the hook asks only
+once the capability gate answers yes to `client_settings:read`; every other
+caller gets the proxy without a 403. The Client Settings screen calls
+`gatewayBase(form.publicBaseUrl)` directly instead, so its example follows the
+field while it is being edited.
+
 ## Why Prism (refractor), not Shiki
 
 Both were measured as a browser bundle carrying the grammars the dashboard

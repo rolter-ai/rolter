@@ -9,7 +9,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
-import { PageBody, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -72,9 +72,9 @@ export default function Pricing() {
   return (
     <PageBody>
       <Toolbar>
-        <span className="text-sm text-muted-foreground">
-          {t("pages.pricing.summary", { count: prices.data?.length ?? 0 })}
-        </span>
+        <ListSummary data={prices.data}>
+          {(rows) => t("pages.pricing.summary", { count: rows.length })}
+        </ListSummary>
         {/* a price is written with PUT /model-prices whether or not the row
             exists, so adding one takes `model_price:update` — there is no
             create capability to gate on (#1258) */}

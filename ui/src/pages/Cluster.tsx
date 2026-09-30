@@ -249,6 +249,7 @@ function ClusterScreen() {
         columns={columns}
         data={rows as (ClusterNodeRow & Record<string, unknown>)[]}
         rowKey="id"
+        read={nodes}
         empty={
           <EmptyState
             uxTarget="cluster-nodes"

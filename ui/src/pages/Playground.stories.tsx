@@ -1,19 +1,26 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { MemoryRouter } from "react-router";
+import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
 
 import Playground from "./Playground";
 import {
   Harness,
+  NEEDS_MEMBER,
   clickWhenEnabled,
+  expectAllowed,
   expectLoadError,
+  expectRefused,
   expectSkeleton,
   json,
   recording,
   scopeResponse,
   type FetchStub,
+  type StoryRole,
 } from "./story-harness";
 import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
@@ -49,6 +56,14 @@ const DOGFOOD_PROBLEMS = {
 
 const MINT_PATH = "/playground-key";
 
+/** What a held-back Send says, read out of the catalog so rewording cannot strand the stories. */
+const SEND_NEEDS_KEY = en.pages.playground.sendNeedsKey;
+const SEND_WAITING = en.pages.playground.sendWaiting;
+
+/** Every mint the screen asked for, from a recorder's calls. */
+const mintsIn = (calls: { method: string; url: string }[]) =>
+  calls.filter((c) => c.method === "POST" && c.url.includes(MINT_PATH)).length;
+
 /** Half an hour out, the lifetime `PLAYGROUND_KEY_TTL_MINUTES` fixes. */
 const expiry = () => new Date(Date.now() + 30 * 60_000).toISOString();
 
@@ -77,6 +92,25 @@ interface Sent {
   keys: string[];
 }
 
+/** The body of a chat completion request, as the gateway reads it. */
+interface ChatRequest {
+  model: string;
+  messages: { role: string; content: unknown }[];
+  stream?: boolean;
+}
+
+/** The body the gateway answers a non-streaming chat completion with. */
+const completion = (text: string) =>
+  json({ choices: [{ index: 0, message: { role: "assistant", content: text } }] });
+
+const CHAT_PATH = "/gw/v1/chat/completions";
+
+/** The chat requests a recorder saw, parsed, in the order they went out. */
+const chatsIn = (calls: { method: string; url: string; body?: string }[]): ChatRequest[] =>
+  calls
+    .filter((c) => c.method === "POST" && c.url.includes(CHAT_PATH))
+    .map((c) => JSON.parse(c.body ?? "{}") as ChatRequest);
+
 /** What the rest of the control plane and the gateway answer, per story. */
 interface Upstream {
   /** the store's route list, `GET /api/v1/models` */
@@ -88,6 +122,8 @@ interface Upstream {
    * key, so a story can refuse a key the gateway has not polled yet.
    */
   gateway?: (n: number) => Response;
+  /** The gateway's answer to its `n`th chat completion (from zero). */
+  chat?: (request: ChatRequest, n: number) => Response | Promise<Response>;
 }
 
 /**
@@ -107,8 +143,10 @@ function deployment(
     routes = ROUTES,
     problems = () => json({ problems: [] }),
     gateway = () => json(GATEWAY_MODELS),
+    chat = () => completion("Hello from the gateway."),
   } = upstream;
   let gatewayCalls = 0;
+  let chatCalls = 0;
   return async (input, init) => {
     const url = String(input);
     const path = new URL(url, "http://localhost").pathname;
@@ -122,6 +160,9 @@ function deployment(
       if (!auth) return json({ error: { message: "missing key" } }, 401);
       sent.keys.push(auth.replace("Bearer ", ""));
       return gateway(gatewayCalls++);
+    }
+    if (url.includes(CHAT_PATH)) {
+      return chat(JSON.parse(String(init?.body ?? "{}")) as ChatRequest, chatCalls++);
     }
     return json(routes);
   };
@@ -139,8 +180,14 @@ function shortKeyWait() {
   return () => setKeyPropagationForTests(null);
 }
 
-/** Clears the in-memory key, so one story's key is never another's start state. */
-function Screen({ fetchStub }: { fetchStub: FetchStub }) {
+/**
+ * Clears the in-memory key, so one story's key is never another's start state.
+ *
+ * `role` mounts the screen under the capability gate as that role; left out,
+ * no gate is mounted and every control renders enabled. The router is for the
+ * routeless project's link to Routing Rules.
+ */
+function Screen({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   // during render, not in an effect: the screen's own effects run first, and
   // a key left behind would suppress the automatic mint under test
   React.useState(() => {
@@ -149,9 +196,11 @@ function Screen({ fetchStub }: { fetchStub: FetchStub }) {
   });
   React.useEffect(() => () => setPlaygroundKey(""), []);
   return (
-    <Harness fetchStub={fetchStub}>
-      <Playground />
-    </Harness>
+    <MemoryRouter>
+      <Harness fetchStub={fetchStub} role={role}>
+        <Playground />
+      </Harness>
+    </MemoryRouter>
   );
 }
 
@@ -248,31 +297,99 @@ export const MintingShowsProgress: Story = {
 /**
  * A project with no routes cannot mint: an empty model list on a virtual key
  * means *every* model, so the control plane refuses rather than handing out the
- * widest key in the system. The screen shows the refusal and stays usable — the
- * paste field is still there.
+ * widest key in the system (#2061).
+ *
+ * That refusal is a precondition, not a failure: the band says the project
+ * needs a route and links the screen that makes one, instead of an unknown
+ * error with the server's line and a retry that can never succeed. The paste
+ * field opens, since pasting is the other way on, and Send waits for a key.
  */
-export const RoutelessProjectIsRefused: Story = {
-  render: () => (
-    <Screen
-      fetchStub={deployment(async () =>
-        json(
-          {
-            error: {
-              message:
-                "this project has no routes, so there is nothing a playground key could address",
-            },
-          },
-          400,
-        ),
-      )}
-    />
+const routeless = recording(
+  deployment(async () =>
+    json(
+      {
+        error: {
+          message:
+            "config error: this project has no routes, so there is nothing a playground key could address",
+        },
+      },
+      400,
+    ),
   ),
+);
+
+export const RoutelessProjectIsRefused: Story = {
+  render: () => <Screen fetchStub={routeless.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /this project has no routes/);
-    // the screen does not retry the refusal on its own — one automatic attempt,
-    // then it is the operator's call
-    await expect(canvas.getByRole("button", { name: "Renew key" })).toBeEnabled();
+    await canvas.findByText(/This project has no routes yet/);
+    const link = canvas.getByRole("link", { name: "Open Routing Rules" });
+    await expect(link).toHaveAttribute("href", "/routing-rules");
+
+    // not the unknown-failure alert, and no retry of a refusal a retry cannot
+    // clear
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Try again" })).toBeNull();
+    await expect(canvas.queryByText(/nothing a playground key could address/)).toBeNull();
+    // one message: nothing about a minted key that does not exist
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+
+    // the paste field is open without being asked for
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+    // one automatic attempt, then it is the operator's call
+    await expect(mintsIn(routeless.calls)).toBe(1);
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+  },
+};
+
+/**
+ * Minting takes `my_virtual_key:create`, which a viewer does not hold (#2061).
+ * The screen asks the gate before it mints, so a viewer is never sent into a
+ * refusal on arrival: the button says which role it takes, the paste field is
+ * open with one line saying why, and a pasted key is what unlocks Send.
+ */
+const viewerCalls = recording(deployment(async () => json(minted())));
+
+export const ViewerIsOfferedThePasteField: Story = {
+  render: () => <Screen role="viewer" fetchStub={viewerCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, "Mint key", NEEDS_MEMBER);
+    await canvas.findByText(/Your role in this project cannot mint keys/);
+    // the gate has answered by now, and the mint it refused never left
+    viewerCalls.expectNotSent("POST", MINT_PATH);
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+
+    const field = canvas.getByLabelText("Virtual key");
+    await expect(field).toBeVisible();
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+
+    await userEvent.type(field, "sk-rolter-given");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expectAllowed(canvasElement, "Send");
+  },
+};
+
+/** The gate only holds the mint back on a "no": a member still arrives with a key. */
+const memberCalls = recording(deployment(async () => json(minted())));
+
+export const MemberMintsOnceTheGateAnswers: Story = {
+  render: () => <Screen role="member" fetchStub={memberCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await memberCalls.expectSent("POST", MINT_PATH);
+    await waitFor(() => expect(canvas.getByText("Active")).toBeVisible());
+    await expectAllowed(canvasElement, "Renew key");
+    await expect(mintsIn(memberCalls.calls)).toBe(1);
   },
 };
 
@@ -340,6 +457,11 @@ export const PastedKeyOverridesTheMintedOne: Story = {
     await userEvent.type(field, "sk-rolter-mine");
     await userEvent.click(canvas.getByRole("button", { name: "Save" }));
 
+    // the confirmation is a drawn icon beside the word, not a glyph in it
+    const saved = await canvas.findByRole("button", { name: "Saved" });
+    await expect(saved.querySelector("svg")).not.toBeNull();
+    await expect(saved).not.toHaveTextContent("✓");
+
     // the badge stops claiming a lifetime rolter chose, because it did not
     await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
     await expect(canvas.queryByText(/Expires in \d+ min/)).toBeNull();
@@ -348,9 +470,12 @@ export const PastedKeyOverridesTheMintedOne: Story = {
 };
 
 /**
- * No project in scope, nothing to mint against. The screen says so rather than
- * leaving a button that cannot work, and the picker falls back to the control
- * plane's route list with a notice explaining what is missing from it (#946).
+ * No project in scope, nothing to mint against. The band says so once — not
+ * beside a hint about a minted key that does not exist (#2061) — the button
+ * offers to mint rather than to renew, and the paste field is open. The picker
+ * falls back to the control plane's route list with a notice explaining what
+ * is missing from it (#946), which describes the list without repeating the
+ * band's instruction.
  */
 export const NoProjectSaysWhatIsMissing: Story = {
   render: () => <Screen fetchStub={deployment(async () => json(minted()), undefined, [])} />,
@@ -359,6 +484,12 @@ export const NoProjectSaysWhatIsMissing: Story = {
     await waitFor(() =>
       expect(canvas.getByText(/Pick a project to mint a key against/)).toBeVisible(),
     );
+    await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
+    await expect(canvas.queryByText(/Set a virtual key above/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Mint key" })).toBeDisabled();
+    await expect(canvas.queryByRole("button", { name: "Renew key" })).toBeNull();
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+
     await waitFor(() => expect(canvas.getByText(/Showing configured routes/)).toBeVisible());
     await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
     const listbox = canvas.getByRole("listbox");
@@ -396,6 +527,82 @@ export const RejectedKeySaysSo: Story = {
       expect(canvas.getByText(/Could not read the gateway's model list/)).toBeVisible(),
     );
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
+
+    // the badge follows the gateway's verdict, not the mint's (#2061): no green
+    // "Active" beside a key the gateway turned down
+    await expect(canvas.getByText("Rejected")).toBeVisible();
+    await expect(canvas.queryByText("Active")).toBeNull();
+    await expect(canvas.queryByText(/Expires in/)).toBeNull();
+    await expect(canvas.getByText(/The gateway refused this key/)).toBeVisible();
+    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
+
+    const send = canvas.getByRole("button", { name: "Send" });
+    await expect(send).toBeDisabled();
+    await expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+  },
+};
+
+/**
+ * Send waits for a key the gateway accepts (#2061). Before, it stayed enabled
+ * and the first message came back as the gateway's `401`. Enter in the composer
+ * is held back too, since it reaches the send without the button.
+ */
+const unkeyed = recording(deployment(async () => json(minted()), undefined, []));
+
+export const SendWaitsForAKey: Story = {
+  render: () => <Screen fetchStub={unkeyed.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => {
+      const send = canvas.getByRole("button", { name: "Send" });
+      expect(send).toBeDisabled();
+      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
+    });
+    // the column follows the route list here, so the model is whatever it opened on
+    await expect(
+      canvas.getByText(/^Send a message to \S+ once there is a key the gateway accepts\.$/),
+    ).toBeVisible();
+
+    await userEvent.type(canvas.getByPlaceholderText("Message…"), "hello{Enter}");
+    unkeyed.expectNotSent("POST", "/gw/v1/chat/completions");
+
+    // a key the gateway takes is what lets it through
+    await userEvent.type(canvas.getByLabelText("Virtual key"), "sk-rolter-mine");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+    await expect(canvas.getByRole("button", { name: "Send" })).not.toHaveAttribute("title");
+    await expect(canvas.getByText(/^Send a message to \S+\.$/)).toBeVisible();
+  },
+};
+
+/**
+ * The no-database `rolter easy-up`: the gateway holds no keys and no control
+ * plane manages it, so it serves anybody, and every `/api/v1/*` route answers
+ * the JSON 404 of a control plane with no store. The screen asks the gateway
+ * once without a key, and on a yes it says so and leaves Send open, rather
+ * than holding back a request the gateway would take (#2061).
+ */
+const noStore = () =>
+  json({ error: { message: "no such endpoint", code: "no_such_endpoint" } }, 404);
+
+export const KeylessGatewayNeedsNoKey: Story = {
+  render: () => (
+    <Screen
+      fetchStub={async (input) => {
+        const url = String(input);
+        if (url.includes("/gw/v1/models")) return json(GATEWAY_MODELS);
+        return noStore();
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This gateway takes requests without a key/);
+    await expect(canvas.getByText("No key")).toBeVisible();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+    // the list is the gateway's own, so there is no fallback to explain
+    await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
+    await expect(canvas.queryByText(/Pick a project to mint a key against/)).toBeNull();
   },
 };
 
@@ -429,6 +636,11 @@ export const WaitsForTheMintedKeyToGoLive: Story = {
     // while the key is on its way the notice says so, not that the list failed
     await canvas.findByText(/Asking the gateway which models this key can use/);
     await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+    // and Send says it is waiting, rather than letting a message meet the 401
+    await expect(canvas.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "title",
+      SEND_WAITING,
+    );
 
     // the same key, asked again until the gateway took it
     await waitFor(() => expect(sent.keys.length).toBe(4));
@@ -439,6 +651,7 @@ export const WaitsForTheMintedKeyToGoLive: Story = {
       expect(canvas.queryByText(/Asking the gateway which models this key can use/)).toBeNull(),
     );
     await expect(canvas.queryByText(/Could not read the gateway's model list/)).toBeNull();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
 
     // and the chat column opens on a route the gateway serves, not on the
     // unservable one the store sorts first
@@ -511,7 +724,389 @@ export const NoPickWithoutTheProblemList: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText(/Could not read the gateway's model list/);
     await expect(canvas.getByRole("combobox", { name: "Model" })).toHaveValue("fake-llm");
-    await expect(canvas.getByText("Send a message to fake-llm.")).toBeVisible();
+    // the gateway refused the key, so the column waits for one it accepts
+    await expect(
+      canvas.getByText("Send a message to fake-llm once there is a key the gateway accepts."),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * The chat composer once the screen holds a key the gateway took: the column
+ * follows the gateway's list to its first route, and Send opens with it.
+ */
+async function readyComposer(canvas: ReturnType<typeof within>): Promise<HTMLElement> {
+  const composer = await canvas.findByRole("textbox", { name: "Message to minicpm5-1b" });
+  await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+  return composer;
+}
+
+/** Types `text` into the composer and presses the Send button. */
+async function sendMessage(canvas: ReturnType<typeof within>, composer: HTMLElement, text: string) {
+  await userEvent.type(composer, text);
+  await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+}
+
+/**
+ * A finished reply is a labelled turn, and it is announced once (#2062).
+ *
+ * The roles are words in the dashboard's language rather than the `user` /
+ * `assistant` enum. The reply is read out through a polite live region that is
+ * not the thread, so the message just typed is not read back, and what goes to
+ * the gateway is still the one user turn: multi-turn context is #2058's call.
+ */
+const replied = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () => completion("The gateway answered."),
+  }),
+);
+
+export const ReplyIsLabelledAndAnnounced: Story = {
+  render: () => <Screen fetchStub={replied.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    // nothing is read out before there is a reply
+    await expect(canvas.queryByText(/ replied: /)).toBeNull();
+
+    await sendMessage(canvas, composer, "Hello there");
+
+    await waitFor(() => expect(canvas.getByText("The gateway answered.")).toBeVisible());
+    await expect(canvas.getByText("You")).toBeVisible();
+    await expect(canvas.getByText("Assistant")).toBeVisible();
+    await expect(canvas.queryByText("user")).toBeNull();
+    await expect(canvas.queryByText("assistant")).toBeNull();
+
+    const announcement = await canvas.findByText("minicpm5-1b replied: The gateway answered.");
+    const region = announcement.closest("[aria-live]");
+    await expect(region).toHaveAttribute("aria-live", "polite");
+    await expect(region).toHaveAttribute("aria-atomic", "true");
+    await expect(region).not.toHaveTextContent("Hello there");
+
+    await expect(chatsIn(replied.calls)).toEqual([
+      { model: "minicpm5-1b", messages: [{ role: "user", content: "Hello there" }], stream: false },
+    ]);
+    await expect(composer).toHaveValue("");
+  },
+};
+
+/** The roles, the composer and the announcement are words in the dashboard's language, not English. */
+export const ReplyIsLabelledInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
+        chat: () => completion("Шлюз ответил."),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const pg = ru.pages.playground;
+    const composer = await canvas.findByRole("textbox", {
+      name: pg.messageAria.replace("{{model}}", "minicpm5-1b"),
+    });
+    await waitFor(() => expect(canvas.getByRole("button", { name: pg.send })).toBeEnabled());
+    await userEvent.type(composer, "Привет");
+    await userEvent.click(canvas.getByRole("button", { name: pg.send }));
+
+    await waitFor(() => expect(canvas.getByText("Шлюз ответил.")).toBeVisible());
+    await expect(canvas.getByText(pg.roles.user)).toBeVisible();
+    await expect(canvas.getByText(pg.roles.assistant)).toBeVisible();
+    await expect(canvas.queryByText("user")).toBeNull();
+    await expect(canvas.queryByText("assistant")).toBeNull();
+    await canvas.findByText(
+      pg.replyAnnounce.replace("{{model}}", "minicpm5-1b").replace("{{reply}}", "Шлюз ответил."),
+    );
+  },
+};
+
+/**
+ * A reply is markdown, rendered, until the operator asks for the characters
+ * the model sent (#955). The same reply in a column must survive both views.
+ */
+const MARKDOWN_REPLY = [
+  "## Plan",
+  "",
+  "- **first** step with `rolter` inline",
+  "- second step",
+  "",
+  "```bash",
+  "curl /gw/v1/models",
+  "```",
+].join("\n");
+
+export const ReplyRendersMarkdown: Story = {
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
+        chat: () => completion(MARKDOWN_REPLY),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Plan it");
+
+    await canvas.findByRole("heading", { name: "Plan" });
+    await expect(canvas.getAllByRole("listitem")).toHaveLength(2);
+    await expect(canvasElement.querySelector("strong")).toHaveTextContent("first");
+    await expect(
+      canvas.getByRole("region", { name: new RegExp(`^${en.markdown.codeBlock}`) }),
+    ).toBeVisible();
+
+    // raw is the characters, markers and all, and it toggles back
+    const toggle = canvas.getByRole("button", { name: "Show raw text" });
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // the toggle is the column's, so the question is shown raw too
+    await waitFor(() =>
+      expect([...canvasElement.querySelectorAll("pre")].map((pre) => pre.textContent)).toEqual([
+        "Plan it",
+        MARKDOWN_REPLY,
+      ]),
+    );
+    await expect(canvas.queryByRole("heading", { name: "Plan" })).toBeNull();
+
+    await userEvent.click(toggle);
+    await canvas.findByRole("heading", { name: "Plan" });
+  },
+};
+
+/**
+ * A gateway refusal lands in an `ErrorNote`, announced as an alert. The turn
+ * that failed leaves its question in the thread, the placeholder for the reply
+ * goes, Send opens again, and the next send clears the note.
+ */
+export const FailedSendShowsTheError: Story = {
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
+        chat: (_, n) =>
+          n === 0
+            ? json({ error: { message: "upstream unavailable: no healthy target" } }, 503)
+            : completion("Back online."),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Are you there?");
+
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent("upstream unavailable: no healthy target");
+    await expect(canvas.getByText("Are you there?")).toBeVisible();
+    await expect(canvas.queryByText("…")).toBeNull();
+    await expect(canvas.queryByText("Assistant")).toBeNull();
+    await expect(canvas.queryByText(/ replied: /)).toBeNull();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Send" })).toBeEnabled());
+
+    await sendMessage(canvas, composer, "Again");
+    await canvas.findByText("Back online.");
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+/**
+ * Enter sends and Shift+Enter adds a line (#2062). The composer grows with its
+ * draft and goes back to one line once the message is out; the message that
+ * leaves keeps its newline.
+ */
+const keys = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () => completion("Two lines received."),
+  }),
+);
+
+export const EnterSendsShiftEnterAddsALine: Story = {
+  render: () => <Screen fetchStub={keys.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const oneLine = composer.offsetHeight;
+
+    await userEvent.type(composer, "first line{Shift>}{Enter}{/Shift}second line");
+    await expect(composer).toHaveValue("first line\nsecond line");
+    keys.expectNotSent("POST", CHAT_PATH);
+    await waitFor(() => expect(composer.offsetHeight).toBeGreaterThan(oneLine));
+
+    await userEvent.keyboard("{Enter}");
+    await canvas.findByText("Two lines received.");
+    await expect(chatsIn(keys.calls)).toHaveLength(1);
+    await expect(chatsIn(keys.calls)[0].messages).toEqual([
+      { role: "user", content: "first line\nsecond line" },
+    ]);
+    // a send leaves the box empty and one line tall, with no newline left in it
+    await expect(composer).toHaveValue("");
+    await waitFor(() => expect(composer.offsetHeight).toBe(oneLine));
+  },
+};
+
+/**
+ * The Enter that confirms an input-method candidate is part of the
+ * composition and sends nothing (#2062). Browsers report it as `isComposing`,
+ * and Safari as keyCode 229 once the composition has ended.
+ */
+const composing = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () => completion("Received."),
+  }),
+);
+
+export const EnterDuringCompositionDoesNotSend: Story = {
+  render: () => <Screen fetchStub={composing.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await userEvent.type(composer, "こんにちは");
+
+    fireEvent.keyDown(composer, { key: "Enter", code: "Enter", isComposing: true });
+    fireEvent.keyDown(composer, { key: "Enter", code: "Enter", keyCode: 229 });
+    composing.expectNotSent("POST", CHAT_PATH);
+    await expect(composer).toHaveValue("こんにちは");
+
+    // the Enter after the composition is the send
+    await userEvent.keyboard("{Enter}");
+    await canvas.findByText("Received.");
+    await expect(chatsIn(composing.calls)).toHaveLength(1);
+    await expect(chatsIn(composing.calls)[0].messages[0].content).toBe("こんにちは");
+  },
+};
+
+/**
+ * Switching mode tabs keeps the conversation (#2062). The thread, the unsent
+ * draft and the column itself are still there on the way back, and going away
+ * and back sends nothing.
+ */
+const tabs = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () => completion("Kept across tabs."),
+  }),
+);
+
+export const TabSwitchKeepsTheThread: Story = {
+  render: () => <Screen fetchStub={tabs.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Remember this");
+    await canvas.findByText("Kept across tabs.");
+    await userEvent.type(composer, "a draft I have not sent");
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Embeddings" }));
+    // the chat is out of the page for everyone, not only out of sight
+    await waitFor(() => expect(canvas.queryByRole("textbox", { name: /^Message to / })).toBeNull());
+    await canvas.findByRole("textbox", { name: "Text 1" });
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Chat" }));
+    await waitFor(() => expect(canvas.getByText("Kept across tabs.")).toBeVisible());
+    await expect(canvas.getByText("Remember this")).toBeVisible();
+    await expect(canvas.getByRole("textbox", { name: "Message to minicpm5-1b" })).toHaveValue(
+      "a draft I have not sent",
+    );
+    await expect(chatsIn(tabs.calls)).toHaveLength(1);
+  },
+};
+
+/**
+ * A reply still on its way when the operator leaves the tab is not lost (#2062):
+ * it lands in its column, and is read out, once it is whole.
+ */
+let release: () => void = () => {};
+const away = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () =>
+      new Promise<Response>((resolve) => {
+        release = () => resolve(completion("Late answer."));
+      }),
+  }),
+);
+
+export const ReplyLandsWhileOnAnotherTab: Story = {
+  render: () => <Screen fetchStub={away.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Take your time");
+    // the reply's place is held, and nothing is read out for a placeholder
+    await canvas.findByText("…");
+    await expect(canvas.queryByText(/ replied: /)).toBeNull();
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Image" }));
+    await canvas.findByRole("textbox", { name: "Image prompt" });
+    release();
+    await userEvent.click(canvas.getByRole("tab", { name: "Chat" }));
+
+    await waitFor(() => expect(canvas.getByText("Late answer.")).toBeVisible());
+    await canvas.findByText("minicpm5-1b replied: Late answer.");
+    await expect(canvas.queryByText("…")).toBeNull();
+    await expect(chatsIn(away.calls)).toHaveLength(1);
+  },
+};
+
+/**
+ * A column's thread is the column's: removing the first of two leaves the
+ * second one's thread under its own model, not the first's (#2062).
+ */
+export const RemovingAColumnKeepsTheOthersThread: Story = {
+  render: () => (
+    <Screen
+      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
+        chat: (request) => {
+          const last = request.messages[request.messages.length - 1];
+          return completion(`echo ${String(last.content)}`);
+        },
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await readyComposer(canvas);
+    await userEvent.click(canvas.getByRole("button", { name: "Add model" }));
+
+    const [first, second] = await canvas.findAllByRole("textbox", { name: /^Message to / });
+    const [sendFirst, sendSecond] = canvas.getAllByRole("button", { name: "Send" });
+    await userEvent.type(first, "alpha");
+    await userEvent.click(sendFirst);
+    await canvas.findByText("echo alpha");
+    await userEvent.type(second, "beta");
+    await userEvent.click(sendSecond);
+    await canvas.findByText("echo beta");
+
+    await userEvent.click(canvas.getAllByRole("button", { name: "Remove column" })[0]);
+    await waitFor(() => expect(canvas.queryByText("echo alpha")).toBeNull());
+    await expect(canvas.getByText("echo beta")).toBeVisible();
+    await expect(canvas.getByText("beta")).toBeVisible();
+    await expect(canvas.queryByText("alpha")).toBeNull();
+  },
+};
+
+/**
+ * Every field on the other modes has a name of its own, not only a placeholder
+ * that goes when it is typed into (#2062): each embedding row by its number, the
+ * image prompt, the text to speak and the realtime frame.
+ */
+export const EveryFieldHasAName: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await readyComposer(canvas);
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Embeddings" }));
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      await canvas.findByRole("textbox", { name: `Text ${n}` });
+    }
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Image" }));
+    await canvas.findByRole("textbox", { name: "Image prompt" });
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Audio" }));
+    await canvas.findByRole("textbox", { name: "Text to synthesize" });
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Realtime" }));
+    await canvas.findByRole("textbox", { name: "Text frame to send" });
   },
 };
 

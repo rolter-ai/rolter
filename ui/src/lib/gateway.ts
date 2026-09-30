@@ -110,6 +110,18 @@ async function gwError(res: Response): Promise<GatewayError> {
   );
 }
 
+/**
+ * Whether a gateway failure is the gateway refusing the key it was sent.
+ *
+ * The gateway answers a key it does not hold, a revoked one and an expired one
+ * alike with `401` (`authenticate` in `crates/rolter-gateway/src/handlers.rs`),
+ * so the status is the whole signal. Any other failure says something about
+ * the gateway rather than the key, and must not be read as the key being bad.
+ */
+export function isKeyRefusal(error: unknown): boolean {
+  return error instanceof GatewayError && error.status === 401;
+}
+
 /** The backoff a freshly minted key is given to reach the gateway. */
 export interface KeyPropagationTiming {
   /** total time spent waiting between attempts before giving up */
@@ -154,7 +166,7 @@ export function keyPropagationDelay(failures: number): number {
  * still ends in the fallback rather than in a spinner.
  */
 export function awaitingMintedKey(failures: number, error: unknown): boolean {
-  if (!(error instanceof GatewayError) || error.status !== 401) return false;
+  if (!isKeyRefusal(error)) return false;
   let waited = 0;
   for (let n = 0; n <= failures; n += 1) waited += keyPropagationDelay(n);
   return waited <= keyPropagation.budgetMs;
@@ -314,17 +326,43 @@ export function realtimeUrl(model: string): string {
 }
 
 /**
- * The gateway's OpenAI-compatible base URL, as a client outside the browser
- * would have to write it (#1585).
- *
- * The dashboard itself talks to `/gw` relative to its own origin, which is
- * useless in a snippet somebody pastes into a terminal — so this resolves it
- * against the current origin. A deployment that serves the gateway on its own
- * host still has to say so; this is the address the dashboard can prove works,
- * not a guess at the operator's ingress.
+ * Where a client outside the browser reaches the gateway, and who said so.
  */
-export function gatewayBaseUrl(): string {
-  return new URL(GW_BASE, location.origin).toString().replace(/\/$/, "");
+export interface GatewayBase {
+  /** the gateway's root, with no trailing slash and no `/v1` — a snippet appends that */
+  url: string;
+  /**
+   * `true` when `url` is the public base URL saved on Client Settings, `false`
+   * when it is the dashboard's own `/gw` proxy. The proxy answers every
+   * OpenAI-compatible call, but it is the control plane's port rather than the
+   * gateway's, so a snippet built on it says so
+   */
+  configured: boolean;
+}
+
+/**
+ * The one gateway address every snippet, example and placeholder in the
+ * dashboard hands out (#2218).
+ *
+ * The saved public base URL wins: it is the operator's statement of where
+ * clients reach the gateway, behind a load balancer or on a host of its own.
+ * Without one this falls back to `/gw` on the dashboard's origin, the address
+ * the dashboard can prove works — never the bare origin, because the control
+ * plane serves the gateway only under `/gw/*` and `/v1/…` there is a 404
+ * (#2075).
+ *
+ * A saved value is trimmed of trailing slashes and of one trailing `/v1`,
+ * since the OpenAI SDKs document their base URL with the version on it and an
+ * operator pasting one would otherwise get `/v1/v1/chat/completions`.
+ *
+ * Pure, so both branches are unit-testable; screens read it through
+ * `useGatewayBase()`, which supplies the saved value.
+ */
+export function gatewayBase(publicBaseUrl?: string | null, origin?: string): GatewayBase {
+  const saved = (publicBaseUrl ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  if (saved) return { url: saved, configured: true };
+  const here = origin ?? (typeof location === "undefined" ? "" : location.origin);
+  return { url: `${here.replace(/\/+$/, "")}${GW_BASE}`, configured: false };
 }
 
 /**

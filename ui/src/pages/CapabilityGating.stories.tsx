@@ -9,6 +9,7 @@ import Providers from "./Providers";
 import Security from "./Security";
 import {
   expectForbidden,
+  expectRefused,
   expectUxEvent,
   recordUxEvents,
   Harness,
@@ -62,12 +63,11 @@ const ADD_PROVIDER = /add provider/i;
 
 /** Assert the create control is refused, and says what it would take. */
 async function expectGatedOut(canvasElement: HTMLElement, name: RegExp) {
-  const canvas = within(canvasElement);
-  const button = await canvas.findByRole("button", { name });
-  await waitFor(() => expect(button).toBeDisabled());
   // "disabled" alone is the same non-answer the 403 was: the control has to
-  // name the role that would make it work
-  await expect(button).toHaveAttribute("title", NEEDS_ADMIN);
+  // name the role that would make it work. both are awaited together on a
+  // fresh lookup, since a create control is also disabled by its own prop
+  // until the scope resolves, before the gate has said anything (#1670)
+  await expectRefused(canvasElement, name, NEEDS_ADMIN);
 }
 
 /** Assert the create control is offered. */
@@ -151,10 +151,7 @@ async function expectRowRefused(
   name: string,
   requirement: string,
 ) {
-  const canvas = within(canvasElement);
-  const control = await canvas.findByRole(role, { name });
-  await waitFor(() => expect(control).toBeDisabled());
-  await expect(control).toHaveAttribute("title", requirement);
+  await expectRefused(canvasElement, name, requirement, role);
 }
 
 /** Assert a per-row control is offered. */

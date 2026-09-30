@@ -23,6 +23,8 @@ grid a table to assistive technology (WCAG 1.3.1).
 | `ListActionsHeader`  | `columnheader`                  | the heading over a row's buttons: no visible text, a name for screen readers |
 | `ListCell`           | `cell`                          | one column of one row                                                        |
 | `ListStateRow`       | `row` holding one `cell`        | what the body shows instead of rows: the loading skeleton, the empty state   |
+| `ListLoadingRow`     | a `ListStateRow`, or nothing    | the skeleton row, shown while the screen's read is awaiting an answer        |
+| `ListEmptyRow`       | a `ListStateRow`, or nothing    | the empty row, shown only once the read succeeded with no rows               |
 
 `ListTable` puts the body rowgroup in itself, the way a browser puts a
 `<tbody>` round rows written straight into a `<table>`, so a screen only writes
@@ -67,6 +69,14 @@ the header and the rows. It tells the header apart by type, which means the
   row owns, which a screen reader reads outside the table and axe fails as
   `aria-required-children`. The header stays on screen above it, which is the
   point: see [loading and empty states](loading-and-empty-states.md).
+- **Hand the state rows the query, not a condition.** Write the skeleton as
+  `<ListLoadingRow read={query}>` and the empty state as
+  `<ListEmptyRow read={query} rows={rows.length}>`, where `query` is the
+  screen's `useQuery` result and `rows` is what survived its filters. The rows
+  alone cannot tell a list that is still coming, or one whose read failed,
+  from one that answered with nothing, and a hand-written
+  `!query.isLoading && rows.length === 0` put "No providers yet" and its create
+  button under the list's own `LoadError` (#2211).
 
 ## Sorting
 
@@ -93,8 +103,9 @@ table for a `ListStateRow`). Each list screen's loaded story calls it.
 
 The primitive's own stories, under **Display/ScreenPrimitives**, assert the
 roles (`TableSemantics`), the `aria-sort` cycle and the hidden arrow
-(`SortIsAnnouncedOnTheHeader`), and the loading and empty rows
-(`LoadingRowKeepsTheTableWhole`, `NoRows`).
+(`SortIsAnnouncedOnTheHeader`), the loading and empty rows
+(`LoadingRowKeepsTheTableWhole`, `NoRows`), and the read they wait on
+(`ParkedReadKeepsTheSkeleton`, `NoEmptyRowUntilTheReadSucceeds`).
 
 The Logs screen is not built from these primitives: it renders a native
 `<table>` and gets its semantics from the elements. So does the Roles &

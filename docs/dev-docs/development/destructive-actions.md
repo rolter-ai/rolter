@@ -69,9 +69,170 @@ Five properties are load-bearing:
   the panel, and keeps everything outside the topmost modal `inert` while it is
   up, so a Tab has nothing behind the scrim to land on (#1998).
 
+The control that opened the dialog carries `pending` too, scoped to its row. A
+list has one mutation for every row, so `pending={remove.isPending}` alone puts a
+spinner on every row's control while one delete is out (#2095). Compare the row
+with the target, `remove.isPending && target?.id === row.id`, the way `Pricing`
+and `Limits` do.
+
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
 key rotation is the case that motivated it.
+
+A save that hands over control of every request goes through the same dialog,
+with `tone="default"`. Activating a guardrail provider pauses the active one
+and sends all traffic through the new one, so `GuardrailProviders` raises the
+confirmation over its provider dialog. The confirmation names the provider it
+pauses and says what the failure policy then does to a request (#2163). The
+provider dialog stays open behind it, so a cancel returns to the form with the
+fields intact. The confirmation is mounted beside that dialog rather than
+inside it: the dialog remounts as it closes, and a confirmation inside it would
+unmount before it could report `save_confirmed`.
+
+Switching the active provider off is the mirror case and goes through the same
+confirmation (#2271). It names the provider and says no external guardrail
+checks requests afterwards, with `tone="danger"`, or that the config-file
+webhook stays in force, with `tone="default"`. It reports under
+`guardrail-provider-pause`. The screen keeps which of the two it raised after
+the dialog closes: the landing is reported on the closing edge, and a key that
+flipped back to the activation's there would file the pause under it.
+
+A publish that changes which prompt reaches live traffic takes `default` as
+well, and its confirmation says who the change will refuse. Publishing or
+rolling back a prompt template version (`MakeLiveDialog` in
+`PromptRepository.tsx`, #2110) lists, as its `children`, the scopes the version
+reaches, the variables a request there must send and the ones the live version
+declared that this one drops, computed from the gateway's own rules in
+`ui/src/lib/prompt-templates.ts`. It warns and never sets `confirmDisabled`,
+since the same dialog is how an operator rolls back mid-incident. Its `name` and
+direction are latched when it opens: the landing is reported on the render that
+closes it, and by then the version is the live one, so a direction read again
+would file a publish as a roll back.
+
+A change to the sign-in policy raises the same dialog when it can shut members
+out (#2084), on the Single Sign-On screen:
+
+- **Taking a provider out of service** confirms as `sso-provider-disable` with
+  `tone="default"`, since one flip undoes it. Switching a provider back on sends
+  at once. Deleting one keeps `sso-connection-delete`. When the provider is the
+  last enabled one and the saved policy has password sign-in off, both carry a
+  `LockoutNotice` as `children` and the disable button turns `danger`.
+  `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides it. It reads the
+  saved policy, not the draft on the policy card, and a provider that is already
+  out of service never counts. The notice states only what the control plane
+  enforces: superadmins are exempt from `allow_password_login = false`, and an
+  account created through a provider has no password, so turning password
+  sign-in back on does not restore it.
+- **Turning password sign-in off** confirms as `sso-password-off`, and lists the
+  enabled providers with no stored client secret (`secretGap`). It warns and
+  never blocks, since a public client has no secret on purpose. A save that
+  also tightens the second factor raises this dialog first and the second-factor
+  one after it, and sends a single request.
+- **Turning single sign-on off** confirms as `sso-single-sign-on-off` (#2326)
+  when the org has an enabled provider, with a `SsoOffNotice` as `children`.
+  `locksOutSsoMembers` in `ui/src/lib/sso-lockout.ts` decides it from the saved
+  policy and the draft: only the flip from on to off counts, and with no enabled
+  provider (none at all, or every one out of service) nobody signs in through
+  one, so the save goes straight out. Turning it on asks nothing. The notice
+  states only what the control plane enforces: the callback refuses every
+  provider of the org while `allow_sso` is off, and an account created through a
+  provider has no password, so those members cannot sign in until single sign-on
+  is back on or a superadmin sets one. An account that holds a password, such as
+  one made from an invitation, keeps signing in, because password sign-in stays
+  on (the control plane refuses both off). It warns and never blocks, since one
+  flip undoes it. The providers come from the list the screen already read, so a
+  caller refused that list gets no confirmation.
+- **The second-factor confirmation** counts people with `distinctPeople`: the
+  memberships endpoint returns one row per grant, so a person holding a role on
+  the org and another on a team is one member.
+
+A save that needs more than one of these asks them in turn, password sign-in
+first, then single sign-on, then the second factor, and sends one request after
+the last. The steps are listed once in `SignInPolicyCard`, and only the last
+confirmation passes `pending`: a confirmation that merely moves on runs no
+request, so it must not report a landing.
+
+The control plane refuses the mirror change, turning passwords off with no
+enabled provider, but does not refuse these (#2233 tracks that guard). The
+dialog stays useful once it lands, as the explanation that comes before the
+refusal.
+
+Three account changes on the Users screen raise it too (#2055, #1893). Each
+names the account by email and states what the control plane does:
+
+- **Deactivating** confirms as `user-deactivate` with `tone="danger"`. The body
+  says sign-in is blocked, every session the account has open ends at once and
+  the virtual keys it minted for itself stop working at the gateway, and that
+  reactivating brings sign-in and those keys back. Reactivating sends at once,
+  with an icon and a label of its own: it only gives access back, and one click
+  on deactivate undoes a misfire.
+- **Deleting** confirms as `user-delete` with `tone="danger"`, raised from the
+  edit sheet, which stays open behind it so a cancel returns to the form. The
+  body says the account leaves every organization and not only the one on
+  screen, what goes with it (its roles and sessions; the keys it minted for
+  itself are disabled, not deleted), and points at deactivating, the reversible
+  way to block a person. A landed delete closes the sheet with it.
+- **Granting superadmin** confirms when the sheet is saved, since that is when
+  the flag is granted: `user-superadmin-grant` with `tone="default"`, because
+  it is not a removal and one flip undoes it. The body says what the flag hands
+  over, every organization, team and project and every deployment-wide setting
+  and account. Turning the flag off saves directly, except on the caller's own
+  account (below).
+
+None of the three self-lockouts is refused by the control plane: a superadmin
+can deactivate or delete the account they are signed in with, or take superadmin
+off it, and the last active superadmin can go the same way (#2344 tracks that
+guard). So when the target is the caller's own account
+(`useOptionalAuth().user.id`), each dialog adds a sentence saying the caller is
+signed out now, or loses the access they are using, and that only another
+superadmin can undo it. Taking the flag off one's own account is the one case
+where removing superadmin asks (`user-superadmin-remove`, `tone="danger"`).
+The screen never claims an account is the last superadmin: its users list holds
+only the people with a role in the selected organization, so it cannot know.
+
+`EditUserDialog` stays mounted whether or not a sheet is open, and the
+confirmations sit beside the sheet rather than inside it, for the reason the
+guardrail one does: a save that lands closes the sheet in the same commit, and
+a dialog inside it would unmount before it reported `save_confirmed`. The
+sheet's own `user-edit` rows record the press of Save, so a save that only
+raised the question still reads as a `form_submit` there; the confirmation's
+rows are the ones that say whether anything was sent.
+
+A `Dialog` paints above an editor sheet. The sheet's layer is `z-[80]`, the
+dialog's `z-[85]` and the toaster's `z-[90]`. Until #2055 the dialog sat at
+`z-50`, under the sheet's own scrim with its action half covered by the panel,
+which every confirmation raised over a sheet had inherited, the discard prompt
+included. The assertion is a z-index comparison, because the sheet is `inert`
+under the dialog and no query tells the layers apart (`expectPaintsOver` in
+`Users.stories.tsx`).
+
+Mapping an identity-provider group to a role confirms when the grant reaches
+far (#2078), on the SCIM and the single sign-on screens alike. Both render the
+shared `GroupMappings` (`ui/src/components/GroupMappings.tsx`), so the rule is
+written once:
+
+- **The form starts on `viewer`**, chosen by name in the component rather than
+  read off `ROLES`, whose order other screens depend on. After a mapping is
+  written it starts over, so the next one does not inherit an admin grant.
+- **`admin`, or any role at the whole organization, confirms** as
+  `<kind>-group-mapping-grant` (`scim` or `sso`) with `tone="default"`, since
+  it is a grant and not a removal. The scope starts on the whole organization,
+  so a mapping left at its defaults confirms. A `member` or `viewer` mapping on
+  one team or one project is sent at once.
+- **The dialog names which of the two raised it.** The title carries the group
+  and the role, the body the scope and, from the screen, when the role
+  arrives (SCIM reconciles on the spot, single sign-on at the member's next
+  sign-in), and `children` lists the reasons: what `admin` is, and that the
+  whole organization is every team and project rather than one. Both reasons
+  appear for `admin` across the organization.
+- **A refusal stays in the dialog.** The mutation is reset on cancel, and the
+  form's own inline error is not drawn while the dialog is up, so the message
+  appears once.
+
+Removing a mapping keeps its own confirmation, `<kind>-group-mapping-remove`,
+whose body each screen supplies because what removal does differs: SCIM
+withdraws the role at once, single sign-on stops granting it at the next
+sign-in.
 
 ## What this is not
 
@@ -93,6 +254,19 @@ emitted none of the rows below, and missed every fix made to `ConfirmDialog`.
 confirmation that needs input, such as the prompt and skill deletes that ask
 for the slug typed back, passes the field as `children` and holds the button
 with `confirmDisabled`.
+
+**An inline two-step panel is not a confirmation either.** The Users sheet
+deleted through a destructive button that flipped a local flag and swapped in
+its own body, error line and second button (#1893). No `DialogFooter` held it,
+so `check:primitives` never saw it, and it reported none of the rows below.
+#2345 tracks teaching the check that shape.
+
+**No confirmation at all is the case no check catches.** `DeleteIconButton`
+looks the same whether its `onClick` opens a dialog or sends the request, so
+`check:primitives` has nothing to match, and the budget and rate-limit deletes on
+`Limits` fired on the first click long after #1179 swept the other screens
+(#1904). What pins it is the story: its cancel step looks for a dialog to
+dismiss, and a delete that never asked has none.
 
 **A confirmation is not a substitute for a reversible action.** Where retiring
 and deleting both exist — `CostAttribution` — the copy points at the reversible

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AuthSessions, OAuthGrants } from "./McpOAuth";
@@ -17,6 +18,7 @@ import {
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type { McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow, UserRow } from "@/lib/api";
+import { CONSENT_CHANNEL, type ConsentAnnouncement, type ConsentFailure } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
 
 const ORG = { id: "org-1", name: "acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
@@ -193,16 +195,21 @@ function routed(
 function Harness({
   fetchStub,
   role,
+  path = "/auth-sessions",
   children,
 }: {
   fetchStub: FetchStub;
   role?: StoryRole;
+  /** the url the screen opens at; the control plane's consent redirect lands with a query (#2166) */
+  path?: string;
   children: React.ReactNode;
 }) {
   return (
-    <ScreenHarness fetchStub={fetchStub} role={role}>
-      {children}
-    </ScreenHarness>
+    <MemoryRouter initialEntries={[path]}>
+      <ScreenHarness fetchStub={fetchStub} role={role}>
+        {children}
+      </ScreenHarness>
+    </MemoryRouter>
   );
 }
 
@@ -518,4 +525,149 @@ export const SessionRenewRefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /^Renew the session/, NEEDS_MEMBER);
   },
+};
+
+// ---------------------------------------------------------------------------
+// the end of a consent (#2166)
+//
+// the control plane redirects the tab the authorization server sent back to
+// here, with the outcome in the query string. each story below opens the screen
+// at one of those urls, the way that redirect does
+
+const landing = (query: string) => `/auth-sessions?${query}`;
+
+// what the other tabs hear. opened from `render`, before the screen mounts,
+// because the screen announces from its first effect — a listener opened in the
+// play function would start after the message had already gone
+// one channel for the whole file, so a story rendered twice cannot hear a
+// message twice
+let heard: ConsentAnnouncement[] = [];
+let channel: BroadcastChannel | null = null;
+function listen() {
+  heard = [];
+  channel ??= new BroadcastChannel(CONSENT_CHANNEL);
+  channel.onmessage = (event: MessageEvent<ConsentAnnouncement>) => heard.push(event.data);
+}
+
+export const ConsentCompletedHighlightsTheSession: Story = {
+  render: () => {
+    listen();
+    return (
+      <Harness
+        fetchStub={routed()}
+        path={landing("consent=completed&session=sess-2&server=srv-github")}
+      >
+        <AuthSessions />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const outcome = await canvas.findByRole("status", { name: "Connected to github" });
+    await expect(outcome).toHaveTextContent(/new session is highlighted below/);
+    await expect(
+      within(outcome).getByRole("link", { name: "Back to MCP Catalog" }),
+    ).toHaveAttribute("href", "/mcp-catalog");
+    // the row the consent minted, and only that one, once the listing is in
+    const fresh = () =>
+      canvas.getAllByRole("row").filter((row) => row.getAttribute("aria-current") === "true");
+    await waitFor(() => expect(fresh()).toHaveLength(1));
+    await expect(within(fresh()[0]).getByText("New")).toBeVisible();
+    await expect(within(fresh()[0]).getByText("tools:call")).toBeVisible();
+    // and the tab that started it is told, once
+    await waitFor(() =>
+      expect(heard).toEqual([
+        { kind: "mcp-consent-completed", session: "sess-2", server: "srv-github" },
+      ]),
+    );
+    await expectListTable(canvasElement, "Auth Sessions");
+  },
+};
+
+// the outcome is the first thing the landing tab has to say, so it does not
+// wait behind the listing's skeleton
+export const ConsentOutcomeBeforeTheListingLoads: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/mcp/sessions")
+          ? new Promise<Response>(() => {})
+          : routed()(input, init)
+      }
+      path={landing("consent=completed&session=sess-9&server=srv-jira")}
+    >
+      <AuthSessions />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("status", { name: "Connected to jira" })).toBeVisible();
+    await expectSkeleton(canvasElement);
+  },
+};
+
+// one refusal family, landed on the way the control plane redirects it. the
+// server is absent for the families that fail before the login state names
+// one, which is when the title cannot name it either
+const failedAt = (reason: ConsentFailure | "from_a_newer_control_plane", server?: string) => () => {
+  listen();
+  const query = `consent=failed&reason=${reason}${server ? `&server=${server}` : ""}`;
+  return (
+    <Harness fetchStub={routed()} path={landing(query)}>
+      <AuthSessions />
+    </Harness>
+  );
+};
+
+const expectRefusal =
+  (title: string, copy: RegExp) =>
+  async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+    const canvas = within(canvasElement);
+    const outcome = await canvas.findByRole("alert", { name: title });
+    await expect(outcome).toHaveTextContent(copy);
+    await expect(
+      within(outcome).getByRole("link", { name: "Back to MCP Catalog" }),
+    ).toHaveAttribute("href", "/mcp-catalog");
+    // the listing underneath still loads, nothing in it is new, and no other
+    // tab is told anything
+    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    await expect(canvas.queryByText("New")).toBeNull();
+    await expect(heard).toEqual([]);
+  };
+
+const NAMED = "Could not connect to github";
+
+export const ConsentDenied: Story = {
+  render: failedAt("access_denied", "srv-github"),
+  play: expectRefusal(NAMED, /consent was declined, so nothing was stored/),
+};
+export const ConsentAuthorizationFailed: Story = {
+  render: failedAt("authorization_failed", "srv-github"),
+  play: expectRefusal(NAMED, /answered with an error instead of a consent/),
+};
+// a replayed or expired callback fails before the state names a server
+export const ConsentStateInvalid: Story = {
+  render: failedAt("state_invalid"),
+  play: expectRefusal("Could not connect the MCP server", /expired or was already used/),
+};
+export const ConsentIssuerMismatch: Story = {
+  render: failedAt("issuer_mismatch", "srv-github"),
+  play: expectRefusal(NAMED, /discarded unread/),
+};
+export const ConsentTokenExchangeFailed: Story = {
+  render: failedAt("token_exchange_failed", "srv-github"),
+  play: expectRefusal(NAMED, /refused to exchange it for tokens/),
+};
+export const ConsentNotConfigured: Story = {
+  render: failedAt("not_configured", "srv-github"),
+  play: expectRefusal(NAMED, /needs ROLTER_KEK set to seal the tokens/),
+};
+export const ConsentInternalError: Story = {
+  render: failedAt("internal_error", "srv-github"),
+  play: expectRefusal(NAMED, /hit an error while storing the consent/),
+};
+// a code from a newer control plane still gets a sentence, not a raw key
+export const ConsentUnknownReason: Story = {
+  render: failedAt("from_a_newer_control_plane", "srv-github"),
+  play: expectRefusal(NAMED, /The connection did not complete/),
 };

@@ -1,7 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, KeyRound, Loader2, RefreshCw, Shield, ShieldOff } from "lucide-react";
+import {
+  ArrowLeft,
+  Building2,
+  CircleAlert,
+  CircleCheck,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  Shield,
+  ShieldOff,
+} from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link, useLocation } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
@@ -18,7 +29,7 @@ import {
   RowIconButton,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogDescription,
@@ -41,8 +52,10 @@ import {
   type UserRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { announceConsent, readConsentResult, type ConsentResult } from "@/lib/mcp-consent";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // both screens read crates/rolter-control/src/mcp_oauth.rs, whose three rules
@@ -143,18 +156,22 @@ function ForbiddenNote({
   return <LoadError error={error} resource={resource} onRetry={onRetry} />;
 }
 
-function LoadingBody() {
+// `lead` is what a screen says above its body whatever state the body is in —
+// the consent outcome on Auth Sessions, which must not wait for the listing
+function LoadingBody({ lead }: { lead?: React.ReactNode }) {
   return (
     <PageBody>
+      {lead}
       <TableSkeleton rows={5} />
     </PageBody>
   );
 }
 
-function NoOrgNote({ resource }: { resource: string }) {
+function NoOrgNote({ resource, lead }: { resource: string; lead?: React.ReactNode }) {
   const { t } = useTranslation();
   return (
     <PageBody>
+      {lead}
       <EmptyState
         uxTarget="mcp-oauth-no-org"
         icon={<Building2 />}
@@ -355,6 +372,82 @@ export function OAuthGrants() {
 // ---------------------------------------------------------------------------
 // sessions: the token metadata minted under a grant
 
+// where a consent ends (#2166). the Connect button opens the authorization
+// server in a new tab, and the control plane redirects that tab here once the
+// user comes back, with the outcome in the query string. a failure arrives as
+// its family only — never what the authorization server said — so every
+// sentence here is the dashboard's own
+function ConsentOutcome({
+  result,
+  servers,
+}: {
+  result: ConsentResult;
+  servers: McpServerRow[] | undefined;
+}) {
+  const { t } = useTranslation();
+  const titleId = React.useId();
+  const ok = result.outcome === "completed";
+  const server = result.server ? servers?.find((s) => s.id === result.server)?.name : undefined;
+  const Icon = ok ? CircleCheck : CircleAlert;
+  return (
+    <div
+      role={ok ? "status" : "alert"}
+      aria-labelledby={titleId}
+      className={cn(
+        "flex flex-col gap-3 rounded-[10px] border bg-[color:var(--surface-subtle)] p-4 sm:flex-row sm:items-start sm:justify-between",
+        ok ? "border-[color:var(--status-success)]/40" : "border-[color:var(--status-danger)]/40",
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <Icon
+          aria-hidden
+          className={cn(
+            "mt-0.5 h-4 w-4 shrink-0",
+            ok
+              ? "text-[color:var(--status-success-text)]"
+              : "text-[color:var(--status-danger-text)]",
+          )}
+        />
+        <div className="min-w-0 max-w-prose space-y-1">
+          <h2 id={titleId} className="text-sm font-semibold text-foreground">
+            {server ? (
+              <Trans
+                i18nKey={
+                  ok
+                    ? "pages.mcpOAuth.consent.completedTitle"
+                    : "pages.mcpOAuth.consent.failedTitle"
+                }
+                values={{ server }}
+                components={[<span key="server" className="font-mono" />]}
+              />
+            ) : ok ? (
+              t("pages.mcpOAuth.consent.completedTitleUnnamed")
+            ) : (
+              t("pages.mcpOAuth.consent.failedTitleUnnamed")
+            )}
+          </h2>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {ok
+              ? t("pages.mcpOAuth.consent.completedBody")
+              : t(`pages.mcpOAuth.consent.reasons.${result.reason}`)}
+          </p>
+        </div>
+      </div>
+      {/* under the text on a phone, lined up with it rather than the icon */}
+      <Link
+        to="/mcp-catalog"
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "ml-7 shrink-0 self-start sm:ml-0",
+        )}
+      >
+        <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+        {t("pages.mcpOAuth.consent.backToCatalog")}
+      </Link>
+    </div>
+  );
+}
+
 type SessionState = "active" | "expired" | "revoked";
 
 function sessionState(s: McpOAuthSessionRow, now: number): SessionState {
@@ -374,6 +467,20 @@ export function AuthSessions() {
   // renders without it, so waiting on it would overstate time-to-interactive
   useScreenReady(!sessions.isLoading);
   useErrorState(!!sessions.error, "auth-sessions");
+
+  // the end of a consent, when the control plane sent the browser here (#2166)
+  const location = useLocation();
+  const result = React.useMemo(() => readConsentResult(location.search), [location.search]);
+  const completed = result?.outcome === "completed" ? result : null;
+  // the tab that started the flow is another one, still showing the catalog;
+  // it is told once per session, not once per render
+  const announced = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!completed || announced.current === completed.session) return;
+    announced.current = completed.session;
+    announceConsent(completed.session, completed.server);
+  }, [completed]);
+  const outcome = result && <ConsentOutcome result={result} servers={servers.data} />;
   // one clock for every relative timestamp, so rows do not drift apart
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
@@ -424,14 +531,15 @@ export function AuthSessions() {
   }, [grants.data]);
 
   if (!scope.isLoading && !scope.orgId)
-    return <NoOrgNote resource={t("errors.resources.authSessions")} />;
-  if (sessions.isLoading || scope.isLoading) return <LoadingBody />;
+    return <NoOrgNote resource={t("errors.resources.authSessions")} lead={outcome} />;
+  if (sessions.isLoading || scope.isLoading) return <LoadingBody lead={outcome} />;
 
   const rows = sessions.data ?? [];
   const live = rows.filter((s) => sessionState(s, now) === "active").length;
 
   return (
     <PageBody>
+      {outcome}
       <TokenNotice>{t("pages.mcpOAuth.sessionsTokenNotice")}</TokenNotice>
 
       {sessions.isError ? (
@@ -481,8 +589,15 @@ export function AuthSessions() {
                   ? serverLabel(servers.data, grant.server_id)
                   : s.grant_id.slice(0, 8);
                 const owner = grant ? ownerLabel(users.data, grant.user_id) : "—";
+                // the session the consent that brought the reader here minted
+                const fresh = s.id === completed?.session;
                 return (
-                  <ListRow key={s.id} grid={SESSION_GRID}>
+                  <ListRow
+                    key={s.id}
+                    grid={SESSION_GRID}
+                    aria-current={fresh ? "true" : undefined}
+                    className={fresh ? "bg-[color:var(--red-tint)]" : undefined}
+                  >
                     <ListCell className="truncate font-mono text-xs font-semibold">
                       {server}
                     </ListCell>
@@ -519,6 +634,9 @@ export function AuthSessions() {
                       {/* renewability is reported as a flag; the refresh token
                           itself is never part of the payload */}
                       {s.has_refresh_token && <Badge tone="info">RENEWABLE</Badge>}
+                      {fresh && (
+                        <Badge tone="accent">{t("pages.mcpOAuth.consent.newSession")}</Badge>
+                      )}
                     </ListCell>
                     {/* renewal is only possible where a refresh token was
                         stored, and a revoked session has nothing to renew */}

@@ -11,14 +11,18 @@ import {
   expectSheetClosed,
   expectSkeleton,
   expectToast,
+  expectUxEvent,
   Harness as ScreenHarness,
   json,
+  recordUxEvents,
   recording,
   Toasted,
   type FetchStub,
+  type Recorder,
   type StoryRole,
 } from "./story-harness";
-import type { GuardrailProviderRow } from "@/lib/api";
+import type { GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: GuardrailProviderRow[] = [
   {
@@ -163,25 +167,33 @@ const GREEN = /owns external enforcement/;
  *
  * `toasted` is opt-in: the Toaster contributes its own role="status" and
  * role="alert" regions, and the stories that query those by role would stop
- * being able to.
+ * being able to. `reported` mounts the screen key the UX stream needs, for a
+ * story that asserts what a confirmation emitted.
  */
 function Harness({
   fetchStub,
   role,
   toasted,
+  reported,
 }: {
   fetchStub: FetchStub;
   role?: StoryRole;
   toasted?: boolean;
+  reported?: boolean;
 }) {
+  const screen = toasted ? (
+    <Toasted>
+      <GuardrailProviders />
+    </Toasted>
+  ) : (
+    <GuardrailProviders />
+  );
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-      {toasted ? (
-        <Toasted>
-          <GuardrailProviders />
-        </Toasted>
+      {reported ? (
+        <UxScreenProvider screen="guardrail-providers">{screen}</UxScreenProvider>
       ) : (
-        <GuardrailProviders />
+        screen
       )}
     </ScreenHarness>
   );
@@ -259,18 +271,87 @@ export const Unreachable: Story = {
   },
 };
 
+/** the row the control plane answers a registration with */
+const POLICY_SERVICE: GuardrailProviderRow = {
+  ...PROVIDERS[0],
+  id: "provider-policy",
+  name: "Policy service",
+  enabled: false,
+  url: "https://policy.corp.internal/evaluate",
+  auth_kind: "none",
+  auth_env: null,
+};
+
+/** open the register dialog and fill in the two fields it cannot save without */
+async function registerPolicyService(canvasElement: HTMLElement) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", { name: /add provider/i }),
+  );
+  const dialog = within(
+    await within(document.body).findByRole("dialog", { name: "Register guardrail provider" }),
+  );
+  await userEvent.type(dialog.getByLabelText("Provider name"), POLICY_SERVICE.name);
+  await userEvent.type(dialog.getByLabelText("Evaluation URL"), POLICY_SERVICE.url);
+  return dialog;
+}
+
+/** the activation confirmation, found by the provider its title names */
+const activationFor = async (name: string) =>
+  within(await within(document.body).findByRole("dialog", { name: `Activate ${name}?` }));
+
+/**
+ * The evaluation URL starts empty, with the example as its placeholder rather
+ * than a value a hurried save would keep, and nothing saves without one
+ * (#2163). A provider registered switched off takes nothing over, so it saves
+ * without a confirmation.
+ */
+let registers: Recorder;
 export const RegistersProvider: Story = {
-  render: () => (
-    <Harness
-      fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async () => json(PROVIDERS[0], 201))}
-    />
-  ),
+  render: () => {
+    registers = recording(
+      registry(PROVIDERS, PRIMARY_WEBHOOK, async () => json(POLICY_SERVICE, 201)),
+    );
+    return <Harness fetchStub={registers.stub} />;
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /add provider/i }));
-    const dialog = within(document.body).getByRole("dialog");
-    await userEvent.type(within(dialog).getByLabelText("Provider name"), "Policy service");
-    await expect(within(dialog).getByRole("button", { name: "Save provider" })).toBeEnabled();
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const url = dialog.getByLabelText("Evaluation URL");
+    await expect(url).toHaveValue("");
+    await expect(url).toHaveAttribute("placeholder", "https://guardrails.internal/v1/evaluate");
+    await expect(url).toBeRequired();
+
+    await userEvent.type(dialog.getByLabelText("Provider name"), "Policy service");
+    const save = dialog.getByRole("button", { name: "Save provider" });
+    await expect(save).toBeDisabled();
+
+    // leaving the field says what it needs, tied to the field
+    await userEvent.click(url);
+    await userEvent.tab();
+    await expect(url).toHaveAttribute("aria-invalid", "true");
+    await expect(url).toHaveAccessibleDescription(
+      "Enter the URL the gateway posts each request to.",
+    );
+    await userEvent.type(url, "policy.corp.internal/evaluate");
+    await userEvent.tab();
+    await expect(url).toHaveAccessibleDescription("Start the URL with http:// or https://.");
+    await expect(save).toBeDisabled();
+
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://policy.corp.internal/evaluate");
+    await expect(url).not.toHaveAttribute("aria-invalid", "true");
+    await userEvent.click(save);
+    const body = await registers.expectSentBody<GuardrailProviderInput>(
+      "POST",
+      "/guardrails/providers",
+    );
+    await expect(body).toMatchObject({
+      name: "Policy service",
+      url: "https://policy.corp.internal/evaluate",
+      enabled: false,
+    });
+    await expectSheetClosed();
   },
 };
 
@@ -295,6 +376,10 @@ export const RegisterRejectedByTheServer: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: /add provider/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Provider name"), "Policy service");
+    await userEvent.type(
+      within(dialog).getByLabelText("Evaluation URL"),
+      "https://policy.corp.internal/evaluate",
+    );
     await userEvent.click(within(dialog).getByRole("button", { name: "Save provider" }));
 
     await expectToast(canvasElement, /health probe/, "error");
@@ -582,5 +667,415 @@ export const EditingAPostCallProviderWarns: Story = {
     await userEvent.click(await dialog.findByRole("option", { name: /Before upstream/ }));
     await expect(stage).toHaveValue("Before upstream");
     await expect(dialog.queryByText(/does not run the Before response stage/)).toBeNull();
+  },
+};
+
+// #2163: switching a provider on hands it every request, and a fail-closed one
+// pointed at a host that does not answer refuses them all. The save that does
+// it goes through a confirmation naming what it replaces and what a failure
+// then does to traffic
+
+/**
+ * The switch names the provider it would pause, and the save asks before it
+ * sends anything. A cancel returns to the form as it was; a confirm registers
+ * the provider switched on, holds both buttons while the request is out, and
+ * closes both dialogs once it lands.
+ */
+let replacing: Recorder;
+let landRegistration: () => void = () => {};
+export const ActivationNamesTheProviderItReplaces: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    replacing = recording(
+      registry(
+        PROVIDERS,
+        PRIMARY_WEBHOOK,
+        () =>
+          new Promise<Response>((resolve) => {
+            landRegistration = () => resolve(json({ ...POLICY_SERVICE, enabled: true }, 201));
+          }),
+      ),
+    );
+    return <Harness fetchStub={replacing.stub} toasted reported />;
+  },
+  play: async ({ canvasElement }) => {
+    const form = await registerPolicyService(canvasElement);
+    const activate = form.getByRole("switch", { name: "Activate provider" });
+    await expect(activate).toHaveAccessibleDescription(
+      "Takes enforcement over from Production LLM Guard, which is then paused.",
+    );
+    await userEvent.click(activate);
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    const confirm = await activationFor("Policy service");
+    await expect(
+      confirm.getByText("It takes enforcement over from Production LLM Guard, which is paused."),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText(/It fails closed: when Policy service times out or errors/),
+    ).toBeVisible();
+    await expect(confirm.getByText("guardrail_blocked")).toBeVisible();
+    replacing.expectNotSent("POST", "/guardrails/providers");
+
+    // a cancel is a way back to the form, not out of it
+    await userEvent.click(confirm.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        within(document.body).queryByRole("dialog", { name: "Activate Policy service?" }),
+      ).toBeNull(),
+    );
+    replacing.expectNotSent("POST", "/guardrails/providers");
+    await expect(form.getByLabelText("Provider name")).toHaveValue("Policy service");
+    await expect(activate).toBeChecked();
+    await expect((await expectUxEvent("form_abandon", "guardrail-provider-activate")).outcome).toBe(
+      "cancelled",
+    );
+
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+    const again = await activationFor("Policy service");
+    await userEvent.click(again.getByRole("button", { name: "Save and activate" }));
+    const body = await replacing.expectSentBody<GuardrailProviderInput>(
+      "POST",
+      "/guardrails/providers",
+    );
+    await expect(body).toMatchObject({
+      name: "Policy service",
+      url: "https://policy.corp.internal/evaluate",
+      enabled: true,
+      failure_mode: "fail_closed",
+    });
+    // the request is on the wire, so nothing looks like it could call it back
+    await waitFor(() => expect(again.getByRole("button", { name: "Cancel" })).toBeDisabled());
+
+    landRegistration();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Policy service created/);
+    await expectUxEvent("save_confirmed", "guardrail-provider-activate");
+  },
+};
+
+/**
+ * With nothing active the confirmation says so, and a fail-open provider says
+ * what a failure then does: the request goes upstream unchecked.
+ */
+let fromNothing: Recorder;
+export const ActivationWithNoProviderActive: Story = {
+  render: () => {
+    fromNothing = recording(
+      registry(
+        PROVIDERS.map((row) => ({ ...row, enabled: false })),
+        NO_WEBHOOK,
+        async () => json({ ...PROVIDERS[1], enabled: true }),
+      ),
+    );
+    return <Harness fetchStub={fromNothing.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Staging evaluator" }),
+    );
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+    );
+    const activate = form.getByRole("switch", { name: "Activate provider" });
+    await expect(activate).toHaveAccessibleDescription(
+      "No provider is active now, so this one would be the only one.",
+    );
+    await userEvent.click(activate);
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    const confirm = await activationFor("Staging evaluator");
+    await expect(confirm.getByText("No provider is active now, so none is paused.")).toBeVisible();
+    await expect(
+      confirm.getByText(
+        /It fails open: when Staging evaluator times out or errors, the request goes upstream unchecked/,
+      ),
+    ).toBeVisible();
+    await expect(confirm.queryByText("guardrail_blocked")).toBeNull();
+
+    await userEvent.click(confirm.getByRole("button", { name: "Save and activate" }));
+    const body = await fromNothing.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-fallback",
+    );
+    await expect(body).toMatchObject({ enabled: true, failure_mode: "fail_open" });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * Saving the provider that is already active hands nothing over, so it saves
+ * without asking: a confirmation on every edit trains the click-through.
+ */
+let editsActive: Recorder;
+export const SavingTheActiveProviderDoesNotAsk: Story = {
+  render: () => {
+    editsActive = recording(registry(PROVIDERS, PRIMARY_WEBHOOK, async () => json(PROVIDERS[0])));
+    return <Harness fetchStub={editsActive.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Production LLM Guard" }),
+    );
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+    );
+    await expect(
+      form.getByRole("switch", { name: "Activate provider" }),
+    ).toHaveAccessibleDescription(
+      "This provider is active. Turning it off pauses it, and no other provider takes its place.",
+    );
+    const timeout = form.getByLabelText("Timeout (ms)");
+    await userEvent.clear(timeout);
+    await userEvent.type(timeout, "2500");
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    // the PUT left on the save itself, with no confirmation pressed
+    const body = await editsActive.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-primary",
+    );
+    await expect(body).toMatchObject({ enabled: true, timeout_ms: 2500 });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * An enabled config-file webhook wins over the registry, so the confirmation
+ * says the new provider is ignored until that webhook is turned off.
+ */
+export const ActivationUnderAConfigFileWebhook: Story = {
+  render: () => <Harness fetchStub={registry(PROVIDERS, FILE_WEBHOOK)} />,
+  play: async ({ canvasElement }) => {
+    const form = await registerPolicyService(canvasElement);
+    await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    const confirm = await activationFor("Policy service");
+    await expect(
+      confirm.getByText(
+        "The config-file webhook stays in force while it is enabled, so Policy service is ignored until that webhook is turned off.",
+      ),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * A provider saved at the post-call stage checks nothing, so activating one
+ * says that instead of a failure policy that never applies.
+ */
+export const ActivatingAPostCallProviderSaysItChecksNothing: Story = {
+  render: () => (
+    <Harness fetchStub={registry([PROVIDERS[0], { ...OUTPUT_EVALUATOR, enabled: false }])} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Edit provider Output evaluator" }),
+    );
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+    );
+    await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    const confirm = await activationFor("Output evaluator");
+    await expect(
+      confirm.getByText("It takes enforcement over from Production LLM Guard, which is paused."),
+    ).toBeVisible();
+    await expect(
+      confirm.getByText(/so no request is sent to it and its failure policy never applies/),
+    ).toBeVisible();
+    await expect(confirm.queryByText(/fails closed/)).toBeNull();
+  },
+};
+
+/**
+ * The registry did not load, so the screen cannot know which provider is
+ * active. The switch and the confirmation say so rather than claim none is.
+ */
+export const ActivationWhileTheRegistryIsUnreadable: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json({ error: { message: "registry offline" } }, 503)} />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return guardrail providers/);
+    const form = await registerPolicyService(canvasElement);
+    const activate = form.getByRole("switch", { name: "Activate provider" });
+    await expect(activate).toHaveAccessibleDescription(
+      "Takes enforcement ownership from the currently active provider.",
+    );
+    await userEvent.click(activate);
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+
+    const confirm = await activationFor("Policy service");
+    await expect(
+      confirm.getByText(
+        "The provider list did not load, so this screen cannot say which provider it replaces.",
+      ),
+    ).toBeVisible();
+    await expect(confirm.queryByText(/No provider is active now/)).toBeNull();
+  },
+};
+
+// #2271: switching the active provider off stops external checks for every
+// request, the same effect on traffic as deleting it, from a form that also
+// holds the timeout and the URL. The save that does it asks first, through the
+// confirmation activation uses
+
+/** open the active provider, switch it off and save, and return the form */
+async function pauseProductionGuard(canvasElement: HTMLElement) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", {
+      name: "Edit provider Production LLM Guard",
+    }),
+  );
+  const form = within(
+    await within(document.body).findByRole("dialog", { name: "Edit guardrail provider" }),
+  );
+  await userEvent.click(form.getByRole("switch", { name: "Activate provider" }));
+  await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+  return form;
+}
+
+/** the pause confirmation, found by the provider its title names */
+const pauseFor = async (name: string) =>
+  within(await within(document.body).findByRole("dialog", { name: `Pause ${name}?` }));
+
+const NOTHING_CHECKS =
+  "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.";
+
+/**
+ * Saving the active provider switched off names it and says nothing checks
+ * requests afterwards. A cancel returns to the form with the switch as it was
+ * left; a confirm saves it switched off, holds both buttons while the request
+ * is out, and once it lands the banner stops claiming enforcement.
+ */
+let pauses: Recorder;
+let providerPaused = false;
+let landPause: () => void = () => {};
+export const PausingTheActiveProviderAsksFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    providerPaused = false;
+    pauses = recording(
+      registry(
+        () => (providerPaused ? PROVIDERS.map((row) => ({ ...row, enabled: false })) : PROVIDERS),
+        () => (providerPaused ? NO_WEBHOOK : PRIMARY_WEBHOOK),
+        () =>
+          new Promise<Response>((resolve) => {
+            landPause = () => {
+              providerPaused = true;
+              resolve(json({ ...PROVIDERS[0], enabled: false }));
+            };
+          }),
+      ),
+    );
+    return <Harness fetchStub={pauses.stub} toasted reported />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const form = await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(confirm.getByText(NOTHING_CHECKS)).toBeVisible();
+    pauses.expectNotSent("PUT", "/guardrails/providers/provider-primary");
+
+    // a cancel is a way back to the form, not out of it
+    await userEvent.click(confirm.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(
+        within(document.body).queryByRole("dialog", { name: "Pause Production LLM Guard?" }),
+      ).toBeNull(),
+    );
+    pauses.expectNotSent("PUT", "/guardrails/providers/provider-primary");
+    await expect(form.getByRole("switch", { name: "Activate provider" })).not.toBeChecked();
+    await expect((await expectUxEvent("form_abandon", "guardrail-provider-pause")).outcome).toBe(
+      "cancelled",
+    );
+
+    await userEvent.click(form.getByRole("button", { name: "Save provider" }));
+    const again = await pauseFor("Production LLM Guard");
+    await userEvent.click(again.getByRole("button", { name: "Save and pause" }));
+    const body = await pauses.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-primary",
+    );
+    await expect(body).toMatchObject({ name: "Production LLM Guard", enabled: false });
+    // the request is on the wire, so nothing looks like it could call it back
+    await waitFor(() => expect(again.getByRole("button", { name: "Cancel" })).toBeDisabled());
+
+    landPause();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Production LLM Guard updated/);
+    await expectUxEvent("save_confirmed", "guardrail-provider-pause");
+    await expect(
+      await canvas.findByRole("region", { name: "No external guardrail is enforcing" }),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * Under an enabled config-file webhook the active row is already overridden,
+ * so the confirmation says that webhook stays in force rather than that
+ * nothing checks requests.
+ */
+let pausesUnderFile: Recorder;
+export const PausingUnderAConfigFileWebhook: Story = {
+  render: () => {
+    pausesUnderFile = recording(
+      registry(PROVIDERS, FILE_WEBHOOK, async () => json({ ...PROVIDERS[0], enabled: false })),
+    );
+    return <Harness fetchStub={pausesUnderFile.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(
+      confirm.getByText(
+        "The config-file webhook stays in force while it is enabled. It already overrides Production LLM Guard, so pausing it changes nothing for requests.",
+      ),
+    ).toBeVisible();
+    await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
+
+    await userEvent.click(confirm.getByRole("button", { name: "Save and pause" }));
+    const body = await pausesUnderFile.expectSentBody<GuardrailProviderInput>(
+      "PUT",
+      "/guardrails/providers/provider-primary",
+    );
+    await expect(body).toMatchObject({ enabled: false });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The effective config did not load, so the screen cannot tell whether a
+ * config-file webhook checks requests once the row is paused. It says so
+ * rather than claim nothing does.
+ */
+export const PausingWhileEnforcementIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input) =>
+        String(input).includes("/api/v1/config")
+          ? json({ error: { message: "config store unavailable" } }, 503)
+          : json(PROVIDERS)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("region", {
+      name: "External enforcement status unknown",
+    });
+    await pauseProductionGuard(canvasElement);
+
+    const confirm = await pauseFor("Production LLM Guard");
+    await expect(
+      confirm.getByText(/cannot say whether a config-file webhook checks requests afterwards/),
+    ).toBeVisible();
+    await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
   },
 };

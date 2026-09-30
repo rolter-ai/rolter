@@ -3,10 +3,11 @@ import { Building2, WalletCards } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
-import { TableSkeleton } from "@/components/LoadingState";
+import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
+  AnalyticsUnavailableError,
   createBusinessUnit,
   createCustomer,
   deleteBusinessUnit,
@@ -26,6 +28,7 @@ import {
   fetchCustomers,
   updateBusinessUnit,
   updateCustomer,
+  type AttributionDimension,
   type AttributionSpendRow,
   type BusinessUnitRow,
   type CustomerRow,
@@ -33,15 +36,60 @@ import {
 import type { Capability } from "@/lib/can";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { isAwaiting, type ReadState } from "@/lib/read-state";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
+import {
+  isTimeWindow,
+  useTimeWindow,
+  useTimeWindowOptions,
+  windowBounds,
+  windowSpan,
+  type TimeWindow,
+} from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-// the window the spend column reports, matching the Dashboard's: one figure on
-// two screens has to mean the same thing, or the totals disagree for a reason
-// nobody can see
-const SPEND_WINDOW = { since: new Date(Date.now() - 86_400_000).toISOString() };
+/** one dimension's spend over a window, with the span it was read over */
+interface WindowSpend {
+  rows: AttributionSpendRow[];
+  from: Date;
+  to: Date;
+}
+
+// the bounds are worked out as the request leaves, not when the screen first
+// rendered, so every refetch (a retry, a return to the tab) reads the window as
+// it is now rather than one that widens for as long as the tab stays open
+// (#2107). the span travels with the rows, so the caption names the range these
+// figures cover rather than one a later render would work out
+async function fetchWindowSpend(
+  window: TimeWindow,
+  dimension: AttributionDimension,
+): Promise<WindowSpend> {
+  const at = new Date();
+  const bounds = windowBounds(window, at);
+  const rows = await fetchAttributionSpend(bounds, dimension, true);
+  return { rows, ...windowSpan(bounds, at) };
+}
+
+/**
+ * The window both screens report over, and the rollup read over it.
+ *
+ * The window is kept in the address and carried from one screen to the other,
+ * so the business units and the customers of one chargeback are read over the
+ * same month. The key holds the window's name rather than its bounds, which
+ * would differ on every render; picking another window changes the name, so it
+ * refetches.
+ */
+function useWindowSpend(dimension: AttributionDimension) {
+  const [spendWindow, setSpendWindow] = useTimeWindow();
+  const spend = useQuery({
+    queryKey: ["analytics", "by-attribution", dimension, spendWindow],
+    queryFn: () => fetchWindowSpend(spendWindow, dimension),
+    retry: false,
+  });
+  return { spendWindow, setSpendWindow, spend };
+}
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
@@ -226,11 +274,16 @@ function Editor({
  * operator acts on.
  */
 function SpendStrip({
+  window,
+  span,
   rows,
   loading,
   error,
   onRetry,
 }: {
+  window: TimeWindow;
+  /** the range the figures were read over, once they have been */
+  span?: { from: Date; to: Date };
   rows: AttributionSpendRow[];
   loading: boolean;
   error: unknown;
@@ -239,10 +292,23 @@ function SpendStrip({
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  // a whole phrase per window: "за 7 дней" and "с начала месяца" do not share
+  // a frame a window's name could be dropped into
+  const labels: Record<TimeWindow, string> = {
+    "24h": t("pages.costAttribution.spendWindows.last24h"),
+    "7d": t("pages.costAttribution.spendWindows.last7d"),
+    "30d": t("pages.costAttribution.spendWindows.last30d"),
+    mtd: t("pages.costAttribution.spendWindows.monthToDate"),
+    "last-month": t("pages.costAttribution.spendWindows.lastMonth"),
+  };
 
-  // no ClickHouse reaches here too and classifies as `noAnalytics`, which names
-  // the missing setting and withholds the retry — the governance list itself is
-  // postgres-backed and keeps working beside it (#1270)
+  // no ClickHouse is not a failed read: the deployment answered, and no retry
+  // changes it. it is stated as a status naming the missing setting, and the
+  // governance list itself is postgres-backed and keeps working beside it
+  // (#1270, #2016)
+  if (error instanceof AnalyticsUnavailableError) {
+    return <AnalyticsUnavailable error={error} i18nKey="pages.costAttribution.noAnalytics" />;
+  }
   if (error) {
     return (
       <LoadError
@@ -252,7 +318,15 @@ function SpendStrip({
       />
     );
   }
-  if (loading) return <Skeleton height={72} radius={10} />;
+  // the one announcement for spend loading: the cards under it hold their
+  // figures' places with bare bars, so a screen reader hears this once
+  if (loading) {
+    return (
+      <LoadingRegion testId="spend-loading">
+        <Skeleton height={72} radius={10} />
+      </LoadingRegion>
+    );
+  }
 
   const total = rows.reduce((sum, r) => sum + num(r.cost_usd), 0);
   const unattributed = rows
@@ -263,8 +337,18 @@ function SpendStrip({
   return (
     <div className="flex flex-wrap items-end gap-x-10 gap-y-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3">
       <SpendFigure
-        label={t("pages.costAttribution.spendWindow")}
+        label={labels[window]}
         value={fmt.currency(total, currency)}
+        // the dates, in the viewer's calendar, are what tells "last month"
+        // apart from the last thirty days on a chargeback
+        note={
+          span
+            ? t("pages.costAttribution.spendRange", {
+                from: fmt.date(span.from),
+                to: fmt.date(span.to),
+              })
+            : undefined
+        }
       />
       <SpendFigure
         label={t("pages.costAttribution.spendAttributed")}
@@ -298,10 +382,17 @@ function SpendFigure({ label, value, note }: { label: string; value: string; not
 }
 
 /** the spend line on one unit's or customer's card */
-function CardSpend({ row }: { row?: AttributionSpendRow }) {
+function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
+  // no row means no spend only once the rollup answered: while it is out, or
+  // after it failed, every card said "No spend in this window" on no evidence
+  // (#2105). the strip above is the one place that says it is loading or why
+  // it failed, so a card holds the figure's place or stays quiet
+  if (isAwaiting(read))
+    return <Skeleton width={120} height={16} data-testid="card-spend-loading" />;
+  if (!read.isSuccess) return null;
   if (!row) {
     return (
       <div className="font-mono text-xs text-[color:var(--text-subtle)]">
@@ -341,8 +432,11 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   mutating,
   mutationError,
   disabled,
+  spendWindow,
+  onSpendWindowChange,
+  spendSpan,
   spend,
-  spendLoading,
+  spendRead,
   spendError,
   onRetrySpend,
 }: {
@@ -367,14 +461,20 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   mutating: boolean;
   mutationError?: Error;
   disabled: boolean;
+  /** the window the strip and every card report over */
+  spendWindow: TimeWindow;
+  onSpendWindowChange: (next: TimeWindow) => void;
+  spendSpan?: { from: Date; to: Date };
   /** window spend keyed by the dimension's own id; the empty id is the
    *  unattributed bucket, which has no card of its own */
   spend: AttributionSpendRow[];
-  spendLoading: boolean;
+  /** the spend rollup's query, which says whether `spend` is an answer yet */
+  spendRead: ReadState;
   spendError: unknown;
   onRetrySpend: () => void;
 }) {
   const { t } = useTranslation();
+  const windowOptions = useTimeWindowOptions();
   const [open, setOpen] = React.useState(false);
   const [form, setForm] = React.useState<EditorState>(blank);
   const [editing, setEditing] = React.useState<T | null>(null);
@@ -455,18 +555,33 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             {mutationError.message}
           </span>
         )}
-        <GatedButton
-          gate={gate}
-          control="attribution-new"
-          className="ml-auto"
-          disabled={disabled}
-          onClick={startCreate}
-        >
-          + {t(createKey)}
-        </GatedButton>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Combobox
+            className="w-48"
+            aria-label={t("common.timeWindow.label")}
+            value={spendWindow}
+            onChange={(next) => isTimeWindow(next) && onSpendWindowChange(next)}
+            options={windowOptions}
+          />
+          <GatedButton
+            gate={gate}
+            control="attribution-new"
+            disabled={disabled}
+            onClick={startCreate}
+          >
+            + {t(createKey)}
+          </GatedButton>
+        </div>
       </div>
 
-      <SpendStrip rows={spend} loading={spendLoading} error={spendError} onRetry={onRetrySpend} />
+      <SpendStrip
+        window={spendWindow}
+        span={spendSpan}
+        rows={spend}
+        loading={isAwaiting(spendRead)}
+        error={spendError}
+        onRetry={onRetrySpend}
+      />
 
       {rows.length === 0 ? (
         <EmptyState
@@ -516,7 +631,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </div>
                   <RetiredBadge retiredAt={row.retired_at} />
                 </div>
-                <CardSpend row={spendById.get(row.id)} />
+                <CardSpend row={spendById.get(row.id)} read={spendRead} />
                 {kind === "customer" && (
                   <div className="text-xs text-muted-foreground">
                     {assigned ? (
@@ -636,11 +751,7 @@ export function BusinessUnits() {
   });
   // spend for the window, unattributed bucket included: the strip's whole job
   // is to show what the cards below it do not account for
-  const spend = useQuery({
-    queryKey: ["analytics", "by-attribution", "business_unit"],
-    queryFn: () => fetchAttributionSpend(SPEND_WINDOW, "business_unit", true),
-    retry: false,
-  });
+  const { spendWindow, setSpendWindow, spend } = useWindowSpend("business_unit");
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
 
@@ -729,7 +840,9 @@ export function BusinessUnits() {
       kind="unit"
       rows={units.data ?? []}
       units={units.data ?? []}
-      isLoading={units.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(units)}
       isError={units.isError}
       error={units.error as Error | undefined}
       onRetry={() => void units.refetch()}
@@ -745,8 +858,11 @@ export function BusinessUnits() {
       deleting={remove.isPending}
       deleteError={remove.error}
       resetDelete={() => remove.reset()}
-      spend={spend.data ?? []}
-      spendLoading={spend.isLoading}
+      spendWindow={spendWindow}
+      onSpendWindowChange={setSpendWindow}
+      spendSpan={spend.data}
+      spend={spend.data?.rows ?? []}
+      spendRead={spend}
       spendError={spend.error}
       onRetrySpend={() => void spend.refetch()}
     />
@@ -767,11 +883,7 @@ export function Customers() {
     enabled: !!orgId,
     retry: false,
   });
-  const spend = useQuery({
-    queryKey: ["analytics", "by-attribution", "customer"],
-    queryFn: () => fetchAttributionSpend(SPEND_WINDOW, "customer", true),
-    retry: false,
-  });
+  const { spendWindow, setSpendWindow, spend } = useWindowSpend("customer");
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
 
@@ -871,7 +983,9 @@ export function Customers() {
       kind="customer"
       rows={customers.data ?? []}
       units={units.data ?? []}
-      isLoading={customers.isLoading}
+      // the scope resolving leaves the query disabled rather than loading, and
+      // a screen that read that as loaded said "0" and "none yet" (#2211)
+      isLoading={scope.isLoading || isAwaiting(customers)}
       isError={customers.isError}
       error={customers.error as Error | undefined}
       onRetry={() => void customers.refetch()}
@@ -887,8 +1001,11 @@ export function Customers() {
       deleting={remove.isPending}
       deleteError={remove.error}
       resetDelete={() => remove.reset()}
-      spend={spend.data ?? []}
-      spendLoading={spend.isLoading}
+      spendWindow={spendWindow}
+      onSpendWindowChange={setSpendWindow}
+      spendSpan={spend.data}
+      spend={spend.data?.rows ?? []}
+      spendRead={spend}
       spendError={spend.error}
       onRetrySpend={() => void spend.refetch()}
     />

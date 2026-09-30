@@ -19,6 +19,7 @@ import {
   type SnippetLang,
   type SnippetRequest,
 } from "@/lib/snippets";
+import { useGatewayBase } from "@/lib/use-gateway-base";
 
 const LABELS: Record<SnippetLang, string> = {
   curl: "curl",
@@ -61,12 +62,10 @@ export function CodeSnippetDialog({
   const { t } = useTranslation();
   const [lang, setLang] = React.useState<SnippetLang>("curl");
 
-  // window is read at render rather than module load so the snippet follows
-  // whatever host the dashboard is actually being served from
-  const snippet = React.useMemo(
-    () => renderSnippet(lang, request, typeof window === "undefined" ? "" : window.location.origin),
-    [lang, request],
-  );
+  // the saved public base URL when this caller can read it, the dashboard's
+  // /gw proxy otherwise — the same address every other snippet hands out
+  const base = useGatewayBase();
+  const snippet = React.useMemo(() => renderSnippet(lang, request, base), [lang, request, base]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} size="lg">

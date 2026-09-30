@@ -96,6 +96,30 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
   screen a member opens (#1848).
+- **The pending invitations on the Users screen.** The section reads
+  `invitation:read` through `useCan()` for its presence, the way the checklist
+  does: it waits for the answer, is absent on an explicit `false`, and sends no
+  request then. The control plane filters the list below the org to the teams
+  and projects the caller administers, so a `403` from the list is an answer
+  too and hides the section instead of raising a `forbidden` `LoadError` on a
+  screen a viewer may open. The revoke button is a `RowIconButton` on
+  `invitation:delete`; the confirmation still says what revoking at the
+  invitation's own scope takes when the server refuses a click the gate allowed
+  (#2054).
+- **An action a screen takes on its own.** The Playground mints its session
+  key as it opens, and minting is `my_virtual_key:create`, which takes the
+  member role. So the automatic mint waits for the answer and does not go out
+  on an explicit `false`: a viewer lands on the paste field with a line saying
+  why, rather than on a refusal they never asked for (#2061). **Mint key** /
+  **Renew key** is a `GatedButton` on the same pair. The screen reads
+  `useCan()` for the automatic mint only, since that is behaviour rather than
+  a control; an unanswered gate still mints, and the `403` stays the backstop.
+- **Minting your own key.** **Generate virtual key** on the account screen,
+  in the toolbar and again in the empty state, is a `GatedButton` on
+  `my_virtual_key:create`, the pair the Playground's mint asks. The empty
+  state reads `useCan()` for its copy only: on an explicit `false` it says
+  that members mint their own keys and to ask an admin of the project, beside
+  the refused button, instead of inviting a mint the button refuses (#2064).
 - **Links into a gated screen.** A link the caller cannot follow is a 403
   with an extra click. The LLM Logs payload drawer links to the log settings
   unless `logging_settings:read` is an explicit `false`, the rail's own rule

@@ -21,11 +21,11 @@ clickhouse_url = "http://localhost:8123"
 
 Logging is disabled when `clickhouse_url` is unset — there's no placeholder or no-op mode.
 
-The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a notice that request logs need ClickHouse, naming `CLICKHOUSE_URL`. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
+The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a note that request logs need ClickHouse, **MCP Logs** as a note that tool-call logs need it, and the **Dashboard** as a note that traffic and spend need it, each naming `CLICKHOUSE_URL`. **Cost Attribution** shows the same kind of note in place of its spend figures, and **My Virtual Keys** shows one above your keys (each key reads _usage: unavailable_), while the rest of both screens keeps working. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
 
 ## What gets logged
 
-Every proxied request writes one row to the `request_logs` table with the following fields:
+Every proxied request writes one row to the `request_logs` table with the following fields. With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, and every total read from the table shrinks with them.
 
 | Field                | Type          | Description                                                                                                                           |
 | -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -239,6 +239,24 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 <Warning>
   Percent-encode the `+` of a positive offset as `%2B`. A query string decodes a bare `+` to a space, so `since=2026-07-01T00:00:00+02:00` arrives as `2026-07-01T00:00:00 02:00` and is refused, with a message that says so.
 </Warning>
+
+## Filtering LLM Logs
+
+**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The 24 hours are counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
+
+- **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
+- **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
+- **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
+
+**Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
+
+The filters are part of the page's address, so a reload keeps them and a copied link opens the same view. Whoever opens it still sees only the rows their own role allows. The parameters use the API's names:
+
+```text
+/logs?status=error&model=gpt-4o&business_unit=<unit-id>
+```
+
+A link can outlive what it names. A status value the API does not know is ignored, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address.
 
 ## Paging the invocation log
 

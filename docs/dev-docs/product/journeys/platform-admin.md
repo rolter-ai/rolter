@@ -69,12 +69,14 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-a — no identity provider: invitations and passwords
 
-| #     | step                                       | where                                                                        | expect                                                                                     | status          |
-| ----- | ------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------- |
-| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations` | a one-time link, valid for days, naming the role and scope it grants                       | verified        |
-| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                     | the invitee receives it                                                                    | partial — #1828 |
-| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                         | an account with exactly the invited role; the link is dead once used                       | verified        |
-| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)          | members without a factor are refused a session until they enrol (the confirmation says so) | partial — #1852 |
+| #     | step                                       | where                                                                                   | expect                                                                                     | status          |
+| ----- | ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------- |
+| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations`            | a one-time link, valid for days, naming the role and scope it grants                       | verified        |
+| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                                | the invitee receives it                                                                    | partial — #1828 |
+| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                                    | an account with exactly the invited role; the link is dead once used                       | verified        |
+| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)                     | members without a factor are refused a session until they enrol (the confirmation says so) | partial — #1852 |
+| A1a.5 | withdraw a link sent to the wrong address  | **Governance → Users → Pending invitations**, the × · `DELETE /api/v1/invitations/{id}` | the link stops working at once; the address can be invited again                           | works — #2054   |
+| A1a.6 | block a leaver, or remove their account    | **Governance → Users**, deactivate or **Edit → Delete** · `/api/v1/users/{id}`          | a confirmation names the account; sign-in is blocked and sessions end                      | works — #2055   |
 
 ### A1-b — an OIDC identity provider (Okta, Entra ID, Google, Keycloak)
 

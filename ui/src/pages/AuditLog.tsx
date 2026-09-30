@@ -13,6 +13,7 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
 import { fetchAuditLogPage, fetchUsers, type AuditLogEntry } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
@@ -310,23 +311,15 @@ export default function AuditLog() {
                 ...TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
               ]}
             />
-            <div className="flex gap-1">
-              {RANGES.map((r, i) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  aria-pressed={i === rangeIdx}
-                  onClick={() => setRangeIdx(i)}
-                  className={`rounded-md border px-2.5 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-                    i === rangeIdx
-                      ? "border-brand-folk bg-accent text-foreground"
-                      : "border-border text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {rangeLabels[r.id]}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              value={RANGES[rangeIdx].id}
+              options={RANGES.map((r) => ({ value: r.id, label: rangeLabels[r.id] }))}
+              onChange={(val) => {
+                const idx = RANGES.findIndex((r) => r.id === val);
+                if (idx !== -1) setRangeIdx(idx);
+              }}
+              ariaLabel={t("pages.auditLog.timeRangeAria")}
+            />
           </div>
 
           {/* the placeholder lives in the table so the columns stay on screen
@@ -338,6 +331,7 @@ export default function AuditLog() {
               columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
               data={rows as unknown as Record<string, unknown>[]}
               rowKey="id"
+              read={page}
               empty={
                 <EmptyState
                   uxTarget="audit-log"

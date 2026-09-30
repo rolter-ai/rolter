@@ -1,19 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderSnippet, snippetBaseUrl, SNIPPET_LANGS, type SnippetRequest } from "./snippets";
+import { gatewayBase } from "./gateway";
+import { renderSnippet, SNIPPET_LANGS, type SnippetRequest } from "./snippets";
 
 const REQ: SnippetRequest = { model: "llama-3.1-8b", prompt: "hello there" };
-const ORIGIN = "https://rolter.localhost";
-
-describe("snippetBaseUrl", () => {
-  test("points at the gateway proxy under the dashboard origin", () => {
-    expect(snippetBaseUrl(ORIGIN)).toBe("https://rolter.localhost/gw/v1");
-  });
-
-  test("does not double the slash when the origin carries one", () => {
-    expect(snippetBaseUrl("https://rolter.localhost/")).toBe("https://rolter.localhost/gw/v1");
-  });
-});
+// no public base URL saved: the dashboard's own /gw proxy
+const ORIGIN = gatewayBase(null, "https://rolter.localhost");
+// a public base URL saved on Client Settings
+const SAVED = gatewayBase("https://gateway.example.com", "https://rolter.localhost");
 
 describe("renderSnippet", () => {
   // the whole point is pasting it into an app, so the route name and the prompt
@@ -41,6 +35,26 @@ describe("renderSnippet", () => {
     for (const lang of SNIPPET_LANGS) {
       expect(renderSnippet(lang, REQ, ORIGIN)).toContain("in production");
     }
+  });
+
+  // the saved address is the gateway's own, so the snippet uses it as-is and
+  // carries no warning that it is the dashboard's port (#2218)
+  test("every language uses a saved public base url and drops the proxy note", () => {
+    for (const lang of SNIPPET_LANGS) {
+      const out = renderSnippet(lang, REQ, SAVED);
+      expect(out).toContain("https://gateway.example.com/v1");
+      expect(out).not.toContain("/gw");
+      expect(out).not.toContain("in production");
+    }
+  });
+
+  test("curl addresses the chat endpoint under the base, not beside it", () => {
+    expect(renderSnippet("curl", REQ, ORIGIN)).toContain(
+      "curl https://rolter.localhost/gw/v1/chat/completions",
+    );
+    expect(renderSnippet("curl", REQ, SAVED)).toContain(
+      "curl https://gateway.example.com/v1/chat/completions",
+    );
   });
 
   test("curl sends a body the gateway would accept", () => {

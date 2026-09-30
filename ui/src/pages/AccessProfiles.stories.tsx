@@ -10,6 +10,7 @@ import {
   expectLoadError,
   expectRefused,
   expectClosesWithoutPrompting,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
@@ -182,6 +183,7 @@ export const Loading: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No access profiles yet/);
   },
 };
 
@@ -407,6 +409,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to access profiles/);
+    await expectNoFalseEmpty(canvasElement, /No access profiles yet/);
   },
 };
 

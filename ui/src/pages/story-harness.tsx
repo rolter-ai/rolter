@@ -520,6 +520,34 @@ export async function expectLoadError(canvasElement: HTMLElement, says: RegExp):
   );
 }
 
+/**
+ * Assert the `AnalyticsUnavailable` panel is on screen under `title`, and that
+ * it is not the failure a 500 is (#2016).
+ *
+ * A deployment with no analytics store answered, and no retry changes the
+ * answer, so the panel is a `status` and nothing on the screen is an `alert`.
+ * The setting to change is in monospace, the control plane's own words (`says`)
+ * stay under it, and there is no retry. Returns the panel for the caller's own
+ * assertions about what sits beside it.
+ */
+export async function expectAnalyticsUnavailable(
+  canvasElement: HTMLElement,
+  title: string,
+  says: string,
+): Promise<HTMLElement> {
+  const canvas = within(canvasElement);
+  const heading = await canvas.findByText(title, undefined, { timeout: 6000 });
+  const panel = heading.closest<HTMLElement>('[role="status"]');
+  await expect(panel).not.toBeNull();
+  await waitFor(() => expect(panel).toBeVisible());
+  await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+  const names = within(panel!).getAllByText("CLICKHOUSE_URL");
+  for (const name of names) await expect(name.tagName).toBe("CODE");
+  await expect(within(panel!).getByText(says)).toBeVisible();
+  await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  return panel!;
+}
+
 /** The `forbidden` LoadError, which is what a non-superadmin gets. */
 export async function expectForbidden(canvasElement: HTMLElement): Promise<void> {
   await expectLoadError(canvasElement, /You do not have access to/);
@@ -541,6 +569,31 @@ export async function expectEmptyState(
   // `getAll`: most screens carry the same action in the toolbar as well, and
   // the placeholder repeating it there is the point, not a duplicate
   if (cta) await expect(canvas.getAllByRole("button", { name: cta }).length).toBeGreaterThan(0);
+}
+
+/**
+ * Assert the screen claims nothing about a list it has not read (#2211): no
+ * empty state titled `emptyTitle`, and no count of zero anywhere — "0 teams",
+ * "All 0", "0 of 0".
+ *
+ * A failed or pending read holds no rows, and a screen that derived its empty
+ * state or its count from the rows said "No providers yet" under its own
+ * `LoadError`. Absent is also what a screen looks like before it has rendered,
+ * so call this *after* `expectLoadError` or `expectSkeleton`, once the screen
+ * has said what it does know.
+ *
+ * The zero is matched against each element's own text, the way `getByText`
+ * reads it, so a figure that merely contains a zero ("403", "0.5") does not
+ * count.
+ */
+export async function expectNoFalseEmpty(
+  canvasElement: HTMLElement,
+  emptyTitle: RegExp,
+): Promise<void> {
+  const canvas = within(canvasElement);
+  await expect(canvas.queryAllByText(emptyTitle)).toHaveLength(0);
+  const zeros = canvas.queryAllByText(/(^|\s)0(\s|$)/).map((node) => node.textContent);
+  await expect(zeros).toEqual([]);
 }
 
 /**

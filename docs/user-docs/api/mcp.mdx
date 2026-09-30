@@ -19,6 +19,23 @@ The virtual key is stripped before forwarding and replaced with the session's
 OAuth bearer. A missing owner, cross-organization server, expired or revoked
 session, or insufficient scope fails before any downstream connection.
 
+## The consent callback
+
+The live OAuth session above comes from a consent the user gives once. The
+authorization server sends their browser back to `GET /auth/mcp/callback` on
+the control plane, which answers by what the request accepts:
+
+- a browser (`Accept: text/html`) gets a `303` to the dashboard's Auth Sessions
+  screen: `consent=completed&session=<id>&server=<id>` on success, or
+  `consent=failed&reason=<code>` (plus `server=<id>` once known) on a failure;
+- any other caller gets JSON: `grant_id`, `session_id`, `server_id`, `scopes`,
+  `expires_at` and `has_refresh_token` on success, or the usual error body.
+
+The redirect carries identifiers only, never a code, a token or the
+authorization server's own error text. The failure codes and what each one
+means are listed under
+[Where consent ends](/security/mcp-oauth#where-consent-ends).
+
 ## Transport behavior
 
 `GET`, `POST`, and `DELETE` are forwarded for Streamable HTTP and legacy SSE

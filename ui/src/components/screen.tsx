@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { useGate, type Capability } from "@/lib/can";
+import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
 import { useRefusedClick } from "@/lib/ux-react";
 import { cn } from "@/lib/utils";
 
@@ -228,6 +229,56 @@ export function ListStateRow({ children }: { children: React.ReactNode }) {
       <div role="cell">{children}</div>
     </div>
   );
+}
+
+// the two state rows a list screen writes, each deciding from the read itself
+// rather than from the rows (#2211). the rows cannot tell a list still coming
+// or a read that failed from one that answered with nothing: all three hold an
+// empty array, and `!query.isLoading && rows.length === 0` put "No providers
+// yet" and its create button under the list's own `LoadError`.
+//
+// `read` is the screen's `useQuery` result. the loading row shows while the
+// read is awaiting an answer, a parked retry included; the empty row only once
+// it succeeded, and `rows` is what survived the screen's filters, so a search
+// that matched nothing still gets its no-match copy
+export function ListLoadingRow({ read, children }: { read: ReadState; children: React.ReactNode }) {
+  return isAwaiting(read) ? <ListStateRow>{children}</ListStateRow> : null;
+}
+
+export function ListEmptyRow({
+  read,
+  rows,
+  children,
+}: {
+  read: ReadState;
+  rows: number;
+  children: React.ReactNode;
+}) {
+  return isEmptyAnswer(read, rows) ? <ListStateRow>{children}</ListStateRow> : null;
+}
+
+// the count a screen states beside its list — "3 teams", "12 connectors". it
+// renders only while the data it counts is held: `data?.length ?? 0` said
+// "0 teams" while the read was in flight and again after it failed (#2211).
+// `children` is handed the data instead of the caller reading it, so there is
+// no `?? 0` left to write. a failed refetch keeps the rows on screen, and the
+// count with them, so it keys on the data and not on `isSuccess`. `fallback` is
+// for a summary that also explains the screen: the explanation without the
+// count stays up while the count is unknown
+export function ListSummary<T>({
+  data,
+  fallback,
+  className,
+  children,
+}: {
+  data: T | undefined;
+  fallback?: React.ReactNode;
+  className?: string;
+  children: (data: T) => React.ReactNode;
+}) {
+  const content = data === undefined ? fallback : children(data);
+  if (content === undefined || content === null) return null;
+  return <span className={cn("text-sm text-muted-foreground", className)}>{content}</span>;
 }
 
 // card grids use `[grid-template-columns:repeat(auto-fill,minmax(min(Npx,100%),1fr))]`:

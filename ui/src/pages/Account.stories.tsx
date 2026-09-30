@@ -4,11 +4,15 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Account from "./Account";
 import {
   Harness,
+  NEEDS_MEMBER,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectAllowed,
+  expectAnalyticsUnavailable,
   expectClosesWithoutPrompting,
   expectLoadError,
+  expectRefused,
   json,
   pending,
   pickOption,
@@ -19,6 +23,7 @@ import {
   type FetchStub,
   expectEmptyState,
   expectInStatusRegion,
+  expectNoFalseEmpty,
   expectNoUxEvent,
   expectSheetClosed,
   expectSkeleton,
@@ -35,6 +40,9 @@ import type {
   ProviderRow,
   RouteRow,
 } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 /**
@@ -249,6 +257,7 @@ export const Loading: Story = {
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
     await expectInStatusRegion(canvasElement, "own-keys-loading");
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
   },
 };
 
@@ -271,6 +280,73 @@ export const Empty: Story = {
   },
 };
 
+/** Both places the screen offers a mint: the toolbar, and the empty state repeating it. */
+const GENERATE = "Generate virtual key";
+
+/**
+ * Minting takes `my_virtual_key:create`, the member role at the project, and a
+ * viewer does not hold it (#2064). The button used to open the whole sheet and
+ * leave the refusal to a raw server line at the end of it. Both Generate
+ * buttons now refuse up front and name the role, the way the Playground's mint
+ * does (#2061), and the placeholder says who mints keys here and whom to ask
+ * instead of inviting a mint the button beside it refuses.
+ */
+export const RefusedToAViewer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={account(() => json([]))} role="viewer">
+      <UxScreenProvider screen="api-keys">
+        <Account />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, /No virtual keys yet/);
+    // every match is refused, and there are two of them to match: a gate on
+    // the toolbar alone would leave the placeholder's copy of it live
+    await expectRefused(canvasElement, GENERATE, NEEDS_MEMBER);
+    await expect(canvas.getAllByRole("button", { name: GENERATE })).toHaveLength(2);
+
+    const placeholder = within(canvas.getByTestId("own-keys-empty"));
+    await expect(placeholder.getByText(/cannot mint keys/)).toBeVisible();
+    await expect(placeholder.getByText(/ask an admin of this project/)).toBeVisible();
+    await expect(placeholder.queryByText(/Create one to start calling the gateway/)).toBeNull();
+
+    // a reach for it is recorded, and no sheet opens behind the refusal
+    await userEvent.click(placeholder.getByRole("button", { name: GENERATE }), {
+      pointerEventsCheck: 0,
+    });
+    await expectUxEvent("refused_click", "account-key-mint-empty:my_virtual_key:create");
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+/** A member holds the pair, so both buttons stay live and the placeholder invites a mint. */
+export const AllowedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={account(() => json([]))} role="member">
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, /No virtual keys yet/);
+    await expectAllowed(canvasElement, GENERATE);
+    await expect(canvas.getAllByRole("button", { name: GENERATE })).toHaveLength(2);
+
+    const placeholder = within(canvas.getByTestId("own-keys-empty"));
+    await expect(placeholder.getByText(/Create one to start calling the gateway/)).toBeVisible();
+    await expect(placeholder.queryByText(/cannot mint keys/)).toBeNull();
+
+    // the placeholder's copy of the action opens the same sheet the toolbar's does
+    await userEvent.click(placeholder.getByRole("button", { name: GENERATE }));
+    await waitFor(() =>
+      expect(within(document.body).getByRole("dialog", { name: "New virtual key" })).toBeVisible(),
+    );
+  },
+};
+
 export const Forbidden: Story = {
   render: () => (
     <Harness fetchStub={account(() => json({ error: { message: "forbidden" } }, 403))}>
@@ -280,6 +356,7 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/do not have access to your keys/i)).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No virtual keys yet/);
   },
 };
 
@@ -287,8 +364,9 @@ export const Forbidden: Story = {
  * ClickHouse is optional, so `/me/usage` answering 503 is a supported
  * deployment rather than a fault. The keys must still render: losing the whole
  * self-service panel because the analytics store is absent would strand every
- * user who needs to rotate a key. The reason is said once, as the `noAnalytics`
- * kind with no retry to offer, and no card claims its key spent nothing (#1270).
+ * user who needs to rotate a key. The reason is said once, as the informational
+ * `AnalyticsUnavailable` panel rather than the red alert a 500 gets, with no
+ * retry to offer, and no card claims its key spent nothing (#1270, #2016).
  */
 export const AnalyticsUnavailable: Story = {
   render: () => (
@@ -304,10 +382,50 @@ export const AnalyticsUnavailable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
-    await expectLoadError(canvasElement, /Analytics are not configured/);
-    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.account.keys.noAnalytics.title,
+      "analytics not configured",
+    );
     await expect(canvas.getAllByText("usage: unavailable")).toHaveLength(KEYS.length);
     await expect(canvas.queryByText(/no usage in the last 7 days/i)).toBeNull();
+    // the keys stay as usable as they were: the card's own buttons are there
+    await expect(canvas.getAllByRole("button", { name: "Rotate" })).toHaveLength(KEYS.length);
+  },
+};
+
+/**
+ * The same panel at 375px in Russian, where the body is the longest copy on the
+ * screen: it wraps inside the viewport, and the cards keep saying the figure is
+ * unavailable in Russian too. It asserts the panel's edge rather than the whole
+ * document, because the key row's button still pushes the document past 375px
+ * in Russian (#2352).
+ */
+export const AnalyticsUnavailableAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ error: { message: "analytics not configured" } }, 503),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      ru.account.keys.noAnalytics.title,
+      "analytics not configured",
+    );
+    await expect(canvas.getAllByText(ru.account.keys.card.usageUnavailable)).toHaveLength(
+      KEYS.length,
+    );
+    await expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
   },
 };
 

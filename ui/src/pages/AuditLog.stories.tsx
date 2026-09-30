@@ -7,6 +7,7 @@ import {
   Harness,
   expectEmptyState,
   expectLoadError,
+  expectNoFalseEmpty,
   expectSkeleton,
   json,
   pending,
@@ -68,6 +69,11 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
     await expect(canvas.getByText("route.delete")).toBeVisible();
+
+    const group = canvas.getByRole("radiogroup", { name: "Time range filter" });
+    await expect(group).toBeInTheDocument();
+    const allRadio = canvas.getByRole("radio", { name: "All" });
+    await expect(allRadio).toHaveAttribute("aria-checked", "true");
   },
 };
 
@@ -77,6 +83,7 @@ export const Loading: Story = {
   render: () => <Screen fetchStub={pending} />,
   play: async ({ canvasElement }) => {
     await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };
 
@@ -98,6 +105,7 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return the audit log/i);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };
 
@@ -107,5 +115,6 @@ export const Forbidden: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to the audit log/);
+    await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
   },
 };

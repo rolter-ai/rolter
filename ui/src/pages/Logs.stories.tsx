@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { focusManager } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Logs from "./Logs";
@@ -98,11 +98,20 @@ const CUSTOMER: CustomerRow = {
   created_at: "2026-02-05T10:00:00Z",
 };
 
+// the models the rail's model filter offers
+const MODELS = [{ model: "gpt-4o" }, { model: "internal-llama" }];
+
+// the control plane's status classes, as `status_predicate` in
+// crates/rolter-control/src/analytics.rs writes them
+const inStatusClass = (status: number, wanted: string) =>
+  wanted === "error" ? status >= 400 : wanted === "success" ? status > 0 && status < 400 : true;
+
 /**
  * A stub that filters the way the control plane does (#1247): the attribution
  * dimensions arrive as comma-separated sets on the query string and narrow the
  * rows *before* the page is cut. A stub that ignored them would let a story
- * pass while the screen quietly filtered the page itself again.
+ * pass while the screen quietly filtered the page itself again. The status
+ * class and the one exact model narrow the same way.
  */
 const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
   scoped(async (input) => {
@@ -114,15 +123,19 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       };
       const units = set("business_unit");
       const customers = set("customer");
+      const model = url.searchParams.get("model");
+      const status = url.searchParams.get("status") ?? "all";
       const data = rows.filter(
         (r) =>
           (!units || units.includes(r.business_unit_id)) &&
-          (!customers || customers.includes(r.customer_id)),
+          (!customers || customers.includes(r.customer_id)) &&
+          (!model || r.model === model) &&
+          inStatusClass(Number(r.status), status),
       );
       return json({ data });
     }
     if (url.pathname === "/api/v1/currency") return json({ base, codes: [base], rates: {} });
-    if (url.pathname === "/api/v1/models") return json([]);
+    if (url.pathname === "/api/v1/models") return json(MODELS);
     if (url.pathname.includes("/business-units")) return json([UNIT]);
     if (url.pathname.includes("/customers")) return json([CUSTOMER]);
     return json([]);
@@ -164,11 +177,12 @@ const meta = {
   title: "Screens/Logs",
   component: Logs,
   parameters: { layout: "fullscreen" },
-  // the payload drawer links to the log settings through react-router, so
-  // every story supplies a router the way main.tsx does
+  // the payload drawer links to the log settings through react-router, and the
+  // filters live in the address (#1985), so every story supplies a router the
+  // way main.tsx does. `parameters.address` is where a story's router starts
   decorators: [
-    (Story) => (
-      <MemoryRouter>
+    (Story, { parameters }) => (
+      <MemoryRouter initialEntries={parameters.address ? [parameters.address] : undefined}>
         <Story />
       </MemoryRouter>
     ),
@@ -397,6 +411,43 @@ export const ARetryResumesTheFeed: Story = {
   },
 };
 
+/** every `since` the screen has sent for the log, oldest first */
+const logSinces = (recorder: Recorder): number[] =>
+  recorder.calls
+    .filter((c) => c.url.includes("/analytics/invocations"))
+    .map((c) => Date.parse(new URL(c.url, "http://localhost").searchParams.get("since") ?? ""));
+
+const windowed = recording(withLogs(ROWS));
+
+/**
+ * #2315: "the last 24 hours" is the 24 hours before each read. `since` used to
+ * be fixed when the screen mounted, and every poll reused it, so a tab left
+ * open for an afternoon read the last 24 hours plus the afternoon. Each poll's
+ * `since` is later than the one before, and the query key does not churn with
+ * it: a key that changed on every render would fetch on every render.
+ */
+export const TheWindowRollsForwardWithEveryPoll: Story = {
+  render: () => (
+    <Harness fetchStub={windowed.stub}>
+      <Logs pollMs={FAST_POLL_MS} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await waitFor(() => expect(logSinces(windowed).length).toBeGreaterThan(2));
+    const [first, second, third] = logSinces(windowed);
+    await expect(second).toBeGreaterThan(first);
+    await expect(third).toBeGreaterThan(second);
+    // 24 hours behind the moment it was sent, not behind when the screen opened
+    const sent = logSinces(windowed);
+    const behind = Date.now() - sent[sent.length - 1];
+    await expect(behind).toBeGreaterThanOrEqual(24 * 3_600_000);
+    await expect(behind).toBeLessThan(24 * 3_600_000 + 10_000);
+    // one request per poll: the key held still while `since` moved
+    await expect(logSinces(windowed).length).toBeLessThan(12);
+  },
+};
+
 /**
  * #1984: a refresh that fails with rows already on screen keeps them, keeps its
  * error through the next attempt, and goes on polling — so the toolbar says the
@@ -605,6 +656,260 @@ export const TheAttributionFilterIsSentToTheServer: Story = {
   },
 };
 
+/**
+ * The router's search string, published so a play can read what the screen
+ * wrote to the address (#1985). It rides on a data attribute with no text, so
+ * no `getByText` can match it.
+ */
+function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+
+const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
+
+/** the query string of the screen's latest read of the log */
+const lastLogQuery = (recorder: Recorder) => {
+  const reads = recorder.calls.filter((c) => c.url.includes("/analytics/invocations"));
+  return new URL(reads[reads.length - 1]?.url ?? "", "http://localhost").searchParams;
+};
+
+/** the model cell of every row in the table, in order */
+const modelsOnScreen = (canvasElement: HTMLElement) =>
+  Array.from(
+    canvasElement.querySelectorAll("tbody tr"),
+    (tr) => tr.querySelectorAll("td")[1]?.textContent ?? "",
+  );
+
+// one request that succeeded and one that failed, on two models, so the status
+// and the model filter each have a row to remove
+const MIXED: InvocationRow[] = [
+  row({ request_id: "req-ok", model: "gpt-4o" }),
+  row({
+    request_id: "req-failed",
+    model: "internal-llama",
+    provider: "vllm",
+    status: 502,
+    error: "upstream reset the connection",
+  }),
+];
+
+const byStatus = recording(serverFiltered(MIXED));
+
+/**
+ * #1985: status was a pair of checkboxes, and ticking both collapsed to "all"
+ * and cleared both ticks, undoing the reader's click without a word. It is one
+ * choice of three now, each pick is the class the server is asked for, and the
+ * address carries it.
+ */
+export const StatusIsOneChoiceOfThree: Story = {
+  render: () => (
+    <Harness fetchStub={byStatus.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const group = within(await canvas.findByRole("radiogroup", { name: "Status" }));
+    const radio = (name: string) => group.getByRole("radio", { name });
+    await expect(radio("All")).toHaveAttribute("aria-checked", "true");
+    // the label promises what the server matches, an answer below 400, and
+    // not the 2xx it used to claim
+    await expect(
+      canvas.getByText("OK is any request answered with a status below 400."),
+    ).toBeVisible();
+    await expect(canvas.queryByText(/2xx/)).toBeNull();
+
+    await userEvent.click(radio("Errors"));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(lastLogQuery(byStatus).get("status")).toBe("error");
+    await expect(addressOf(canvasElement).get("status")).toBe("error");
+
+    // picking the other class replaces the first rather than cancelling both
+    await userEvent.click(radio("OK"));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(radio("OK")).toHaveAttribute("aria-checked", "true");
+    await expect(radio("Errors")).toHaveAttribute("aria-checked", "false");
+    await expect(lastLogQuery(byStatus).get("status")).toBe("success");
+    await expect(addressOf(canvasElement).get("status")).toBe("success");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    // "All" takes the parameter out of the address rather than writing a default
+    await userEvent.click(radio("All"));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).has("status")).toBe(false);
+  },
+};
+
+const byModel = recording(serverFiltered(MIXED));
+
+/**
+ * #1985: the model list was checkboxes that kept only the last tick, so a
+ * second model silently unticked the first. The control plane filters on one
+ * exact model, so the rail picks one, a second pick visibly replaces it, and
+ * the pick holds through the feed's refreshes.
+ */
+export const AModelPickSticks: Story = {
+  render: () => (
+    <Harness fetchStub={byModel.stub}>
+      <Logs pollMs={FAST_POLL_MS} />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Model" });
+    await expect(picker).toHaveAttribute("placeholder", "All models");
+
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "internal-llama" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(picker).toHaveValue("internal-llama");
+    await expect(addressOf(canvasElement).get("model")).toBe("internal-llama");
+
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "gpt-4o" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(picker).toHaveValue("gpt-4o");
+    await expect(addressOf(canvasElement).get("model")).toBe("gpt-4o");
+
+    // two more reads of the feed, and the pick is still the one on screen
+    const reads = logReads(byModel);
+    await waitFor(() => expect(logReads(byModel)).toBeGreaterThan(reads + 1));
+    await expect(lastLogQuery(byModel).get("model")).toBe("gpt-4o");
+    await expect(picker).toHaveValue("gpt-4o");
+    await expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o"]);
+  },
+};
+
+const clearing = recording(serverFiltered(MIXED));
+
+/**
+ * #1985: the only way to drop every filter was the no-match empty state, under
+ * a button that said "Clear search". The rail carries its own control, which
+ * waits disabled until there is a filter to clear.
+ */
+export const ClearFiltersResetsTheRail: Story = {
+  render: () => (
+    <Harness fetchStub={clearing.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const clear = await canvas.findByRole("button", { name: "Clear filters" });
+    await expect(clear).toBeDisabled();
+
+    const group = within(canvas.getByRole("radiogroup", { name: "Status" }));
+    await userEvent.click(group.getByRole("radio", { name: "Errors" }));
+    const picker = canvas.getByRole("combobox", { name: "Model" });
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "internal-llama" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Filters · 2" })).toBeVisible());
+    await expect(clear).toBeEnabled();
+
+    await userEvent.click(clear);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(group.getByRole("radio", { name: "All" })).toHaveAttribute("aria-checked", "true");
+    await expect(picker).toHaveValue("");
+    await expect(clear).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Filters" })).toBeVisible();
+    const address = addressOf(canvasElement);
+    await expect(address.has("status")).toBe(false);
+    await expect(address.has("model")).toBe(false);
+    const sent = lastLogQuery(clearing);
+    await expect(sent.get("status")).toBe("all");
+    await expect(sent.has("model")).toBe(false);
+  },
+};
+
+const fromAddress = recording(serverFiltered(MIXED));
+
+/**
+ * #1985: a filtered view could not be shared, because the filters lived in the
+ * component and a reload dropped them. Opened from an address that names
+ * them, the screen reads them before its first request, so there is never an
+ * unfiltered page first, and the rail shows what is applied.
+ */
+export const FiltersComeBackFromTheAddress: Story = {
+  parameters: { address: "/logs?status=error&model=internal-llama" },
+  render: () => (
+    <Harness fetchStub={fromAddress.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    const reads = fromAddress.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams);
+    await expect(reads.length).toBeGreaterThan(0);
+    for (const sent of reads) {
+      await expect(sent.get("status")).toBe("error");
+      await expect(sent.get("model")).toBe("internal-llama");
+    }
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 2" }));
+    const group = within(await canvas.findByRole("radiogroup", { name: "Status" }));
+    await expect(group.getByRole("radio", { name: "Errors" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    await waitFor(() =>
+      expect(canvas.getByRole("combobox", { name: "Model" })).toHaveValue("internal-llama"),
+    );
+    await expect(canvas.getByRole("button", { name: "Clear filters" })).toBeEnabled();
+  },
+};
+
+const staleAddress = recording(serverFiltered(MIXED));
+
+/**
+ * An address outlives what it names. A status the control plane does not know
+ * would be a 400, so it reads as no status filter; a model since removed from
+ * the catalogue still filters the log, so the picker still shows it rather
+ * than reading as unset over a narrowed table. The empty state's way out now
+ * says what it does.
+ */
+export const AStaleAddressStillReadsTrue: Story = {
+  parameters: { address: "/logs?status=2xx&model=gpt-3.5-legacy" },
+  render: () => (
+    <Harness fetchStub={staleAddress.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, /No requests match these filters/, /Clear filters/);
+    const sent = lastLogQuery(staleAddress);
+    await expect(sent.get("status")).toBe("all");
+    await expect(sent.get("model")).toBe("gpt-3.5-legacy");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    const group = within(await canvas.findByRole("radiogroup", { name: "Status" }));
+    await expect(group.getByRole("radio", { name: "All" })).toHaveAttribute("aria-checked", "true");
+    await waitFor(() =>
+      expect(canvas.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-3.5-legacy"),
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Hide filters" }));
+
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).toString()).toBe("");
+  },
+};
+
 /** the detail drawer names the unit and the customer, not their uuids */
 export const DetailDrawerNamesTheAttribution: Story = {
   render: () => (
@@ -791,7 +1096,7 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
 
     const attribution = drawer.getByRole("region", { name: "Attribution" });
     // the key list answers after the drawer opens
-    await expect(await within(attribution).findByText("ci-runner")).toBeVisible();
+    await waitFor(() => expect(within(attribution).getByText("ci-runner")).toBeVisible());
     await expect(within(attribution).getByText("rk_live_ab12…")).toBeVisible();
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");

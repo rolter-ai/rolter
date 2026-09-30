@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { Loader2, PlugZap, Plus, ShieldAlert, ShieldOff, ShieldQuestion } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
@@ -44,10 +44,17 @@ import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
+// the shape of an evaluation URL, shown as a placeholder and never as a value:
+// a prefilled host saves as the endpoint when nobody edits it, and a
+// fail-closed provider pointed at a host that does not exist refuses every
+// request (#2163)
+const URL_EXAMPLE = "https://guardrails.internal/v1/evaluate";
+const HTTP_URL = /^https?:\/\//;
+
 const EMPTY: GuardrailProviderInput = {
   name: "",
   enabled: false,
-  url: "https://guardrails.internal/v1/evaluate",
+  url: "",
   stage: "pre_call",
   timeout_ms: 2000,
   max_retries: 0,
@@ -124,6 +131,40 @@ function GuardrailProvidersScreen() {
   const enforcement = query.data
     ? resolveEnforcement(query.data.providers, query.data.webhook)
     : null;
+  // `undefined` while the registry has not loaded: "none is active" would be a
+  // guess, and the confirmation below must not guess
+  const active = query.data ? (providers.find((provider) => provider.enabled) ?? null) : undefined;
+  // an enabled config-file webhook wins over the registry, whichever row is on
+  const fileInForce =
+    (enforcement?.state === "enforced" || enforcement?.state === "inert") &&
+    enforcement.provider === null;
+
+  // switching a provider on hands it every request (#2163), and switching the
+  // active one off leaves them to nothing (#2271), so both saves go through a
+  // confirmation naming the provider and what traffic goes through afterwards.
+  // a save that leaves the switch where it was is not a hand-over and saves
+  // directly
+  const [handingOver, setHandingOver] = React.useState<GuardrailProviderInput | null>(null);
+  // not cleared as the confirmation closes: the landing is reported on the
+  // closing edge, and a UX stream key that flipped to the activation's there
+  // would file the pause under it
+  const [pausing, setPausing] = React.useState(false);
+  const requestSave = (body: GuardrailProviderInput) => {
+    if (body.enabled === Boolean(editing?.enabled)) {
+      save.mutate(body);
+      return;
+    }
+    setPausing(!body.enabled);
+    setHandingOver(body);
+  };
+  // what requests go through once the active row is paused. no other row
+  // takes its place, so only an enabled config-file webhook still checks
+  // them, and an unreadable effective config cannot say whether one is
+  const pauseConsequence = fileInForce
+    ? t("pages.guardrailProviders.confirm.pauseFileStays", { name: handingOver?.name })
+    : enforcement === null || enforcement.state === "unknown"
+      ? t("pages.guardrailProviders.confirm.pauseUnknown")
+      : t("pages.guardrailProviders.confirm.pauseUnchecked");
 
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
@@ -284,12 +325,111 @@ function GuardrailProvidersScreen() {
         key={editing?.id ?? (editing === null ? "new" : "closed")}
         open={editing !== undefined}
         initial={editing ?? null}
+        active={active}
         pending={save.isPending}
         error={save.isError ? (save.error as Error).message : null}
         onClose={() => setEditing(undefined)}
-        onSave={(body) => save.mutate(body)}
+        onSave={requestSave}
+      />
+
+      {/* raised over the provider dialog, which stays open behind it: a
+          cancel goes back to the form with every field as it was. mounted
+          outside that dialog, whose key changes as it closes, so it sees the
+          save land */}
+      <ConfirmDialog
+        name={pausing ? "guardrail-provider-pause" : "guardrail-provider-activate"}
+        open={!!handingOver}
+        onOpenChange={(open) => {
+          if (open) return;
+          setHandingOver(null);
+          save.reset();
+        }}
+        // activating is a hand-over, not a removal: the provider it pauses can
+        // be switched back on. a pause that leaves requests unchecked is as
+        // red as the delete, and one under the config-file webhook changes
+        // nothing for traffic
+        tone={pausing && !fileInForce ? "danger" : "default"}
+        title={
+          pausing
+            ? t("pages.guardrailProviders.confirm.pauseTitle", { name: handingOver?.name })
+            : t("pages.guardrailProviders.confirm.activateTitle", { name: handingOver?.name })
+        }
+        description={
+          handingOver &&
+          (pausing ? (
+            pauseConsequence
+          ) : (
+            <ActivationConsequence
+              provider={handingOver}
+              replaces={active === undefined ? undefined : (active?.name ?? null)}
+              fileWins={fileInForce}
+            />
+          ))
+        }
+        confirmLabel={
+          pausing
+            ? t("pages.guardrailProviders.confirm.pauseConfirm")
+            : t("pages.guardrailProviders.confirm.activateConfirm")
+        }
+        pending={save.isPending}
+        error={save.error}
+        onConfirm={() => {
+          if (!handingOver) return;
+          save.mutate(handingOver, { onSuccess: () => setHandingOver(null) });
+        }}
       />
     </div>
+  );
+}
+
+/**
+ * What activating `provider` does, for the confirmation: the registry row it
+ * pauses, then what every request goes through afterwards. `replaces` is the
+ * active row's name, `null` when none is active, and `undefined` when the
+ * registry did not load.
+ *
+ * Rendered inside the dialog's description paragraph, so each sentence is a
+ * block `span` rather than a `p`.
+ */
+function ActivationConsequence({
+  provider,
+  replaces,
+  fileWins,
+}: {
+  provider: GuardrailProviderInput;
+  replaces: string | null | undefined;
+  fileWins: boolean;
+}) {
+  const { t } = useTranslation();
+  const name = provider.name;
+  return (
+    <>
+      <span className="block">
+        {replaces === undefined
+          ? t("pages.guardrailProviders.confirm.activateOwnerUnknown")
+          : replaces === null
+            ? t("pages.guardrailProviders.confirm.activateNoneActive")
+            : t("pages.guardrailProviders.confirm.activateReplaces", { current: replaces })}
+      </span>
+      <span className="mt-2 block">
+        {provider.stage === "post_call" ? (
+          t("pages.guardrailProviders.confirm.activatePostCall")
+        ) : provider.failure_mode === "fail_closed" ? (
+          <Trans
+            i18nKey="pages.guardrailProviders.confirm.activateFailClosed"
+            values={{ name }}
+            components={[<code key="code" className="font-mono text-xs" />]}
+          />
+        ) : (
+          t("pages.guardrailProviders.confirm.activateFailOpen", { name })
+        )}
+      </span>
+      {fileWins && (
+        <span className="mt-2 block">
+          {t("pages.guardrailProviders.confirm.activateFileWins", { name })}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -419,6 +559,7 @@ function EnforcementBanner({
 function ProviderDialog({
   open,
   initial,
+  active,
   pending,
   error,
   onClose,
@@ -426,6 +567,8 @@ function ProviderDialog({
 }: {
   open: boolean;
   initial: GuardrailProviderRow | null;
+  /** the registry's active row, `null` for none, `undefined` before it loads */
+  active: GuardrailProviderRow | null | undefined;
   pending: boolean;
   error: string | null;
   onClose: () => void;
@@ -436,12 +579,31 @@ function ProviderDialog({
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
   const postCall = form.stage === "post_call";
+  const urlValid = HTTP_URL.test(form.url);
+  // said once the field is left, not on the first keystroke of a URL that is
+  // still being typed
+  const [urlLeft, setUrlLeft] = React.useState(false);
+  const urlError =
+    urlLeft && !urlValid
+      ? form.url.trim() === ""
+        ? t("pages.guardrailProviders.urlRequired")
+        : t("pages.guardrailProviders.urlInvalid")
+      : undefined;
   const valid =
     form.name.trim() !== "" &&
-    /^https?:\/\//.test(form.url) &&
+    urlValid &&
     form.timeout_ms > 0 &&
     form.max_body_bytes > 0 &&
     (form.auth_kind === "none" || Boolean(form.auth_env?.trim()));
+  // names the provider the switch would pause; the save that turns it on is
+  // confirmed on the screen, with the failure policy the form ends up with
+  const activateHint = initial?.enabled
+    ? t("pages.guardrailProviders.activateHintSelf")
+    : active === undefined
+      ? t("pages.guardrailProviders.activateHint")
+      : active === null
+        ? t("pages.guardrailProviders.activateHintNone")
+        : t("pages.guardrailProviders.activateHintReplaces", { name: active.name });
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogHeader>
@@ -456,6 +618,7 @@ function ProviderDialog({
         <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
           <Input
             id="provider-name"
+            required
             value={form.name}
             onChange={(event) => set({ name: event.target.value })}
           />
@@ -464,12 +627,17 @@ function ProviderDialog({
           label={t("pages.guardrailProviders.fieldUrl")}
           htmlFor="provider-url"
           hint={t("pages.guardrailProviders.urlHint")}
+          error={urlError}
         >
           <Input
             id="provider-url"
             type="url"
+            required
+            className="font-mono"
+            placeholder={URL_EXAMPLE}
             value={form.url}
             onChange={(event) => set({ url: event.target.value })}
+            onBlur={() => setUrlLeft(true)}
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -588,13 +756,14 @@ function ProviderDialog({
         <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
           <div>
             <p className="text-sm font-medium">{t("pages.guardrailProviders.activateLabel")}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {t("pages.guardrailProviders.activateHint")}
+            <p id="provider-activate-hint" className="mt-0.5 text-xs text-muted-foreground">
+              {activateHint}
             </p>
           </div>
           <Switch
             checked={form.enabled}
             aria-label={t("pages.guardrailProviders.activateLabel")}
+            aria-describedby="provider-activate-hint"
             onCheckedChange={(enabled) => set({ enabled })}
           />
         </div>

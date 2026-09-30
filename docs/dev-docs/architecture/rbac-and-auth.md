@@ -356,9 +356,17 @@ reach, which makes it a snapshot of what the caller could reach rather than a
 standing grant.
 
 The dashboard calls this once per project as the Playground opens, and once
-more per **Renew key** — never in a loop, since a refusal (a routeless project
-answers `400`, no session answers `401`) is a state the operator has to act on
-rather than one a retry can clear. Both the Virtual Keys screen and the account's
+more per **Mint key** / **Renew key** — never in a loop, since a refusal (a
+routeless project answers `400`, no session answers `401`) is a state the
+operator has to act on rather than one a retry can clear. The automatic call
+waits for `my_virtual_key:create` from `/api/v1/rbac/effective` and is not made
+on an explicit refusal, so a viewer is not sent into a `403` on arrival. The
+endpoint takes no body, so `400` is the one client error it gives, and the
+Playground reads that status as "this project routes nothing": it explains the
+precondition, links Routing Rules and offers no retry (#2061). With no key and
+no mint due, the Playground asks `GET /gw/v1/models` once without a key; a
+gateway no control plane manages, holding no keys, answers it, and the screen
+then sends without a key rather than holding back its Send buttons. Both the Virtual Keys screen and the account's
 own key list label a `purpose = 'playground'` row, so a half-hour expiry reads as
 the design rather than as somebody's mistake.
 

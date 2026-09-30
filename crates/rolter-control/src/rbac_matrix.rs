@@ -335,6 +335,19 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // the control plane's own public base URL (#2083): the SSO redirect uri,
+    // the SSO login url and the SCIM base url are all built from it, and it is
+    // the same for every caller and carries no tenant's data — so anyone
+    // authenticated may read it and nobody may write it; it comes from
+    // `ROLTER_PUBLIC_URL` at startup
+    Capability {
+        resource: "public_url",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -1222,7 +1235,10 @@ mod tests {
                 "version:read",
                 // which subsystems this build calls experimental (#1385): a
                 // property of the code, so it has no scope either
-                "stability:read"
+                "stability:read",
+                // the control plane's own public url (#2083): a property of
+                // the deployment, the same for every caller
+                "public_url:read"
             ]
         );
     }
@@ -1318,6 +1334,7 @@ mod tests {
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
+        ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),
         ("rbac_matrix.rs", include_str!("rbac_matrix.rs")),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
