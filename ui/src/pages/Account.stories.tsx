@@ -42,7 +42,7 @@ import type {
 } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile } from "@/lib/story-viewport";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 /**
@@ -217,7 +217,84 @@ export const Loaded: Story = {
     // a key with no usage row still renders, with the window spelled out —
     // "nothing recorded" and "analytics is down" must not look the same
     await expect(canvas.getByText(/no usage in the last 7 days/i)).toBeInTheDocument();
-    await expect(canvas.getByText(/req ·/)).toBeInTheDocument();
+    // the figure is spelled out like the rest of the dashboard: "requests" and
+    // "the last 7 days", not "req" and "(7d)"
+    await expect(
+      await canvas.findByText("1,204 requests · $12.34 in the last 7 days"),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText(/\breq\b|\(7d\)/)).toBeNull();
+  },
+};
+
+/** A usage row for `id`, for the stories that care how the figure is worded. */
+const usageRow = (id: string, requests: number, cost: string): MyUsageRow => ({
+  virtual_key_id: id,
+  requests,
+  tokens: requests * 100,
+  cost_usd: cost,
+  errors: 0,
+});
+
+/** three keys, so one screen can show every plural form the language has */
+const THREE_KEYS = [...KEYS, PLAYGROUND_KEY];
+
+/**
+ * One request reads "1 request", not "1 requests": the count picks the form
+ * and the figure beside it is still formatted by the locale.
+ */
+export const UsageAgreesWithItsCount: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ data: [usageRow("vk-1", 1, "0.05"), usageRow("vk-2", 2, "1.5")] }),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText("1 request · $0.05 in the last 7 days"),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText("2 requests · $1.50 in the last 7 days")).toBeInTheDocument();
+  },
+};
+
+/**
+ * Russian needs four plural forms, and all three keys here land on a different
+ * one: 1 204 is "запроса", 5 is "запросов", 21 is "запрос". The catalog used to
+ * abbreviate to "запр." and "7 дн.", which is no form at all.
+ */
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(THREE_KEYS),
+        () =>
+          json({
+            data: [
+              usageRow("vk-1", 1204, "12.34"),
+              usageRow("vk-2", 5, "0.4"),
+              usageRow("vk-3", 21, "1"),
+            ],
+          }),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the figure is locale-formatted, so the grouping space is matched loosely
+    await expect(
+      await canvas.findByText(/^1\s204 запроса · .+ за последние 7 дней$/),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText(/^5 запросов · .+ за последние 7 дней$/)).toBeInTheDocument();
+    await expect(canvas.getByText(/^21 запрос · .+ за последние 7 дней$/)).toBeInTheDocument();
+    await expect(canvas.queryByText(/запр\.|дн\./)).toBeNull();
   },
 };
 
@@ -390,16 +467,19 @@ export const AnalyticsUnavailable: Story = {
     await expect(canvas.getAllByText("usage: unavailable")).toHaveLength(KEYS.length);
     await expect(canvas.queryByText(/no usage in the last 7 days/i)).toBeNull();
     // the keys stay as usable as they were: the card's own buttons are there
-    await expect(canvas.getAllByRole("button", { name: "Rotate" })).toHaveLength(KEYS.length);
+    await expect(canvas.getByRole("button", { name: "Rotate key my laptop" })).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Rotate key sk-rolter-retired" }),
+    ).toBeVisible();
   },
 };
 
 /**
  * The same panel at 375px in Russian, where the body is the longest copy on the
- * screen: it wraps inside the viewport, and the cards keep saying the figure is
- * unavailable in Russian too. It asserts the panel's edge rather than the whole
- * document, because the key row's button still pushes the document past 375px
- * in Russian (#2352).
+ * screen: it wraps inside the viewport, the cards keep saying the figure is
+ * unavailable in Russian too, and the whole document fits. The key row used to
+ * push it to 393px, because the Russian "create" button sat beside the count on
+ * a row that could not wrap (#2352).
  */
 export const AnalyticsUnavailableAtMobileInRussian: Story = {
   ...atMobile,
@@ -426,6 +506,29 @@ export const AnalyticsUnavailableAtMobileInRussian: Story = {
       KEYS.length,
     );
     await expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * The key row at 375px in Russian: the longest label the button has and the
+ * longest count beside it. The row wraps, so the button drops under the count
+ * with its whole box on screen and the document does not scroll sideways (#2352).
+ */
+export const KeyRowAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("my laptop");
+    const generate = canvas.getByRole("button", { name: ru.account.keys.generate });
+    await expect(generate.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    await expectNoHorizontalOverflow();
   },
 };
 
@@ -477,6 +580,58 @@ export const MintsAKey: Story = {
 };
 
 /**
+ * A list of keys is N identical pairs of buttons unless each one says which key
+ * it belongs to (#1896): a screen reader tabbing through hears the name, and a
+ * story can reach the button it means without counting. An unnamed key is named
+ * by its prefix, since "unnamed key" would be the same on every such card.
+ */
+export const EveryCardControlNamesItsKey: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("my laptop");
+    for (const name of ["my laptop", "sk-rolter-retired"]) {
+      await expect(canvas.getByRole("button", { name: `Rotate key ${name}` })).toBeVisible();
+      await expect(canvas.getByRole("button", { name: `Delete key ${name}` })).toBeVisible();
+    }
+    // no two controls share a name, and no card is left with a bare one
+    const names = canvas
+      .getAllByRole("button", { name: /^(Rotate|Delete) key / })
+      .map((b) => b.getAttribute("aria-label"));
+    await expect(new Set(names).size).toBe(names.length);
+    await expect(names).toHaveLength(KEYS.length * 2);
+    await expect(canvas.queryByRole("button", { name: "Rotate" })).toBeNull();
+  },
+};
+
+/**
+ * The names follow the locale, and still begin with the visible word on the
+ * Rotate button, so a voice-control user saying what they see is understood.
+ */
+export const CardControlNamesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("my laptop");
+    const rotate = canvas.getByRole("button", { name: "Ротировать ключ my laptop" });
+    await expect(rotate).toHaveTextContent(ru.account.keys.card.rotate);
+    await expect(canvas.getByRole("button", { name: "Удалить ключ my laptop" })).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Удалить ключ sk-rolter-retired" }),
+    ).toBeVisible();
+  },
+};
+
+/**
  * Rotation reaches the same reveal dialog by a different path — the card's own
  * mutation rather than the mint sheet — and that second entry point is the one
  * a refactor of the sheet would quietly drop.
@@ -489,8 +644,7 @@ export const RotatingAKeyRevealsTheNewSecret: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const [rotate] = await canvas.findAllByRole("button", { name: /rotate/i });
-    await userEvent.click(rotate);
+    await userEvent.click(await canvas.findByRole("button", { name: "Rotate key my laptop" }));
     // rotation kills the old secret the instant the new one is issued, so it
     // now asks first, naming the key it is about to invalidate (#1179)
     await confirmDestructive(/my laptop/, /rotate key/i);
@@ -507,7 +661,7 @@ export const CancellingARotationLeavesTheKeyAlone: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const [rotate] = await canvas.findAllByRole("button", { name: /rotate/i });
+    const rotate = await canvas.findByRole("button", { name: "Rotate key my laptop" });
     await userEvent.click(rotate);
     await cancelConfirmation();
     rotations.expectNotSent("POST", "/me/virtual-keys/vk-1/rotate");
@@ -540,8 +694,8 @@ export const DeletingAKeyIsConfirmedAndReported: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const [remove] = await canvas.findAllByRole("button", { name: "Delete this virtual key" });
-    await userEvent.click(remove!);
+    const remove = await canvas.findByRole("button", { name: "Delete key my laptop" });
+    await userEvent.click(remove);
     await expect(
       await within(document.body).findByRole("heading", { name: "Delete key my laptop?" }),
     ).toBeVisible();
@@ -552,7 +706,7 @@ export const DeletingAKeyIsConfirmedAndReported: Story = {
     await expect(abandon.outcome).toBe("cancelled");
     expectNoUxEvent("form_submit", "account-key-delete");
 
-    await userEvent.click(remove!);
+    await userEvent.click(remove);
     // the body carries the prefix, which is what a client config shows
     await confirmDestructive(/sk-rolter-laptop/, "Delete key");
     await keyDeletes.expectSent("DELETE", "/me/virtual-keys/vk-1");
@@ -585,8 +739,10 @@ export const DeletingAKeyRefused: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const buttons = await canvas.findAllByRole("button", { name: "Delete this virtual key" });
-    await userEvent.click(buttons[1]!);
+    // the unnamed key is reached by its prefix, the same name its dialog carries
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Delete key sk-rolter-retired" }),
+    );
     await expect(
       await within(document.body).findByRole("heading", { name: "Delete key sk-rolter-retired?" }),
     ).toBeVisible();
@@ -723,11 +879,44 @@ export const MintRejectionIsShownOnTheSheet: Story = {
     const form = sheet();
     await userEvent.type(within(form).getByLabelText("Name"), "rejected");
     await userEvent.click(within(form).getByRole("button", { name: "Mint" }));
-    await waitFor(() =>
-      expect(within(form).getByText(/virtual key name is required/i)).toBeInTheDocument(),
-    );
+    // the lead is the dashboard's own, translated line; the control plane's
+    // words follow it as the detail rather than standing in for it
+    const alert = await within(form).findByRole("alert");
+    await expect(within(alert).getByText("Could not create the key")).toBeInTheDocument();
+    await expect(within(alert).getByText("virtual key name is required")).toBeInTheDocument();
     // and the sheet stays open, so the operator can fix it in place
     await expect(within(form).getByLabelText("Name")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The same refusal in Russian. The server answers in English whatever the
+ * locale and there is no table to translate it with, so the lead is Russian and
+ * the detail stays as the server wrote it, instead of the whole line being a
+ * lowercase English sentence in a Russian sheet.
+ */
+export const MintRejectionLeadsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={account((init) =>
+        init?.method === "POST"
+          ? json({ error: { message: "virtual key name is required" } }, 400)
+          : json(KEYS),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, ru.account.keys.generate);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText(ru.keyMint.name), "rejected");
+    await userEvent.click(within(form).getByRole("button", { name: ru.account.keys.mint.save }));
+    const alert = await within(form).findByRole("alert");
+    await expect(within(alert).getByText(ru.account.keys.mint.failed)).toBeInTheDocument();
+    await expect(within(alert).getByText("virtual key name is required")).toBeInTheDocument();
+    await expect(within(form).getByLabelText(ru.keyMint.name)).toBeInTheDocument();
   },
 };
 

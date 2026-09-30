@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
+import { Check, Copy, KeyRound, Plus, RotateCw } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -25,7 +25,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
-import { ListSummary, PageBody } from "@/components/screen";
+import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Tag } from "@/components/ui/tag";
 import {
   AnalyticsUnavailableError,
@@ -138,7 +139,9 @@ export default function Account() {
             on a deployment that configured no documentation host (#1164) */}
         <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
-      <div className="flex items-center gap-3">
+      {/* a toolbar, not a bare flex row: the Russian button is ~250px wide, so
+          at 375px it drops under the count instead of pushing the page wide (#2352) */}
+      <Toolbar>
         <ListSummary data={keys.data}>
           {(rows) => t("account.keys.summary", { count: rows.length })}
         </ListSummary>
@@ -156,7 +159,7 @@ export default function Account() {
           <Plus className="h-4 w-4" />
           {t("account.keys.generate")}
         </GatedButton>
-      </div>
+      </Toolbar>
 
       {/* the content below is a card grid, so the placeholder holding its
           space is one too — and it is a `role="status"` region rather than a
@@ -320,6 +323,9 @@ function KeyCard({
   // issued, so it asks first like every other destructive action (#1179)
   const [rotateOpen, setRotateOpen] = React.useState(false);
   const keyLabel = keyRow.name ?? t("account.keys.card.unnamed");
+  // the name a control carries for this card: two unnamed keys would both be
+  // "unnamed key", so the prefix tells them apart, as in the delete dialog (#1896)
+  const keyRef = keyRow.name ?? keyRow.key_prefix;
 
   return (
     <Card>
@@ -356,6 +362,9 @@ function KeyCard({
           ) : usage ? (
             <span>
               {t("account.keys.card.usage", {
+                // `count` picks the plural form, `requests` is the figure as
+                // the locale formats it
+                count: Number(usage.requests),
                 requests: format.number(Number(usage.requests)),
                 cost: format.currency(Number(usage.cost_usd)),
               })}
@@ -365,27 +374,27 @@ function KeyCard({
           )}
         </div>
         <div className="flex items-center justify-end gap-2">
+          {/* both controls name their card: N identical "Rotate" and "Delete"
+              buttons are a list a screen reader cannot tell apart (#1214, #1896) */}
           <Button
             size="sm"
             variant="outline"
+            className="h-[30px]"
             disabled={rotate.isPending}
             onClick={() => {
               rotate.reset();
               setRotateOpen(true);
             }}
+            aria-label={t("account.keys.card.rotateAria", { name: keyRef })}
             title={t("account.keys.card.rotateHint")}
           >
             <RotateCw className="h-3.5 w-3.5" />
             {t("account.keys.card.rotate")}
           </Button>
-          <Button
-            size="sm"
-            variant="destructive"
+          <DeleteIconButton
+            label={t("account.keys.card.deleteAria", { name: keyRef })}
             onClick={onDelete}
-            title={t("account.keys.card.deleteHint")}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          />
         </div>
         <ConfirmDialog
           name="account-key-rotate"
@@ -462,7 +471,10 @@ function MintKeyDialog({
       title={t("account.keys.mint.title")}
       subtitle={t("account.keys.mint.subtitle", { project })}
       dirty={Boolean(name || models.length || providerSel.length) || cache !== "inherit"}
-      errorMessage={mint.isError ? (mint.error as Error).message : undefined}
+      // the lead is ours and translated; the control plane's own words follow as
+      // the detail, since the server answers in English whatever the locale
+      errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
+      errorDetail={mint.isError ? errorDetail(mint.error) : undefined}
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}
