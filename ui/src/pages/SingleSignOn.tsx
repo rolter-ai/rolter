@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   Eraser,
@@ -16,17 +15,10 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
-import {
-  orgScopeText,
-  OrgScopePicker,
-  OrgScopePill,
-  scopeTargetIds,
-  useOrgScope,
-  type ScopeTarget,
-} from "@/components/OrgScopePicker";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
+import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -46,14 +38,12 @@ import {
   fetchMemberships,
   fetchSsoGroupMappings,
   fetchSsoProviders,
-  ROLES,
   ssoRedirectUri,
   updateAuthPolicy,
   MFA_POLICIES,
   type MfaPolicy,
   type OrgAuthPolicy,
   type PublicUrl,
-  type SsoGroupMappingRow,
   type SsoProviderRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
@@ -73,18 +63,6 @@ import { useErrorState, useScreenReady } from "@/lib/ux-react";
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
-
-// the roles a group mapping may grant, mirroring `parse_role` in
-// crates/rolter-control/src/sso.rs. deliberately not /api/v1/roles: that list
-// carries every role the control plane knows about, and offering one the
-// mapping endpoint refuses would build a form that can only fail on submit
-const MAPPABLE_ROLES = ROLES;
-
-// the label for a role the server sent us, falling back to the raw value so a
-// newer control plane's role is shown rather than rendered as a missing key
-function roleLabel(t: TFunction, role: string): string {
-  return t(`shell.roles.${role}`, { defaultValue: role });
-}
 
 // a labelled line inside a provider card: mono value, optionally copyable. an
 // address wraps instead of truncating, because the end of it is what tells the
@@ -691,200 +669,42 @@ function SignInPolicyCard({
  *
  * A mapping grants at the provider's own org by default — the create endpoint
  * reads an omitted scope that way — but it may also name one team or one
- * project inside that org (#1234). The scope select is the shared
- * `OrgScopePicker`, so a project in a team the scope switcher does not
- * currently have selected can be mapped without moving the switcher first. A
- * mapping may never grant outside the provider's org, which the control plane
- * enforces whatever this sends.
+ * project inside that org (#1234). The form and the list are the shared
+ * `GroupMappings`; this is the strip of the provider's card they sit in, and
+ * the words that are true of this screen only: a mapping grants at each
+ * member's next sign-in, and the empty list falls back to the provider's
+ * default role.
  */
-function GroupMappings({ provider }: { provider: SsoProviderRow }) {
+function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const toast = useToast();
-  // the provider's own org, not the scope switcher's: a mapping can only ever
-  // reach inside the org that registered the provider
-  const scope = useOrgScope(provider.org_id);
-  const mappings = useQuery({
-    queryKey: [MAPPINGS_KEY, provider.id],
-    queryFn: () => fetchSsoGroupMappings(provider.id),
-    retry: false,
-  });
-
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: [MAPPINGS_KEY, provider.id] });
-
-  const [group, setGroup] = React.useState("");
-  const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
-  // "" is the provider's own org; otherwise "team:<id>" or "project:<id>"
-  const [target, setTarget] = React.useState<ScopeTarget>("");
-
-  const create = useMutation({
-    mutationFn: () =>
-      createSsoGroupMapping(provider.id, {
-        group_name: group.trim(),
-        role,
-        ...scopeTargetIds(target),
-      }),
-    onSuccess: () => {
-      toast.push({ tone: "success", title: t("toast.created", { what: group.trim() }) });
-      setGroup("");
-      invalidate();
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.saveFailed", { what: group.trim() }),
-        detail: errorDetail(error),
-      });
-    },
-  });
-
-  const remove = useMutation({
-    mutationFn: (id: string) => deleteSsoGroupMapping(id),
-    onSuccess: invalidate,
-  });
-
-  // a mapping is what puts people in a role, so removing one takes access away
-  // from everyone in that group — named and confirmed first (#1179)
-  const [removeTarget, setRemoveTarget] = React.useState<SsoGroupMappingRow | null>(null);
-  const startRemove = (mapping: SsoGroupMappingRow) => {
-    remove.reset();
-    setRemoveTarget(mapping);
-  };
-
-  const rows = mappings.data ?? [];
-
   return (
-    <div className="border-t border-[color:var(--border-subtle)] px-4 py-3.5">
+    <div className="flex flex-col gap-2.5 border-t border-[color:var(--border-subtle)] px-4 py-3.5">
       <div className="flex items-center gap-1.5">
         <Users aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
         <h3 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
           {t("pages.sso.mappings.title")}
         </h3>
       </div>
-
-      {mappings.isLoading && <Skeleton className="mt-2.5 h-8 rounded-md" />}
-      {mappings.isError && (
-        <p className="mt-2.5 text-sm text-[color:var(--status-danger-text)]">
-          {(mappings.error as Error).message}
-        </p>
-      )}
-      {!mappings.isLoading && !mappings.isError && rows.length === 0 && (
-        <p className="mt-2 text-sm text-muted-foreground">
-          {provider.default_role
+      <GroupMappings
+        kind="sso"
+        orgId={provider.org_id}
+        queryKey={[MAPPINGS_KEY, provider.id]}
+        fetchMappings={() => fetchSsoGroupMappings(provider.id)}
+        createMapping={(grant) => createSsoGroupMapping(provider.id, grant)}
+        deleteMapping={deleteSsoGroupMapping}
+        empty={
+          provider.default_role
             ? t("pages.sso.mappings.emptyWithDefault", {
                 role: roleLabel(t, provider.default_role),
               })
-            : t("pages.sso.mappings.empty")}
-        </p>
-      )}
-
-      {rows.length > 0 && (
-        <ul className="mt-2 flex flex-col gap-1.5">
-          {rows.map((mapping) => (
-            <li
-              key={mapping.id}
-              className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-2.5 py-1.5"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                {mapping.group_name}
-              </span>
-              <OrgScopePill scope={scope} value={mapping} />
-              <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
-              <RowIconButton
-                danger
-                gate="sso_group_mapping:delete"
-                control="sso-mapping-remove"
-                title={t("pages.sso.mappings.remove")}
-                aria-label={t("pages.sso.mappings.removeNamed", {
-                  group: mapping.group_name,
-                })}
-                disabled={remove.isPending}
-                onClick={() => startRemove(mapping)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </RowIconButton>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <Input
-          className="h-8 max-w-[220px] flex-1"
-          value={group}
-          onChange={(e) => setGroup(e.target.value)}
-          aria-label={t("pages.sso.mappings.groupLabel")}
-          placeholder={t("pages.sso.mappings.groupPlaceholder")}
-        />
-        <OrgScopePicker
-          orgId={provider.org_id}
-          value={target}
-          onChange={setTarget}
-          label={t("pages.sso.mappings.scopeLabel")}
-        />
-        <Combobox
-          size="sm"
-          className="w-[132px]"
-          value={role}
-          onChange={setRole}
-          aria-label={t("pages.sso.mappings.roleLabel")}
-          options={MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
-        />
-        <GatedButton
-          gate="sso_group_mapping:create"
-          control="sso-mapping-add"
-          size="sm"
-          variant="outline"
-          // every provider card carries one of these, so the label names which
-          // one — "Map group" alone is ambiguous the moment an org registers a
-          // second identity provider
-          aria-label={t("pages.sso.mappings.addNamed", { provider: provider.name })}
-          disabled={!group.trim() || create.isPending}
-          onClick={() => create.mutate()}
-        >
-          {create.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
-          {t("pages.sso.mappings.add")}
-        </GatedButton>
-      </div>
-      {create.isError && (
-        <p role="alert" className="mt-2 text-sm text-[color:var(--status-danger-text)]">
-          {(create.error as Error).message}
-        </p>
-      )}
-
-      <ConfirmDialog
-        name="sso-group-mapping-remove"
-        open={!!removeTarget}
-        onOpenChange={(open) => !open && setRemoveTarget(null)}
-        title={t("pages.sso.mappings.confirm.title", {
-          group: removeTarget?.group_name,
-        })}
-        description={t("pages.sso.mappings.confirm.body", {
-          role: removeTarget ? roleLabel(t, removeTarget.role) : "",
-          // the scope is half of what is being withdrawn: "admin" and "admin on
-          // Gateway" are very different removals
-          scope: removeTarget ? orgScopeText(t, scope, removeTarget) : "",
-        })}
-        confirmLabel={t("pages.sso.mappings.confirm.confirm")}
-        pending={remove.isPending}
-        error={remove.error}
-        onConfirm={() => {
-          if (!removeTarget) return;
-          const what = removeTarget.group_name;
-          remove.mutate(removeTarget.id, {
-            onSuccess: () => {
-              setRemoveTarget(null);
-              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
-            },
-            onError: (error) => {
-              toast.push({
-                tone: "error",
-                title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
-              });
-            },
-          });
-        }}
+            : t("pages.sso.mappings.empty")
+        }
+        grantTiming={t("pages.sso.mappings.grantTiming")}
+        removeBody={(role, scope) => t("pages.sso.mappings.removeBody", { role, scope })}
+        // every provider card carries one of these, so the label names which
+        // one: "Map group" alone is ambiguous the moment an org registers a
+        // second identity provider
+        addLabel={t("pages.sso.mappings.addNamed", { provider: provider.name })}
       />
     </div>
   );
@@ -1039,7 +859,7 @@ function ProviderCard({
         <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
       </div>
 
-      <GroupMappings provider={provider} />
+      <ProviderMappings provider={provider} />
     </section>
   );
 }

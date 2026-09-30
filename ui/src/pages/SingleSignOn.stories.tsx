@@ -8,6 +8,8 @@ import {
   confirmation,
   confirmDestructive,
   expectAllowed,
+  expectInStatusRegion,
+  expectLoadError,
   expectNoFalseEmpty,
   expectNoUxEvent,
   expectRefused,
@@ -38,6 +40,9 @@ import type {
   SsoGroupMappingRow,
   SsoProviderRow,
 } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const NOW = "2026-08-01T10:00:00Z";
@@ -2032,11 +2037,17 @@ export const MapsAGroupToATeam: Story = {
       "/api/v1/sso-providers/sso-1/group-mappings",
     );
     await expect(body.group_name).toBe("gateway-oncall");
+    // the role is the one the row starts on: nothing was picked, so nothing
+    // more powerful than a viewer was granted (#2078)
+    await expect(body.role).toBe("viewer");
     // the narrower scope is the whole point: `team_id` set, and `project_id`
     // left out entirely rather than sent as null, which the server would read
     // as the more specific scope
     await expect(body.team_id).toBe(TEAM.id);
     await expect(body.project_id).toBeUndefined();
+    // a viewer on one team is the narrowest grant there is, so it saves at
+    // once, with no dialog between the press and the request
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
 
@@ -2086,5 +2097,345 @@ export const NamesTheScopeWhenRemovingAMapping: Story = {
     const dialog = within(await confirmation());
     await expect(dialog.getByText(new RegExp(TEAM.name))).toBeVisible();
     await cancelConfirmation();
+  },
+};
+
+// --- the add row: what it starts on, and what it asks before it grants (#2078) ---
+
+// the stub of the story being played, so `play` reads what `render` was given
+let sent: Recorder;
+
+const GROUP_MAPPINGS_URL = "/api/v1/sso-providers/sso-1/group-mappings";
+
+type Posted = { group_name: string; role: string; team_id?: string; project_id?: string };
+
+const reasonAdmin = en.groupMappings.grant.reasonAdmin;
+const reasonOrg = en.groupMappings.grant.reasonOrg;
+
+// the create is held until the story lets it land, so the dialog can be read
+// while the request is on the wire
+let releaseGrant: () => void = () => {};
+const heldGrant =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) => {
+    if (
+      (init?.method ?? "GET").toUpperCase() === "POST" &&
+      String(input).includes("/group-mappings")
+    ) {
+      await new Promise<void>((resolve) => {
+        releaseGrant = resolve;
+      });
+    }
+    return inner(input, init);
+  };
+
+// every mapping read answered 500, and nothing else
+const mappingsFail =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) =>
+    String(input).includes("/group-mappings") && (init?.method ?? "GET").toUpperCase() === "GET"
+      ? json({ error: { message: "mappings unavailable" } }, 500)
+      : inner(input, init);
+
+/**
+ * A new mapping starts on the least powerful role. The row used to preselect
+ * `admin` at the whole organization, so typing a name and pressing the button
+ * made everyone in the group an org admin. It also had no visible labels, and
+ * a placeholder that was the name of a mapping already listed.
+ */
+export const NewMappingStartsOnViewer: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByLabelText("Role to grant")).toHaveValue("Viewer");
+    // the picker is a skeleton until the org's teams and projects answer
+    await expect(await canvas.findByLabelText("Where the role applies")).toHaveValue(
+      "Whole organization",
+    );
+
+    // each control carries a label you can read, not only one a screen reader is told
+    for (const label of ["IdP group", "Where the role applies", "Role to grant"]) {
+      await expect(canvas.getByText(label, { selector: "label" })).toBeVisible();
+    }
+
+    // and the empty field cannot be taken for a filled one: the example is marked as
+    // one, and is not the name of a mapping that is listed
+    const group = canvas.getByLabelText("IdP group");
+    await expect(group).toHaveValue("");
+    const placeholder = group.getAttribute("placeholder");
+    await expect(placeholder).toBe(en.groupMappings.groupPlaceholder);
+    await expect(placeholder).toMatch(/^e\.g\. /);
+    await waitFor(() => expect(canvas.getByText("platform-engineering")).toBeVisible());
+    await expect(MAPPINGS["sso-1"].map((m) => m.group_name)).not.toContain(placeholder);
+  },
+};
+
+/**
+ * Admin is asked about first, and the question names the group, the role and
+ * the scope. Cancelling sends nothing and keeps what was typed; confirming
+ * sends exactly the body the dialog described, and the form starts over on
+ * Viewer rather than carrying the admin grant into the next mapping.
+ */
+export const AdminGrantAsksFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    sent = recording(heldGrant(api({ providers: () => [provider()] })));
+    return (
+      <Harness fetchStub={sent.stub}>
+        <UxScreenProvider screen="sso">
+          <SingleSignOn />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText("IdP group");
+    await userEvent.type(group, "gateway-deployers");
+    await pickOption(await canvas.findByLabelText("Where the role applies"), TEAM.name);
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+
+    const dialogElement = await confirmation();
+    // the dialog animates in, so visibility is polled rather than read once (#2287)
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(dialog.getByText("Map gateway-deployers to Admin?")).toBeVisible();
+    await expect(dialog.getByText(new RegExp(`gets Admin on ${TEAM.name}\\.`))).toBeVisible();
+    // this screen grants at sign-in, and says so rather than promising a sync
+    await expect(dialog.getByText(/at their next sign-in/)).toBeVisible();
+    // admin is the only reason: the scope is one team, so nothing says "whole organization"
+    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
+    await expect(dialog.queryByText(reasonOrg)).toBeNull();
+    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
+
+    // backing out sends nothing and is recorded as a cancel, not a decision
+    await cancelConfirmation();
+    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
+    const abandon = await expectUxEvent("form_abandon", "sso-group-mapping-grant");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "sso-group-mapping-grant");
+    await expect(group).toHaveValue("gateway-deployers");
+    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Admin");
+
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await confirmDestructive("Map gateway-deployers to Admin?", "Map group");
+    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
+      group_name: "gateway-deployers",
+      role: "admin",
+      team_id: TEAM.id,
+    });
+
+    // in flight: the request is on the wire, so neither button can be pressed
+    const inFlight = within(await confirmation());
+    await waitFor(() => {
+      expect(inFlight.getByRole("button", { name: "Map group" })).toBeDisabled();
+      expect(inFlight.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    });
+
+    releaseGrant();
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "sso-group-mapping-grant");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "sso-group-mapping-grant");
+    await waitFor(() => expect(group).toHaveValue(""));
+    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Viewer");
+    await expect(canvas.getByLabelText("Where the role applies")).toHaveValue("Whole organization");
+  },
+};
+
+/**
+ * A role across the whole organization is asked about too, however small the
+ * role: the form starts there, so a viewer is the first thing an operator can
+ * grant org-wide by pressing one button. The dialog says it is the scope that
+ * raised it, and the request names no team or project.
+ */
+export const WholeOrgGrantAsksFirst: Story = {
+  render: () => {
+    sent = recording(api({ providers: () => [provider()] }));
+    return (
+      <Harness fetchStub={sent.stub}>
+        <SingleSignOn />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("IdP group"), "ops-readers");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
+    await expect(dialog.getByText(/gets Viewer on the whole organization\./)).toBeVisible();
+    await expect(dialog.getByText(reasonOrg)).toBeVisible();
+    await expect(dialog.queryByText(reasonAdmin)).toBeNull();
+
+    await cancelConfirmation();
+    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
+
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await confirmDestructive("Map ops-readers to Viewer?", "Map group");
+    // an org-wide grant names no scope at all, rather than an empty one
+    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
+      group_name: "ops-readers",
+      role: "viewer",
+    });
+  },
+};
+
+// the two reasons stack: admin across the whole organization is the widest grant
+// there is, and the dialog says both rather than picking one
+export const AdminOnTheWholeOrgNamesBothReasons: Story = {
+  render: () => {
+    sent = recording(api({ providers: () => [provider()] }));
+    return (
+      <Harness fetchStub={sent.stub}>
+        <SingleSignOn />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("IdP group"), "platform-admins");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
+    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
+    await expect(dialog.getByText(reasonOrg)).toBeVisible();
+
+    await confirmDestructive("Map platform-admins to Admin?", "Map group");
+    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
+      group_name: "platform-admins",
+      role: "admin",
+    });
+  },
+};
+
+// the confirmation does not close itself: a refusal stays beside the button that
+// caused it, and cancelling does not leave it standing under the next attempt
+export const MapGroupRefusedInsideTheConfirmation: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/group-mappings") &&
+        (init?.method ?? "GET").toUpperCase() === "POST"
+          ? json({ error: { message: "platform-admins is already mapped" } }, 409)
+          : api({ providers: () => [provider()] })(input, init)
+      }
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText("IdP group");
+    await userEvent.type(group, "platform-admins");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
+    await confirmDestructive("Map platform-admins to Admin?", "Map group");
+
+    const dialog = within(await confirmation());
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/already mapped/));
+    // said once: behind the dialog the form does not repeat it
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+
+    await cancelConfirmation();
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+    await expect(group).toHaveValue("platform-admins");
+  },
+};
+
+// a list that could not be read is a LoadError with the retry a read has, where
+// it used to be a line of red text with nothing to press
+export const GroupMappingsCannotLoad: Story = {
+  render: () => (
+    <Harness fetchStub={mappingsFail(api({ providers: () => [provider()] }))}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return group mappings/);
+    // the control plane's own words stay under the summary
+    await expect(canvas.getByText("mappings unavailable")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: en.errors.load.retry })).toBeVisible();
+    // a list that could not be read is not a list of nothing
+    await expect(canvas.queryByText(/everyone signing in through this provider gets/)).toBeNull();
+    // the form is still there: writing a mapping does not need the list
+    await expect(canvas.getByLabelText("IdP group")).toBeVisible();
+  },
+};
+
+export const GroupMappingsLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/group-mappings")
+          ? new Promise<Response>(() => {})
+          : api({ providers: () => [provider()] })(input, init)
+      }
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectInStatusRegion(canvasElement, "group-mappings-loading");
+    await expect(canvas.queryByText(/everyone signing in through this provider gets/)).toBeNull();
+  },
+};
+
+/**
+ * The add row on a phone, in Russian. The group name shrank to three
+ * characters and the role read "Администрато" because four controls shared one
+ * wrapping line. Each control has its own line now, labelled, and all of them
+ * are as wide as the card.
+ */
+export const AddRowFitsAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.groupMappings;
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText(copy.groupLabel);
+    const scope = await canvas.findByLabelText(copy.scopeLabel);
+    const role = canvas.getByLabelText(copy.roleLabel);
+    const add = canvas.getByRole("button", {
+      name: ru.pages.sso.mappings.addNamed.replace("{{provider}}", "Acme Okta"),
+    });
+    // the row reads in Russian, and the default survives the language
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
+    await expect(canvas.getByText(copy.groupLabel, { selector: "label" })).toBeVisible();
+
+    // the name field is a field, not a sliver: it spans the card
+    await expect(group.getBoundingClientRect().width).toBeGreaterThan(240);
+    // every control sits inside the phone's width. the page is not asked: the
+    // provider cards have their own phone-width problems (#2090)
+    for (const control of [group, scope, role, add]) {
+      const box = control.getBoundingClientRect();
+      await expect(box.left).toBeGreaterThanOrEqual(0);
+      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
+    }
+
+    // a listed mapping keeps its name too: it was squeezed out by the chips on its row
+    const listed = await canvas.findByText("platform-engineering");
+    await expect(listed.getBoundingClientRect().width).toBeGreaterThan(100);
+    await expect(listed.scrollWidth).toBeLessThanOrEqual(listed.clientWidth);
+
+    // the widest role is spelled out in full, in the control that names it
+    await pickOption(role, ru.shell.roles.admin);
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
+    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
   },
 };
