@@ -9,6 +9,7 @@ import {
   clickWhenEnabled,
   confirmDestructive,
   expectAllowed,
+  expectAnalyticsUnavailable,
   expectClosesWithoutPrompting,
   expectLoadError,
   expectRefused,
@@ -39,6 +40,9 @@ import type {
   ProviderRow,
   RouteRow,
 } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 /**
@@ -360,8 +364,9 @@ export const Forbidden: Story = {
  * ClickHouse is optional, so `/me/usage` answering 503 is a supported
  * deployment rather than a fault. The keys must still render: losing the whole
  * self-service panel because the analytics store is absent would strand every
- * user who needs to rotate a key. The reason is said once, as the `noAnalytics`
- * kind with no retry to offer, and no card claims its key spent nothing (#1270).
+ * user who needs to rotate a key. The reason is said once, as the informational
+ * `AnalyticsUnavailable` panel rather than the red alert a 500 gets, with no
+ * retry to offer, and no card claims its key spent nothing (#1270, #2016).
  */
 export const AnalyticsUnavailable: Story = {
   render: () => (
@@ -377,10 +382,50 @@ export const AnalyticsUnavailable: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
-    await expectLoadError(canvasElement, /Analytics are not configured/);
-    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.account.keys.noAnalytics.title,
+      "analytics not configured",
+    );
     await expect(canvas.getAllByText("usage: unavailable")).toHaveLength(KEYS.length);
     await expect(canvas.queryByText(/no usage in the last 7 days/i)).toBeNull();
+    // the keys stay as usable as they were: the card's own buttons are there
+    await expect(canvas.getAllByRole("button", { name: "Rotate" })).toHaveLength(KEYS.length);
+  },
+};
+
+/**
+ * The same panel at 375px in Russian, where the body is the longest copy on the
+ * screen: it wraps inside the viewport, and the cards keep saying the figure is
+ * unavailable in Russian too. It asserts the panel's edge rather than the whole
+ * document, because the key row's button still pushes the document past 375px
+ * in Russian (#2352).
+ */
+export const AnalyticsUnavailableAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ error: { message: "analytics not configured" } }, 503),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      ru.account.keys.noAnalytics.title,
+      "analytics not configured",
+    );
+    await expect(canvas.getAllByText(ru.account.keys.card.usageUnavailable)).toHaveLength(
+      KEYS.length,
+    );
+    await expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
   },
 };
 

@@ -520,6 +520,34 @@ export async function expectLoadError(canvasElement: HTMLElement, says: RegExp):
   );
 }
 
+/**
+ * Assert the `AnalyticsUnavailable` panel is on screen under `title`, and that
+ * it is not the failure a 500 is (#2016).
+ *
+ * A deployment with no analytics store answered, and no retry changes the
+ * answer, so the panel is a `status` and nothing on the screen is an `alert`.
+ * The setting to change is in monospace, the control plane's own words (`says`)
+ * stay under it, and there is no retry. Returns the panel for the caller's own
+ * assertions about what sits beside it.
+ */
+export async function expectAnalyticsUnavailable(
+  canvasElement: HTMLElement,
+  title: string,
+  says: string,
+): Promise<HTMLElement> {
+  const canvas = within(canvasElement);
+  const heading = await canvas.findByText(title, undefined, { timeout: 6000 });
+  const panel = heading.closest<HTMLElement>('[role="status"]');
+  await expect(panel).not.toBeNull();
+  await waitFor(() => expect(panel).toBeVisible());
+  await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+  const names = within(panel!).getAllByText("CLICKHOUSE_URL");
+  for (const name of names) await expect(name.tagName).toBe("CODE");
+  await expect(within(panel!).getByText(says)).toBeVisible();
+  await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  return panel!;
+}
+
 /** The `forbidden` LoadError, which is what a non-superadmin gets. */
 export async function expectForbidden(canvasElement: HTMLElement): Promise<void> {
   await expectLoadError(canvasElement, /You do not have access to/);

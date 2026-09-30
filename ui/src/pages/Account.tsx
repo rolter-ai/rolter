@@ -3,6 +3,7 @@ import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DocsLink } from "@/components/DocsLink";
 import {
@@ -39,6 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tag } from "@/components/ui/tag";
 import {
+  AnalyticsUnavailableError,
   PLAYGROUND_PURPOSE,
   deleteMyKey,
   fetchMyKeys,
@@ -203,13 +205,20 @@ export default function Account() {
         />
       )}
 
-      {usage.error && !!keys.data?.length && (
-        <LoadError
-          error={usage.error}
-          resource={t("errors.resources.yourUsage")}
-          onRetry={() => usage.refetch()}
-        />
-      )}
+      {/* a deployment with no analytics store is a supported shape, not a
+          failed read: it is said as a status with no retry, and the keys below
+          stay as usable as they were (#2016) */}
+      {usage.error &&
+        !!keys.data?.length &&
+        (usage.error instanceof AnalyticsUnavailableError ? (
+          <AnalyticsUnavailable error={usage.error} i18nKey="account.keys.noAnalytics" />
+        ) : (
+          <LoadError
+            error={usage.error}
+            resource={t("errors.resources.yourUsage")}
+            onRetry={() => usage.refetch()}
+          />
+        ))}
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">
         {keys.data?.map((key) => (

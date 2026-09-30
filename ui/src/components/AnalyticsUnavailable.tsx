@@ -2,15 +2,16 @@ import { ChartNoAxesColumn } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 /**
- * What a screen shows on a deployment with no analytics store (#1984, #1976).
+ * What a screen shows on a deployment with no analytics store (#1984, #1976, #2016).
  *
  * That deployment answered, and the answer will not change until someone sets
  * `CLICKHOUSE_URL`: it is a configuration rolter supports, not an outage. It
  * used to render `LoadError`, whose red `role="alert"` put it in the same voice
- * as a 500 and had a screen reader announce it as urgent on every visit. This
- * is the same information, stated calmly as a `status`: the cause, the setting
- * in monospace, and the control plane's own words under it (#962). There is
- * no retry, because no retry can help.
+ * as a 500 and had a screen reader announce it as urgent on every visit, and
+ * `LoadError` no longer has a kind for it. This is the same information, stated
+ * calmly as a `status`: the cause, the setting in monospace, and the control
+ * plane's own words under it (#962). There is no retry, because no retry can
+ * help.
  *
  * `i18nKey` names the screen's own copy, which needs a `title` and a `body`
  * under it. The body carries one `<0>` element around the setting's name, and

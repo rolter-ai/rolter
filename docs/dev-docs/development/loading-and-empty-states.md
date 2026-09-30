@@ -149,12 +149,12 @@ Two rules the wording depends on:
   alone is what produced "No provider groups match." on a screen with no query.
 - **A deployment answer is not an empty state.** A control plane with no
   ClickHouse has not "served nothing yet" — it was never asked to record
-  anything, and no amount of traffic will fill the screen. That is a
-  `noAnalytics` state, not an `EmptyState`; the Dashboard rendered it as the
-  latter until #1236. Nor is it an outage: LLM Logs and the Dashboard show it
+  anything, and no amount of traffic will fill the screen. That is an
+  `AnalyticsUnavailableError`, not an `EmptyState`; the Dashboard rendered it as
+  the latter until #1236. Nor is it an outage: LLM Logs, the Dashboard, MCP
+  Logs, Cost Attribution's spend strip and Account's usage figures all show it
   as the informational `AnalyticsUnavailable` panel rather than a red alert
-  (#1984, #1976), and the other screens follow in #2016 (see
-  [error states](error-states.md)).
+  (#1984, #1976, #2016; see [error states](error-states.md)).
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.

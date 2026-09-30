@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent } from "storybook/test";
 
-import { AnalyticsUnavailableError, ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 
 import { LoadError } from "./LoadError";
@@ -126,9 +126,9 @@ export const WithoutRetryHandle: Story = {
 /**
  * Every kind at once, against one resource noun.
  *
- * Five of the eight bodies carry `{{resource}}` and the title of a sixth does
- * not, so the component has to interpolate both halves — before #1362 it filled
- * only the title and the reader saw the raw `{{resource}}` in the body. Catalog
+ * Some bodies carry `{{resource}}` and one title does not, so the component has
+ * to interpolate both halves — before #1362 it filled only the title and the
+ * reader saw the raw `{{resource}}` in the body. Catalog
  * parity cannot see this: the placeholder is in every locale, it was the call
  * site that dropped it. The assertion is therefore on the rendered DOM.
  */
@@ -141,7 +141,6 @@ export const EveryKind: Story = {
         new ApiError("insufficient role", 403),
         new ApiError("no session", 401, "open_mode_no_session"),
         new ApiError("no such endpoint: /api/v1/orgs", 404, "no_such_endpoint"),
-        new AnalyticsUnavailableError("analytics is not configured"),
         new TypeError("Failed to fetch"),
         new ApiError("database connection pool exhausted", 500),
         new ApiError("I'm a teapot", 418),
@@ -152,7 +151,7 @@ export const EveryKind: Story = {
   ),
   play: async ({ canvas }) => {
     const alerts = await canvas.findAllByRole("alert");
-    await expect(alerts).toHaveLength(8);
+    await expect(alerts).toHaveLength(7);
     for (const alert of alerts) {
       // no unresolved interpolation anywhere on screen, in either half
       await expect(alert.textContent).not.toContain("{{");
