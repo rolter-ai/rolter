@@ -575,10 +575,15 @@ OpenTelemetry Collector config document from the enabled rows instead: one
 connector, receiving from the `otlp` receiver rolter's own
 `OTEL_EXPORTER_OTLP_*` export targets.
 
-Point a collector at it with the confmap HTTP provider
-(`otelcol --config=http://control:4001/api/v1/connectors/collector-config`,
-bearer-authenticated the same as any other control-plane endpoint), or fetch it
-on a schedule and reload. `sampling_rate` becomes a `probabilistic_sampler`
+The endpoint answers a superadmin principal only, and a collector has no session
+to present one, so a collector is not pointed at it: that would put the admin
+token in the collector's own deployment. The dashboard's **Collector config**
+dialog (#1195, #2106) shows the document and the full endpoint URL, built from the
+control plane's public base, and the operator saves the document as the collector's
+config file, or an automation fetches it with its own credential and reloads the
+collector. A connector that is switched off is left out of the document, and the
+dashboard creates connectors switched off unless its add sheet's start switch is on
+(#2349). `sampling_rate` becomes a `probabilistic_sampler`
 processor scoped to that connector's own pipeline, since sampling is now the
 collector's decision, applied independently per destination rather than once
 for the whole deployment. A managed secret (`managed_auth_secret`) is decrypted
