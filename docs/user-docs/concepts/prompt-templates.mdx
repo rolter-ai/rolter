@@ -21,6 +21,8 @@ Variable names start with a letter or underscore and contain only letters, digit
 
 A version can be assigned to the entire organization, the current project, an individual route, or a virtual key. Leave its scope list empty to save it without deploying it anywhere.
 
+The control plane validates a version when it is created, through the API as well as the dashboard, and answers HTTP 400 with every problem it found: a variable that is both required and defaulted, a variable declared twice, a placeholder with no declared variable, a malformed placeholder, or no decorators at all. Nothing is stored until the content is valid.
+
 Scope assignment belongs to the version. Once a version is published, both its content and scopes remain immutable. Create a new draft to make a change.
 
 Every published template whose scopes match a request applies to it, in slug order. No scope takes precedence over another: a route-scoped template and a project-scoped one both decorate a request that matches both.

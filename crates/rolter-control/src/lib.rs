@@ -36,6 +36,8 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+#[cfg(feature = "postgres")]
+mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
 // secret-stripping are covered by the default-feature test run too; only the
 // route it backs needs postgres
@@ -792,7 +794,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
 
     let Some(internal_addr) = args.internal_addr else {
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
         return Ok(());
     };
 
@@ -802,10 +806,51 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // both listeners share the process: if either dies the control plane is
     // degraded (no config propagation, or no dashboard), so exit rather than
     // limp on with half a control plane
-    tokio::try_join!(async { axum::serve(listener, app).await }, async {
-        axum::serve(internal_listener, internal).await
-    },)?;
+    tokio::try_join!(
+        async {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+        async {
+            axum::serve(internal_listener, internal)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+    )?;
     Ok(())
+}
+
+/// Resolve once the process receives a shutdown signal (Ctrl-C on all
+/// platforms, or `SIGTERM` on Unix, which is what orchestrators send).
+///
+/// Every caller installs its own listener; tokio broadcasts a signal to all of
+/// them, so this coexists with the gateway's own handler when both planes share
+/// a process under `rolter easy-up`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
+        _ = terminate => tracing::info!("received SIGTERM, draining"),
+    }
 }
 
 /// Everything the API did not match falls through to the built SPA.
@@ -1862,6 +1907,11 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     // with its digest blanked the list maps every tenant and its people
     config.db_virtual_keys.clear();
     config.mcp_oauth_sessions.clear();
+    // a postgres store holding the KEK unseals every static mcp credential into
+    // this list for the snapshot, and a file config carries them in the clear
+    // (#1938). The whole list goes rather than just `credential`: each row also
+    // names its tenant's org and upstream url, and the dashboard reads none of it
+    config.mcp_servers.clear();
     // which org owns a row is the gateway's business (#1844). the rows
     // themselves, every org's providers, routes and groups, are still listed:
     // whether this anonymous document may describe that topology at all is #1840
@@ -2429,7 +2479,8 @@ mod tests {
     #[test]
     fn dashboard_config_carries_no_secrets() {
         use rolter_core::config::{
-            McpOAuthSessionConfig, ProviderConfig, VirtualKeyConfig, VirtualKeyRecord,
+            McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ProviderConfig, VirtualKeyConfig,
+            VirtualKeyRecord,
         };
         let mut config = GatewayConfig::default();
         config.providers.push(ProviderConfig {
@@ -2460,6 +2511,17 @@ mod tests {
             .unwrap(),
         );
         config.logging.clickhouse_url = Some("http://ch:pass@clickhouse:8123".into());
+        // as `PostgresConfigStore::load` hands it over once the KEK has unsealed
+        // it for the snapshot (#1938)
+        config.mcp_servers.push(McpServerConfig {
+            id: "srv".into(),
+            org_id: "org-of-an-mcp-tenant".into(),
+            slug: "tools".into(),
+            url: "https://mcp.tenant.internal/sse".into(),
+            auth_kind: McpAuthKind::Bearer,
+            credential: Some("mcp-bearer-secret".into()),
+            ..Default::default()
+        });
 
         redact_config_for_dashboard(&mut config);
 
@@ -2476,6 +2538,9 @@ mod tests {
             "user:pw",
             "u:p@",
             "ch:pass",
+            "mcp-bearer-secret",
+            "org-of-an-mcp-tenant",
+            "mcp.tenant.internal",
         ] {
             // the message names the seed, not the serialised document: a
             // failing run must not print the very thing it is guarding
@@ -2491,6 +2556,7 @@ mod tests {
         );
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
+        assert!(config.mcp_servers.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
             Some("http://clickhouse:8123/")

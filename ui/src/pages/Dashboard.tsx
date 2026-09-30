@@ -1,6 +1,7 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
@@ -12,7 +13,7 @@ import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListSkeleton, LoadingRegion, StatGridSkeleton } from "@/components/LoadingState";
-import { StatCard } from "@/components/ui/stat-card";
+import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import { Table } from "@/components/ui/table";
 import {
   AnalyticsUnavailableError,
@@ -20,10 +21,12 @@ import {
   fetchAnalyticsSummary,
   fetchAnalyticsTimeseries,
   fetchInvocations,
+  type AnalyticsByModelRow,
   type InvocationRow,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
 import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
@@ -55,8 +58,30 @@ const pollEvery =
   (query: { state: { status: string; data: unknown } }): number | false =>
     query.state.status === "error" && query.state.data === undefined ? false : ms;
 
-// the shared categorical sequence (#1245), not a fifth hand-written list
-const BAR_PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"];
+// the bars show this many models. the donut keeps one more slice than that
+// before it rolls the rest into "Other", so the models on the bars are always
+// the donut's first slices, in the same colours
+const BARS_SHOWN = 6;
+
+// the models in the order every card colours them by (#1994): the read arrives
+// by cost, and the bars used to re-sort it by requests while the donut kept it
+function byRequests(models: AnalyticsByModelRow[]) {
+  return rankedByRequests(models.map((m) => ({ model: m.model, requests: num(m.requests) })));
+}
+
+// the recent requests sit in a card that already has the frame, so the table
+// drops its own, which drew a second border 24px inside the first. a phone has
+// less room than four columns need: at 16px padding and with the model wrapping
+// onto several lines, the `ms` column scrolled out of reach. so below `sm` the
+// cells give up 8px of padding each, and the model column (the second) takes
+// whatever the other three leave and truncates in it, its full name on hover,
+// rather than wrapping. `relative` on the row is what the row link stretches to
+// cover
+const RECENT_TABLE = cn(
+  "rounded-md border-0 [&_tbody_tr]:relative",
+  "[&_th]:px-2 [&_td]:px-2 sm:[&_th]:px-4 sm:[&_td]:px-4",
+  "[&_th:nth-child(2)]:w-full [&_td:nth-child(2)]:max-w-0 [&_td:nth-child(2)]:truncate",
+);
 
 function isUnavailable(err: unknown): boolean {
   return err instanceof AnalyticsUnavailableError;
@@ -257,7 +282,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             const unmeasured = t("pages.dashboard.notMeasured");
             const why = t("pages.dashboard.noRequestsInWindow");
             return (
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
+              <div className={STAT_GRID}>
                 <StatCard label={t("pages.dashboard.statRequests")} value={fmt.number(requests)} />
                 <StatCard label={t("pages.dashboard.statSpend")} value={money(num(s?.cost_usd))} />
                 <StatCard
@@ -309,7 +334,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">{t("pages.dashboard.spendTitle")}</CardTitle>
+            <CardTitle>{t("pages.dashboard.spendTitle")}</CardTitle>
             {/* the amounts follow the deployment's currency, so the subtitle
                 names it rather than claiming dollars (#1182) */}
             <CardDescription>{t("pages.dashboard.spendSub", { currency })}</CardDescription>
@@ -365,7 +390,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">{t("pages.dashboard.trafficTitle")}</CardTitle>
+            <CardTitle>{t("pages.dashboard.trafficTitle")}</CardTitle>
             <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
           </CardHeader>
           <CardContent>
@@ -379,7 +404,12 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               }
             >
               {(models) => {
-                const traffic = models.map((m) => ({ label: m.model, value: num(m.requests) }));
+                const traffic = byRequests(models).map((m, i) => ({
+                  label: m.model,
+                  value: m.requests,
+                  color: modelColor(i),
+                }));
+                const total = traffic.reduce((a, m) => a + m.value, 0);
                 return traffic.length === 0 ? (
                   <p className="py-16 text-center text-sm text-muted-foreground">
                     {t("pages.dashboard.noTraffic")}
@@ -388,8 +418,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                   <Donut
                     segments={traffic}
                     size={150}
-                    centerLabel={fmtK(traffic.reduce((a, m) => a + m.value, 0))}
-                    centerSub={t("pages.dashboard.requests")}
+                    maxSegments={BARS_SHOWN + 1}
+                    centerLabel={fmtK(total)}
+                    // the caption agrees with the count, and russian has four forms
+                    centerSub={t("pages.dashboard.requests", { count: total })}
                   />
                 );
               }}
@@ -405,7 +437,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
               {t("pages.dashboard.last24h")}
             </CardDescription>
-            <CardTitle className="text-base">{t("pages.dashboard.byModelTitle")}</CardTitle>
+            <CardTitle>{t("pages.dashboard.byModelTitle")}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
             <CardRead
@@ -424,16 +456,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               }
             >
               {(models) => {
-                const barMax = Math.max(1, ...models.map((m) => num(m.requests)));
-                const bars = [...models]
-                  .sort((a, b) => num(b.requests) - num(a.requests))
-                  .slice(0, 6)
-                  .map((m, i) => ({
-                    label: m.model,
-                    value: num(m.requests),
-                    pct: (num(m.requests) / barMax) * 100,
-                    color: BAR_PALETTE[i] ?? "var(--chart-5)",
-                  }));
+                const ranked = byRequests(models);
+                const barMax = Math.max(1, ...ranked.map((m) => m.requests));
+                const bars = ranked.slice(0, BARS_SHOWN).map((m, i) => ({
+                  label: m.model,
+                  value: m.requests,
+                  pct: (m.requests / barMax) * 100,
+                  color: modelColor(i),
+                }));
                 return bars.length === 0 ? (
                   <p className="py-10 text-center text-sm text-muted-foreground">
                     {t("pages.dashboard.noTraffic")}
@@ -471,7 +501,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             >
               {recentFeed}
             </CardDescription>
-            <CardTitle className="text-base">{t("pages.dashboard.recentTitle")}</CardTitle>
+            <CardTitle>{t("pages.dashboard.recentTitle")}</CardTitle>
           </CardHeader>
           <CardContent>
             <CardRead
@@ -487,17 +517,25 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 ) : (
                   <Table
                     rowKey="id"
+                    className={RECENT_TABLE}
                     columns={[
                       {
                         key: "t",
                         header: t("pages.dashboard.colTime"),
                         mono: true,
-                        width: "92px",
+                        render: (_, row) => (
+                          <RequestTime
+                            ts={row.ts as string}
+                            requestId={row.requestId as string}
+                            model={row.model as string}
+                          />
+                        ),
                       },
                       {
                         key: "model",
                         header: t("pages.dashboard.colModel"),
                         mono: true,
+                        render: (v) => <span title={v as string}>{v as string}</span>,
                       },
                       {
                         key: "status",
@@ -514,7 +552,8 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                     data={
                       rows.map((r: InvocationRow) => ({
                         id: r.request_id || r.ts,
-                        t: fmt.time(r.ts),
+                        ts: r.ts,
+                        requestId: r.request_id,
                         model: r.model,
                         status: num(r.status),
                         lat: Math.round(num(r.latency_ms)),
@@ -528,6 +567,37 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         </Card>
       </div>
     </PageBody>
+  );
+}
+
+// when a request happened, and the way into it. the clock is always there; the
+// day sits under it only on a row that is not from today, since a window of 24
+// hours crosses midnight and a bare clock then reads as today's. the row opens
+// the request in LLM Logs: the link is the time cell's, stretched over the row
+// (`after:absolute`, against the `relative` row in `RECENT_TABLE`), and is the
+// keyboard's and the screen reader's way in, named for the request it opens. a
+// row with no request id has nothing to open, so it is the time alone
+function RequestTime({ ts, requestId, model }: { ts: string; requestId: string; model: string }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const day = fmt.dayUnlessToday(ts);
+  const when = (
+    <>
+      <span className="block">{fmt.time(ts)}</span>
+      {day && <span className="block text-[0.6875rem] text-[color:var(--text-subtle)]">{day}</span>}
+    </>
+  );
+  if (!requestId) return when;
+  const stamp = fmt.dateTime(ts);
+  return (
+    <Link
+      to={`/logs?request_id=${encodeURIComponent(requestId)}`}
+      title={stamp}
+      aria-label={t("pages.dashboard.openRequest", { model, time: stamp })}
+      className="rounded-sm hover:underline focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-inset focus-visible:after:ring-ring after:absolute after:inset-0"
+    >
+      {when}
+    </Link>
   );
 }
 

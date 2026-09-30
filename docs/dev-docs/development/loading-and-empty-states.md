@@ -54,6 +54,12 @@ table for a screen reader (see [list tables](list-tables.md)):
 `ListLoadingRow` and its sibling `ListEmptyRow` take the query itself and decide
 from it, for the reason the next rule gives.
 
+A skeleton stands in the grid its content is laid out in, or the tiles change
+columns when the data lands. `StatGridSkeleton` lays out in `STAT_GRID`
+(`ui/src/components/ui/stat-card.tsx`), the grid a strip of stat cards uses, so a
+screen puts its loaded `StatCard`s in the same constant. Its stories compare the
+tracks of the two at every width (#1994).
+
 The state row is as wide as the part of the table the reader sees, not as its
 column floor (#2362). Below the floor the table scrolls sideways, and a row the
 width of the floor put the empty title and its call to action centred past the
@@ -173,7 +179,11 @@ Two rules the wording depends on:
 `Table` takes an `empty` prop rendered in a full-width row, so the placeholder
 sits inside the table's border with the column headers above it rather than
 floating beneath a header row over nothing. It comes with `read`, the query the
-rows came from, and renders only once that read succeeded.
+rows came from, and renders only once that read succeeded. Like the list-table
+state row, the placeholder is as wide as the frame the table scrolls in and not
+as the table (#2420): it sticks to the frame's left edge, so on a 375px phone
+the title, the description and the button are centred on what is visible. See
+[list tables](list-tables.md).
 
 An empty result is never routed through `LoadError`; see
 [error states](error-states.md) for why.

@@ -22,6 +22,8 @@
 //!   string, exactly as the provider path does.
 
 use axum::extract::{Path, State};
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -130,11 +132,8 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
             "storing connector credentials requires {KEK_ENV}"
         )));
     };
-    kek.encrypt(secret).map_err(|_| {
-        ApiError::Core(Error::Store(
-            "failed to encrypt connector credential".into(),
-        ))
-    })
+    kek.encrypt(secret)
+        .map_err(|_| ApiError::Curated("failed to encrypt connector credential".into()))
 }
 
 async fn list(
@@ -285,7 +284,7 @@ async fn test_delivery(
         _ => None,
     };
 
-    let outcome = deliver_probe(&state.http, &kind, &endpoint, token.as_deref()).await;
+    let outcome = deliver_probe(&state.egress, &kind, &endpoint, token.as_deref()).await;
     let checked_at = Utc::now();
     let (status, error) = match &outcome {
         Ok(()) => ("healthy", None),
@@ -318,7 +317,7 @@ async fn test_delivery(
 /// so a test cannot pollute the operator's backend with synthetic records while
 /// still exercising the whole path: DNS, TLS, the URL, and the credential.
 async fn deliver_probe(
-    http: &reqwest::Client,
+    egress: &Arc<rolter_core::EgressPolicy>,
     kind: &str,
     endpoint: &str,
     authorization: Option<&str>,
@@ -326,9 +325,14 @@ async fn deliver_probe(
     if kind != "otlp_http" {
         return Err(format!("unsupported connector kind '{kind}'"));
     }
+    // not `state.http`: that client follows redirects and resolves without the
+    // egress policy, so a sink could bounce the probe to link-local
+    let http = crate::egress_client::builder(egress)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|_| "delivery client unavailable".to_string())?;
     let mut request = http
         .post(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
         .json(&serde_json::json!({ "resourceLogs": [] }));
     if let Some(value) = authorization {
         request = request.header(axum::http::header::AUTHORIZATION, value);
@@ -376,6 +380,51 @@ async fn audit(state: &ControlState, principal: &Principal, action: &str, connec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1949: a sink whose name resolves only to an address the policy denies
+    /// is refused before any connection is made.
+    #[tokio::test]
+    async fn a_sink_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let outcome = deliver_probe(
+            &crate::egress_client::testing::deny_loopback(),
+            "otlp_http",
+            &listener.url("/v1/logs"),
+            None,
+        )
+        .await;
+        assert_eq!(outcome, Err("could not connect to the sink".to_string()));
+        assert_eq!(listener.accepted(), 0);
+    }
+
+    /// #1949: the probe used the shared client, which follows ten redirects, so
+    /// a sink that passed the check could bounce it anywhere.
+    #[tokio::test]
+    async fn a_redirect_from_the_sink_is_not_followed() {
+        let target = crate::egress_client::testing::Counter::start().await;
+        let location = format!("http://127.0.0.1:{}/", target.port);
+        let app = axum::Router::new().fallback(move || {
+            let location = location.clone();
+            async move {
+                (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, location)],
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let sink = format!(
+            "http://{}/v1/logs",
+            listener.local_addr().expect("an address")
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let outcome = deliver_probe(&Arc::default(), "otlp_http", &sink, None).await;
+        assert_eq!(outcome, Err("sink returned HTTP 302".to_string()));
+        assert_eq!(target.accepted(), 0);
+    }
 
     fn input(endpoint: &str, sampling_rate: f64) -> ConnectorInput {
         ConnectorInput {

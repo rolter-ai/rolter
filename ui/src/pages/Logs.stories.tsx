@@ -10,12 +10,16 @@ import {
   expectEmptyState,
   expectGateAnswered,
   expectLoadError,
+  expectNoUxEvent,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
+  uxEvents,
   type FetchStub,
   type Recorder,
 } from "./story-harness";
@@ -24,11 +28,14 @@ import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
+  atLaptop,
   atMobile,
   atTablet,
+  expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
 } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 // the formatter the screen itself uses, so a story asserts the house format
 // rather than a second copy of it
@@ -118,7 +125,7 @@ const inStatusClass = (status: number, wanted: string) =>
  * dimensions arrive as comma-separated sets on the query string and narrow the
  * rows *before* the page is cut. A stub that ignored them would let a story
  * pass while the screen quietly filtered the page itself again. The status
- * class and the one exact model narrow the same way.
+ * class, the one exact model and the unpriced flag (#1986) narrow the same way.
  */
 const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
   scoped(async (input) => {
@@ -132,11 +139,13 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       const customers = set("customer");
       const model = url.searchParams.get("model");
       const status = url.searchParams.get("status") ?? "all";
+      const onlyUnpriced = url.searchParams.get("unpriced") === "true";
       const data = rows.filter(
         (r) =>
           (!units || units.includes(r.business_unit_id)) &&
           (!customers || customers.includes(r.customer_id)) &&
           (!model || r.model === model) &&
+          (!onlyUnpriced || Number(r.unpriced ?? 0) === 1) &&
           inStatusClass(Number(r.status), status),
       );
       return json({ data });
@@ -180,6 +189,32 @@ const logReads = (recorder: Recorder) =>
 const refusing = (): FetchStub =>
   scoped(async () => json({ error: { message: "clickhouse refused" } }, 500));
 
+/**
+ * The columns the table is drawing, and whether it has to scroll sideways to
+ * draw them (#1986). The narrower columns give way to the width the table has
+ * rather than scrolling out of it, so a read of the headers and of a row's
+ * cells says what a reader can see without touching the scrollbar.
+ */
+const tableShape = (canvasElement: HTMLElement) => {
+  const table = canvasElement.querySelector("table") as HTMLTableElement;
+  const scroller = table.parentElement as HTMLElement;
+  const drawn = (el: Element) => getComputedStyle(el).display !== "none";
+  return {
+    scroller,
+    columns: Array.from(table.querySelectorAll("thead th"))
+      .filter(drawn)
+      .map((th) => th.textContent ?? ""),
+    cells: (row: number) =>
+      Array.from(table.querySelectorAll("tbody tr")[row].querySelectorAll("td")).filter(drawn),
+    scrolls: scroller.scrollWidth > scroller.clientWidth,
+  };
+};
+
+/** Every cell of the row is inside the scroll area's own frame, not past its edge. */
+async function expectRowInFrame(shape: ReturnType<typeof tableShape>, row: number) {
+  for (const cell of shape.cells(row)) await expectInFrame(cell, shape.scroller);
+}
+
 const meta = {
   title: "Screens/Logs",
   component: Logs,
@@ -209,7 +244,7 @@ export const Loaded: Story = {
     // one house stamp per row for the timestamp column, milliseconds included,
     // and one grouped number for tokens — neither follows the browser locale (#1182)
     for (const r of ROWS)
-      await expect(await canvas.findAllByText(fmt.dateTimeMs(r.ts))).toHaveLength(1);
+      await expect(await canvas.findAllByText(fmt.timeMs(r.ts))).toHaveLength(1);
     await expect(await canvas.findAllByText(fmt.number(12345))).toHaveLength(2);
     await expect(await canvas.findByText(fmt.currency(0.0123, "USD"))).toBeInTheDocument();
     // a fetch that succeeded is the one state the toolbar may call live (#1984)
@@ -242,21 +277,31 @@ export const EveryRowShowsItsOwnTimestamp: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(BURST[0].ts));
+    await canvas.findByText(fmt.timeMs(BURST[0].ts));
     const stamps = Array.from(
       canvasElement.querySelectorAll("tbody tr"),
       (tr) => tr.querySelector("td")?.textContent ?? "",
     );
-    await expect(stamps).toEqual(BURST.map((r) => fmt.dateTimeMs(r.ts)));
+    await expect(stamps).toEqual(BURST.map((r) => fmt.timeMs(r.ts)));
     // four distinct instants, milliseconds included, and the tie kept both rows
     await expect(new Set(stamps).size).toBe(4);
-    await expect(canvas.getAllByText(fmt.dateTimeMs(burstTs(750)))).toHaveLength(2);
+    await expect(canvas.getAllByText(fmt.timeMs(burstTs(750)))).toHaveLength(2);
+
+    // the cell is the clock and nothing else: the date is not repeated on every
+    // row of a day's log, and the full stamp is one hover away (#1986)
+    for (const stamp of stamps) await expect(stamp).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+    const time = canvasElement.querySelector("tbody tr time");
+    await expect(time).toHaveAttribute("datetime", BURST[0].ts);
+    await expect(time).toHaveAttribute("title", fmt.dateTimeMs(BURST[0].ts));
   },
 };
 
 /**
  * #969/#1182: a request against a model with no price used to read `$0.0000`,
- * which claims the request was free. The cell says "unknown" instead.
+ * which claims the request was free. It then read a dim dash, the same glyph as
+ * a missing provider, with the reason in a tooltip a keyboard or a touch never
+ * reaches. The cell now says `unpriced` in words, in mono, and keeps the
+ * explanation on hover (#1986).
  */
 export const UnpricedRequestsAreNotFree: Story = {
   render: () => (
@@ -266,10 +311,17 @@ export const UnpricedRequestsAreNotFree: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const marker = await canvas.findByTitle(/no price is configured/i);
-    await expect(marker).toBeInTheDocument();
-    // and the false zero is nowhere on the screen
+    const label = await canvas.findByText("unpriced");
+    await expect(label).toBeVisible();
+    await expect(label.closest("td")).toHaveTextContent(/^unpriced$/);
+    await expect(getComputedStyle(label).fontFamily).toMatch(/mono/i);
+    await expect(label.getAttribute("title")).toMatch(/no price is configured/i);
+    // only the row with no price carries it: the other one shows its money
+    await expect(canvas.getAllByText("unpriced")).toHaveLength(1);
+    await expect(canvas.getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
+    // and neither the false zero nor a dash standing in for it is on the screen
     await expect(canvas.queryByText(fmt.currency(0, "USD"))).toBeNull();
+    await expect(label.closest("td")).not.toHaveTextContent("—");
   },
 };
 
@@ -289,6 +341,7 @@ export const AZeroCostThatIsNotUnpricedReadsAsFree: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(fmt.currency(0, "USD"))).toBeInTheDocument();
     await expect(canvas.queryByTitle(/no price is configured/i)).toBeNull();
+    await expect(canvas.queryByText("unpriced")).toBeNull();
   },
 };
 
@@ -409,7 +462,7 @@ export const ARetryResumesTheFeed: Story = {
     await expectLoadError(canvasElement, /failed to return request logs/i);
     upstream = "ok";
     await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
-    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
     await expect(canvas.getByText("Streaming · 2 requests")).toBeVisible();
     await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
     // and it polls again
@@ -440,7 +493,7 @@ export const TheWindowRollsForwardWithEveryPoll: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await within(canvasElement).findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await within(canvasElement).findByText(fmt.timeMs(ROWS[0].ts));
     await waitFor(() => expect(logSinces(windowed).length).toBeGreaterThan(2));
     const [first, second, third] = logSinces(windowed);
     await expect(second).toBeGreaterThan(first);
@@ -473,7 +526,7 @@ export const ARefreshFailureKeepsTheRows: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await failARefresh(canvasElement);
-    await expect(canvas.getByText(fmt.dateTimeMs(ROWS[0].ts))).toBeVisible();
+    await expect(canvas.getByText(fmt.timeMs(ROWS[0].ts))).toBeVisible();
     await expectLoadError(canvasElement, /failed to return request logs/i);
     await expect(canvas.queryByText(/Streaming/)).toBeNull();
 
@@ -485,7 +538,7 @@ export const ARefreshFailureKeepsTheRows: Story = {
 /** Load the rows, then fail every read after them until the toolbar says so. */
 async function failARefresh(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
-  await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+  await canvas.findByText(fmt.timeMs(ROWS[0].ts));
   upstream = "failing";
   // the next poll, plus the screen's own two retries (1s, then 2s), which
   // outlast the shared 5s budget on a busy runner
@@ -554,6 +607,169 @@ export const Forbidden: Story = {
   },
 };
 
+// the log read is held until the play lets it go, so a story can watch what
+// the screen reports while the skeleton is still up
+let releaseLog: () => void = () => {};
+let logGate: Promise<void> = Promise.resolve();
+const holdTheLog = () => {
+  logGate = new Promise<void>((resolve) => {
+    releaseLog = resolve;
+  });
+};
+
+const answersModels = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") {
+      await logGate;
+      return json({ data: ROWS });
+    }
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models") return json(MODELS);
+    return json([]);
+  }),
+);
+
+/**
+ * #2017: `screen_ready` followed the model list, which only feeds the rail's
+ * picker. It fired as soon as that answered, over a log table that was still a
+ * skeleton. It now waits for the log read and fires once, when it lands.
+ */
+export const TheScreenIsNotReadyWhileTheLogIsOut: Story = {
+  beforeEach: () => {
+    holdTheLog();
+    return recordUxEvents();
+  },
+  render: () => (
+    <UxScreenProvider screen="logs">
+      <Harness fetchStub={answersModels.stub}>
+        <Logs />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectSkeleton(canvasElement);
+    // the model list has answered, and the screen is still not interactive
+    await waitFor(() =>
+      expect(answersModels.calls.some((c) => c.url.includes("/api/v1/models"))).toBe(true),
+    );
+    await sleep(300);
+    expectNoUxEvent("time_to_interactive");
+
+    releaseLog();
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    const ready = await expectUxEvent("time_to_interactive");
+    await expect(ready.screen).toBe("logs");
+    await expect(typeof ready.duration_ms).toBe("number");
+    await expect(uxEvents().filter((e) => e.action === "time_to_interactive")).toHaveLength(1);
+  },
+};
+
+// the model list never answers; the log does
+const noModelList = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") return json({ data: ROWS });
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models") return new Promise<Response>(() => {});
+    return json([]);
+  }),
+);
+
+/** #2017: a model list that never comes back does not hold the screen back from being ready. */
+export const TheScreenIsReadyWithoutTheModelList: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="logs">
+      <Harness fetchStub={noModelList.stub}>
+        <Logs />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(ROWS[0].ts));
+    const ready = await expectUxEvent("time_to_interactive");
+    await expect(ready.screen).toBe("logs");
+  },
+};
+
+// what a ClickHouse outage looks like: the analytics reads fail, and the
+// catalogue the rail's picker reads answers as usual
+const failedRead = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.startsWith("/api/v1/analytics/"))
+      return json({ error: { message: "clickhouse refused" } }, 500);
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models") return json(MODELS);
+    return json([]);
+  }),
+);
+
+/**
+ * #2017: a ClickHouse outage fails every log read and recorded nothing, because
+ * the `error_state` row followed the model list. It follows the log read now,
+ * once for the failure and not once per retry or per poll, in the region the
+ * empty state names so the two pair up in the dead-states query.
+ */
+export const AFailedLogReadIsAnErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="logs">
+      <Harness fetchStub={failedRead.stub}>
+        <Logs pollMs={FAST_POLL_MS} />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return request logs/i);
+    const failed = await expectUxEvent("error_state", "request-logs");
+    await expect(failed.screen).toBe("logs");
+    await expect(failed.outcome).toBe("error");
+    // the feed stopped polling on the failure, so nothing adds a second row
+    await sleep(FAST_POLL_MS * 3);
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
+  },
+};
+
+// the log answers and the model list fails
+const failedModelList = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") return json({ data: ROWS });
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname === "/api/v1/models")
+      return json({ error: { message: "catalogue down" } }, 500);
+    return json([]);
+  }),
+);
+
+/** #2017: the model list failing is the rail's problem, not the screen's: no `error_state` for it. */
+export const AFailedModelListIsNotTheLogsError: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="logs">
+      <Harness fetchStub={failedModelList.stub}>
+        <Logs />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(ROWS[0].ts));
+    await waitFor(() =>
+      expect(failedModelList.calls.some((c) => c.url.includes("/api/v1/models"))).toBe(true),
+    );
+    await sleep(300);
+    expectNoUxEvent("error_state");
+    await expectUxEvent("time_to_interactive");
+  },
+};
+
 /**
  * #1203: the 248px filter rail and the 380px detail drawer both sat in the
  * flow, so at 375px the table had 127px and the page scrolled sideways. Both
@@ -568,7 +784,150 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    await expectNoHorizontalOverflow();
+
+    // #1986: the table kept an 880px floor and scrolled inside its card, so at
+    // 375px only Time and Model were in view and Cost was off the edge. Now the
+    // columns that matter share the width and the rest give way; the provider,
+    // latency and tokens are all in the drawer
+    const shape = tableShape(canvasElement);
+    await expect(shape.columns).toEqual(["Time", "Model", "Status", "Cost", "Details"]);
+    await expect(shape.scrolls).toBe(false);
+    for (const row of [0, 1]) {
+      await expectRowInFrame(shape, row);
+      for (const cell of shape.cells(row)) await expectInViewport(cell);
+    }
+    // the unpriced row says so in the cost column that is on screen
+    await expect(within(shape.cells(1)[3]).getByText("unpriced")).toBeVisible();
+    await expect(within(shape.cells(0)[3]).getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
+  },
+};
+
+// a model name long enough to wrap in the narrowest column it gets, and a row
+// with no price, so the cost column holds both of the things it can hold
+const LONG_MODEL = row({
+  request_id: "req-long-model",
+  model: "claude-sonnet-4-5-20250929",
+  provider: "anthropic",
+  cost_usd: 0,
+  unpriced: 1,
+});
+
+/**
+ * #1986 in Russian, the longer copy: Time, Status and Cost all stay in frame
+ * at 375px with a model name that has to wrap, and the page does not scroll
+ * sideways.
+ */
+export const TimeStatusAndCostStayInFrameInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs([...ROWS, LONG_MODEL])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const clock = formattersFor("ru").timeMs(ROWS[0].ts);
+    await canvas.findByText(clock);
+    await expectNoHorizontalOverflow();
+
+    const shape = tableShape(canvasElement);
+    await expect(shape.columns).toEqual([
+      ru.pages.logs.time,
+      ru.pages.logs.model,
+      ru.pages.logs.status,
+      ru.pages.logs.cost,
+      ru.analytics.details,
+    ]);
+    await expect(shape.scrolls).toBe(false);
+    for (const row of [0, 1, 2]) {
+      await expectRowInFrame(shape, row);
+      for (const cell of shape.cells(row)) await expectInViewport(cell);
+    }
+    // the label is the Russian one, and it is in the cost column of the row
+    await expect(within(shape.cells(2)[3]).getByText(ru.analytics.unpriced)).toBeVisible();
+    // the clock is the locale's own: a comma before the milliseconds
+    await expect(shape.cells(0)[0]).toHaveTextContent(/^\d{2}:\d{2}:\d{2},\d{3}$/);
+  },
+};
+
+/**
+ * #1986: the table is narrower than the window once the filter rail and the
+ * detail drawer are open beside it, and it gives up columns to the width it
+ * actually has, widest need first, never Status or Cost. With both panels open
+ * at 1280px it is 652px wide and keeps six columns without scrolling.
+ */
+export const TheColumnsFollowTheWidthTheTableHas: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    const all = ["Time", "Model", "Provider", "Status", "Latency", "Tokens", "Cost", "Details"];
+    await expect(tableShape(canvasElement).columns).toEqual(all);
+
+    // the rail takes 248px and the table still has room for all eight
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    await canvas.findByRole("button", { name: "Hide filters" });
+    await waitFor(() => expect(tableShape(canvasElement).columns).toEqual(all));
+
+    // the drawer takes 380px more: the provider and the tokens go, in that order
+    await userEvent.click(canvas.getByRole("button", { name: /Open request details for gpt-4o/i }));
+    await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() =>
+      expect(tableShape(canvasElement).columns).toEqual([
+        "Time",
+        "Model",
+        "Status",
+        "Latency",
+        "Cost",
+        "Details",
+      ]),
+    );
+    const shape = tableShape(canvasElement);
+    await expect(shape.scrolls).toBe(false);
+    await expectRowInFrame(shape, 0);
+    await expectRowInFrame(shape, 1);
+    // Status and Cost are both in the row that was opened
+    await expect(within(shape.cells(0)[2]).getByText("200")).toBeVisible();
+    await expect(within(shape.cells(0)[4]).getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
+
+    // closing the drawer gives the columns back
+    await userEvent.click(canvas.getByRole("button", { name: "Close details" }));
+    await waitFor(() => expect(tableShape(canvasElement).columns).toEqual(all));
+  },
+};
+
+/**
+ * #1986: beside the 232px sidebar the 380px drawer left the table 412px at the
+ * `lg` breakpoint, and 164px with the rail open too. It overlays the table as a
+ * sheet below `xl`, the same panel out of the flow, so the table keeps the
+ * whole window.
+ */
+export const TheDrawerOverlaysTheTableBelowXl: Story = {
+  ...atLaptop,
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const dialog = await within(document.body).findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("200")).toBeVisible());
+    // not the inline panel beside the table, and the table has not been squeezed
+    await expect(canvas.queryByRole("complementary", { name: "Details" })).toBeNull();
+    const shape = tableShape(canvasElement);
+    await expect(shape.columns).toHaveLength(8);
+    await expect(shape.scrolls).toBe(false);
     await expectNoHorizontalOverflow();
   },
 };
@@ -582,7 +941,7 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
     await expectNoHorizontalOverflow();
   },
 };
@@ -917,6 +1276,99 @@ export const AStaleAddressStillReadsTrue: Story = {
   },
 };
 
+const onlyUnpriced = recording(serverFiltered(ROWS));
+
+/**
+ * #1986: the log could not be narrowed to the requests with no price, which is
+ * the list a FinOps reader wants once the spend total says it is incomplete.
+ * The rail's Cost section carries an "Unpriced only" check, the server is asked
+ * for it before the page is cut like every other filter here, the address holds
+ * it, and Clear filters takes it back out.
+ */
+export const TheUnpricedFilterIsSentToTheServer: Story = {
+  render: () => (
+    <Harness fetchStub={onlyUnpriced.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o", "internal-llama"]);
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const only = await canvas.findByRole("checkbox", { name: "Unpriced only" });
+    await expect(only).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(only);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(only).toHaveAttribute("aria-checked", "true");
+    await expect(lastLogQuery(onlyUnpriced).get("unpriced")).toBe("true");
+    await expect(addressOf(canvasElement).get("unpriced")).toBe("true");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    // unticked, or cleared with the rest of the rail, it leaves the address and the request
+    await userEvent.click(only);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).has("unpriced")).toBe(false);
+    await expect(lastLogQuery(onlyUnpriced).has("unpriced")).toBe(false);
+
+    await userEvent.click(only);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).toString()).toBe("");
+    await expect(canvas.getByRole("checkbox", { name: "Unpriced only" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  },
+};
+
+const unpricedLink = recording(serverFiltered(ROWS));
+
+/** #1986: a link to the unpriced view opens it, asked for before the first page, with the rail showing it. */
+export const AnUnpricedLinkComesBackFiltered: Story = {
+  parameters: { address: "/logs?unpriced=true" },
+  render: () => (
+    <Harness fetchStub={unpricedLink.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    const reads = unpricedLink.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams);
+    for (const sent of reads) await expect(sent.get("unpriced")).toBe("true");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    await expect(await canvas.findByRole("checkbox", { name: "Unpriced only" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  },
+};
+
+const staleUnpriced = recording(serverFiltered(ROWS));
+
+/** An address that says `unpriced=yes` is not the filter: only `true` is, as with an unknown status. */
+export const AnUnpricedValueItDoesNotKnowReadsAsOff: Story = {
+  parameters: { address: "/logs?unpriced=yes" },
+  render: () => (
+    <Harness fetchStub={staleUnpriced.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(lastLogQuery(staleUnpriced).has("unpriced")).toBe(false);
+    await expect(canvas.getByRole("button", { name: "Filters" })).toBeVisible();
+  },
+};
+
 /** the detail drawer names the unit and the customer, not their uuids */
 export const DetailDrawerNamesTheAttribution: Story = {
   render: () => (
@@ -1007,8 +1459,8 @@ export const AFailedRequestLeadsWithItsError: Story = {
       "Routing",
       "Usage and cost",
       "Attribution",
-      "Request",
-      "Response",
+      // neither body was stored, so the two share one note and one heading
+      "Request and response",
     ]);
     const error = drawer.getByRole("region", { name: /^Error — / });
     await expect(error).toHaveTextContent(FAILED.error);
@@ -1124,7 +1576,7 @@ export const TheOpenRowIsMarkedSelected: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
     const [first, second] = Array.from(canvasElement.querySelectorAll("tbody tr"));
     const surface = (el: Element) => getComputedStyle(el).backgroundColor;
     await expect(first).toHaveAttribute("aria-selected", "false");
@@ -1202,6 +1654,34 @@ export const AFailedRequestInTheSheet: Story = {
 };
 
 /**
+ * #1986: the drawer had the same dash-and-tooltip for a request with no price.
+ * It has room to say it, so the cost row names the state and the sentence that
+ * explains it is text on the screen, not a title attribute.
+ */
+export const AnUnpricedRequestSaysSoInTheDrawer: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for internal-llama/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const usage = within(panel).getByRole("region", { name: "Usage and cost" });
+    const cost = within(usage).getByText("Cost", { selector: "dt" }).nextElementSibling;
+    await expect(within(cost as HTMLElement).getByText("unpriced")).toBeVisible();
+    // the reason is a sentence in the row, read by anyone who reads the drawer
+    const reason = within(cost as HTMLElement).getByText(/no price is configured/i);
+    await expect(reason).toBeVisible();
+    await expect(reason.getAttribute("title")).toBeNull();
+    await expect(cost).not.toHaveTextContent(fmt.currency(0, "USD"));
+  },
+};
+
+/**
  * #954: an absent payload used to read "payload logging is off", which is one
  * of three possible reasons and often the wrong one. A viewer cannot read the
  * logging settings — that route is superadmin-only — so the screen does not
@@ -1220,12 +1700,17 @@ export const AnAbsentPayloadSaysWhy: Story = {
       await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
-    // both the Request and the Response panel explain themselves
-    await expect(drawer.getAllByText(/retention window has already passed/i)).toHaveLength(2);
+    // the two bodies are missing for the same reason, so it is said once, under
+    // a heading that names both (#2131)
+    await expect(drawer.getAllByText(/retention window has already passed/i)).toHaveLength(1);
+    await expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible();
+    await expect(drawer.queryByRole("heading", { name: "Request" })).toBeNull();
+    await expect(drawer.queryByRole("heading", { name: "Response" })).toBeNull();
     // and it is not the old claim, which asserted a reason it could not know
     await expect(drawer.queryByText("payload logging is off")).not.toBeInTheDocument();
-    const link = drawer.getAllByRole("link", { name: "Open log settings" })[0];
-    await expect(link).toHaveAttribute("href", "/logs-settings");
+    const links = drawer.getAllByRole("link", { name: "Open log settings" });
+    await expect(links).toHaveLength(1);
+    await expect(links[0]).toHaveAttribute("href", "/logs-settings");
   },
 };
 
@@ -1249,9 +1734,9 @@ export const AMemberIsNotSentToLogSettings: Story = {
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     // absent is also what the link looks like before the gate has spoken
     await expectGateAnswered();
-    await expect(drawer.getAllByText(/retention window has already passed/i)).toHaveLength(2);
+    await expect(drawer.getAllByText(/retention window has already passed/i)).toHaveLength(1);
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
-    await expect(drawer.getAllByText(/set by a superadmin/i)).toHaveLength(2);
+    await expect(drawer.getAllByText(/set by a superadmin/i)).toHaveLength(1);
   },
 };
 
@@ -1280,10 +1765,10 @@ export const ASuperadminIsSentToLogSettings: Story = {
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     await expectGateAnswered();
     // the settings were read, so the reason names the retention window's length
-    await waitFor(() => expect(drawer.getAllByText(/24h retention window/i)).toHaveLength(2));
+    await waitFor(() => expect(drawer.getAllByText(/24h retention window/i)).toHaveLength(1));
     const links = drawer.getAllByRole("link", { name: "Open log settings" });
-    await expect(links).toHaveLength(2);
-    for (const link of links) await expect(link).toHaveAttribute("href", "/logs-settings");
+    await expect(links).toHaveLength(1);
+    await expect(links[0]).toHaveAttribute("href", "/logs-settings");
     await expect(drawer.queryByText(/set by a superadmin/i)).toBeNull();
   },
 };
@@ -1306,9 +1791,124 @@ export const AWithheldPayloadSaysItIsTheRole: Story = {
       await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
-    await expect(drawer.getAllByText(/hidden for your role/i)).toHaveLength(2);
+    await expect(drawer.getAllByText(/hidden for your role/i)).toHaveLength(1);
+    await expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible();
     await expect(drawer.queryByText(/retention window/i)).not.toBeInTheDocument();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).not.toBeInTheDocument();
+  },
+};
+
+const REQUEST_BODY = '{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}';
+const RESPONSE_BODY = '{"id":"chatcmpl-1","choices":[{"message":{"content":"pong"}}]}';
+
+/** Both bodies stored: two code blocks under their own headings, and nothing to explain. */
+export const BothBodiesAreShownWithNoNote: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({ request_payload: REQUEST_BODY, response_payload: RESPONSE_BODY }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
+    await expect(drawer.getByRole("region", { name: /^Request — / })).toHaveTextContent("ping");
+    await expect(drawer.getByRole("region", { name: /^Response — / })).toHaveTextContent("pong");
+    await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
+    await expect(drawer.queryByText(/No (request|response) body was stored/)).toBeNull();
+    await expect(drawer.queryByText(/retention window/i)).toBeNull();
+    await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
+  },
+};
+
+/**
+ * #2131: a request with one body keeps the explanation for the missing one
+ * only. The gateway stores a request's two bodies together, so one of them
+ * being there means capture was on, the request passed the allow-list and the
+ * retention window is open; none of the three guesses applies, and the log
+ * settings cannot fill a body that was empty when it was logged. The note says
+ * that and offers no settings link.
+ */
+export const ARequestWithOneBodyExplainsTheMissingOneOnly: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([row({ request_payload: REQUEST_BODY, response_payload: "" })])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
+    await expect(drawer.getByRole("region", { name: /^Request — / })).toHaveTextContent("ping");
+    await expect(drawer.getByRole("heading", { name: "Response" })).toBeVisible();
+    await expect(drawer.getAllByText(/No response body was stored/)).toHaveLength(1);
+    await expect(drawer.queryByText(/No request body was stored/)).toBeNull();
+    await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
+    // the three guesses are for a request with neither body
+    await expect(drawer.queryByText(/retention window|capture/i)).toBeNull();
+    await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
+  },
+};
+
+/** The other half: a stored response with no request body. */
+export const AResponseWithNoRequestBodyExplainsTheRequestOnly: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([row({ request_payload: "", response_payload: RESPONSE_BODY })])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
+    await expect(drawer.getByRole("region", { name: /^Response — / })).toHaveTextContent("pong");
+    await expect(drawer.getByRole("heading", { name: "Request" })).toBeVisible();
+    await expect(drawer.getAllByText(/No request body was stored/)).toHaveLength(1);
+    await expect(drawer.queryByText(/No response body was stored/)).toBeNull();
+    await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
+  },
+};
+
+/**
+ * #2131 in Russian, the copy that ran to five lines twice: one note, one
+ * heading that names both bodies and one link, in a drawer that holds them
+ * without pushing the page sideways.
+ */
+export const TheAbsentPayloadNoteIsOnceInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", {
+        name: ru.analytics.openDetails.replace("{{model}}", "gpt-4o"),
+      }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("heading", { name: ru.pages.logs.requestAndResponse })).toBeVisible(),
+    );
+    await expect(dialog.getAllByText(/срок хранения тела уже истёк/)).toHaveLength(1);
+    await expect(dialog.queryByRole("heading", { name: ru.pages.logs.request })).toBeNull();
+    await expect(
+      dialog.getAllByRole("link", { name: ru.pages.logs.payloadSettingsLink }),
+    ).toHaveLength(1);
+    await expectNoHorizontalOverflow();
   },
 };
 
@@ -1328,10 +1928,13 @@ const unconfigured = recording(
  * `status` panel: nothing on the screen is an alert, and nothing polls.
  */
 export const NoAnalyticsStore: Story = {
+  beforeEach: recordUxEvents,
   render: () => (
-    <Harness fetchStub={unconfigured.stub}>
-      <Logs pollMs={FAST_POLL_MS} />
-    </Harness>
+    <UxScreenProvider screen="logs">
+      <Harness fetchStub={unconfigured.stub}>
+        <Logs pollMs={FAST_POLL_MS} />
+      </Harness>
+    </UxScreenProvider>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -1355,6 +1958,11 @@ export const NoAnalyticsStore: Story = {
     await sleep(FAST_POLL_MS * 3);
     await expect(panel!.isConnected).toBe(true);
     await expect(logReads(unconfigured)).toBe(reads);
+
+    // it is an answer, so the screen is ready, and a supported deployment, so it
+    // is not an error state (#2017)
+    await expectUxEvent("time_to_interactive");
+    expectNoUxEvent("error_state");
   },
 };
 
@@ -1409,13 +2017,13 @@ export const PagesOnTheCursor: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await canvas.findByText(fmt.timeMs(SIXTY[0].ts));
     await expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(50);
     await expect(canvas.getByRole("button", { name: "Previous page" })).toBeDisabled();
 
     await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
     // the second page starts at the 51st row and holds the ten that are left
-    await canvas.findByText(fmt.dateTimeMs(SIXTY[50].ts));
+    await canvas.findByText(fmt.timeMs(SIXTY[50].ts));
     await waitFor(() => expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(10));
     const sent = paged.calls.filter((c) => c.url.includes("/analytics/invocations"));
     const cursor = `${SIXTY[49].ts}|${SIXTY[49].request_id}`;
@@ -1428,9 +2036,9 @@ export const PagesOnTheCursor: Story = {
     await expect(canvas.getByRole("button", { name: "Next page" })).toBeDisabled();
 
     await userEvent.click(canvas.getByRole("button", { name: "Previous page" }));
-    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await canvas.findByText(fmt.timeMs(SIXTY[0].ts));
     await expect(canvas.getByText("p1")).toBeInTheDocument();
-    await expect(canvas.queryByText(fmt.dateTimeMs(SIXTY[50].ts))).toBeNull();
+    await expect(canvas.queryByText(fmt.timeMs(SIXTY[50].ts))).toBeNull();
   },
 };
 
@@ -1448,13 +2056,13 @@ export const AnEmptyLaterPageIsTheEnd: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(FIFTY[0].ts));
+    await canvas.findByText(fmt.timeMs(FIFTY[0].ts));
     await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
     await expectEmptyState(canvasElement, /reached the end/);
     await expect(canvas.queryByText(/Nothing logged yet/)).toBeNull();
 
     await userEvent.click(canvas.getByRole("button", { name: "Back to newest" }));
-    await canvas.findByText(fmt.dateTimeMs(FIFTY[0].ts));
+    await canvas.findByText(fmt.timeMs(FIFTY[0].ts));
     await expect(canvas.getByText("p1")).toBeInTheDocument();
   },
 };
@@ -1468,7 +2076,7 @@ export const ALaterPageFails: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(SIXTY[0].ts));
+    await canvas.findByText(fmt.timeMs(SIXTY[0].ts));
     await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
     await expectLoadError(canvasElement, /failed to return request logs/i);
     // the way back is still there
@@ -1577,7 +2185,7 @@ export const APastedRequestIdOpensItsRow: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await canvas.findByText(fmt.timeMs(FEED[0].ts));
     await expect(canvas.getByRole("button", { name: "Pause" })).toBeVisible();
     // a pasted id keeps what the clipboard put around it out of the request
     await pasteLookup(canvasElement, `  ${ARCHIVED.request_id}\n`);
@@ -1626,7 +2234,7 @@ export const AnIdThatMatchesNothingSaysSo: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await canvas.findByText(fmt.timeMs(FEED[0].ts));
     await pasteLookup(canvasElement, "req-unknown-5150");
 
     await expectEmptyState(canvasElement, new RegExp(lookupCopy.missTitle), /Clear lookup/);
@@ -1668,7 +2276,7 @@ export const ATraceIdListsEveryRequestOnIt: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText(fmt.dateTimeMs(FEED[0].ts));
+    await canvas.findByText(fmt.timeMs(FEED[0].ts));
     await pasteLookup(canvasElement, `00-${TRACE}-b7ad6b7169203331-01`);
 
     await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(TRACED.length));

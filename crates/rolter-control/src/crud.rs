@@ -28,8 +28,8 @@ use rolter_store::postgres::models::{
     VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, BusinessUnitRepo,
-    CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
+    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
+    BusinessUnitRepo, CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
     PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
     RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
@@ -205,6 +205,7 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/memberships/{id}", delete(delete_membership))
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
+        .route("/api/v1/audit-log", get(list_deployment_audit_log))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -216,7 +217,16 @@ pub(crate) fn pool(state: &ControlState) -> &PgPool {
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
+    /// An error from the store, the core or a dependency. A `4xx` renders its
+    /// own message, which is validation written for the caller. A `500` renders
+    /// only [`INTERNAL_ERROR`] and logs the rest: `Error::Store` in particular
+    /// carries raw driver text from every `e.to_string()` call site, which can
+    /// name hosts, ports, schemas or query fragments (#2268).
     Core(Error),
+    /// A server-side failure (500) whose message was written for the caller on
+    /// purpose, such as a store that is not configured or a write it refused.
+    /// Rendered verbatim, so it must never carry anything a driver said.
+    Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
     /// missing or invalid credentials (401)
@@ -235,6 +245,10 @@ impl From<Error> for ApiError {
     }
 }
 
+/// What a `500` says when its cause is not one of the [`ApiError::Curated`]
+/// messages. The cause itself goes to the log, not the response.
+pub(crate) const INTERNAL_ERROR: &str = "internal server error";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // read before the match consumes `self`
@@ -243,14 +257,20 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let (status, message) = match self {
-            Self::Core(err) => {
-                let status = match &err {
-                    Error::NotFound(_) => StatusCode::NOT_FOUND,
-                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-                (status, err.to_string())
-            }
+            Self::Core(err) => match &err {
+                Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+                Error::Config(_) | Error::Unauthorized => {
+                    (StatusCode::BAD_REQUEST, err.to_string())
+                }
+                _ => {
+                    tracing::error!(error = %err, "control-plane request failed");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        INTERNAL_ERROR.to_string(),
+                    )
+                }
+            },
+            Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
@@ -501,12 +521,47 @@ async fn list_audit_log(
         cap!("audit_log", Read),
     )
     .await?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page(org_id, &filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count(org_id, &filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Every audit row in the deployment, org-less account events included. Those
+/// are the ones no org read returns: a superadmin's own sign-ins, attempts
+/// against an unregistered address and the events of someone removed from
+/// every org (#1858).
+// a security-auditor role (#1834) would be admitted here alongside superadmin
+async fn list_deployment_audit_log(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(query): Query<AuditLogQuery>,
+) -> ApiResult<Json<AuditLogPageResponse>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_audit_log", Read))?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page_all(&filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count_all(&filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Parse the audit-log query string into a store filter and a clamped page
+/// size; shared by the per-org and the deployment-wide read.
+fn audit_log_filter(query: &AuditLogQuery) -> ApiResult<(AuditLogFilter, i64)> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let direction = query.direction.unwrap_or_default();
     let filter = AuditLogFilter {
         actor_user_id: query.actor,
-        action: normalized_filter(query.action, "action")?,
-        target_type: normalized_filter(query.target_type, "target_type")?,
+        action: normalized_filter(query.action.clone(), "action")?,
+        target_type: normalized_filter(query.target_type.clone(), "target_type")?,
         start_at: query.start_at,
         end_at: query.end_at,
         cursor: query
@@ -514,7 +569,7 @@ async fn list_audit_log(
             .as_deref()
             .map(parse_audit_cursor)
             .transpose()?,
-        direction: direction.into(),
+        direction: query.direction.unwrap_or_default().into(),
     };
     if filter
         .start_at
@@ -524,16 +579,24 @@ async fn list_audit_log(
             "start_at must be before or equal to end_at".to_string(),
         )));
     }
-    let page = AuditLogRepo(pool(&state))
-        .list_page(org_id, &filter, limit)
-        .await?;
-    let has_next = match direction {
-        AuditLogQueryDirection::Next => page.has_more,
-        AuditLogQueryDirection::Previous => !page.entries.is_empty(),
+    Ok((filter, limit))
+}
+
+fn audit_log_response(
+    page: AuditLogPage,
+    filter: &AuditLogFilter,
+    total: Option<i64>,
+) -> AuditLogPageResponse {
+    let previous = matches!(filter.direction, AuditLogDirection::Previous);
+    let has_next = if previous {
+        !page.entries.is_empty()
+    } else {
+        page.has_more
     };
-    let has_previous = match direction {
-        AuditLogQueryDirection::Next => filter.cursor.is_some(),
-        AuditLogQueryDirection::Previous => page.has_more,
+    let has_previous = if previous {
+        page.has_more
+    } else {
+        filter.cursor.is_some()
     };
     let next_cursor = has_next
         .then(|| page.entries.last().map(encode_audit_cursor))
@@ -541,19 +604,14 @@ async fn list_audit_log(
     let previous_cursor = has_previous
         .then(|| page.entries.first().map(encode_audit_cursor))
         .flatten();
-    let total = if query.include_total {
-        Some(AuditLogRepo(pool(&state)).count(org_id, &filter).await?)
-    } else {
-        None
-    };
-    Ok(Json(AuditLogPageResponse {
+    AuditLogPageResponse {
         items: page.entries,
         next_cursor,
         previous_cursor,
         has_next,
         has_previous,
         total,
-    }))
+    }
 }
 
 #[derive(Deserialize)]
@@ -1277,6 +1335,41 @@ struct CreatePromptTemplateVersion {
     decorators: serde_json::Value,
 }
 
+/// Refuse version content `PromptTemplatesConfig::validate` would reject.
+///
+/// The same check the snapshot's config validation runs, so a version the
+/// gateway could never be served is refused here instead of stored (#2279).
+/// The placeholder id only has to be non-empty; the problems name the content.
+fn check_prompt_template_version(
+    id: Uuid,
+    variables: &serde_json::Value,
+    decorators: &serde_json::Value,
+) -> ApiResult<()> {
+    let malformed = |what: &str, e: serde_json::Error| {
+        ApiError::Core(Error::Config(format!("{what} are malformed: {e}")))
+    };
+    let candidate = rolter_core::prompt_templates::PromptTemplate {
+        id: id.to_string(),
+        version: 1,
+        routes: Vec::new(),
+        scopes: Vec::new(),
+        variables: serde_json::from_value(variables.clone())
+            .map_err(|e| malformed("variables", e))?,
+        decorators: serde_json::from_value(decorators.clone())
+            .map_err(|e| malformed("decorators", e))?,
+    };
+    let problems =
+        rolter_core::prompt_templates::PromptTemplatesConfig::template_problems(&candidate);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Core(Error::Config(format!(
+            "invalid prompt template version: {}",
+            problems.join("; ")
+        ))))
+    }
+}
+
 async fn create_prompt_template_version(
     principal: Principal,
     State(state): State<ControlState>,
@@ -1293,6 +1386,7 @@ async fn create_prompt_template_version(
             "decorators must be a JSON array".to_string(),
         )));
     }
+    check_prompt_template_version(id, &body.variables, &body.decorators)?;
     let repo = PromptTemplateRepo(pool(&state));
     let template = repo.get_template(id).await?;
     authorize(
@@ -1363,6 +1457,16 @@ async fn set_prompt_template_version(
         cap!("prompt_template", Update),
     )
     .await?;
+    // a version stored before create-time validation may still be malformed;
+    // publishing it would only get it pruned from the snapshot
+    if let Some(stored) = repo
+        .list_versions(id)
+        .await?
+        .into_iter()
+        .find(|v| v.version == version)
+    {
+        check_prompt_template_version(id, &stored.variables, &stored.decorators)?;
+    }
     let template = repo.publish_version(id, version).await?;
     log_audit(
         state,
@@ -2335,7 +2439,7 @@ async fn test_provider(
 
     let parsed_kind: rolter_core::ProviderKind =
         serde_json::from_value(serde_json::Value::String(kind.clone()))
-            .map_err(|_| Error::Store(format!("unknown provider kind '{kind}'")))?;
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
 
     // same precedence the snapshot uses: a sealed key wins over the env var
     let sealed: Option<(Vec<u8>, Vec<u8>)> =
@@ -5595,5 +5699,74 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use super::*;
+
+    async fn rendered(err: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Driver text as `store_err` and every `e.to_string()` call site pass it
+    /// on: it names the host, the credentials in the url and the schema (#2268).
+    const DRIVER_TEXT: &str = "error returned from database: relation \"tenant_a.users\" \
+         does not exist (postgres://rolter:hunter2@db.internal:5432/rolter)";
+
+    #[tokio::test]
+    async fn a_raw_server_error_never_reaches_a_500_body() {
+        for err in [
+            Error::Store(DRIVER_TEXT.into()),
+            Error::Upstream(DRIVER_TEXT.into()),
+            Error::Io(std::io::Error::other(DRIVER_TEXT)),
+        ] {
+            let (status, body) = rendered(ApiError::Core(err)).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(body["error"]["message"], INTERNAL_ERROR);
+            let text = body.to_string();
+            for fragment in ["db.internal", "hunter2", "tenant_a"] {
+                assert!(!text.contains(fragment), "{fragment} reached the body");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_curated_message_still_reaches_a_500_body() {
+        let (status, body) = rendered(ApiError::Curated(
+            crate::ingest_failure::INSERT_FAILED.to_string(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"]["message"],
+            crate::ingest_failure::INSERT_FAILED
+        );
+    }
+
+    /// Validation and lookups are written for the caller, and stay as they are.
+    #[tokio::test]
+    async fn a_4xx_keeps_its_own_message() {
+        let (status, body) = rendered(ApiError::Core(Error::Config(
+            "slug must be lowercase".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("slug must be lowercase"));
+        let (status, body) = rendered(ApiError::Core(Error::NotFound("team 42".into()))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("team 42"));
     }
 }

@@ -87,6 +87,37 @@ export const Desktop: Story = {
 };
 
 /**
+ * The landing screen's reference render is one day of traffic, not figures
+ * over empty charts. The shell's stub answered the summary and nothing else, so
+ * the tiles said 132 requests beside a spend chart, a donut, bars and a request
+ * log that said there was nothing (#1994), and the latency tile read "0 ms"
+ * from a summary with no average.
+ */
+export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const figures = await canvas.findByTestId("dashboard-figures");
+    await expect(await within(figures).findByText("132")).toBeVisible();
+    await expect(figures).toHaveTextContent(/215\s*ms/);
+    await expect(
+      await canvas.findByRole("img", { name: en.pages.dashboard.spendChartAria }),
+    ).toBeVisible();
+    await expect(
+      await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),
+    ).toBeVisible();
+    await expect(
+      await within(canvas.getByTestId("dashboard-recent")).findByText("gpt-4o", {
+        selector: "td span",
+      }),
+    ).toBeVisible();
+    await expect(canvas.queryByText(en.analytics.noRowsYet)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.nothingLogged)).toBeNull();
+  },
+};
+
+/**
  * Between `md` and `lg` the rail is still in the flow but folded to icons, and
  * the splitter is gone: dragging a 52px strip wider is not that width's
  * affordance.

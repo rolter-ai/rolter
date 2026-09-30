@@ -441,6 +441,12 @@ export interface InvocationsQuery extends AnalyticsWindow {
   request_id?: string;
   /** a W3C trace id, matched exactly; searches every retained row the same way */
   trace_id?: string;
+  /**
+   * Only the requests the gateway recorded as unpriced. The server narrows on
+   * the flag it stored per request, before the page is cut, so a page of 50 is
+   * 50 unpriced requests
+   */
+  unpriced?: boolean;
   limit?: number;
   /**
    * The previous page's `next_cursor`, handed back unchanged; omitted for the
@@ -474,6 +480,7 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.status) params.set("status", query.status);
   if (query.request_id) params.set("request_id", query.request_id);
   if (query.trace_id) params.set("trace_id", query.trace_id);
+  if (query.unpriced) params.set("unpriced", "true");
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();

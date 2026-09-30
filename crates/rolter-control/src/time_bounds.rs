@@ -413,11 +413,17 @@ mod tests {
 
     /// Routes that document a `since`, `until` or `cursor` but never hand it to
     /// a best-effort parse, each with the reason.
-    const CHECKED_ELSEWHERE: &[(&str, &str)] = &[(
-        "/api/v1/orgs/{org_id}/audit-log",
-        "postgres-backed: `start_at`/`end_at` deserialize as `DateTime<Utc>` and the \
-         cursor through `parse_audit_cursor`, so a malformed one is already refused",
-    )];
+    const CHECKED_ELSEWHERE: &[(&str, &str)] = &[
+        (
+            "/api/v1/orgs/{org_id}/audit-log",
+            "postgres-backed: `start_at`/`end_at` deserialize as `DateTime<Utc>` and the \
+             cursor through `parse_audit_cursor`, so a malformed one is already refused",
+        ),
+        (
+            "/api/v1/audit-log",
+            "the deployment-wide read shares the per-org handler's query parsing",
+        ),
+    ];
 
     /// Whether this module's router harness can reach `path`. `/me/usage`
     /// authenticates a live session before its query string is read, so the
