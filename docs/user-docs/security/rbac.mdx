@@ -69,6 +69,21 @@ The most specific grant wins even when it is the lower role: an org admin who is
 
 Each control is disabled for callers who do not hold admin at the scope the dashboard is showing, and its tooltip names the role it needs. The server still checks every request, against your role at the grant's own scope. When it refuses with `403`, the dialog stays open with the server's message and says that revoking at that scope takes admin there or above. If a grant is already gone, for example revoked in another tab or removed by SSO reconciliation, the revoke counts as done and the list refreshes.
 
+### Inviting people on the Users screen
+
+**Invite user** opens a sheet that brings someone in at the organization, a team or a project.
+
+- **Email and method.** The default method is an invitation link: the person chooses their own password, so nobody else ever knows it. **Set a password now** creates the account yourself and is the exception below.
+- **Scope.** The whole organization, any team, or any project in any team, picked by name, the same picker as when you grant a role. The role field is named for the scope you pick (**Org role**, **Team role**, **Project role**) and lists **Admin**, **Member** and **Viewer**. An invitation is authorized at the scope it grants, so a team admin invites into their own team or its projects without an org admin. If the control plane refuses it, the sheet stays open with its message and says that inviting at that scope takes admin there or on a scope above it. `POST /api/v1/orgs/{org_id}/invitations` with `scope_type` and `scope_id`.
+- **An account created with a password** takes its role on the whole organization only, because that endpoint has no scope. The scope picker is locked to the organization and says so. Invite by link to choose a team or a project.
+- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. rolter does not send email, so you send the link yourself. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the button says the copy failed and the link stays on screen until you press **Done**: select it and copy it by hand.
+
+Under the users table, **Pending invitations** lists every invitation that has not been accepted or revoked: the address, the role, the scope by name, who sent it and when it expires. A link works once and expires after seven days. An invitation past its expiry stays in the list, marked **Expired**, because it still holds its address: an organization keeps one unaccepted invitation per address, and inviting an address that already has one is refused with the control plane's own message. Revoke the listed one first. **Sent by** is read from the users list, so it says **not recorded** for an invitation sent with the admin token or by an account since deleted, and **unknown** for a sender you cannot list.
+
+An org admin sees every invitation of the organization, a team admin the ones into the teams and projects they administer, and someone with neither sees no section.
+
+The **×** at the end of a row revokes the invitation. The confirmation names the address, the role and the scope, and says the link stops working straight away; for an expired one it says revoking only frees the address. `DELETE /api/v1/invitations/{id}`. If the person accepted in the meantime, the control plane answers `404` because only unaccepted invitations can be revoked: the dialog says it is no longer pending and the list refreshes. Like the role controls, the button is disabled for callers without admin at the scope the dashboard is showing, and the server checks again at the invitation's own scope.
+
 ## Who sees which request logs
 
 The request log, the usage and spend rollups and provider health are not only gated — each answer is filtered to the caller:

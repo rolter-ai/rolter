@@ -156,6 +156,7 @@
     "resources": {
       "skillVersions": "the skill's versions",
       "users": "users",
+      "invitations": "pending invitations",
       "provisioningTokens": "provisioning tokens",
       "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
@@ -2574,6 +2575,7 @@
       "linkTitle": "Invitation link",
       "linkBody": "Shown once and not recoverable after you close this dialog.",
       "linkSendTo": "Send this link to <0>{{email}}</0>. It works once and expires in seven days.",
+      "linkGrants": "Accepting it grants {{role}} on {{scope}}.",
       "copyLink": "Copy link",
       "done": "Done",
       "inviteTitle": "Invite user",
@@ -2588,6 +2590,10 @@
       "passwordOptionalHint": "at least 8 characters if set; blank leaves an SSO-only account",
       "passwordOptionalPlaceholder": "leave blank for SSO-only",
       "orgRole": "Org role",
+      "teamRole": "Team role",
+      "projectRole": "Project role",
+      "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
+      "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
@@ -2618,6 +2624,23 @@
       "newRole": "New role",
       "newRolePlaceholder": "Pick a role",
       "alreadyHeld": "{{email}} already holds {{role}} on {{scope}}.",
+      "invitations": {
+        "title": "Pending invitations",
+        "summary_one": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "summary_other": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "colInvitee": "Invitee",
+        "colRole": "Role",
+        "colScope": "Scope",
+        "colSentBy": "Sent by",
+        "colExpires": "Expires",
+        "senderNotRecorded": "not recorded",
+        "senderUnknown": "unknown",
+        "expired": "Expired",
+        "emptyTitle": "No pending invitations",
+        "emptyBody": "An invitation waits here until it is accepted, expires or is revoked.",
+        "revoke": "Revoke the invitation for {{email}}",
+        "toastRevoked": "Revoked the invitation for {{email}}"
+      },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
         "revokeNone": "{{email}} loses {{role}} on {{scope}} straight away, and no other grant of theirs reaches it.",
@@ -2637,7 +2660,13 @@
         "changeSelf": "It is your own role, so a lower one may take away access you are using right now.",
         "changeConfirm": "Change role",
         "changePartial": "{{next}} was granted, but {{role}} could not be revoked. {{email}} holds both roles on {{scope}}, and {{applies}} applies there until {{role}} is revoked.",
-        "changeRetry": "Retry revoking {{role}}"
+        "changeRetry": "Retry revoking {{role}}",
+        "invitationTitle": "Revoke the invitation for {{email}}?",
+        "invitationBody": "The link stops working straight away, so {{email}} cannot join {{scope}} as {{role}} with it. You can invite them again afterwards.",
+        "invitationExpired": "This invitation has already expired and its link no longer works. Revoking it removes it from the list and lets you invite {{email}} again.",
+        "invitationConfirm": "Revoke invitation",
+        "invitationRefused": "Revoking an invitation into {{scope}} takes Admin there or on a scope above it.",
+        "invitationGone": "This invitation is no longer pending, most likely because it was just accepted. The list has been refreshed."
       }
     },
     "config": {
