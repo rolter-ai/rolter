@@ -59,6 +59,8 @@ The effective configuration does not say where each rule came from, so the scree
 
 A route can switch a rule off for its own traffic. Name the rule in the route's `advanced.guardrails.disable` list. Every other route keeps running it, and a rule added later reaches every route that does not name it. A rule the route lists under `advanced.guardrails.enable` runs there even if `disable` names it too.
 
+A name that no rule has is a typo, and a configuration file that contains one is refused at load. The control plane is more forgiving about dashboard rules: if you pause, rename or delete a rule that a route still names, the route's override is left out of the configuration sent to the gateways and reported on `GET /api/v1/config/problems`, rather than blocking every other change. Update or remove the override to clear the notice.
+
 ```toml
 [[routes]]
 model = "internal-support-bot"

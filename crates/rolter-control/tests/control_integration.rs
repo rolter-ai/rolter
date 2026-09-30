@@ -330,6 +330,155 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
+/// Pausing a dashboard guardrail rule that a route still names in an override
+/// must not turn every later snapshot into a 500: the override is pruned and
+/// reported instead (#2306).
+#[tokio::test]
+async fn pausing_a_guardrail_rule_named_by_a_route_override_keeps_the_snapshot_served() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(req: reqwest::RequestBuilder, what: &str) -> Value {
+        let resp = req.send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        assert!(status.is_success(), "{what} failed ({status}): {json}");
+        json
+    }
+    let rule_body = |enabled: bool| {
+        json!({
+            "name": "no-secrets", "enabled": enabled, "source_type": "pattern",
+            "pattern": "secret", "stage": "pre_call", "action": "block",
+            "include_system": false, "position": 0
+        })
+    };
+
+    let org = send(
+        client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": "Acme", "slug": "acme"})),
+        "org",
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = send(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/teams"))
+            .json(&json!({"name": "Platform"})),
+        "team",
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = send(
+        client
+            .post(format!("{base}/api/v1/teams/{team_id}/projects"))
+            .json(&json!({"name": "Gateway"})),
+        "project",
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = send(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(
+                &json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+            ),
+        "provider",
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = send(
+        client
+            .post(format!("{base}/api/v1/projects/{project_id}/routes"))
+            .json(&json!({"model": "gpt-4o", "strategy": "round_robin"})),
+        "route",
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    send(
+        client
+            .post(format!("{base}/api/v1/routes/{route_id}/targets"))
+            .json(&json!({"provider_id": provider_id, "weight": 1})),
+        "target",
+    )
+    .await;
+    let rule = send(
+        client
+            .post(format!("{base}/api/v1/guardrails/rules"))
+            .json(&rule_body(true)),
+        "rule",
+    )
+    .await;
+    let rule_id = rule["id"].as_str().expect("rule id");
+    send(
+        client
+            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+            .json(&json!({"advanced": {"guardrails": {"disable": ["no-secrets"]}}})),
+        "advanced",
+    )
+    .await;
+
+    let snapshot = |client: reqwest::Client, base: String| async move {
+        client
+            .get(format!("{base}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap()
+    };
+    let live = snapshot(client.clone(), base.clone()).await;
+    assert_eq!(live.status(), 200);
+    let live: Value = live.json().await.unwrap();
+    let overrides = live["config"]["routes"]
+        .as_array()
+        .and_then(|r| r.iter().find(|r| r["model"] == "gpt-4o"))
+        .map(|r| r["advanced"]["guardrails"]["disable"].clone())
+        .expect("route in snapshot");
+    assert_eq!(
+        overrides,
+        json!(["no-secrets"]),
+        "precondition: override served"
+    );
+
+    // pause the rule: it leaves the effective set while the override stays
+    send(
+        client
+            .put(format!("{base}/api/v1/guardrails/rules/{rule_id}"))
+            .json(&rule_body(false)),
+        "pause",
+    )
+    .await;
+
+    let paused = snapshot(client.clone(), base.clone()).await;
+    assert_eq!(paused.status(), 200, "snapshot must survive the pause");
+    let paused: Value = paused.json().await.unwrap();
+    let route = paused["config"]["routes"]
+        .as_array()
+        .and_then(|r| r.iter().find(|r| r["model"] == "gpt-4o"))
+        .expect("route still served");
+    assert!(
+        route["advanced"]["guardrails"]["disable"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "override pruned: {route}"
+    );
+
+    let problems: Value = send(
+        client.get(format!("{base}/api/v1/config/problems")),
+        "problems",
+    )
+    .await;
+    let listed = problems["problems"].as_array().expect("problems array");
+    assert!(
+        listed.iter().any(|p| p
+            .as_str()
+            .is_some_and(|p| p.contains("gpt-4o") && p.contains("no-secrets"))),
+        "pruned override must be reported: {problems}"
+    );
+}
+
 /// One org can neither point its routes and groups at another org's providers
 /// nor take a name the gateway holds in a deployment-wide namespace, and the
 /// snapshot stays servable through every refused attempt (#1844, #1845).
