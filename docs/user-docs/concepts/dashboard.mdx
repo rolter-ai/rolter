@@ -207,9 +207,11 @@ To test one particular key on purpose — a customer's, or one you are about to 
 
 **Enter** sends the message and **Shift+Enter** adds a new line, so a prompt can run over several lines. The box grows with the draft up to about six lines, then scrolls. The **Enter** that confirms a candidate in an input method editor, as when typing Japanese, Chinese or Korean, belongs to the composition and does not send.
 
-Each chat column keeps its conversation, and any draft you have not sent, while you visit another tab. A reply still on its way when you leave lands in its column. Nothing is saved: the conversation lives in the page, so reloading or leaving the Playground clears it, and the other tabs start over each time you return to them.
+Each chat column keeps its conversation, and any draft you have not sent, while you visit another tab. So do the other tabs: Embeddings keeps the texts you edited and their projection, Image keeps the prompt and the generated images, and Audio keeps the text to synthesize and the clip, or the uploaded file's transcript. A clip that is playing pauses when you leave. A request still on its way when you leave lands where it started, so an image you are waiting on is there when you come back, and coming back never sends it again. Nothing is saved: all of it lives in the page, so reloading or leaving the Playground clears it.
 
-A screen reader hears each finished reply once it has arrived, as the model's name followed by the reply, and hears a failed send's error as an alert. Every field has a name of its own, not only a placeholder.
+Realtime is the exception. Leaving its tab closes the session and clears the event log, because a session kept alive under a tab you are not looking at would hold a WebSocket open. The tab says so above the session.
+
+A screen reader hears each finished reply once it has arrived, as the model's name followed by the reply, and hears a failed send's error as an alert. Every field has a name of its own, not only a placeholder. Each column's conversation is a region named after its model: press Tab to reach it, then the arrow keys or Page Down to scroll a long reply. The buttons a column repeats say what they act on, as in **Send to** a model and **Copy as code for** a model. In a comparison they also carry the column's number, and **Remove column** carries its number and model, so two columns holding the same model stay apart. On Embeddings each row's **Remove text** button carries the row's number.
 
 ## Markdown in the Playground
 
