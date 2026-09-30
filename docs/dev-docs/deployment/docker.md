@@ -144,6 +144,10 @@ GHCR always publishes via the built-in `GITHUB_TOKEN`. To also push to Docker Hu
 - Scale `gateway` horizontally; all replicas hot-reload config from Redis. ClickHouse and Postgres are shared.
 - Kubernetes deployments are supported through the [rolter Helm chart](kubernetes.md).
 
+## Stopping
+
+Both planes drain in-flight requests on `SIGTERM` and Ctrl-C (`SIGINT`), standalone and under `rolter easy-up`, which is the image's default command. Under `easy-up` each plane installs its own handler, so one signal starts both drains and the process exits `0` once both have finished; `docker stop` therefore returns promptly instead of waiting out the grace period for `SIGKILL`. If either plane fails, the command ends with that error. `crates/rolter/tests/easy_up_signals.rs` spawns the real binary and bounds the exit time.
+
 ## Air-gapped
 
 Running fully offline behind an internal mirror (Nexus/Artifactory/Harbor)? See
