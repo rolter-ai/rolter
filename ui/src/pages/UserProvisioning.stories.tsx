@@ -7,14 +7,19 @@ import {
   expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
+  expectToast,
   Harness as ScreenHarness,
   json,
   openOptions,
   pickOption,
+  Toasted,
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
 import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
+import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
 
@@ -135,12 +140,37 @@ function scoped(
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  toasted,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  /** mount the shell's toast queue, for a story that asserts the outcome */
+  toasted?: boolean;
+}) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-      <UserProvisioning />
+      {toasted ? (
+        <Toasted>
+          <UserProvisioning />
+        </Toasted>
+      ) : (
+        <UserProvisioning />
+      )}
     </ScreenHarness>
   );
+}
+
+/**
+ * The cells of the token's table row in column order: token, status, last sync,
+ * created, actions. Found by the row's name, so a story reads a column of one
+ * token rather than counting cells across the table.
+ */
+async function cellsOf(canvasElement: HTMLElement, name: string): Promise<HTMLElement[]> {
+  const row = await within(canvasElement).findByRole("row", { name: new RegExp(name) });
+  return within(row).getAllByRole("cell");
 }
 
 const meta = {
@@ -159,7 +189,76 @@ export const Loaded: Story = {
     await waitFor(() => expect(canvas.getByText("Okta production")).toBeVisible());
     // a token an IdP has never presented is distinguishable from a live one
     await expect(canvas.getByText("never used")).toBeVisible();
-    await expect(canvas.getByText("REVOKED")).toBeVisible();
+
+    // the status reads from the catalog, and a revoked token keeps when it was
+    // revoked on the badge
+    const copy = en.pages.userProvisioning;
+    const [, live] = await cellsOf(canvasElement, "Okta production");
+    await expect(live.textContent).toBe(copy.statusActive);
+    const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
+    await expect(revoked.textContent).toBe(copy.statusRevoked);
+    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
+      "title",
+      copy.revokedAt.replace("{{when}}", formattersFor("en").dateTime(TOKENS[2].revoked_at!)),
+    );
+  },
+};
+
+/**
+ * "Last sync" and "Created" were two date styles in one table: a numeric stamp
+ * with the clock beside a short date. Both columns show the day now, and the
+ * whole stamp is the hover (#2080).
+ */
+export const DatesShareOneStyle: Story = {
+  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
+  play: async ({ canvasElement }) => {
+    const fmt = formattersFor("en");
+    const [, , lastSync, created] = await cellsOf(canvasElement, "Okta production");
+    const lastUsed = TOKENS[0].last_used_at!;
+    await expect(lastSync.textContent).toBe(fmt.date(lastUsed));
+    await expect(created.textContent).toBe(fmt.date(NOW));
+    // the same shape in both: a short date, never the clock or the numeric stamp
+    for (const cell of [lastSync, created]) {
+      await expect(cell.textContent).toMatch(/^[A-Za-z]{3,} \d{1,2}, \d{4}$/);
+    }
+    // and the clock is one hover away, on the moment itself
+    await expect(within(lastSync).getByText(fmt.date(lastUsed))).toHaveAttribute(
+      "title",
+      fmt.dateTime(lastUsed),
+    );
+    await expect(within(created).getByText(fmt.date(NOW))).toHaveAttribute(
+      "title",
+      fmt.dateTime(NOW),
+    );
+    // a token never presented has no date to style
+    const [, , never] = await cellsOf(canvasElement, "Entra staging");
+    await expect(never.textContent).toBe(en.pages.userProvisioning.neverUsed);
+  },
+};
+
+/**
+ * The status badges were the English words `ACTIVE` and `REVOKED` in every
+ * locale (#2080). They read from the catalog, so the Russian dashboard says so
+ * in Russian.
+ */
+export const ReadsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.userProvisioning;
+    // the locale decorator switches language from an effect, after first paint
+    await waitFor(async () => {
+      const [, live] = await cellsOf(canvasElement, "Okta production");
+      await expect(live.textContent).toBe(copy.statusActive);
+    });
+    const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
+    await expect(revoked.textContent).toBe(copy.statusRevoked);
+    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
+      "title",
+      copy.revokedAt.replace("{{when}}", formattersFor("ru").dateTime(TOKENS[2].revoked_at!)),
+    );
+    // no English status anywhere on the screen, in either case
+    await expect(canvasElement.textContent).not.toMatch(/\b(active|revoked)\b/i);
   },
 };
 
@@ -209,6 +308,13 @@ export const Forbidden: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/visible to org admins only/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Issue token/ })).toBeDisabled();
+    // a refused read is not a list of zero: the lead keeps what it explains and
+    // states no count of tokens, and no empty table stands in for the refusal
+    // (#2211, which #2080 asked for)
+    await expect(canvas.getByText("/scim/v2/Users")).toBeVisible();
+    await expect(canvasElement.textContent).not.toMatch(/\d+ tokens?\b/);
+    await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
+    await expect(canvas.queryByRole("table")).toBeNull();
     // a caller who may connect nothing is not handed the address to connect it to
     await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
   },
@@ -421,7 +527,8 @@ export const IssueRejectedByTheServer: Story = {
 };
 
 // revoking is immediate and does not touch the accounts already provisioned —
-// the confirmation has to say that before the operator commits
+// the confirmation has to say that before the operator commits. the row stays
+// in the list as revoked, so the toast says revoked and not deleted (#2080)
 export const RevokeExplainsWhatItDoesNotDo: Story = {
   render: () => {
     revokedTokens.length = 0;
@@ -432,7 +539,7 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
       }
       return json([revokedTokens.length ? token({ revoked_at: NOW }) : token()]);
     });
-    return <Harness fetchStub={stub} />;
+    return <Harness fetchStub={stub} toasted />;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -446,10 +553,16 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
     await expect(modal.getByText(/nobody is deactivated or logged out/)).toBeVisible();
     await userEvent.click(modal.getByRole("button", { name: "Revoke" }));
     // the DELETE itself, not just the badge: the row re-renders off a fixture
-    // this story controls, so "REVOKED" on screen would pass a screen that
+    // this story controls, so "Revoked" on screen would pass a screen that
     // never sent the request (#1607)
     await waitFor(() => expect(revokedTokens).toEqual(["tok-1"]));
-    await waitFor(() => expect(canvas.getByText("REVOKED")).toBeVisible());
+    await waitFor(async () => {
+      const [, status] = await cellsOf(canvasElement, "Okta production");
+      await expect(status.textContent).toBe(en.pages.userProvisioning.statusRevoked);
+    });
+    // the toast describes what happened to the row that is still there
+    await expectToast(canvasElement, /Okta production revoked/);
+    await expect(canvas.queryByText(/deleted/i)).toBeNull();
   },
 };
 

@@ -2527,6 +2527,8 @@
         "lastSync": "Last sync",
         "created": "Created"
       },
+      "statusActive": "Active",
+      "statusRevoked": "Revoked",
       "revokedAt": "revoked {{when}}",
       "neverUsed": "never used",
       "revoke": "Revoke",
@@ -3660,6 +3662,7 @@
     "savedDetail": "{{what}} updated.",
     "saveFailed": "Could not save {{what}}",
     "deleted": "{{what}} deleted",
+    "revoked": "{{what}} revoked",
     "deleteFailed": "Could not delete {{what}}",
     "created": "{{what}} created",
     "exportFailed": "Could not export {{what}}"
