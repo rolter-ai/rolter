@@ -1,8 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
+import { BY_MODEL, RECENT, SERIES, SUMMARY, recentRow } from "./dashboard-fixtures";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import {
   Harness,
@@ -22,82 +23,11 @@ import {
 } from "./story-harness";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
 
 const fmt = formattersFor("en");
-
-const SUMMARY = {
-  requests: 132,
-  tokens: 1_284_000,
-  prompt_tokens: 900_000,
-  completion_tokens: 384_000,
-  cost_usd: 41.27,
-  unpriced_requests: 0,
-  unpriced_models: 0,
-  errors: 7,
-  avg_latency_ms: 214.6,
-  p50_latency_ms: 210,
-  p95_latency_ms: 980,
-};
-
-const SERIES = Array.from({ length: 6 }, (_, i) => ({
-  bucket: `2026-10-05T0${i}:00:00Z`,
-  requests: 10 + i * 3,
-  tokens: 4000 + i * 500,
-  cost_usd: 1.5 + i,
-}));
-
-const BY_MODEL = [
-  {
-    model: "gpt-4o",
-    requests: 84,
-    tokens: 800_000,
-    cost_usd: 30.1,
-    unpriced_requests: 0,
-    errors: 4,
-    p50_latency_ms: 190,
-    p95_latency_ms: 820,
-  },
-  {
-    model: "claude-sonnet-4",
-    requests: 48,
-    tokens: 484_000,
-    cost_usd: 11.17,
-    unpriced_requests: 0,
-    errors: 3,
-    p50_latency_ms: 240,
-    p95_latency_ms: 1100,
-  },
-];
-
-const RECENT = [
-  {
-    ts: "2026-10-05T12:34:56.789Z",
-    request_id: "req-1",
-    trace_id: "trace-1",
-    org_id: "org-1",
-    team_id: "team-1",
-    project_id: "project-1",
-    virtual_key_id: "vk-1",
-    model: "gpt-4o",
-    provider: "openai",
-    target: "openai/gpt-4o",
-    variant: "",
-    status: 200,
-    stream: 0,
-    cache_hit: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    prompt_tokens: 8000,
-    completion_tokens: 4345,
-    total_tokens: 12345,
-    cost_usd: 0.0123,
-    latency_ms: 842,
-    ttft_ms: 120,
-    error: "",
-  },
-];
 
 const loadedWith = (summary: typeof SUMMARY): FetchStub =>
   routes([
@@ -109,6 +39,37 @@ const loadedWith = (summary: typeof SUMMARY): FetchStub =>
   ]);
 
 const loaded = loadedWith(SUMMARY);
+
+/** `loaded`, with the by-model read answering `rows` and the recent read `recent` */
+const loadedAnswering = (answers: { byModel?: unknown[]; recent?: unknown[] }): FetchStub =>
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (answers.byModel && path === "/api/v1/analytics/by-model") {
+      return json({ data: answers.byModel });
+    }
+    if (answers.recent && path === "/api/v1/analytics/invocations") {
+      return json({ data: answers.recent });
+    }
+    return loaded(input, init);
+  });
+const withRecent = (recent: unknown[]) => loadedAnswering({ recent });
+const withByModel = (byModel: unknown[]) => loadedAnswering({ byModel });
+
+/** a by-model row: the fixture's, for `model` and `requests` */
+const modelRow = (model: string, requests: number, cost_usd = 1) => ({
+  ...BY_MODEL[0],
+  model,
+  requests,
+  cost_usd,
+});
+
+// a long model name, a 429 and a request from before midnight: what makes the
+// recent requests widest, at the width a phone has
+const MOBILE_ROWS = [
+  recentRow("req-m1", "claude-sonnet-4-20250514", 0, { latency_ms: 1530 }),
+  recentRow("req-m2", "gemini-2.5-flash-lite", 3, { status: 429, latency_ms: 88 }),
+  recentRow("req-m3", "gpt-4o", 30 * 60, { latency_ms: 842 }),
+];
 
 /** the error-rate tile's delta line, as `t("pages.dashboard.errors")` renders it */
 const errorCount = (n: number) => en.pages.dashboard.errors_other.replace("{{count}}", String(n));
@@ -170,6 +131,23 @@ export const Loaded: Story = {
     const latency = tile(canvas, en.pages.dashboard.statAvgLatency);
     await expect(latency).toHaveTextContent(`${fmt.number(215)}${en.pages.dashboard.colMs}`);
     await expect(latency).not.toHaveTextContent(en.pages.dashboard.noRequestsInWindow);
+
+    // the cards carry the one frame: the recent requests table inside its card
+    // draws none of its own, which was a second hairline 24px inside the first
+    const recent = canvas.getByTestId("dashboard-recent");
+    await expect(getComputedStyle(recent).borderTopWidth).toBe("1px");
+    const table = within(recent).getByRole("table");
+    await expect(getComputedStyle(table.closest("[tabindex]")!).borderTopWidth).toBe("0px");
+
+    // a card title is the Headline tier, 18px at 600, the size the screen title
+    // and "Getting started" use. they were 16px, a size the design does not have
+    const headline = getComputedStyle(canvas.getByText(en.pages.gettingStarted.title));
+    await expect(headline.fontSize).toBe("18px");
+    for (const id of CARDS.filter((card) => card !== "dashboard-figures")) {
+      const title = getComputedStyle(within(canvas.getByTestId(id)).getByRole("heading"));
+      await expect(title.fontSize).toBe(headline.fontSize);
+      await expect(title.fontWeight).toBe(headline.fontWeight);
+    }
   },
 };
 
@@ -298,11 +276,51 @@ export const EmptySummaryEnvelope: Story = {
  */
 export const Mobile: Story = {
   ...atMobile,
-  render: () => render(loaded),
+  render: () => render(withRecent(MOBILE_ROWS)),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findAllByText(fmt.number(132));
     await expectNoHorizontalOverflow();
+
+    // the recent requests fit the card at a phone's width: the `ms` column was
+    // scrolled out of reach, four columns at 16px padding being wider than the
+    // card. every column is inside the card, and the table has nothing to scroll
+    const recent = canvas.getByTestId("dashboard-recent");
+    const table = await within(recent).findByRole("table");
+    const scroller = table.closest("[tabindex]") as HTMLElement;
+    await expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth);
+    const card = recent.getBoundingClientRect();
+    for (const head of within(recent).getAllByRole("columnheader")) {
+      const box = head.getBoundingClientRect();
+      await expect(box.left).toBeGreaterThanOrEqual(card.left);
+      await expect(box.right).toBeLessThanOrEqual(card.right);
+    }
+    await expect(
+      within(recent).getByRole("columnheader", { name: en.pages.dashboard.colMs }),
+    ).toBeVisible();
+
+    // the spend chart is drawn at the width it has, so its axis text is read at
+    // the size it was set: the viewBox was a fixed 640 wide, squeezed to about a
+    // third of that, and 9px text came out near 3px
+    const spend = canvas.getByTestId("dashboard-spend");
+    const svg = (await within(spend).findByRole("img", {
+      name: en.pages.dashboard.spendChartAria,
+    })) as unknown as SVGSVGElement;
+    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    await expect(scale).toBeGreaterThan(0.95);
+    await expect(scale).toBeLessThan(1.05);
+    const axis = [...svg.querySelectorAll("text")];
+    for (const text of axis) {
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(10);
+    }
+    // and the labels are thinned to what fits, so none runs into the next
+    const boxes = axis
+      .filter((text) => /^\d{2}:\d{2}$/.test(text.textContent ?? ""))
+      .map((text) => text.getBoundingClientRect());
+    await expect(boxes.length).toBeGreaterThan(1);
+    for (let i = 1; i < boxes.length; i += 1) {
+      await expect(boxes[i].left).toBeGreaterThanOrEqual(boxes[i - 1].right);
+    }
   },
 };
 
@@ -503,13 +521,7 @@ export const TheHeaderRefreshStillReadsTheWindowAgain: Story = {
   },
 };
 
-const NEWER = {
-  ...RECENT[0],
-  ts: "2026-10-05T12:35:30.000Z",
-  request_id: "req-2",
-  model: "gemini-2.5-flash",
-  status: 429,
-};
+const NEWER = recentRow("req-2", "gemini-2.5-flash", 0, { status: 429 });
 
 // the log answers with one request, then with that one and a newer one
 let recentReads = 0;
@@ -603,12 +615,12 @@ export const AFailedPollKeepsWhatLoaded: Story = {
       }),
     ).toBeVisible();
     await expect(canvas.getByTestId("dashboard-traffic")).toHaveTextContent(
-      en.pages.dashboard.requests,
+      en.pages.dashboard.requests_other,
     );
     await expect(
       within(canvas.getByTestId("dashboard-by-model")).getByText("claude-sonnet-4"),
     ).toBeVisible();
-    await expect(canvas.getByText("gpt-4o", { selector: "td" })).toBeVisible();
+    await expect(canvas.getByText("gpt-4o", { selector: "td span" })).toBeVisible();
 
     // the poll goes on, so a control plane that comes back is noticed
     upstream = "ok";
@@ -708,7 +720,7 @@ async function expectTheOthersLoaded(canvasElement: HTMLElement, skip: string[])
     "dashboard-traffic": async () => {
       await expect(
         await within(canvas.getByTestId("dashboard-traffic")).findByText(
-          en.pages.dashboard.requests,
+          en.pages.dashboard.requests_other,
         ),
       ).toBeVisible();
     },
@@ -720,7 +732,7 @@ async function expectTheOthersLoaded(canvasElement: HTMLElement, skip: string[])
     "dashboard-recent": async () => {
       await expect(
         await within(canvas.getByTestId("dashboard-recent")).findByText("gpt-4o", {
-          selector: "td",
+          selector: "td span",
         }),
       ).toBeVisible();
     },
@@ -820,7 +832,7 @@ export const TheRecentLabelSaysLiveOnlyAfterTheFirstRead: Story = {
     recentHeld.forEach((release) => release());
     await expect(await within(recent).findByText(en.pages.dashboard.live)).toBeVisible();
     await expect(within(recent).queryByText(en.pages.dashboard.feed.loading)).toBeNull();
-    await expect(within(recent).getByText("gpt-4o", { selector: "td" })).toBeVisible();
+    await expect(within(recent).getByText("gpt-4o", { selector: "td span" })).toBeVisible();
   },
 };
 
@@ -917,7 +929,7 @@ export const TheTwoCardsOnOneReadShareOneAlert: Story = {
     modelsDown = false;
     await userEvent.click(within(traffic).getByRole("button", { name: "Try again" }));
     await expect(await within(bars).findByText("claude-sonnet-4")).toBeVisible();
-    await expect(await within(traffic).findByText(en.pages.dashboard.requests)).toBeVisible();
+    await expect(await within(traffic).findByText(en.pages.dashboard.requests_other)).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
     await expect(canvas.queryByText(shared)).toBeNull();
     await expect(readsOf(byModelDown, ENDPOINTS[2])).toBe(reads + 1);
@@ -1073,5 +1085,218 @@ export const TheNoAnalyticsPanelHoldsStill: Story = {
     await sleep(FAST_POLL_MS * 3);
     await expect(panel.isConnected).toBe(true);
     await expect(ENDPOINTS.map((e) => readsOf(unconfigured, e))).toEqual(reads);
+  },
+};
+
+// models in the order the control plane answers, by cost. the cheap ones are
+// the busy ones, so the request order is nothing like it: re-sorted by requests,
+// claude leads and gpt-4o-mini follows. eight of them, so the donut rolls the two
+// quietest into "Other" while the bars show six
+const BY_COST = [
+  modelRow("gpt-4o", 48, 30.1),
+  modelRow("claude-sonnet-4", 84, 11.17),
+  modelRow("o3", 12, 9.5),
+  modelRow("gemini-2.5-pro", 30, 7.1),
+  modelRow("llama-3.3-70b", 66, 5.2),
+  modelRow("mistral-large", 22, 3.3),
+  modelRow("haiku-4", 57, 2.2),
+  modelRow("gpt-4o-mini", 75, 0.9),
+];
+const BUSIEST_FIRST = [
+  "claude-sonnet-4",
+  "gpt-4o-mini",
+  "llama-3.3-70b",
+  "haiku-4",
+  "gpt-4o",
+  "gemini-2.5-pro",
+];
+
+/** what `var(<token>)` computes to as a background, which is how a swatch and a bar are painted */
+function backgroundOf(token: string): string {
+  const probe = document.createElement("span");
+  probe.style.backgroundColor = `var(${token})`;
+  document.body.appendChild(probe);
+  const color = getComputedStyle(probe).backgroundColor;
+  probe.remove();
+  return color;
+}
+
+const swatchIn = (card: HTMLElement, model: string) =>
+  getComputedStyle(within(card).getByText(model).previousElementSibling as HTMLElement)
+    .backgroundColor;
+const barIn = (card: HTMLElement, model: string) =>
+  getComputedStyle(
+    within(card).getByText(model).nextElementSibling!.firstElementChild as HTMLElement,
+  ).backgroundColor;
+
+/**
+ * #1994: the donut coloured the models in the order the read arrived, by cost,
+ * and the bars re-sorted by requests before colouring, so one model was two
+ * colours in neighbouring cards. Both take the colour from the busiest-first
+ * order now, so a model is one colour wherever it is drawn, and the six bars are
+ * six colours where the fifth and the sixth used to share one.
+ */
+export const OneModelIsOneColourAcrossTheCards: Story = {
+  render: () => render(withByModel(BY_COST)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const traffic = canvas.getByTestId("dashboard-traffic");
+    const bars = canvas.getByTestId("dashboard-by-model");
+    await within(bars).findByText("claude-sonnet-4");
+    const seen = new Set<string>();
+    for (const [rank, model] of BUSIEST_FIRST.entries()) {
+      const colour = backgroundOf(`--chart-${rank + 1}`);
+      await expect(barIn(bars, model)).toBe(colour);
+      await expect(swatchIn(traffic, model)).toBe(colour);
+      seen.add(colour);
+    }
+    await expect(seen.size).toBe(BUSIEST_FIRST.length);
+    // the two quietest are in neither the bars nor a slice of their own
+    await expect(within(bars).queryByText("o3")).toBeNull();
+    await expect(within(traffic).queryByText("o3")).toBeNull();
+  },
+};
+
+/**
+ * The same, with few enough models that the donut keeps every slice and never
+ * re-sorts them itself: the order it is handed is the order it colours by, which
+ * is where the read's order (by cost) used to reach it.
+ */
+export const OneModelIsOneColourWhenTheDonutKeepsEverySlice: Story = {
+  render: () =>
+    render(withByModel([modelRow("gpt-4o", 48, 30.1), modelRow("claude-sonnet-4", 84, 11.17)])),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const traffic = canvas.getByTestId("dashboard-traffic");
+    const bars = canvas.getByTestId("dashboard-by-model");
+    await within(bars).findByText("claude-sonnet-4");
+    for (const [rank, model] of ["claude-sonnet-4", "gpt-4o"].entries()) {
+      const colour = backgroundOf(`--chart-${rank + 1}`);
+      await expect(swatchIn(traffic, model)).toBe(colour);
+      await expect(barIn(bars, model)).toBe(colour);
+    }
+  },
+};
+
+/** the donut's centre caption, as a read of `total` requests in one model draws it */
+const captionFor = (total: number) => render(withByModel([modelRow("gpt-4o", total)]));
+
+/**
+ * The caption under the donut's count agrees with the count. It was the fixed
+ * word "requests", so a single request read "1 requests".
+ */
+export const TheDonutCaptionIsSingularForOneRequest: Story = {
+  render: () => captionFor(1),
+  play: async ({ canvasElement }) => {
+    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
+    await expect(
+      await within(traffic).findByText(en.pages.dashboard.requests_one, { selector: "text" }),
+    ).toBeVisible();
+    await expect(within(traffic).queryByText(en.pages.dashboard.requests_other)).toBeNull();
+  },
+};
+
+/**
+ * Russian has four forms and the caption was the fixed «запросов», right for
+ * five and wrong for one. 21 is «запрос» and 3 is «запроса».
+ */
+export const TheDonutCaptionInRussianIsTheOneFormForTwentyOne: Story = {
+  globals: { locale: "ru" },
+  render: () => captionFor(21),
+  play: async ({ canvasElement }) => {
+    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
+    await expect(
+      await within(traffic).findByText(ru.pages.dashboard.requests_one, { selector: "text" }),
+    ).toBeVisible();
+    await expect(within(traffic).queryByText(ru.pages.dashboard.requests_many)).toBeNull();
+  },
+};
+
+export const TheDonutCaptionInRussianIsTheFewFormForThree: Story = {
+  globals: { locale: "ru" },
+  render: () => captionFor(3),
+  play: async ({ canvasElement }) => {
+    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
+    await expect(
+      await within(traffic).findByText(ru.pages.dashboard.requests_few, { selector: "text" }),
+    ).toBeVisible();
+  },
+};
+
+const TODAY_ROW = recentRow("req-today", "gpt-4o", 0);
+// 30 hours back is never today, whatever the hour the story runs at
+const EARLIER_ROW = recentRow("req-earlier", "claude-sonnet-4", 30 * 60, { latency_ms: 1530 });
+const NO_ID_ROW = recentRow("", "gemini-2.5-flash", 0, { status: 429 });
+
+// where the router is, for a story to read after a click
+function Where() {
+  const location = useLocation();
+  return (
+    <span data-testid="where" className="sr-only">
+      {location.pathname + location.search}
+    </span>
+  );
+}
+
+/** the day a row fell on, as the column writes it under the clock */
+const dayOf = (ts: string) => fmt.date(ts, { month: "short", day: "numeric" });
+
+/** the name of the link that opens a request, as the catalog words it */
+const openName = (model: string, ts: string) =>
+  en.pages.dashboard.openRequest.replace("{{model}}", model).replace("{{time}}", fmt.dateTime(ts));
+
+/**
+ * The recent requests window is 24 hours and crosses midnight, where a bare
+ * clock reads as today's. A row from another day carries its date under the
+ * clock; a row from today stays a clock. Each row opens its request in LLM Logs
+ * by the id it carries, over its whole width, and a row with no id has nothing
+ * to open and is not a link.
+ */
+export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={withRecent([TODAY_ROW, EARLIER_ROW, NO_ID_ROW])}>
+        <Dashboard />
+        <Where />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const recent = canvas.getByTestId("dashboard-recent");
+    const rowOf = async (model: string) =>
+      (await within(recent).findByText(model, { selector: "td span" })).closest(
+        "tr",
+      ) as HTMLTableRowElement;
+    const today = await rowOf("gpt-4o");
+    const earlier = await rowOf("claude-sonnet-4");
+    const noId = await rowOf("gemini-2.5-flash");
+
+    // a clock alone for today, and the day under it for the earlier request
+    await expect(today.cells[0].textContent).toBe(fmt.time(TODAY_ROW.ts));
+    await expect(earlier.cells[0]).toHaveTextContent(fmt.time(EARLIER_ROW.ts));
+    await expect(earlier.cells[0]).toHaveTextContent(dayOf(EARLIER_ROW.ts));
+
+    // each row with an id is a link to that request, named for it
+    const link = within(earlier).getByRole("link", {
+      name: openName("claude-sonnet-4", EARLIER_ROW.ts),
+    });
+    await expect(link).toHaveAttribute("href", "/logs?request_id=req-earlier");
+    await expect(
+      within(today).getByRole("link", { name: openName("gpt-4o", TODAY_ROW.ts) }),
+    ).toHaveAttribute("href", "/logs?request_id=req-today");
+    await expect(within(noId).queryByRole("link")).toBeNull();
+    await expect(within(recent).getAllByRole("link")).toHaveLength(2);
+
+    // the link covers the row, so a press on the model's cell lands on it
+    earlier.scrollIntoView({ block: "center" });
+    const cell = within(earlier).getByText("claude-sonnet-4", { selector: "td span" });
+    const box = cell.getBoundingClientRect();
+    await expect(
+      document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2),
+    ).toBe(link);
+
+    await userEvent.click(link);
+    await expect(canvas.getByTestId("where")).toHaveTextContent("/logs?request_id=req-earlier");
   },
 };

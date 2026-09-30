@@ -54,6 +54,12 @@ table for a screen reader (see [list tables](list-tables.md)):
 `ListLoadingRow` and its sibling `ListEmptyRow` take the query itself and decide
 from it, for the reason the next rule gives.
 
+A skeleton stands in the grid its content is laid out in, or the tiles change
+columns when the data lands. `StatGridSkeleton` lays out in `STAT_GRID`
+(`ui/src/components/ui/stat-card.tsx`), the grid a strip of stat cards uses, so a
+screen puts its loaded `StatCard`s in the same constant. Its stories compare the
+tracks of the two at every width (#1994).
+
 The state row is as wide as the part of the table the reader sees, not as its
 column floor (#2362). Below the floor the table scrolls sideways, and a row the
 width of the floor put the empty title and its call to action centred past the
