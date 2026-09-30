@@ -13,12 +13,14 @@ mod guardrails;
 mod labels;
 mod mcp;
 mod mfa;
+mod saved_views;
 mod support;
 
 pub use guardrails::*;
 pub use labels::*;
 pub use mcp::*;
 pub use mfa::*;
+pub use saved_views::*;
 use support::store_err;
 
 use chrono::{DateTime, Utc};

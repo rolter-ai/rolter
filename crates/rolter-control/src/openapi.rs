@@ -379,6 +379,12 @@ const SCOPE_QUERY: &[QueryParam] = &[
 /// The time window the analytics, health and usage summaries share.
 const WINDOW_QUERY: &[QueryParam] = &[SINCE, UNTIL];
 
+const SAVED_VIEW_QUERY: &[QueryParam] = &[QueryParam::new(
+    "surface",
+    "string",
+    "only presets of one screen: llm_logs or dashboard",
+)];
+
 /// The window plus the bucket only the timeseries endpoint reads.
 const TIMESERIES_QUERY: &[QueryParam] = &[
     SINCE,
@@ -1155,6 +1161,32 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/preferences",
                 "putMyPreferences",
                 "Replace the calling account's whole preferences document (any role)",
+            ),
+            Op::get(
+                "/api/v1/me/saved-views",
+                "listMySavedViews",
+                "The calling account's saved filter presets, with what it can no longer read (any role)",
+            )
+            .query(SAVED_VIEW_QUERY),
+            Op::post(
+                "/api/v1/me/saved-views",
+                "createMySavedView",
+                "Save a named filter preset for LLM Logs or the Dashboard (any role)",
+            ),
+            Op::get(
+                "/api/v1/me/saved-views/{id}",
+                "getMySavedView",
+                "One of the calling account's saved filter presets",
+            ),
+            Op::patch(
+                "/api/v1/me/saved-views/{id}",
+                "updateMySavedView",
+                "Rename a saved filter preset and/or replace its filters",
+            ),
+            Op::delete(
+                "/api/v1/me/saved-views/{id}",
+                "deleteMySavedView",
+                "Delete a saved filter preset",
             ),
             Op::get(
                 "/api/v1/me/mfa",

@@ -15269,3 +15269,638 @@ async fn a_scim_managed_display_name_is_read_only_but_the_bio_is_not() {
     assert_eq!(me().await["user"]["display_name"], "Rear Admiral Hopper");
     assert_eq!(me().await["user"]["bio"], "Nanoseconds.");
 }
+
+/// `/api/v1/me/saved-views` (#1825): a viewer saves, lists, renames, updates
+/// and deletes filter presets on both surfaces; bad input is refused; the
+/// audit rows name the preset and never what it filters by.
+#[tokio::test]
+async fn a_viewer_manages_their_own_saved_views() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let viewer = seed_user(&pool, "views-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "viewsviewer").await;
+    let views = format!("{base}/api/v1/me/saved-views");
+
+    let send = |method: reqwest::Method, url: String, body: Option<Value>| {
+        let client = client.clone();
+        let token = token.clone();
+        async move {
+            let mut req = client.request(method, url).bearer_auth(token);
+            if let Some(body) = body {
+                req = req.json(&body);
+            }
+            let res = req.send().await.unwrap();
+            let status = res.status().as_u16();
+            let text = res.text().await.unwrap();
+            (
+                status,
+                serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let create = |body: Value| send(reqwest::Method::POST, views.clone(), Some(body));
+
+    // nothing saved yet
+    let (status, empty) = send(reqwest::Method::GET, views.clone(), None).await;
+    assert_eq!(status, 200, "{empty}");
+    assert_eq!(empty, json!([]));
+
+    // one preset per surface
+    let (status, logs) = create(json!({
+        "surface": "llm_logs",
+        "name": "  Errors last week ",
+        "filters": {"window": "7d", "status": "error", "model": "gpt-4o"},
+    }))
+    .await;
+    assert_eq!(status, 200, "{logs}");
+    assert_eq!(logs["name"], "Errors last week");
+    assert_eq!(logs["filters"]["status"], "error");
+    assert_eq!(logs["effective_filters"], logs["filters"]);
+    assert_eq!(logs["unavailable"], json!([]));
+    let logs_preset = logs["id"].as_str().unwrap().to_string();
+    let (status, dash) = create(json!({
+        "surface": "dashboard", "name": "Month to date",
+        "filters": {"window": "mtd", "bucket": "day"},
+    }))
+    .await;
+    assert_eq!(status, 200, "{dash}");
+    let dash_preset = dash["id"].as_str().unwrap().to_string();
+
+    // list, all and per surface
+    let (_, all) = send(reqwest::Method::GET, views.clone(), None).await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    let (_, only_logs) = send(
+        reqwest::Method::GET,
+        format!("{views}?surface=llm_logs"),
+        None,
+    )
+    .await;
+    assert_eq!(only_logs.as_array().unwrap().len(), 1);
+    assert_eq!(only_logs[0]["id"], logs_preset);
+    let (status, _) = send(reqwest::Method::GET, format!("{views}?surface=nope"), None).await;
+    assert_eq!(status, 400);
+
+    // get one
+    let (status, one) = send(reqwest::Method::GET, format!("{views}/{dash_preset}"), None).await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["filters"], json!({"window": "mtd", "bucket": "day"}));
+
+    // rename leaves the filters alone; a case-only rename of itself is fine
+    let (status, renamed) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"name": "Weekly errors"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{renamed}");
+    assert_eq!(renamed["name"], "Weekly errors");
+    assert_eq!(renamed["filters"]["model"], "gpt-4o");
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"name": "WEEKLY ERRORS"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // update replaces the whole filter set and leaves the name alone
+    let (status, updated) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"filters": {"window": "30d"}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{updated}");
+    assert_eq!(updated["filters"], json!({"window": "30d"}));
+    assert_eq!(updated["name"], "WEEKLY ERRORS");
+
+    // a patch that changes nothing is refused, and so is a surface change
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"surface": "dashboard"})),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    // the same name on another surface is fine, on the same one is a 409 even
+    // when only the case differs
+    let (status, _) = create(json!({"surface": "dashboard", "name": "weekly errors"})).await;
+    assert_eq!(status, 200);
+    let (status, dup) = create(json!({"surface": "llm_logs", "name": "weekly ERRORS"})).await;
+    assert_eq!(status, 409, "{dup}");
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"name": "Month to date"})),
+    )
+    .await;
+    assert_eq!(status, 200, "a name taken on another surface is free here");
+    let (status, _) = create(json!({"surface": "dashboard", "name": "month TO date"})).await;
+    assert_eq!(status, 409);
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{dash_preset}"),
+        Some(json!({"name": "weekly errors"})),
+    )
+    .await;
+    assert_eq!(status, 409, "renaming onto an existing name");
+
+    // validation
+    for bad in [
+        json!({"surface": "billing", "name": "x"}),
+        json!({"surface": "llm_logs", "name": "   "}),
+        json!({"surface": "llm_logs", "name": "x".repeat(81)}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"limit": 500}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"cursor": "a|b"}}),
+        json!({"surface": "dashboard", "name": "ok", "filters": {"model": "gpt-4o"}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"window": "forever"}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"window": 7}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"status": ["error"]}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"key": "not-a-uuid"}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"customer": "a-string"}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": {"business_unit": [1]}}),
+        json!({"surface": "llm_logs", "name": "ok", "filters": []}),
+        json!({"surface": "llm_logs", "name": "ok", "extra": 1}),
+        json!({"name": "no surface"}),
+    ] {
+        let (status, body) = create(bad.clone()).await;
+        assert_eq!(status, 400, "{bad} was accepted: {body}");
+    }
+    let (status, _) = send(
+        reqwest::Method::PATCH,
+        format!("{views}/{logs_preset}"),
+        Some(json!({"filters": {"surface_is_fixed": true}})),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    // delete, then it is gone
+    let (status, _) = send(
+        reqwest::Method::DELETE,
+        format!("{views}/{dash_preset}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    let (status, _) = send(reqwest::Method::GET, format!("{views}/{dash_preset}"), None).await;
+    assert_eq!(status, 404);
+    let (status, _) = send(
+        reqwest::Method::DELETE,
+        format!("{views}/{dash_preset}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    // no session, no presets
+    for req in [
+        client.get(&views),
+        client.post(&views).json(&json!({})),
+        client.get(format!("{views}/{logs_preset}")),
+        client
+            .patch(format!("{views}/{logs_preset}"))
+            .json(&json!({})),
+        client.delete(format!("{views}/{logs_preset}")),
+    ] {
+        assert_eq!(req.send().await.unwrap().status(), 401);
+    }
+
+    // the audit rows name the preset and the surface, never a filter value
+    let rows: Vec<(String, Value)> = sqlx::query_as(
+        "select action, detail from audit_log
+         where action like 'user.saved_view.%' and actor_user_id = $1 order by at",
+    )
+    .bind(viewer)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();
+    assert!(actions.contains(&"user.saved_view.create"), "{actions:?}");
+    assert!(actions.contains(&"user.saved_view.update"), "{actions:?}");
+    assert!(actions.contains(&"user.saved_view.delete"), "{actions:?}");
+    let dump = serde_json::to_string(&rows).unwrap();
+    for value in ["gpt-4o", "30d", "mtd", "\"window\"", "\"status\""] {
+        assert!(
+            !dump.contains(value),
+            "{value} leaked into the audit log: {dump}"
+        );
+    }
+    let (_, created) = rows
+        .iter()
+        .find(|(a, _)| a == "user.saved_view.create")
+        .unwrap();
+    assert_eq!(
+        created,
+        &json!({"surface": "llm_logs", "name": "Errors last week"})
+    );
+}
+
+/// An account holds at most 50 presets per surface (#1825); the 51st is a 409,
+/// the cap is per surface, and deleting one frees a slot.
+#[tokio::test]
+async fn saved_views_are_capped_per_user_and_surface() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let views = format!("http://{addr}/api/v1/me/saved-views");
+
+    let user = seed_user(&pool, "views-cap@example.com", false).await;
+    let token = seed_session(&pool, user, "viewscap").await;
+    let other = seed_user(&pool, "views-cap-other@example.com", false).await;
+    let other_token = seed_session(&pool, other, "viewscapother").await;
+
+    let create = |token: String, surface: &'static str, name: String| {
+        let client = client.clone();
+        let url = views.clone();
+        async move {
+            client
+                .post(url)
+                .bearer_auth(token)
+                .json(&json!({"surface": surface, "name": name}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let mut first = String::new();
+    for n in 0..50 {
+        let res = create(token.clone(), "llm_logs", format!("preset {n}")).await;
+        assert_eq!(res.status(), 200, "preset {n}");
+        if n == 0 {
+            first = res.json::<Value>().await.unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        }
+    }
+    let over = create(token.clone(), "llm_logs", "one too many".to_string()).await;
+    assert_eq!(over.status(), 409);
+    let body: Value = over.json().await.unwrap();
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("50"),
+        "{body}"
+    );
+
+    // another surface and another user have their own allowance
+    assert_eq!(
+        create(token.clone(), "dashboard", "fine".to_string())
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        create(other_token, "llm_logs", "fine".to_string())
+            .await
+            .status(),
+        200
+    );
+
+    // deleting one frees a slot
+    let gone = client
+        .delete(format!("{views}/{first}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), 204);
+    assert_eq!(
+        create(token, "llm_logs", "one more".to_string())
+            .await
+            .status(),
+        200
+    );
+}
+
+/// Presets are private (#1825): another account's list excludes them and
+/// every by-id route answers 404 for them, as it does for an id that does not
+/// exist, so an id cannot be probed.
+#[tokio::test]
+async fn one_users_saved_view_is_invisible_to_another() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let views = format!("http://{addr}/api/v1/me/saved-views");
+
+    let alice = seed_user(&pool, "views-alice@example.com", false).await;
+    let alice_token = seed_session(&pool, alice, "viewsalice").await;
+    let bob = seed_user(&pool, "views-bob@example.com", false).await;
+    let bob_token = seed_session(&pool, bob, "viewsbob").await;
+    let admin = seed_user(&pool, "views-admin@example.com", true).await;
+    let admin_token = seed_session(&pool, admin, "viewsadmin").await;
+
+    let made: Value = client
+        .post(&views)
+        .bearer_auth(&alice_token)
+        .json(&json!({"surface": "dashboard", "name": "Alice's", "filters": {"window": "7d"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let preset_id = made["id"].as_str().unwrap().to_string();
+    let missing = uuid::Uuid::new_v4();
+
+    for (who, token) in [("bob", &bob_token), ("a superadmin", &admin_token)] {
+        let list: Value = client
+            .get(&views)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(list, json!([]), "{who} saw another account's preset");
+
+        // the same answer for a preset that exists and one that does not
+        for id in [preset_id.clone(), missing.to_string()] {
+            let url = format!("{views}/{id}");
+            let get = client.get(&url).bearer_auth(token).send().await.unwrap();
+            assert_eq!(get.status(), 404, "{who} get {id}");
+            let patch = client
+                .patch(&url)
+                .bearer_auth(token)
+                .json(&json!({"name": "hijacked"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(patch.status(), 404, "{who} patch {id}");
+            let delete = client.delete(&url).bearer_auth(token).send().await.unwrap();
+            assert_eq!(delete.status(), 404, "{who} delete {id}");
+        }
+    }
+
+    // untouched, and bob may reuse the name because names are per user
+    let mine: Value = client
+        .get(format!("{views}/{preset_id}"))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mine["name"], "Alice's");
+    let reuse = client
+        .post(&views)
+        .bearer_auth(&bob_token)
+        .json(&json!({"surface": "dashboard", "name": "Alice's"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reuse.status(), 200);
+}
+
+/// A preset that names something the caller can no longer read still applies
+/// the rest (#1825): `effective_filters` drops the ids and `unavailable` says
+/// which, for a key, a business unit and a customer, whether access was lost by
+/// removing the membership or the row was deleted.
+#[tokio::test]
+async fn a_saved_view_reports_the_filters_the_user_can_no_longer_read() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn make(client: &reqwest::Client, url: String, body: Value) -> uuid::Uuid {
+        let v: Value = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        v["id"].as_str().unwrap().parse().unwrap()
+    }
+    let org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "ViewsOrg", "slug": "views-org"}),
+    )
+    .await;
+    let other_org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "ViewsOther", "slug": "views-other"}),
+    )
+    .await;
+    let team = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/teams"),
+        json!({"name": "T"}),
+    )
+    .await;
+    let project = make(
+        &client,
+        format!("{base}/api/v1/teams/{team}/projects"),
+        json!({"name": "P"}),
+    )
+    .await;
+    let kept_key = make(
+        &client,
+        format!("{base}/api/v1/projects/{project}/virtual-keys"),
+        json!({"name": "kept"}),
+    )
+    .await;
+    let doomed_key = make(
+        &client,
+        format!("{base}/api/v1/projects/{project}/virtual-keys"),
+        json!({"name": "doomed"}),
+    )
+    .await;
+    let unit = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/business-units"),
+        json!({"name": "Finance"}),
+    )
+    .await;
+    let foreign_unit = make(
+        &client,
+        format!("{base}/api/v1/orgs/{other_org}/business-units"),
+        json!({"name": "Elsewhere"}),
+    )
+    .await;
+    let customer = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/customers"),
+        json!({"name": "Acme"}),
+    )
+    .await;
+
+    let member = seed_user(&pool, "views-member@example.com", false).await;
+    let token = seed_session(&pool, member, "viewsmember").await;
+    seed_membership(&pool, member, None, None, Some(project), "viewer").await;
+
+    let views = format!("{base}/api/v1/me/saved-views");
+    let res = client
+        .post(&views)
+        .bearer_auth(&token)
+        .json(&json!({
+            "surface": "llm_logs",
+            "name": "Everything",
+            "filters": {
+                "window": "30d",
+                "model": "gpt-4o",
+                "key": doomed_key,
+                "business_unit": [unit, foreign_unit],
+                "customer": [customer],
+            },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let created: Value = res.json().await.unwrap();
+    let preset_id = created["id"].as_str().unwrap().to_string();
+    let read = || async {
+        client
+            .get(format!("{views}/{preset_id}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let sorted = |v: &Value| {
+        let mut items: Vec<(String, String)> = v["unavailable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| {
+                (
+                    u["filter"].as_str().unwrap().to_string(),
+                    u["id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        items.sort();
+        items
+    };
+
+    // give the account a role at the org itself so that the unit and customer
+    // in it are readable, and only the foreign unit is not
+    seed_membership(&pool, member, Some(org), None, None, "viewer").await;
+    let got = read().await;
+    assert_eq!(
+        sorted(&got),
+        vec![("business_unit".to_string(), foreign_unit.to_string())],
+        "{got}"
+    );
+    assert_eq!(got["effective_filters"]["key"], json!(doomed_key));
+    assert_eq!(got["effective_filters"]["business_unit"], json!([unit]));
+    assert_eq!(got["effective_filters"]["customer"], json!([customer]));
+    // the stored filters are never rewritten by a read
+    assert_eq!(got["filters"]["business_unit"], json!([unit, foreign_unit]));
+
+    // the key is deleted: it is unavailable, the rest still applies
+    let gone = client
+        .delete(format!("{base}/api/v1/virtual-keys/{doomed_key}"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert!(gone.status().is_success(), "{}", gone.status());
+    let got = read().await;
+    assert_eq!(
+        sorted(&got),
+        vec![
+            ("business_unit".to_string(), foreign_unit.to_string()),
+            ("key".to_string(), doomed_key.to_string()),
+        ],
+        "{got}"
+    );
+    let effective = &got["effective_filters"];
+    assert!(effective.get("key").is_none(), "{got}");
+    assert_eq!(effective["window"], "30d");
+    assert_eq!(effective["model"], "gpt-4o");
+    assert_eq!(effective["business_unit"], json!([unit]));
+    assert_eq!(effective["customer"], json!([customer]));
+
+    // both memberships go: the unit and customer are lost too, and the list
+    // route says the same thing as the get route
+    sqlx::query("delete from memberships where user_id = $1")
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let listed: Value = client
+        .get(format!("{views}?surface=llm_logs"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sorted(&listed[0]).len(), 4, "{listed}");
+    assert_eq!(
+        listed[0]["effective_filters"],
+        json!({"window": "30d", "model": "gpt-4o"}),
+        "the lists emptied out drop their keys"
+    );
+
+    // a preset that names a key still readable is untouched
+    let res = client
+        .post(&views)
+        .bearer_auth(&token)
+        .json(&json!({"surface": "llm_logs", "name": "Kept", "filters": {"key": kept_key}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let kept: Value = res.json().await.unwrap();
+    // the membership is gone, so even this one reads as lost
+    assert_eq!(
+        kept["unavailable"],
+        json!([{"filter": "key", "id": kept_key}])
+    );
+    seed_membership(&pool, member, None, None, Some(project), "viewer").await;
+    let kept: Value = client
+        .get(format!("{views}/{}", kept["id"].as_str().unwrap()))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(kept["unavailable"], json!([]));
+    assert_eq!(kept["effective_filters"], json!({"key": kept_key}));
+}

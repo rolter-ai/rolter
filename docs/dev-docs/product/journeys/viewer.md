@@ -52,7 +52,7 @@ say clearly enough that it is read-only.
 
 ## V5 — keep my own view
 
-| #    | step                                                | where | expect                                               | status      |
-| ---- | --------------------------------------------------- | ----- | ---------------------------------------------------- | ----------- |
-| V5.1 | save "errors on gpt-4o this week" as a named filter | —     | one click back to it on any browser                  | gap — #1825 |
-| V5.2 | the saved filter is mine alone                      | —     | nobody else sees it; it never widens what I can read | gap — #1825 |
+| #    | step                                                | where | expect                                               | status                               |
+| ---- | --------------------------------------------------- | ----- | ---------------------------------------------------- | ------------------------------------ |
+| V5.1 | save "errors on gpt-4o this week" as a named filter | —     | one click back to it on any browser                  | backend done (#1825), screen pending |
+| V5.2 | the saved filter is mine alone                      | —     | nobody else sees it; it never widens what I can read | backend done (#1825), screen pending |

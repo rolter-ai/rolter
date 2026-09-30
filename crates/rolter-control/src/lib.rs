@@ -73,6 +73,8 @@ mod mcp_oauth_discovery;
 mod mcp_oauth_flow;
 #[cfg(feature = "postgres")]
 mod me;
+#[cfg(feature = "postgres")]
+mod me_saved_views;
 /// TOTP second factor for local accounts (#1078). `pub` for the break-glass
 /// reset the `rolter` launcher's `mfa reset` subcommand runs.
 #[cfg(feature = "postgres")]
