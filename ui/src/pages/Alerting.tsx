@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Loader2, Megaphone, Play } from "lucide-react";
+import { Gavel, History, Loader2, Megaphone, Pencil, Play } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -20,6 +20,7 @@ import {
   ListTable,
   PageBody,
   Pill,
+  RowIconButton,
   StatusDot,
   Toolbar,
 } from "@/components/screen";
@@ -43,17 +44,18 @@ import {
   type AlertRuleRow,
 } from "@/lib/api";
 import {
-  ALERT_SIGNAL_SPECS,
   defaultThresholdInput,
   formatSignalValue,
   fromFormValue,
   isAlertSignal,
   signalDescription,
   signalLabel,
+  signalSpec,
   thresholdInputMax,
   thresholdLabel,
   thresholdRangeKey,
   thresholdValid,
+  toFormValue,
   type AlertSignal,
 } from "@/lib/alert-signals";
 import { useCurrencyCode } from "@/lib/currency";
@@ -90,8 +92,9 @@ const deliveryTone = (status: string) => DELIVERY_TONE[status] ?? DELIVERY_TONE.
 const WINDOW_MIN_SECS = 60;
 const WINDOW_MAX_SECS = 86_400;
 
-// the signal a new rule starts from
+// the signal and window a new rule starts from
 const DEFAULT_SIGNAL: AlertSignal = ALERT_SIGNALS[0];
+const DEFAULT_WINDOW_SECS = 300;
 
 // ---------------------------------------------------------------------------
 // channels: webhook destinations alerts are delivered to
@@ -127,7 +130,14 @@ function AlertChannelsScreen() {
   });
   const remove = useMutation({ mutationFn: deleteAlertChannel, onSuccess: invalidate });
 
-  const [addOpen, setAddOpen] = React.useState(false);
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // the channel the sheet edits, or `null` when it adds one. kept after the
+  // sheet closes, so a closing edit does not turn into the add form on its way out
+  const [editTarget, setEditTarget] = React.useState<AlertChannelRow | null>(null);
+  const openSheet = (channel: AlertChannelRow | null) => {
+    setEditTarget(channel);
+    setSheetOpen(true);
+  };
   // deleting a channel silently strands every rule delivering through it, so
   // the name and the consequence are stated before the request (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<AlertChannelRow | null>(null);
@@ -148,7 +158,7 @@ function AlertChannelsScreen() {
           gate="alert_channel:create"
           control="alert-channel-new"
           className="ml-auto"
-          onClick={() => setAddOpen(true)}
+          onClick={() => openSheet(null)}
         >
           + {t("pages.alerting.channels.add")}
         </GatedButton>
@@ -172,7 +182,7 @@ function AlertChannelsScreen() {
             <GatedButton
               gate="alert_channel:create"
               control="alert-channel-new-empty"
-              onClick={() => setAddOpen(true)}
+              onClick={() => openSheet(null)}
             >
               {t("pages.alerting.channels.add")}
             </GatedButton>
@@ -211,17 +221,28 @@ function AlertChannelsScreen() {
                   {t("pages.alerting.channels.secretSet")}
                 </Pill>
               )}
-              {/* the label names the channel: a column of cards each
+              {/* the labels name the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
                   cannot tell apart (#1214) */}
-              <DeleteIconButton
-                gate="alert_channel:delete"
-                control="alert-channel-delete"
-                className="ml-auto"
-                label={t("pages.alerting.channels.deleteAria", { name: c.name })}
-                pending={remove.isPending && remove.variables === c.id}
-                onClick={() => startDelete(c)}
-              />
+              <div className="ml-auto flex items-center gap-1.5">
+                <RowIconButton
+                  gate="alert_channel:update"
+                  control="alert-channel-edit"
+                  className="p-1.5"
+                  title={t("pages.alerting.channels.editAria", { name: c.name })}
+                  aria-label={t("pages.alerting.channels.editAria", { name: c.name })}
+                  onClick={() => openSheet(c)}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </RowIconButton>
+                <DeleteIconButton
+                  gate="alert_channel:delete"
+                  control="alert-channel-delete"
+                  label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                  pending={remove.isPending && remove.variables === c.id}
+                  onClick={() => startDelete(c)}
+                />
+              </div>
             </div>
           </div>
         ))}
@@ -255,46 +276,69 @@ function AlertChannelsScreen() {
         }}
       />
 
-      <AddChannelDialog open={addOpen} onOpenChange={setAddOpen} onDone={invalidate} />
+      <ChannelSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        existing={editTarget}
+        onDone={invalidate}
+      />
     </PageBody>
   );
 }
 
-function AddChannelDialog({
+// whether an edit moves the endpoint to another scheme, host or port: the API
+// drops a stored secret on such a move unless the same request brings a new
+// one, since it was given for the receiver at the old endpoint. an endpoint
+// that does not parse moves nothing here, because the API refuses it anyway
+function movesOrigin(stored: string, next: string): boolean {
+  try {
+    return new URL(stored).origin !== new URL(next.trim()).origin;
+  } catch {
+    return false;
+  }
+}
+
+function ChannelSheet({
   open,
   onOpenChange,
+  existing,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** the channel to edit, or `null` to add one */
+  existing: AlertChannelRow | null;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [name, setName] = React.useState("");
   const [endpoint, setEndpoint] = React.useState("");
+  // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
 
-  React.useEffect(() => {
-    if (open) {
-      setName("");
-      setEndpoint("");
-      setSecret("");
-    }
-  }, [open]);
-
-  const create = useMutation({
-    mutationFn: () =>
-      createAlertChannel({
-        name,
-        endpoint,
-        enabled: true,
-        ...(secret.trim() ? { managed_secret: secret } : {}),
-      }),
+  const save = useMutation({
+    mutationFn: () => {
+      // a blank secret is left out, which an update reads as "keep the stored one"
+      const input = { name, endpoint, ...(secret.trim() ? { managed_secret: secret } : {}) };
+      // PUT replaces the whole row, so an edit sends the switch back as it
+      // found it; a new channel starts on
+      return existing
+        ? updateAlertChannel(existing.id, { ...input, enabled: existing.enabled })
+        : createAlertChannel({ ...input, enabled: true });
+    },
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
+      toast.push(
+        existing
+          ? {
+              tone: "success",
+              title: t("toast.saved"),
+              detail: t("toast.savedDetail", { what: name }),
+            }
+          : { tone: "success", title: t("toast.created", { what: name }) },
+      );
       onDone();
       onOpenChange(false);
     },
@@ -307,19 +351,46 @@ function AddChannelDialog({
     },
   });
 
+  React.useEffect(() => {
+    if (open) {
+      setName(existing?.name ?? "");
+      setEndpoint(existing?.endpoint ?? "");
+      setSecret("");
+      // a refusal for one channel must not greet the next one opened
+      save.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, existing]);
+
+  // what happens to the stored secret on save, said beside the field that
+  // decides it
+  const secretHint = !existing
+    ? undefined
+    : !existing.secret_configured
+      ? t("pages.alerting.channels.secretNoneHint")
+      : secret.trim() === "" && movesOrigin(existing.endpoint, endpoint)
+        ? t("pages.alerting.channels.secretDroppedHint")
+        : t("pages.alerting.channels.secretKeepHint");
+
   return (
     <EditorSheet
-      name="alert-channel-create"
+      name={existing ? "alert-channel-edit" : "alert-channel-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.alerting.channels.sheetTitle")}
+      title={
+        existing
+          ? t("pages.alerting.channels.editTitle", { name: existing.name })
+          : t("pages.alerting.channels.sheetTitle")
+      }
       subtitle={t("pages.alerting.channels.sheetSubtitle")}
-      dirty={Boolean(name || endpoint || secret)}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
+      dirty={
+        name !== (existing?.name ?? "") || endpoint !== (existing?.endpoint ?? "") || secret !== ""
+      }
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      saving={save.isPending}
+      onSave={() => save.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.channels.fieldName")}>
@@ -333,7 +404,7 @@ function AddChannelDialog({
             placeholder="https://alerts.example.com/rolter"
           />
         </Field>
-        <Field label={t("pages.alerting.channels.fieldSecret")}>
+        <Field label={t("pages.alerting.channels.fieldSecret")} hint={secretHint}>
           <Input
             type="password"
             value={secret}
@@ -431,7 +502,14 @@ function AlertRulesScreen() {
   });
   const remove = useMutation({ mutationFn: deleteAlertRule, onSuccess: invalidate });
 
-  const [addOpen, setAddOpen] = React.useState(false);
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // the rule the sheet edits, or `null` when it adds one, kept after the sheet
+  // closes for the reason the channel's is
+  const [editTarget, setEditTarget] = React.useState<AlertRuleRow | null>(null);
+  const openSheet = (rule: AlertRuleRow | null) => {
+    setEditTarget(rule);
+    setSheetOpen(true);
+  };
   const [deleteTarget, setDeleteTarget] = React.useState<AlertRuleRow | null>(null);
   const startDelete = (rule: AlertRuleRow) => {
     remove.reset();
@@ -448,7 +526,7 @@ function AlertRulesScreen() {
           gate="alert_rule:create"
           control="alert-rule-new"
           className="ml-auto"
-          onClick={() => setAddOpen(true)}
+          onClick={() => openSheet(null)}
         >
           + {t("pages.alerting.rules.add")}
         </GatedButton>
@@ -476,7 +554,7 @@ function AlertRulesScreen() {
             <GatedButton
               gate="alert_rule:create"
               control="alert-rule-new-empty"
-              onClick={() => setAddOpen(true)}
+              onClick={() => openSheet(null)}
             >
               {t("pages.alerting.rules.add")}
             </GatedButton>
@@ -566,14 +644,25 @@ function AlertRulesScreen() {
                   )}
                   {t("pages.alerting.rules.evaluateNow")}
                 </GatedButton>
-                <DeleteIconButton
-                  gate="alert_rule:delete"
-                  control="alert-rule-delete"
-                  className="ml-auto"
-                  label={t("pages.alerting.rules.deleteAria", { name: r.name })}
-                  pending={remove.isPending && remove.variables === r.id}
-                  onClick={() => startDelete(r)}
-                />
+                <div className="ml-auto flex items-center gap-1.5">
+                  <RowIconButton
+                    gate="alert_rule:update"
+                    control="alert-rule-edit"
+                    className="p-1.5"
+                    title={t("pages.alerting.rules.editAria", { name: r.name })}
+                    aria-label={t("pages.alerting.rules.editAria", { name: r.name })}
+                    onClick={() => openSheet(r)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                  <DeleteIconButton
+                    gate="alert_rule:delete"
+                    control="alert-rule-delete"
+                    label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                    pending={remove.isPending && remove.variables === r.id}
+                    onClick={() => startDelete(r)}
+                  />
+                </div>
               </div>
             </article>
           );
@@ -608,9 +697,10 @@ function AlertRulesScreen() {
         }}
       />
 
-      <AddRuleDialog
-        open={addOpen}
-        onOpenChange={setAddOpen}
+      <RuleSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        existing={editTarget}
         channels={channels.data ?? []}
         onDone={invalidate}
       />
@@ -638,60 +728,103 @@ function RuleStat({ label, value, mono = true }: { label: string; value: string;
   );
 }
 
-function AddRuleDialog({
+interface RuleDraft {
+  name: string;
+  signal: string;
+  /** typed in the signal's form unit: a percentage for `error_rate` */
+  threshold: string;
+  windowSecs: string;
+  channelId: string;
+}
+
+// the form as it opens: an existing rule's own values, with the threshold in
+// the form's unit (a stored 0.05 error rate opens as 5), or a new rule's
+// defaults
+function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): RuleDraft {
+  return existing
+    ? {
+        name: existing.name,
+        signal: existing.signal,
+        threshold: String(toFormValue(existing.signal, existing.threshold)),
+        windowSecs: String(existing.window_secs),
+        channelId: existing.channel_id ?? "",
+      }
+    : {
+        name: "",
+        signal: DEFAULT_SIGNAL,
+        threshold: defaultThresholdInput(DEFAULT_SIGNAL),
+        windowSecs: String(DEFAULT_WINDOW_SECS),
+        channelId: channels[0]?.id ?? "",
+      };
+}
+
+function RuleSheet({
   open,
   onOpenChange,
+  existing,
   channels,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** the rule to edit, or `null` to add one */
+  existing: AlertRuleRow | null;
   channels: AlertChannelRow[];
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const currency = useCurrencyCode();
-  const [name, setName] = React.useState("");
-  const [signal, setSignal] = React.useState<AlertSignal>(DEFAULT_SIGNAL);
-  // typed in the signal's form unit: a percentage for `error_rate`
-  const [threshold, setThreshold] = React.useState(defaultThresholdInput(DEFAULT_SIGNAL));
-  const [windowSecs, setWindowSecs] = React.useState("300");
-  const [channelId, setChannelId] = React.useState("");
-
-  React.useEffect(() => {
-    if (open) {
-      setName("");
-      setSignal(DEFAULT_SIGNAL);
-      setThreshold(defaultThresholdInput(DEFAULT_SIGNAL));
-      setWindowSecs("300");
-      setChannelId(channels[0]?.id ?? "");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  const seed = ruleSeed(existing, channels);
+  const [name, setName] = React.useState(seed.name);
+  // a string rather than an `AlertSignal`: an existing rule may carry a signal
+  // this build does not know, and an edit sends it back as it found it
+  const [signal, setSignal] = React.useState(seed.signal);
+  const [threshold, setThreshold] = React.useState(seed.threshold);
+  const [windowSecs, setWindowSecs] = React.useState(seed.windowSecs);
+  const [channelId, setChannelId] = React.useState(seed.channelId);
 
   // a threshold means something only in its signal's unit, so another signal
-  // starts from its own default rather than carrying 5 % over as 5 ms
+  // starts from its own default rather than carrying 5 % over as 5 ms. picking
+  // the signal already chosen is no change, and keeps what the rule had
   const chooseSignal = (next: string) => {
-    if (!isAlertSignal(next)) return;
+    if (!isAlertSignal(next) || next === signal) return;
     setSignal(next);
     setThreshold(defaultThresholdInput(next));
   };
 
-  const create = useMutation({
-    mutationFn: () =>
-      createAlertRule({
+  const save = useMutation({
+    mutationFn: () => {
+      const input = {
         name,
         signal,
-        threshold: fromFormValue(signal, Number(threshold)),
+        // an untouched threshold goes back as stored rather than through the
+        // form's twelve digits, so renaming a rule cannot nudge it
+        threshold:
+          existing && signal === existing.signal && threshold === seed.threshold
+            ? existing.threshold
+            : fromFormValue(signal, Number(threshold)),
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
-        enabled: true,
-      }),
+      };
+      // PUT replaces the whole row, so an edit sends the switch back as it
+      // found it; a new rule starts on
+      return existing
+        ? updateAlertRule(existing.id, { ...input, enabled: existing.enabled })
+        : createAlertRule({ ...input, enabled: true });
+    },
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
+      toast.push(
+        existing
+          ? {
+              tone: "success",
+              title: t("toast.saved"),
+              detail: t("toast.savedDetail", { what: name }),
+            }
+          : { tone: "success", title: t("toast.created", { what: name }) },
+      );
       onDone();
       onOpenChange(false);
     },
@@ -703,6 +836,21 @@ function AddRuleDialog({
       });
     },
   });
+
+  // seeded straight from the row rather than through `chooseSignal`, so an
+  // existing rule opens on its own threshold instead of its signal's default
+  React.useEffect(() => {
+    if (open) {
+      setName(seed.name);
+      setSignal(seed.signal);
+      setThreshold(seed.threshold);
+      setWindowSecs(seed.windowSecs);
+      setChannelId(seed.channelId);
+      // a refusal for one rule must not greet the next one opened
+      save.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, existing]);
 
   // the same bounds the API checks, so a window the form accepts is never a 400
   const windowNumber = Number(windowSecs);
@@ -719,28 +867,34 @@ function AddRuleDialog({
   const thresholdRange = t(thresholdRangeKey(signal));
   const thresholdMax = thresholdInputMax(signal);
 
-  // the draft is seeded with defaults rather than blanks, so "dirty" is a diff
-  // against the seed instead of a plain emptiness check
+  // the draft is seeded with the row or with defaults rather than blanks, so
+  // "dirty" is a diff against the seed instead of a plain emptiness check
   const dirty =
-    name !== "" ||
-    signal !== DEFAULT_SIGNAL ||
-    threshold !== defaultThresholdInput(signal) ||
-    windowSecs !== "300" ||
-    channelId !== (channels[0]?.id ?? "");
+    name !== seed.name ||
+    signal !== seed.signal ||
+    threshold !== seed.threshold ||
+    windowSecs !== seed.windowSecs ||
+    channelId !== seed.channelId;
 
   return (
     <EditorSheet
-      name="alert-rule-create"
+      name={existing ? "alert-rule-edit" : "alert-rule-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.alerting.rules.sheetTitle")}
-      subtitle={t("pages.alerting.rules.sheetSubtitle")}
+      title={
+        existing
+          ? t("pages.alerting.rules.editTitle", { name: existing.name })
+          : t("pages.alerting.rules.sheetTitle")
+      }
+      subtitle={
+        existing ? t("pages.alerting.rules.editSubtitle") : t("pages.alerting.rules.sheetSubtitle")
+      }
       dirty={dirty}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && thresholdOk && windowValid)}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      saving={save.isPending}
+      onSave={() => save.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.rules.fieldName")}>
@@ -750,7 +904,8 @@ function AddRuleDialog({
             placeholder={t("pages.alerting.rules.namePlaceholder")}
           />
         </Field>
-        {/* the option's second line is the id the API and the docs use */}
+        {/* the option's second line is the id the API and the docs use; a
+            signal this build does not know is offered under its id alone */}
         <Field
           label={t("pages.alerting.rules.fieldSignal")}
           hint={signalDescription(signal, t, currency)}
@@ -758,11 +913,14 @@ function AddRuleDialog({
           <Combobox
             value={signal}
             onChange={chooseSignal}
-            options={ALERT_SIGNALS.map((s) => ({
-              value: s,
-              label: signalLabel(s, t),
-              description: s,
-            }))}
+            options={[
+              ...(isAlertSignal(signal) ? [] : [{ value: signal, label: signal }]),
+              ...ALERT_SIGNALS.map((s) => ({
+                value: s,
+                label: signalLabel(s, t),
+                description: s,
+              })),
+            ]}
           />
         </Field>
         {/* one per row: the label carries the unit, and the longest one would
@@ -776,7 +934,7 @@ function AddRuleDialog({
             type="number"
             min={0}
             max={thresholdMax}
-            step={ALERT_SIGNAL_SPECS[signal].step}
+            step={signalSpec(signal)?.step ?? "any"}
             value={threshold}
             onChange={(e) => setThreshold(e.target.value)}
           />
