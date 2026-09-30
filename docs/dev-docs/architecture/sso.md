@@ -38,6 +38,10 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 5. The id token is verified against the provider's JWKS: signature by `kid`,
    issuer, audience (`client_id`), expiry, and the `nonce` from step 1.
 
+6. The callback answers on `Accept` (#2297). A caller that is not a browser
+   gets the session as JSON, as it always did. A browser is sent a `303` to the
+   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in).
+
 Rules that hold on every path:
 
 - The **redirect URI comes from configuration** (`ROLTER_PUBLIC_URL`), never
@@ -48,6 +52,72 @@ Rules that hold on every path:
 - The discovery document's `issuer` must equal the configured issuer.
 - A failed token exchange reports the HTTP status only. The provider's error
   body can echo the client secret back, and that must not reach a log.
+
+## Ending a browser sign-in
+
+The provider sends the browser to the callback, which is a top-level
+navigation: there is no script to read a JSON body, and the dashboard reads its
+session from `localStorage`. Answering with the session JSON left the bearer
+token printed in a stray tab and the dashboard signed out (#2297). The callback
+therefore negotiates on `Accept`, with the same test as the MCP consent callback
+(#2166, `prefers_html`), and varies on it.
+
+**Success.** The identity is verified and its grants reconciled exactly as
+before, then the callback stores a **one-time exchange code** and redirects:
+
+```
+303 {public_url}/login?sso_code=<code>
+```
+
+The dashboard posts the code to `POST /auth/sso/exchange` with `{"code": "…"}`
+and receives the same body the JSON callback returns (`token`, `expires_at`,
+`user`, `granted_roles`), then strips `sso_code` from the address bar.
+
+- **Why a code and not the token.** A bearer token must not travel in a query
+  string: history, access logs and `Referer` all keep it. A URL fragment
+  (`#token=…`) avoids logs and `Referer` but still lands in history and puts a
+  live credential in the address bar. The code is worthless once redeemed, so
+  whatever keeps it keeps nothing.
+- **Single use.** The redemption is one `DELETE … RETURNING`, so two concurrent
+  redemptions cannot both win.
+- **Sixty seconds.** The dashboard redeems it as soon as it loads. The clock is
+  the database's, and an expired row is swept on the next redemption.
+- **Hashed at rest.** `sso_exchange_codes` holds the SHA-256 of the code, so
+  reading the table is not a sign-in. The code is 256 random bits, which is why
+  the exchange needs no throttle of its own: the login throttle is keyed on an
+  email and an address and there is nothing here to key on.
+- **The session is minted at redemption**, not at the callback, so no bearer
+  token rests in the database in between. The sign-in is audited once, as
+  `auth.sso_login` at the callback; the exchange does not audit a second time,
+  and a refused one is logged.
+- An unknown, spent or expired code is one answer: `400` with
+  `error.code = "invalid_exchange_code"`. A user deactivated between the
+  callback and the redemption gets the same answer.
+- The table is not read by the data plane, so it has no
+  `bump_config_version()` trigger.
+
+**Refusal.** A browser is sent to `{public_url}/login?sso_error=<code>`, plus
+`&sso=<slug>` once the login state has vouched for the provider. The code is
+from a closed set (`SsoFailure` in `sso.rs`); never rename one, and add a
+dashboard translation for each new one. Nothing the identity provider said is
+in the URL.
+
+| `sso_error`               | When                                                                 |
+| ------------------------- | -------------------------------------------------------------------- |
+| `idp_error`               | the provider answered with an `error` (declined, policy)             |
+| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
+| `sso_disabled`            | the org turned SSO off                                               |
+| `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
+| `account_deactivated`     | the account is deactivated                                           |
+| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
+| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`         |
+| `internal_error`          | anything else                                                        |
+
+**What the dashboard's `/login` screen handles:** `sso_code` (call the exchange,
+store the token as a local sign-in does, clear the query string, route on) and
+`sso_error` (show the translated message, with `sso` naming the provider's
+slug, which is to be looked up against `/api/v1/auth/methods` and never
+rendered raw). `/auth/sso/*` must be proxied to the control plane in dev.
 
 ## Groups become memberships
 

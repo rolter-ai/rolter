@@ -35,8 +35,8 @@ use super::models::{
     ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
     Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
     ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
-    SsoLoginState, SsoProvider, Team, User, VirtualKey,
+    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode,
+    SsoGroupMapping, SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -1686,6 +1686,50 @@ impl SsoRepo<'_> {
              returning state, provider_id, code_verifier, nonce, redirect_uri, created_at",
         )
         .bind(state)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Record a one-time exchange code for a completed browser sign-in. Only
+    /// the digest of the code is stored; `ttl_secs` counts from the database
+    /// clock, like every other expiry here.
+    pub async fn issue_exchange(
+        &self,
+        code_hash: &str,
+        user_id: Uuid,
+        provider_id: Uuid,
+        granted_roles: &[String],
+        ttl_secs: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "insert into sso_exchange_codes (code_hash, user_id, provider_id, granted_roles, expires_at) \
+             values ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)",
+        )
+        .bind(code_hash)
+        .bind(user_id)
+        .bind(provider_id)
+        .bind(granted_roles)
+        .bind(ttl_secs.to_string())
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Redeem an exchange code exactly once. An unknown, already-redeemed or
+    /// expired code yields `None`; the delete is the single-use guarantee, so
+    /// two concurrent redemptions cannot both succeed.
+    pub async fn redeem_exchange(&self, code_hash: &str) -> Result<Option<SsoExchangeCode>> {
+        // opportunistic sweep, as for login states
+        let _ = sqlx::query("delete from sso_exchange_codes where expires_at < now()")
+            .execute(self.0)
+            .await;
+        sqlx::query_as(
+            "delete from sso_exchange_codes where code_hash = $1 and expires_at > now() \
+             returning user_id, provider_id, granted_roles",
+        )
+        .bind(code_hash)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)

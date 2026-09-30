@@ -199,11 +199,20 @@ Turning single sign-on **off** confirms too, when the org has at least one enabl
 The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped issuer or an outage at the identity provider would otherwise leave nobody able to sign in and fix it. That exemption is what makes the switch safe to use.
 </Info>
 
+## What a user sees when signing in
+
+Choosing **Continue with …** on the sign-in screen takes the user to the identity provider and back, and they land signed in on the dashboard. The session token never appears in the address bar: the provider's redirect carries a one-time code that is good for a minute and works once, and the dashboard swaps it for the session straight away.
+
+If the sign-in is refused, the user comes back to the sign-in screen with the reason. The reasons are: the provider declined the sign-in, the sign-in took too long or was already used, SSO is turned off for the organization, the user is in no mapped group, the account is deactivated, or the provider's answer could not be verified. The provider's own error text is never shown.
+
+Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON.
+
 ## What the login flow refuses to do
 
 - **No unsigned trust.** The id token is verified against the JWKS fetched from the issuer's discovery document, with the issuer, audience and nonce all checked. An `alg: none` or HMAC-signed token is rejected — only the asymmetric algorithms the provider publishes are accepted.
 - **No open redirect.** The redirect URI comes from the deployment's own base URL, never from the request.
 - **One-shot state.** The login state row is consumed by the callback and expires, so a replayed `code`+`state` pair finds nothing to redeem.
+- **One-shot sign-in code.** A browser is handed a code, not the session. The code expires after a minute, works once, and only its digest is stored.
 - **No implicit access.** A user in no mapped group gets the provider's default role, or is refused when there is none.
 
 ## Removing a provider

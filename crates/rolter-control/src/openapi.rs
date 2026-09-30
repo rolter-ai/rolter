@@ -1930,6 +1930,18 @@ fn operations() -> Vec<Op> {
                 "ssoCallback",
                 "OAuth/OIDC redirect target for an SSO login",
             )
+            .public()
+            .see_other(
+                "sent to a browser (`Accept: text/html`): the dashboard's `/login` screen, with \
+                 `sso_code=` (a one-time code for `POST /auth/sso/exchange`) on success or \
+                 `sso_error=` (a stable code, plus `sso=` once the provider is known) on a \
+                 refusal. Any other caller gets the session JSON or the error",
+            ),
+            Op::post(
+                "/auth/sso/exchange",
+                "exchangeSsoCode",
+                "Redeem the one-time code a browser SSO sign-in ended with for its session",
+            )
             .public(),
         ],
     ));
@@ -3168,6 +3180,11 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
+        // the SSO callback is the only other one (#2297)
+        let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
+        assert!(sso["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3176,7 +3193,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 1);
+        assert_eq!(redirects, 2);
     }
 
     #[test]

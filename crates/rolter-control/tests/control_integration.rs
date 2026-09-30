@@ -8045,6 +8045,267 @@ async fn sso_login(
     Some(body["token"].as_str().unwrap().to_string())
 }
 
+/// #2297: the provider sends the browser to the callback, so the callback must
+/// end on the dashboard. A success hands over a one-time code (never the
+/// token), redeemed once; a refusal names a stable code and none of the IdP's
+/// own words.
+#[tokio::test]
+async fn browser_sso_sign_in_ends_on_the_dashboard_with_a_one_time_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "BrowserOrg", "slug": "browser-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let client_secret = format!("idp-{}", uuid::Uuid::new_v4());
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Stub IdP", "slug": "browser", "issuer": issuer,
+            "client_id": "rolter", "client_secret": client_secret
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    let mapping = client
+        .post(format!(
+            "{base}/api/v1/sso-providers/{provider_id}/group-mappings"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"group_name": "admins", "role": "admin", "org_id": org_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mapping.status(), 200);
+
+    // one browser navigation through the provider, answered with `groups`
+    let navigate = |groups: Value| {
+        let (client, base, stub, issuer) = (&client, &base, &stub, &issuer);
+        async move {
+            let start = client
+                .get(format!("{base}/auth/sso/browser/start"))
+                .send()
+                .await
+                .unwrap();
+            let location = start
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let state = url_param(&location, "state");
+            let nonce = url_param(&location, "nonce");
+            *stub.next_claims.lock().unwrap() = stub_idp::claims(issuer, "rolter", &nonce, groups);
+            client
+                .get(format!(
+                    "{base}/auth/sso/browser/callback?code=abc&state={state}"
+                ))
+                .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let location_of = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+    let exchange = |code: String| {
+        let (client, base) = (&client, &base);
+        async move {
+            client
+                .post(format!("{base}/auth/sso/exchange"))
+                .json(&json!({"code": code}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // success: a 303 to the login screen carrying a code that is not the token
+    let response = navigate(json!(["admins"])).await;
+    assert_eq!(response.status(), 303);
+    let location = location_of(&response);
+    assert!(
+        location.starts_with(&format!("{base}/login?sso_code=")),
+        "{location}"
+    );
+    assert!(!location.contains("rolter_sess_"), "{location}");
+    let body = response.text().await.unwrap();
+    assert!(
+        !body.contains("rolter_sess_") && !body.contains("token"),
+        "{body}"
+    );
+    let code = url_param(&location, "sso_code");
+    assert!(!code.is_empty());
+
+    // only a digest is stored
+    let stored: Vec<String> = sqlx::query_scalar("select code_hash from sso_exchange_codes")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_ne!(stored[0], code, "the plain code must not rest in the table");
+
+    // redeeming it yields a working session, once
+    let redeemed = exchange(code.clone()).await;
+    assert_eq!(redeemed.status(), 200);
+    let session: Value = redeemed.json().await.unwrap();
+    assert_eq!(session["user"]["email"], "ada@example.com");
+    assert_eq!(session["granted_roles"][0], "admin");
+    let token = session["token"].as_str().unwrap().to_string();
+    assert_ne!(token, code);
+    let me = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+
+    let replay = exchange(code).await;
+    assert_eq!(replay.status(), 400, "a code is single-use");
+    let refusal: Value = replay.json().await.unwrap();
+    assert_eq!(refusal["error"]["code"], "invalid_exchange_code");
+    assert!(!refusal.to_string().contains(&token));
+    let unknown = exchange("never-issued".to_string()).await;
+    assert_eq!(unknown.status(), 400);
+
+    // one sign-in, one audit line: the redemption does not add a second
+    let audited: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'auth.sso_login'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(audited, 1);
+
+    // an expired code is refused (backdated rather than slept on)
+    let response = navigate(json!(["admins"])).await;
+    let code = url_param(&location_of(&response), "sso_code");
+    sqlx::query("update sso_exchange_codes set expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(exchange(code).await.status(), 400);
+
+    // refusals: a stable code, the provider once known, and no IdP words
+    let idp_words = "idp-free-text-should-never-leak";
+    let start = client
+        .get(format!("{base}/auth/sso/browser/start"))
+        .send()
+        .await
+        .unwrap();
+    let state = url_param(&location_of(&start), "state");
+    let declined = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?error=access_denied&error_description={idp_words}&state={state}"
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(declined.status(), 303);
+    assert_eq!(
+        location_of(&declined),
+        format!("{base}/login?sso_error=idp_error")
+    );
+
+    let stale = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?code=abc&state=made-up"
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        location_of(&stale),
+        format!("{base}/login?sso_error=state_expired")
+    );
+
+    let ungrouped = navigate(json!(["nobody"])).await;
+    assert_eq!(ungrouped.status(), 303);
+    assert_eq!(
+        location_of(&ungrouped),
+        format!("{base}/login?sso_error=no_mapped_group&sso=browser")
+    );
+
+    let deactivate = sqlx::query("update users set deactivated_at = now() where email = $1")
+        .bind("ada@example.com")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(deactivate.rows_affected(), 1);
+    let deactivated = navigate(json!(["admins"])).await;
+    assert_eq!(
+        location_of(&deactivated),
+        format!("{base}/login?sso_error=account_deactivated&sso=browser")
+    );
+    sqlx::query("update users set deactivated_at = null")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let disabled = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .bearer_auth("admintok")
+        .json(&json!({"allow_password_login": true, "allow_sso": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    let off = navigate(json!(["admins"])).await;
+    assert_eq!(
+        location_of(&off),
+        format!("{base}/login?sso_error=sso_disabled&sso=browser")
+    );
+
+    // a caller that is not a browser still gets the JSON refusal
+    let start = client
+        .get(format!("{base}/auth/sso/browser/start"))
+        .send()
+        .await
+        .unwrap();
+    let state = url_param(&location_of(&start), "state");
+    let json_refusal = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?error=access_denied&state={state}"
+        ))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_refusal.status(), 400);
+}
+
 /// Invitation onboarding (#712): an admin mints a one-time link, the invitee
 /// sets their own password, and every way the link can be misused fails.
 #[tokio::test]
