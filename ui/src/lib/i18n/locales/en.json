@@ -3578,11 +3578,13 @@
         "active": "active",
         "allModels": "all models",
         "usageUnavailable": "usage: unavailable",
-        "usage": "{{requests}} req · {{cost}} (7d)",
+        "usage_one": "{{requests}} request · {{cost}} in the last 7 days",
+        "usage_other": "{{requests}} requests · {{cost}} in the last 7 days",
         "noUsage": "no usage in the last 7 days",
         "rotate": "Rotate",
         "rotateHint": "Rotate: issue a new secret and disable this one",
-        "deleteHint": "Delete this virtual key",
+        "rotateAria": "Rotate key {{name}}",
+        "deleteAria": "Delete key {{name}}",
         "playground": "Playground",
         "playgroundHint": "The Playground minted this key for one sitting. It expires on its own — nothing needs to delete it."
       },
@@ -3590,7 +3592,8 @@
         "title": "New virtual key",
         "subtitle": "Personal virtual key in {{project}} — shown once, right after creation",
         "currentProject": "the current project",
-        "save": "Mint"
+        "save": "Mint",
+        "failed": "Could not create the key"
       },
       "revealed": {
         "title": "Virtual key ready",

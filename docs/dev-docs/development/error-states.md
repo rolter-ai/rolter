@@ -265,6 +265,16 @@ was taken, not where the data would have been. For a destructive action that
 means inside the confirmation, which stays open so the message has somewhere to
 live — see [destructive actions](destructive-actions.md).
 
+A sheet reports its failure in two parts. `EditorSheet`'s `errorMessage` is the
+screen's own translated lead ("Could not create the key") and `errorDetail` is
+what the control plane said, read with `errorDetail()` from `ui/src/lib/toast.ts`.
+The server answers in English whatever the locale and the dashboard has no table
+to translate it with, so the lead keeps the sheet readable in every language and
+the server's words sit under it in mono, the way a failed toast and `LoadError`
+carry them. A sheet that passes only `errorMessage` renders one line as before;
+Account's mint sheet is the first to use both, and the other sheets follow as
+#2216 reaches them.
+
 ## One-shot feedback: toasts
 
 Inline messages are for what stays on screen: a field that failed validation, a
