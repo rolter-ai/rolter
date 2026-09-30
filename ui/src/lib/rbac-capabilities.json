@@ -491,8 +491,8 @@
     },
     {
       "resource": "mcp_log",
-      "scope": "deployment",
-      "read": "superadmin",
+      "scope": "project",
+      "read": "viewer",
       "create": "superadmin",
       "update": null,
       "delete": null

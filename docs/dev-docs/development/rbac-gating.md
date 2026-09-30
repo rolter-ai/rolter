@@ -129,9 +129,11 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   `MemoryRouter`.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
-  the cluster, connectors, alerting and the MCP logs are wrapped in
+  the cluster, connectors and alerting are wrapped in
   `superadminOnly()` (`ui/src/components/ForbiddenScreen.tsx`). A non-superadmin
-  never mounts them, so they send no request to be refused.
+  never mounts them, so they send no request to be refused. The MCP logs are
+  scoped on the server since #1831 (`mcp_log:read` is a viewer-level project
+  capability); the screen stays wrapped until its dashboard half lands.
 
 ## Disabled has to say why
 
