@@ -40,6 +40,7 @@ import { useCurrencyCode } from "@/lib/currency";
 import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { useModalA11y } from "@/lib/modal-a11y";
+import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -48,6 +49,11 @@ import { useErrorState, useScreenReady } from "@/lib/ux-react";
 const PAGE_SIZE = 50;
 // how often the live feed asks for the newest page
 const POLL_MS = 5000;
+// the log reads one window, by name. its bounds are worked out as each page is
+// requested (a poll, a retry, a filter change), not when the screen mounts, so
+// a tab left open keeps reading the last 24 hours rather than every hour since
+// it was opened (#2315). the name is what the query key carries
+const LOG_WINDOW: TimeWindow = "24h";
 type StatusFilter = "all" | "error" | "success";
 
 const num = (v: number | string | undefined): number => {
@@ -173,11 +179,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const [streaming, setStreaming] = React.useState(true);
   const errorHeading = React.useId();
 
-  const window = React.useMemo(
-    () => ({ since: new Date(Date.now() - 24 * 3600_000).toISOString() }),
-    [],
-  );
-
   const scope = useScope();
   const models = useQuery({ queryKey: ["models"], queryFn: fetchModels });
   // the two governance dimensions a row can be attributed to. named here so
@@ -209,7 +210,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const query = useQuery({
     queryKey: [
       "invocations",
-      window.since,
+      LOG_WINDOW,
       status,
       model,
       unitSel.join(","),
@@ -218,7 +219,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     ],
     queryFn: () =>
       fetchInvocationsPage({
-        since: window.since,
+        ...windowBounds(LOG_WINDOW),
         model: model || undefined,
         // the rail allows several of each, so the whole selection travels
         business_unit: unitSel.length ? unitSel : undefined,

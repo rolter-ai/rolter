@@ -22,14 +22,35 @@ import {
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { windowBounds, type TimeWindow } from "@/lib/time-window";
+import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
-const WINDOW = {
-  since: new Date(Date.now() - 86_400_000).toISOString(),
-  bucket: "hour",
-};
+// the screen reads one window, by name. its bounds are worked out as each
+// request leaves rather than once when the module loads, so a tab left open
+// reads the last 24 hours as they are now and not every hour since it was
+// opened (#1975). the name is what the query keys carry
+const WINDOW_NAME: TimeWindow = "24h";
+const readWindow = () => ({ ...windowBounds(WINDOW_NAME), bucket: "hour" });
+
+// the recent requests card says "live", so it asks again every 15s, the pace
+// of the other polled screens (Cluster, Adaptive Routing). react-query holds
+// an interval while the tab is hidden and asks again when it comes back. the
+// figures and charts are aggregates over a day: a minute keeps them, and the
+// window they are read over, from going stale on a tab left open
+const RECENT_POLL_MS = 15_000;
+const OVERVIEW_POLL_MS = 60_000;
+
+// a query that has never held data goes back to pending on every refetch, which
+// unmounts its error, so polling one that failed would swap the alert for a
+// skeleton and back each cycle. it waits for the retry instead (#1984). a
+// failure with data on screen keeps that data and is retried by the next poll
+const pollEvery =
+  (ms: number) =>
+  (query: { state: { status: string; data: unknown } }): number | false =>
+    query.state.status === "error" && query.state.data === undefined ? false : ms;
 
 // the shared categorical sequence (#1245), not a fifth hand-written list
 const BAR_PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"];
@@ -41,15 +62,19 @@ function isUnavailable(err: unknown): boolean {
 // live overview: 4 KPIs, hourly spend line, traffic
 // donut, requests-by-provider bars, and a recent-requests mini table. all
 // clickhouse-backed; renders a calm not-configured state when analytics is off.
-export default function Dashboard() {
+// `pollMs` is only ever set by a story, which swaps both intervals for one a
+// play can watch several of inside the test-runner's per-story budget
+export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const { t } = useTranslation();
   // formatting follows the dashboard language, not the browser locale
   const fmt = useFormat();
   const currency = useCurrencyCode();
   const money = (n: number) => fmt.currency(n, currency);
+  const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
   const summary = useQuery({
-    queryKey: ["analytics", "summary", "24h"],
-    queryFn: () => fetchAnalyticsSummary(WINDOW),
+    queryKey: ["analytics", "summary", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsSummary(readWindow()),
+    refetchInterval: overviewPoll,
     retry: false,
   });
 
@@ -58,25 +83,35 @@ export default function Dashboard() {
   useScreenReady(!summary.isLoading);
   useErrorState(!!summary.error, "dashboard");
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", "24h"],
-    queryFn: () => fetchAnalyticsTimeseries(WINDOW),
+    queryKey: ["analytics", "timeseries", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsTimeseries(readWindow()),
+    refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", "24h"],
-    queryFn: () => fetchAnalyticsByModel(WINDOW),
+    queryKey: ["analytics", "by-model", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsByModel(readWindow()),
+    refetchInterval: overviewPoll,
     retry: false,
   });
   const recent = useQuery({
     queryKey: ["invocations", "recent"],
-    queryFn: () => fetchInvocations({ ...WINDOW, limit: 8 }),
+    queryFn: () => fetchInvocations({ ...readWindow(), limit: 8 }),
+    refetchInterval: pollEvery(pollMs ?? RECENT_POLL_MS),
     retry: false,
   });
+
+  // the reads that failed with nothing to show. a poll that fails while an
+  // earlier answer is on screen leaves that answer up: swapping the whole page
+  // for an alert on every blip would blank a dashboard that had loaded
+  const blocking = [summary, series, byModel].flatMap((q) =>
+    q.data === undefined && q.error ? [q.error] : [],
+  );
 
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
   // yet" about a control plane that was never asked to record anything (#1236)
-  const unavailable = [summary.error, series.error, byModel.error].find(isUnavailable) ?? null;
+  const unavailable = blocking.find(isUnavailable) ?? null;
 
   if (unavailable) {
     return (
@@ -91,7 +126,7 @@ export default function Dashboard() {
 
   // a failed summary is a failure, not a quiet day: without this branch a 5xx
   // or an expired session rendered "0 requests · $0.00" and nothing else
-  const failed = summary.error ?? series.error ?? byModel.error;
+  const failed = blocking[0];
   if (failed) {
     return (
       <PageBody>
@@ -102,6 +137,8 @@ export default function Dashboard() {
             void summary.refetch();
             void series.refetch();
             void byModel.refetch();
+            // a first load that failed stopped polling, so it is asked again too
+            void recent.refetch();
           }}
         />
       </PageBody>
@@ -137,6 +174,16 @@ export default function Dashboard() {
       pct: (num(m.requests) / barMax) * 100,
       color: BAR_PALETTE[i] ?? "var(--chart-5)",
     }));
+
+  // "live" is said only while the last read of this card succeeded (#1984). a
+  // first load that failed has stopped polling, and a failure with rows on
+  // screen is retried by the next poll, so only the second one says retrying
+  const recentFailedAt = fmt.time(recent.errorUpdatedAt);
+  const recentFeed = !recent.isError
+    ? t("pages.dashboard.live")
+    : recent.data === undefined
+      ? t("pages.dashboard.feed.loadFailed", { time: recentFailedAt })
+      : t("pages.dashboard.feed.refreshFailedRetrying", { time: recentFailedAt });
 
   const recentRows = (recent.data ?? []).map((r: InvocationRow) => ({
     id: r.request_id || r.ts,
@@ -288,8 +335,13 @@ export default function Dashboard() {
         </Card>
         <Card>
           <CardHeader>
-            <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {t("pages.dashboard.live")}
+            <CardDescription
+              className={cn(
+                "text-[0.6875rem] uppercase tracking-[0.07em]",
+                recent.isError && "text-[color:var(--status-danger-text)]",
+              )}
+            >
+              {recentFeed}
             </CardDescription>
             <CardTitle className="text-base">{t("pages.dashboard.recentTitle")}</CardTitle>
           </CardHeader>

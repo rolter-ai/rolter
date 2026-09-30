@@ -411,6 +411,43 @@ export const ARetryResumesTheFeed: Story = {
   },
 };
 
+/** every `since` the screen has sent for the log, oldest first */
+const logSinces = (recorder: Recorder): number[] =>
+  recorder.calls
+    .filter((c) => c.url.includes("/analytics/invocations"))
+    .map((c) => Date.parse(new URL(c.url, "http://localhost").searchParams.get("since") ?? ""));
+
+const windowed = recording(withLogs(ROWS));
+
+/**
+ * #2315: "the last 24 hours" is the 24 hours before each read. `since` used to
+ * be fixed when the screen mounted, and every poll reused it, so a tab left
+ * open for an afternoon read the last 24 hours plus the afternoon. Each poll's
+ * `since` is later than the one before, and the query key does not churn with
+ * it: a key that changed on every render would fetch on every render.
+ */
+export const TheWindowRollsForwardWithEveryPoll: Story = {
+  render: () => (
+    <Harness fetchStub={windowed.stub}>
+      <Logs pollMs={FAST_POLL_MS} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.dateTimeMs(ROWS[0].ts));
+    await waitFor(() => expect(logSinces(windowed).length).toBeGreaterThan(2));
+    const [first, second, third] = logSinces(windowed);
+    await expect(second).toBeGreaterThan(first);
+    await expect(third).toBeGreaterThan(second);
+    // 24 hours behind the moment it was sent, not behind when the screen opened
+    const sent = logSinces(windowed);
+    const behind = Date.now() - sent[sent.length - 1];
+    await expect(behind).toBeGreaterThanOrEqual(24 * 3_600_000);
+    await expect(behind).toBeLessThan(24 * 3_600_000 + 10_000);
+    // one request per poll: the key held still while `since` moved
+    await expect(logSinces(windowed).length).toBeLessThan(12);
+  },
+};
+
 /**
  * #1984: a refresh that fails with rows already on screen keeps them, keeps its
  * error through the next attempt, and goes on polling — so the toolbar says the

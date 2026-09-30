@@ -505,6 +505,10 @@
       "errors_other": "{{count}} errors",
       "last24h": "Last 24h",
       "live": "Live",
+      "feed": {
+        "loadFailed": "Load failed at {{time}}",
+        "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
+      },
       "spendTitle": "Spend",
       "spendSub": "Hourly gateway spend, USD",
       "noSpendRecorded": "No spend recorded for this window. Requests were served, but none of them were priced — add pricing for the models in use to see cost here.",

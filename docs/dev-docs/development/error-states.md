@@ -111,6 +111,23 @@ three polling intervals and asserts it is still connected: an alert that
 flickered would have been unmounted and replaced, so the held node would be
 detached even if a new alert had since appeared.
 
+The Dashboard polls four queries under the same rule (#1975). A read blocks the
+page only while it holds no data, so a poll that fails over figures already on
+screen leaves them up rather than swapping the whole screen for an alert on every
+blip. The Recent requests card is the one that says "Live", so it reads its own
+query: the word gives way to `Refresh failed at {time}, retrying` when a poll
+fails over rows, and to `Load failed at {time}` when the first read failed and
+polling stopped. The `AFailedPollKeepsWhatLoaded` and
+`AFirstLoadThatFailsStopsPolling` stories in `Dashboard.stories.tsx` pin the two.
+
+A polled screen that reads a time window keeps the window's name in the query key
+and works the bounds out inside the query function, with `windowBounds()` from
+`ui/src/lib/time-window.ts`. Bounds fixed when the screen mounted keep widening
+on a tab left open, so "the last 24 hours" would mean every hour since the tab
+was opened, and a key that carried a fresh timestamp would fetch on every render.
+The Dashboard and LLM Logs (#2315) do this, and the `TheWindowRollsForward…`
+stories record two reads and assert the second `since` is later than the first.
+
 Two of these are easy to collapse and must not be. A plain 401 is fixed by
 signing in; `open_mode_no_session` is a control plane running with no admin
 token, which has no accounts to sign into at all — signing in again is exactly

@@ -242,7 +242,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 
 ## Filtering LLM Logs
 
-**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
+**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The 24 hours are counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
 
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
