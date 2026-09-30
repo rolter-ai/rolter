@@ -22,7 +22,7 @@
 //!   status or the class of transport failure, since an error body can echo the
 //!   credential it just rejected.
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
@@ -930,7 +930,7 @@ impl Outcome {
 /// Deliver `change` to the rule's channel and record the outcome as a history
 /// row, inside the evaluation's transaction.
 async fn report(
-    egress: &EgressPolicy,
+    egress: &Arc<EgressPolicy>,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     rule: &Rule,
     channel: Option<&ChannelTarget>,
@@ -1003,7 +1003,7 @@ fn payload(id: Uuid, rule: &Rule, change: &str) -> serde_json::Value {
 /// history records, never an evaluation error, so a dead endpoint cannot stop
 /// the rule's state from moving.
 async fn deliver(
-    egress: &EgressPolicy,
+    egress: &Arc<EgressPolicy>,
     channel: &ChannelTarget,
     payload: &serde_json::Value,
     kek: Option<&Kek>,
@@ -1036,7 +1036,7 @@ async fn deliver(
         }
         _ => None,
     };
-    let Some(client) = delivery_client() else {
+    let Some(client) = delivery_client(egress) else {
         return Outcome::failed("webhook client unavailable");
     };
     let mut request = client.post(&channel.endpoint).json(payload);
@@ -1060,24 +1060,19 @@ async fn deliver(
 
 /// The client webhooks are sent with.
 ///
-/// Separate from [`ControlState`]'s shared client because it does not follow
+/// It resolves through the egress policy, so a hostname that answers with a
+/// denied address is refused at connect time, and it does not follow
 /// redirects: a `3xx` is how an endpoint that passed the egress check hands the
 /// request to one that would not have, so it is recorded as a failure instead.
 /// Bounded end to end, since the evaluator waits on it while holding the
 /// rule's row lock.
-fn delivery_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(DELIVERY_TIMEOUT)
-                .user_agent(concat!("rolter/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .ok()
-        })
-        .as_ref()
+fn delivery_client(egress: &Arc<EgressPolicy>) -> Option<reqwest::Client> {
+    crate::egress_client::builder(egress)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(DELIVERY_TIMEOUT)
+        .user_agent(concat!("rolter/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()
 }
 
 async fn audit(
@@ -1128,6 +1123,27 @@ mod tests {
             enabled: false,
             managed_secret,
         }
+    }
+
+    /// #1949: a hostname that resolves only to an address the policy denies
+    /// passes the literal check, so only the connect-time resolver stops it.
+    #[tokio::test]
+    async fn a_name_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let channel = ChannelTarget {
+            id: Uuid::new_v4(),
+            endpoint: listener.url("/hook"),
+            enabled: true,
+            secret_ciphertext: None,
+            secret_nonce: None,
+        };
+        let policy = crate::egress_client::testing::deny_loopback();
+        // the write-time and pre-send literal checks cannot see a hostname
+        assert!(policy.url_deny_reason(&channel.endpoint).is_none());
+        let outcome = deliver(&policy, &channel, &serde_json::json!({}), None).await;
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.detail, "could not connect to the endpoint");
+        assert_eq!(listener.accepted(), 0);
     }
 
     fn egress() -> EgressPolicy {
