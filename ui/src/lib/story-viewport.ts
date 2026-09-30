@@ -18,6 +18,11 @@ export const TABLET = { width: 768, height: 1024 } as const;
 /** A 1440 px laptop window, wider than the runner's 1280×800 default */
 export const WIDE = { width: 1440, height: 900 } as const;
 /**
+ * A small laptop, in the band between `lg` and `xl`: wide enough for the
+ * sidebar, too narrow for the LLM Logs drawer beside it (#1986)
+ */
+export const LAPTOP = { width: 1100, height: 800 } as const;
+/**
  * A 1280×720 screen at 200 % zoom, the short window #2003 lost a dialog's
  * title and buttons in. WCAG 1.4.10 asks for reflow at that size
  */
@@ -27,6 +32,7 @@ const OPTIONS = {
   rolterMobile: { name: "Mobile 375", styles: { width: "375px", height: "812px" } },
   rolterTablet: { name: "Tablet 768", styles: { width: "768px", height: "1024px" } },
   rolterWide: { name: "Wide 1440", styles: { width: "1440px", height: "900px" } },
+  rolterLaptop: { name: "Laptop 1100", styles: { width: "1100px", height: "800px" } },
   rolterShort: { name: "Short 640×360", styles: { width: "640px", height: "360px" } },
 };
 
@@ -44,6 +50,11 @@ export const atTablet = {
 export const atWide = {
   parameters: { viewportSize: WIDE, viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterWide", isRotated: false } },
+};
+
+export const atLaptop = {
+  parameters: { viewportSize: LAPTOP, viewport: { options: OPTIONS } },
+  globals: { viewport: { value: "rolterLaptop", isRotated: false } },
 };
 
 export const atShort = {

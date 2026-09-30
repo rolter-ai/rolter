@@ -59,6 +59,14 @@ const CLOCK: Intl.DateTimeFormatOptions = {
   second: "2-digit",
 };
 
+// `fractionalSecondDigits` is an ES2021 Intl option and the tsconfig lib stops
+// at ES2020, so it is attached through an assertion rather than by widening the
+// lib for one field. every engine the dashboard supports honours it
+const CLOCK_MS = {
+  ...CLOCK,
+  fractionalSecondDigits: 3,
+} as Intl.DateTimeFormatOptions;
+
 const STAMP: Intl.DateTimeFormatOptions = {
   year: "numeric",
   month: "2-digit",
@@ -66,9 +74,6 @@ const STAMP: Intl.DateTimeFormatOptions = {
   ...CLOCK,
 };
 
-// `fractionalSecondDigits` is an ES2021 Intl option and the tsconfig lib stops
-// at ES2020, so it is attached through an assertion rather than by widening the
-// lib for one field. every engine the dashboard supports honours it
 const STAMP_MS = {
   ...STAMP,
   fractionalSecondDigits: 3,
@@ -99,6 +104,8 @@ export interface Formatters {
   dateTimeMs: (value: Date | string | number) => string;
   /** clock only, for a column whose rows all sit in the same day */
   time: (value: Date | string | number) => string;
+  /** the clock with milliseconds, for log rows that land inside one second */
+  timeMs: (value: Date | string | number) => string;
   /** clock without seconds, for chart buckets */
   timeShort: (value: Date | string | number) => string;
   /**
@@ -156,6 +163,7 @@ export function formattersFor(locale: Locale): Formatters {
     dateTime: (value) => stamp(value, STAMP),
     dateTimeMs: (value) => stamp(value, STAMP_MS),
     time: (value) => stamp(value, CLOCK),
+    timeMs: (value) => stamp(value, CLOCK_MS),
     timeShort: (value) => stamp(value, { ...CLOCK, second: undefined }),
     dayUnlessToday: (value, now) => {
       const date = toDate(value);
