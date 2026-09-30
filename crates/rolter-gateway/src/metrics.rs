@@ -307,6 +307,10 @@ pub struct Metrics {
     pub health_events_written_total: AtomicU64,
     /// provider-health-event rows dropped (queue full or write failed)
     pub health_events_dropped_total: AtomicU64,
+    /// mcp tool-call rows successfully written to clickhouse
+    pub mcp_events_written_total: AtomicU64,
+    /// mcp tool-call rows dropped (queue full or write failed)
+    pub mcp_events_dropped_total: AtomicU64,
     /// requests rejected because a matching budget was exhausted
     pub budget_blocks_total: AtomicU64,
     /// requests refused because the model had no price and the unpriced policy
@@ -640,6 +644,18 @@ impl Metrics {
                 name: "rolter_health_events_dropped_total",
                 help: "provider-health-event rows dropped (queue full or write failed)",
                 value: self.health_events_dropped_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_mcp_events_written_total",
+                help: "mcp tool-call rows written to clickhouse",
+                value: self.mcp_events_written_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "counter",
+                name: "rolter_mcp_events_dropped_total",
+                help: "mcp tool-call rows dropped (queue full or write failed)",
+                value: self.mcp_events_dropped_total.load(Relaxed),
             },
             Scalar {
                 kind: "counter",

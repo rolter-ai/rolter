@@ -14,6 +14,7 @@ use serde::Deserialize;
 use rolter_core::{McpAuthKind, McpServerConfig};
 use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
+use crate::mcp_log::{CallContext, PendingCall};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -107,6 +108,34 @@ async fn proxy(
             "mcp_transport_unsupported",
         );
     }
+    // a `tools/call` is recorded in the MCP tool-call log (#2395). `None` for
+    // every other request, and without parsing anything when no ClickHouse is
+    // configured, so the common path pays one flag check
+    let call = if method == Method::POST {
+        let request_id = headers
+            .get(crate::trace::REQUEST_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        PendingCall::parse(
+            &state.mcp_events,
+            &body,
+            &CallContext {
+                server: &server.slug,
+                transport: &server.transport,
+                org_id: &key.org_id,
+                team_id: &key.team_id,
+                project_id: &key.project_id,
+                virtual_key_id: &key.id,
+                // the session is looked up by this id below, so on a per-user
+                // OAuth server it is the session owner
+                user_id: &key.user_id,
+                request_id,
+                capture: &snapshot.logging.payload_capture,
+            },
+        )
+    } else {
+        None
+    };
     // the credential is chosen by what the server row says it is. only `oauth`
     // consults the per-user session; the static kinds are a deployment-wide
     // credential and deliberately do not require one, which is the whole point
@@ -118,6 +147,9 @@ async fn proxy(
                 .mcp_oauth_sessions
                 .get(&(server.id.clone(), key.user_id.clone()))
             else {
+                if let Some(call) = call {
+                    call.fail("auth_denied");
+                }
                 return error(
                     StatusCode::FORBIDDEN,
                     "no live MCP OAuth session authorizes this user and server",
@@ -125,6 +157,9 @@ async fn proxy(
                 );
             };
             if chrono::Utc::now() >= session.expires_at {
+                if let Some(call) = call {
+                    call.fail("auth_denied");
+                }
                 return error(
                     StatusCode::FORBIDDEN,
                     "MCP OAuth session has expired",
@@ -136,6 +171,9 @@ async fn proxy(
                 .iter()
                 .any(|scope| !session.scopes.contains(scope))
             {
+                if let Some(call) = call {
+                    call.fail("auth_denied");
+                }
                 return error(
                     StatusCode::FORBIDDEN,
                     "MCP OAuth session does not cover the server's required scopes",
@@ -207,12 +245,17 @@ async fn proxy(
         )
         .await
     {
-        Ok(response) => upstream_response(response),
-        Err(upstream) => error(
-            StatusCode::BAD_GATEWAY,
-            format!("MCP upstream request failed: {upstream}"),
-            "mcp_upstream_error",
-        ),
+        Ok(response) => upstream_response(response, call),
+        Err(upstream) => {
+            if let Some(call) = call {
+                call.fail_upstream(&upstream.to_string());
+            }
+            error(
+                StatusCode::BAD_GATEWAY,
+                format!("MCP upstream request failed: {upstream}"),
+                "mcp_upstream_error",
+            )
+        }
     }
 }
 
@@ -289,10 +332,14 @@ fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     headers
 }
 
-fn upstream_response(response: reqwest::Response) -> Response {
+fn upstream_response(response: reqwest::Response, call: Option<PendingCall>) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut headers = end_to_end_headers(response.headers().clone());
+    let is_sse = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
     if !headers.contains_key(header::CONTENT_TYPE) {
         headers.insert(
             header::CONTENT_TYPE,
@@ -303,15 +350,20 @@ fn upstream_response(response: reqwest::Response) -> Response {
     if let Some(response_headers) = builder.headers_mut() {
         *response_headers = headers;
     }
-    builder
-        .body(Body::from_stream(response.bytes_stream()))
-        .unwrap_or_else(|_| {
-            error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to build MCP response",
-                "mcp_response_error",
-            )
-        })
+    let body = match call {
+        // recorded when the body has been read, without touching a byte of it
+        Some(call) => {
+            Body::from_stream(call.observe(status.as_u16(), is_sse, response.bytes_stream()))
+        }
+        None => Body::from_stream(response.bytes_stream()),
+    };
+    builder.body(body).unwrap_or_else(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to build MCP response",
+            "mcp_response_error",
+        )
+    })
 }
 
 fn error(status: StatusCode, message: impl Into<String>, code: &'static str) -> Response {

@@ -16,6 +16,7 @@ use crate::budgets::BudgetEnforcer;
 use crate::cache::ResponseCache;
 use crate::health_events::HealthEventSink;
 use crate::logging::LogSink;
+use crate::mcp_log::McpEventSink;
 use crate::metrics::Metrics;
 use crate::queue::ProviderQueues;
 use crate::rate_limits::RateLimiter;
@@ -787,6 +788,8 @@ pub struct AppState {
     pub log: LogSink,
     /// batched writer for provider health events; disabled when no clickhouse url
     pub health_events: HealthEventSink,
+    /// batched writer for proxied MCP tool calls; disabled when no clickhouse url
+    pub mcp_events: McpEventSink,
     /// enforces spend caps against Redis; disabled when no redis url is set
     pub budgets: BudgetEnforcer,
     /// dedup for the `warn` unpriced-traffic policy, so an unenforceable budget
@@ -827,11 +830,13 @@ impl AppState {
         let metrics = Arc::new(Metrics::default());
         let log = LogSink::disabled(metrics.clone());
         let health_events = HealthEventSink::disabled(metrics.clone());
+        let mcp_events = McpEventSink::disabled(metrics.clone());
         Self::assemble(
             config,
             metrics,
             log,
             health_events,
+            mcp_events,
             BudgetEnforcer::disabled(),
             RateLimiter::disabled(),
             ResponseCache::disabled(),
@@ -863,6 +868,16 @@ impl AppState {
                 metrics.clone(),
             ),
             None => HealthEventSink::disabled(metrics.clone()),
+        };
+        let mcp_events = match &config.logging.clickhouse_url {
+            Some(url) => McpEventSink::spawn(
+                url.clone(),
+                config.logging.batch_max,
+                Duration::from_millis(config.logging.flush_ms),
+                config.logging.queue_capacity,
+                metrics.clone(),
+            ),
+            None => McpEventSink::disabled(metrics.clone()),
         };
         // the request funnel doubles as the passive health-event source
         let log = log.with_health_events(health_events.clone());
@@ -900,17 +915,20 @@ impl AppState {
             metrics,
             log,
             health_events,
+            mcp_events,
             budgets,
             rate_limiter,
             response_cache,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         config: &GatewayConfig,
         metrics: Arc<Metrics>,
         log: LogSink,
         health_events: HealthEventSink,
+        mcp_events: McpEventSink,
         budgets: BudgetEnforcer,
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
@@ -947,6 +965,7 @@ impl AppState {
             metrics,
             log,
             health_events,
+            mcp_events,
             budgets,
             unpriced_warns: Arc::new(crate::budgets::UnpricedWarnLog::default()),
             rate_limiter,
@@ -1047,22 +1066,23 @@ impl AppState {
         self.realtime_sessions.drained(grace).await
     }
 
-    /// Flush and stop the request-log writer, the health-event writer and the
-    /// usage-recording workers, waiting at most `grace` for all three together.
-    /// Returns whether they finished inside `grace`.
+    /// Flush and stop the request-log writer, the health-event writer, the MCP
+    /// tool-call writer and the usage-recording workers, waiting at most `grace`
+    /// for all of them together. Returns whether they finished inside `grace`.
     ///
     /// None of them ends on its own at shutdown: `AppState` clones held by the
     /// prober, scraper and watcher keep every channel sender alive, so without
     /// this the runtime is dropped with up to `[logging] flush_ms` of rows in a
     /// batch and any queued budget or `tpm` records unwritten (#1924). Call it
-    /// after the HTTP and realtime drains, once nothing produces new work. The
-    /// three run concurrently so a dead ClickHouse and a dead Redis share one
+    /// after the HTTP and realtime drains, once nothing produces new work. They
+    /// run concurrently so a dead ClickHouse and a dead Redis share one
     /// `grace` rather than spending it twice.
     pub async fn drain_sinks(&self, grace: std::time::Duration) -> bool {
         let flush = async {
             tokio::join!(
                 self.log.shutdown(),
                 self.health_events.shutdown(),
+                self.mcp_events.shutdown(),
                 self.log.usage_recorders().shutdown(),
             );
         };

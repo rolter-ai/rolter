@@ -229,7 +229,7 @@ flushed by the sink drain that runs after the realtime drain (below).
 
 ### Sink drain
 
-The request-log writer, the health-event writer and the usage-recording workers
+The request-log writer, the health-event writer, the MCP tool-call writer and the usage-recording workers
 (`SinkTasks` in `sink_drain.rs`, `AppState::drain_sinks`) each hold work that
 only leaves the process once they flush: up to `[logging] flush_ms` of rows in a
 batch, whatever is queued on their channel, and any budget or `tpm` record not
