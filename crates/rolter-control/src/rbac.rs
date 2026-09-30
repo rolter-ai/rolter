@@ -314,7 +314,11 @@ pub(crate) fn resolve_role(
 /// reach (or too low a role) is `false`. DB-free so the whole `(role, scope,
 /// action)` matrix can be exhaustively unit-tested; [`authorize`] wraps this
 /// with the superadmin short-circuit and the membership fetch.
-fn user_authorized(memberships: &[Membership], chain: ScopeChain, required: Role) -> bool {
+pub(crate) fn user_authorized(
+    memberships: &[Membership],
+    chain: ScopeChain,
+    required: Role,
+) -> bool {
     match resolve_role(memberships, chain.org, chain.team, chain.project) {
         Some(role) => role_rank(role) >= role_rank(required),
         None => false,
