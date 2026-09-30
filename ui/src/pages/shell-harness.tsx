@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router";
 import App from "@/App";
 import type { SubsystemStability } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
+import { BY_MODEL, RECENT, SERIES, SUMMARY } from "./dashboard-fixtures";
 import {
   Harness,
   ORG,
@@ -89,19 +90,6 @@ export function shellStubWithStability(subsystems: SubsystemStability[]): FetchS
   return shellStub([["/api/v1/stability", () => subsystems]]);
 }
 
-const SUMMARY = {
-  requests: 132,
-  tokens: 1_284_000,
-  prompt_tokens: 900_000,
-  completion_tokens: 384_000,
-  cost_usd: 41.27,
-  unpriced_requests: 0,
-  unpriced_models: 0,
-  errors: 7,
-  p50_latency_ms: 210,
-  p95_latency_ms: 980,
-};
-
 /**
  * Everything the shell asks for before a screen has been chosen, plus enough
  * of the landing screen's own data that it settles instead of hanging in a
@@ -124,7 +112,13 @@ export function shellStub(extra: [string, () => unknown][] = []): FetchStub {
       routes([
         ...extra,
         ["/api/v1/auth/me", () => ME],
+        // the landing screen's whole read, from the fixture its own stories
+        // use, so the tiles are not 132 requests over charts with nothing in
+        // them. every other analytics screen still answers empty
         ["/api/v1/analytics/summary", () => ({ data: [SUMMARY] })],
+        ["/api/v1/analytics/timeseries", () => ({ data: SERIES })],
+        ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
+        ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
         ["/api/v1/analytics", () => ({ data: [] })],
         ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
         ["/api/v1/version", () => VERSION],

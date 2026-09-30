@@ -46,6 +46,10 @@ function relativeFormat(locale: string): Intl.RelativeTimeFormat {
 /** the house short date — `medium` so `10/5` is never read as 5 October */
 const DATE: Intl.DateTimeFormatOptions = { dateStyle: "medium" };
 
+// the day without its year, for a stamp that sits beside a clock in a narrow
+// column: a named month for the same reason as `DATE`
+const DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+
 // log and audit rows are scanned as a column, so the clock is always h23: an
 // AM/PM stamp sorts badly by eye and doubles the width of the cell
 const CLOCK: Intl.DateTimeFormatOptions = {
@@ -97,6 +101,13 @@ export interface Formatters {
   time: (value: Date | string | number) => string;
   /** clock without seconds, for chart buckets */
   timeShort: (value: Date | string | number) => string;
+  /**
+   * The short date (`Oct 5`) a moment fell on, or `""` when it fell on the same
+   * local day as `now` (defaults to the current time). For a column of clock
+   * times over a window that can cross midnight: the clock is always shown, and
+   * the day only on the rows where the clock alone would read as today's
+   */
+  dayUnlessToday: (value: Date | string | number, now?: Date | string | number) => string;
   /** `3m ago` / `in 2h`, relative to `now` (defaults to the current time) */
   relative: (value: Date | string | number, now?: Date | string | number) => string;
 }
@@ -146,6 +157,13 @@ export function formattersFor(locale: Locale): Formatters {
     dateTimeMs: (value) => stamp(value, STAMP_MS),
     time: (value) => stamp(value, CLOCK),
     timeShort: (value) => stamp(value, { ...CLOCK, second: undefined }),
+    dayUnlessToday: (value, now) => {
+      const date = toDate(value);
+      if (date === null) return "";
+      const today = (now === undefined ? null : toDate(now)) ?? new Date();
+      if (date.toDateString() === today.toDateString()) return "";
+      return stamp(date, DAY);
+    },
     relative: (value, now) => {
       const date = toDate(value);
       if (date === null) return "";

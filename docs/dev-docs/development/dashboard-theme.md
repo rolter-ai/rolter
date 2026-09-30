@@ -127,10 +127,10 @@ which is exactly how the gold avatar chip came to carry white initials at
 
 Both palettes live in `ui/src/index.css`:
 
-| Tokens                                     | Used by                                                                            | Floor                                               |
-| ------------------------------------------ | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s provider bars | 3:1 — a fill carries a shape                        |
-| `--avatar-1` … `--avatar-6`                | the `Users.tsx` chips                                                              | 4.5:1 against `#ffffff` — the chip carries initials |
+| Tokens                                     | Used by                                                                                   | Floor                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s model donut and bars | 3:1 — a fill carries a shape                        |
+| `--avatar-1` … `--avatar-6`                | the `Users.tsx` chips                                                                     | 4.5:1 against `#ffffff` — the chip carries initials |
 
 An avatar chip takes its entry from `avatarColor(id)` in `ui/src/lib/avatar.ts`,
 a stable hash of the person's id. The row's position is never the input: picked
