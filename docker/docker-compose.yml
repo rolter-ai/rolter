@@ -1,4 +1,26 @@
+# the local stack: one command, no secrets, everything reachable. it is open on
+# purpose (example postgres login, passwordless redis and clickhouse, management
+# plane without an admin token) and is meant for one person on one machine that
+# nobody else can reach.
+#
+# a stack for a team, on one shared host, is the same services closed down and
+# fed from an env file. layer docker-compose.team.yml over this file:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+#                  --env-file .env up -d
 name: rolter
+
+# the image all three rolter services run. `CARGO_FEATURES=postgres` builds the
+# control plane with its postgres-backed store, CRUD API and migrations. the
+# Dockerfile defaults to no features, and an image built that way ignores
+# ROLTER_DATABASE_URL, keeps everything in memory and has none of the dashboard's
+# create, edit and delete screens, however healthy the postgres beside it is
+x-rolter-build: &rolter-build
+  context: ..
+  dockerfile: docker/Dockerfile
+  target: runtime
+  args:
+    CARGO_FEATURES: postgres
 
 services:
   postgres:
@@ -46,10 +68,7 @@ services:
         hard: ${CLICKHOUSE_NOFILE:-262144}
 
   gateway:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: runtime
+    build: *rolter-build
     restart: unless-stopped
     command: ["rolter-gateway", "--config", "/app/rolter.toml"]
     ports:
@@ -63,15 +82,21 @@ services:
       # analytics screens read back. it was missing here, so the local stack
       # served traffic into empty dashboards (#929)
       CLICKHOUSE_URL: http://clickhouse:8123
+      # follow the control plane: a provider, route or virtual key created in the
+      # dashboard reaches this gateway on its next poll (5 s), or at once through
+      # redis, instead of this gateway serving the bundled rolter.toml forever.
+      # the control plane is open here, so the snapshot needs no token. the
+      # gateway starts whether or not the control plane is answering yet and
+      # keeps polling until it does
+      ROLTER_SNAPSHOT_URL: http://control:4001/internal/snapshot
+      ROLTER_REDIS_URL: redis://redis:6379
     depends_on:
       - redis
       - clickhouse
+      - control
 
   control:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: runtime
+    build: *rolter-build
     restart: unless-stopped
     command: ["rolter-control"]
     ports:
@@ -82,12 +107,21 @@ services:
       # published port; the control plane defaults to loopback so that open
       # mode cannot escape a developer's machine by omission (#970)
       ROLTER_CONTROL_HOST: 0.0.0.0
-      # this stack is deliberately open — see the note under `preflight` below.
-      # binding 0.0.0.0 with no ROLTER_ADMIN_TOKEN is refused unless it is
-      # acknowledged, and here it is: the management plane is wide open on
-      # purpose, on whatever network you run compose on
+      # this stack is deliberately open: no admin token, so everyone who reaches
+      # port 4001 is a superadmin. binding 0.0.0.0 with no ROLTER_ADMIN_TOKEN is
+      # refused unless it is acknowledged, and here it is, on whatever network
+      # you run compose on. docker-compose.team.yml sets a token, turns this
+      # off and reads its secrets from an env file (#1890)
       ROLTER_ALLOW_OPEN_MODE: "1"
       ROLTER_UI_DIR: /app/ui/dist
+      # the dashboard's Playground calls the gateway through /gw/* on this
+      # process. the default is localhost:4000, which inside this container is
+      # the control plane itself, so every Playground call failed with a 502
+      ROLTER_GATEWAY_URL: http://gateway:4000
+      # optional: the dashboard refuses to store a provider key until the
+      # control plane has a KEK to seal it with. export one before `up`, or put
+      # it in docker/.env, to add providers in the dashboard (openssl rand -hex 32)
+      ROLTER_KEK: ${ROLTER_KEK:-}
       ROLTER_DATABASE_URL: postgres://rolter:rolter@postgres:5432/rolter
       # connection-pool budget (#1052). left at the defaults here — a local
       # stack has one gateway — but named so the knobs are discoverable from
@@ -110,25 +144,23 @@ services:
       - clickhouse
 
   # pre-boot validation (#854). behind a profile, so `docker compose up` never
-  # runs it: this file is the *local* stack and is deliberately loose — example
-  # postgres credentials, no KEK, management plane wide open — and gating local
-  # bring-up on production rules would break the one path that is meant to have
-  # no friction.
+  # runs it: this file is the *local* stack and is deliberately loose, and
+  # gating local bring-up on production rules would break the one path that is
+  # meant to have no friction.
   #
-  # point it at a production environment file to check that environment with the
-  # exact binary that will run it:
+  # it checks the environment of its own container, which here is nothing, so
+  # against this file alone it reports every secret missing. the team shape
+  # (docker-compose.team.yml) hands it the same values it hands the control
+  # plane, so it judges what will actually run:
   #
-  #   docker compose -f docker/docker-compose.yml --profile preflight \
-  #                  run --rm --env-file /path/to/production.env preflight
+  #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+  #                  --env-file .env --profile preflight run --rm preflight
   #
   # it exits non-zero on anything that would start degraded, which is what makes
   # it usable as a deploy gate rather than advice.
   preflight:
     profiles: ["preflight"]
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: runtime
+    build: *rolter-build
     command: ["/usr/local/bin/rolter", "check", "--strict"]
 
 volumes:

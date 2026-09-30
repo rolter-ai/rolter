@@ -1447,10 +1447,16 @@ bash docker/smoke/smoke.sh
 It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
 [`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
-keyless open gateway config) so the built-in `fake-llm` model answers without any
-provider secret. The script waits for both `/healthz` endpoints, checks
-`/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
-postgres-backed `/internal/snapshot` on the control plane, then always dumps
+keyless open config, `require_auth = false`) into the gateway and the control
+plane, so the built-in `fake-llm` model answers without any provider secret. The
+control plane gets it too because the gateway follows the control plane's
+snapshot, which carries the control plane's own bootstrap config: the example
+baked into the image would bring its virtual key back. The script waits for both
+`/healthz` endpoints, checks `/v1/models` and `fake-llm` chat (non-streaming +
+SSE) on the gateway and the postgres-backed `/internal/snapshot` on the control
+plane, then creates an org, team, project, provider and route through the
+control plane's open API and waits for the gateway to list the new model, which
+is the check that the two planes are wired together. It then always dumps
 compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).

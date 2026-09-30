@@ -71,6 +71,10 @@ ClickHouse, use the full-stack option instead:
 docker compose -f docker/docker-compose.yml up -d
 ```
 
+That is the open local stack, for one machine nobody else can reach. A team on
+a shared host layers `docker/docker-compose.team.yml` over it with an env file;
+see [Docker](docs/user-docs/deployment/docker.mdx#team-stack).
+
 ### 2. Configure
 
 The dashboard is ready at http://localhost:4001. Add real providers and routes

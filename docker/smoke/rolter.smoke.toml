@@ -1,9 +1,13 @@
 # minimal gateway config for the CI full-stack compose smoke (ROL-245).
 #
-# it deliberately omits the [[virtual_keys]] section so the gateway runs open:
-# the built-in fake-llm model is then reachable with no auth and no provider
-# secret, which keeps the smoke deterministic. do NOT use this in production —
-# the shipped rolter.example.toml defines virtual keys and real providers.
+# it deliberately omits the [[virtual_keys]] section and sets require_auth to
+# false so the gateway runs open: the built-in fake-llm model is then reachable
+# with no auth and no provider secret, which keeps the smoke deterministic. the
+# explicit false matters because this gateway follows the control plane, and a
+# gateway that follows one fails closed while no virtual key exists. do NOT use
+# this in production: the shipped rolter.example.toml defines virtual keys and
+# real providers.
 [server]
 host = "0.0.0.0"
 port = 4000
+require_auth = false

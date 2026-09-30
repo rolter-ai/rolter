@@ -237,7 +237,9 @@ priorities live on the issues.
 | #1817 | the dogfood fleet's adaptive route never engages                                       | A3-d (adaptive), D2                            |
 | #1818 | `rolter-seed --import` is silent about sections it skips                               | A3-d                                           |
 | #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                            | A0-b on constrained hosts                      |
-| #1890 | the compose stack takes no secrets and its gateway ignores the control plane           | A0-b, A0.6                                     |
+| #2405 | the published image is built without the postgres feature                              | A0.6 (image and Helm)                          |
+| #2408 | the bundled `sk-rolter-dev` key reaches gateways through the control plane snapshot    | A0-c, A0.6                                     |
+| #2413 | `rolter init` does not write the compose stack's datastore passwords                   | A0.5                                           |
 | #1939 | a default Helm install fails its own strict preflight                                  | A0-c, A0.6                                     |
 | #1897 | `rolter-seed` ships in no image or package                                             | A0.8                                           |
 | #1891 | the published image binds loopback, so `docker run -p` reaches nothing                 | the quickstart's `docker run`                  |

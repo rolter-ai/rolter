@@ -108,7 +108,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 ### Deployment
 
-- [Docker](/deployment/docker): Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host.
+- [Docker](/deployment/docker): Run the full Rolter stack with Docker Compose: gateway, control plane, PostgreSQL, Redis and ClickHouse, either open on one machine or closed for a team on one host.
 - [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
 - [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
 - [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, every outbound network path with the setting that controls it, an operator checklist, and an offline smoke test.
