@@ -69,6 +69,19 @@ function stamp(fmt: Formatters, iso: string | null): string {
   return (iso ? fmt.dateTime(iso) : "") || "—";
 }
 
+// a moment in a table cell. every date column shows the day and keeps the
+// whole stamp for the hover, so "last sync" and "created" read the same way
+// and the clock is still one hover away
+function When({ fmt, iso }: { fmt: Formatters; iso: string }) {
+  const day = fmt.date(iso);
+  if (!day) return <>—</>;
+  return (
+    <time dateTime={iso} title={stamp(fmt, iso)}>
+      {day}
+    </time>
+  );
+}
+
 // the label for a role the server sent us, falling back to the raw value so a
 // newer control plane's role is shown rather than rendered as a missing key
 function roleLabel(t: TFunction, role: string): string {
@@ -424,11 +437,11 @@ export default function UserProvisioning() {
               when: stamp(fmt, row.revoked_at),
             })}
           >
-            REVOKED
+            {t("pages.userProvisioning.statusRevoked")}
           </Badge>
         ) : (
           <Badge dot tone="success">
-            ACTIVE
+            {t("pages.userProvisioning.statusActive")}
           </Badge>
         ),
     },
@@ -437,7 +450,7 @@ export default function UserProvisioning() {
       header: t("pages.userProvisioning.columns.lastSync"),
       render: (_v, row) =>
         row.last_used_at ? (
-          stamp(fmt, row.last_used_at)
+          <When fmt={fmt} iso={row.last_used_at} />
         ) : (
           <span className="text-[color:var(--text-subtle)]">
             {t("pages.userProvisioning.neverUsed")}
@@ -448,8 +461,7 @@ export default function UserProvisioning() {
       key: "created_at",
       header: t("pages.userProvisioning.columns.created"),
       align: "right",
-      // "created" is a day, not an instant — the short date, as everywhere else
-      render: (_v, row) => fmt.date(row.created_at) || "—",
+      render: (_v, row) => <When fmt={fmt} iso={row.created_at} />,
     },
     {
       key: "actions",
@@ -608,7 +620,7 @@ export default function UserProvisioning() {
           revoke.mutate(revokeTarget.id, {
             onSuccess: () => {
               setRevokeTarget(null);
-              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+              toast.push({ tone: "success", title: t("toast.revoked", { what }) });
             },
           });
         }}

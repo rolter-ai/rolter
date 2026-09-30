@@ -2675,6 +2675,8 @@
         "lastSync": "Последняя синхронизация",
         "created": "Создан"
       },
+      "statusActive": "Активен",
+      "statusRevoked": "Отозван",
       "revokedAt": "отозван {{when}}",
       "neverUsed": "не использовался",
       "revoke": "Отозвать",
@@ -3848,6 +3850,7 @@
     "savedDetail": "{{what}}: изменения применены.",
     "saveFailed": "Не удалось сохранить: {{what}}",
     "deleted": "Удалено: {{what}}",
+    "revoked": "Отозвано: {{what}}",
     "deleteFailed": "Не удалось удалить: {{what}}",
     "created": "Создано: {{what}}",
     "exportFailed": "Не удалось экспортировать: {{what}}"

@@ -44,7 +44,7 @@ Issuing, listing, and revoking tokens all require the **admin** role on the org 
   </Step>
 
   <Step title="Push a test user">
-    Assign one person to the Rolter application in the IdP and run a sync. They appear under **Governance → Users**, and the token's **Last sync** column updates on the next request.
+    Assign one person to the Rolter application in the IdP and run a sync. They appear under **Governance → Users**, and the token's **Last sync** column changes from *never used* to today's date on the next request. The token list shows dates only; hover one for the exact time.
   </Step>
 </Steps>
 
@@ -129,7 +129,7 @@ To rotate without a gap in coverage:
 
 1. Issue a second token and copy it.
 2. Update the connector in the identity provider to use the new value.
-3. Run a sync and confirm the new token's **Last sync** timestamp moves.
+3. Run a sync and confirm the new token's **Last sync** moves from _never used_ to a date (hover it for the exact time).
 4. Revoke the old token.
 
 If you need to cut off an identity provider immediately — a compromised connector, for example — revoke the token first and deactivate the affected accounts from **Governance → Users** separately. Revocation alone is not a way to lock people out.
