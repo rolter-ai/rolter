@@ -962,6 +962,8 @@ mod tests {
             is_superadmin: flag,
             deactivated_at: None,
             created_at: Utc::now(),
+            display_name: None,
+            bio: None,
         }
     }
 

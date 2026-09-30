@@ -1130,6 +1130,11 @@ fn operations() -> Vec<Op> {
                 "Spend and usage for the calling account's keys",
             )
             .query(WINDOW_QUERY),
+            Op::patch(
+                "/api/v1/me/profile",
+                "updateMyProfile",
+                "Change the calling account's own display name and bio (any role)",
+            ),
             Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",

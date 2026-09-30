@@ -29,10 +29,10 @@ say clearly enough that it is read-only.
 
 ## V2 — own the account
 
-| #    | step                         | where                                                      | expect                                                  | status                        |
-| ---- | ---------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
-| V2.1 | set a display name and a bio | —                                                          | others see the name; the bio says who to ask about what | gap — #1823                   |
-| V2.2 | enrol a second factor        | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes, same as any role               | verified (as a member, E10.4) |
+| #    | step                         | where                                                      | expect                                                  | status                               |
+| ---- | ---------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------ |
+| V2.1 | set a display name and a bio | —                                                          | others see the name; the bio says who to ask about what | backend done (#1823), screen pending |
+| V2.2 | enrol a second factor        | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes, same as any role               | verified (as a member, E10.4)        |
 
 ## V3 — preferences
 

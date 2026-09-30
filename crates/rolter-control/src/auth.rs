@@ -607,6 +607,9 @@ pub(crate) fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
 struct MeResponse {
     user: User,
     memberships: Vec<MeMembership>,
+    /// true when a SCIM directory owns `user.display_name`, so the dashboard
+    /// renders it read-only (`PATCH /api/v1/me/profile` would answer 409)
+    display_name_managed: bool,
 }
 
 /// A membership as `/auth/me` reports it: the row as stored, plus the org and
@@ -644,9 +647,11 @@ async fn me(
             }
         })
         .collect();
+    let display_name_managed = crate::me::display_name_managed(&state, current.user.id).await?;
     Ok(Json(MeResponse {
         user: current.user,
         memberships,
+        display_name_managed,
     }))
 }
 

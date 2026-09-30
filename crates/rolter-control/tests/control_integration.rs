@@ -13513,3 +13513,271 @@ async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
         .unwrap();
     assert_eq!(after["tiers"].as_array().map(Vec::len), Some(2));
 }
+
+/// `PATCH /api/v1/me/profile` (#1823): any signed-in account, a viewer
+/// included, edits its own display name and bio; omitted fields stay, `null`
+/// and `""` clear, bad input is a 400, and the audit row names fields only.
+#[tokio::test]
+async fn a_viewer_edits_their_own_profile() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let viewer = seed_user(&pool, "profile-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "profileviewer").await;
+    let bystander = seed_user(&pool, "profile-bystander@example.com", false).await;
+    let bystander_token = seed_session(&pool, bystander, "profilebystander").await;
+
+    let me = |token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .get(format!("{base}/api/v1/auth/me"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let patch = |token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let res = client
+                .patch(format!("{base}/api/v1/me/profile"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+
+    let before = me(token.clone()).await;
+    assert_eq!(before["user"]["display_name"], Value::Null);
+    assert_eq!(before["user"]["bio"], Value::Null);
+    assert_eq!(before["display_name_managed"], false);
+
+    // set both, with surrounding whitespace normalised away
+    let (status, body) = patch(
+        token.clone(),
+        json!({"display_name": "  Grace Hopper ", "bio": "Compilers.\nCOBOL."}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["display_name"], "Grace Hopper");
+    assert_eq!(body["bio"], "Compilers.\nCOBOL.");
+    let after = me(token.clone()).await;
+    assert_eq!(after["user"]["display_name"], "Grace Hopper");
+    assert_eq!(after["user"]["bio"], "Compilers.\nCOBOL.");
+
+    // omitted leaves the other field alone
+    let (status, body) = patch(token.clone(), json!({"display_name": "Grace"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["bio"], "Compilers.\nCOBOL.");
+
+    // null clears one field, an empty string the other
+    let (status, body) = patch(token.clone(), json!({"display_name": null, "bio": ""})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["display_name"], Value::Null);
+    assert_eq!(body["bio"], Value::Null);
+    let cleared = me(token.clone()).await;
+    assert_eq!(cleared["user"]["display_name"], Value::Null);
+    assert_eq!(cleared["user"]["bio"], Value::Null);
+
+    // validation
+    for bad in [
+        json!({"display_name": "x".repeat(81)}),
+        json!({"bio": "x".repeat(501)}),
+        json!({"display_name": "line\u{0007}bell"}),
+        json!({"display_name": "two\nlines"}),
+        json!({"display_name": "   "}),
+        json!({"bio": " \n\t "}),
+        json!({"display_name": 7}),
+    ] {
+        let (status, body) = patch(token.clone(), bad.clone()).await;
+        assert_eq!(status, 400, "{bad} was accepted: {body}");
+    }
+    // exactly at the limits is fine
+    let (status, _) = patch(
+        token.clone(),
+        json!({"display_name": "n".repeat(80), "bio": "b".repeat(500)}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // the route writes only the caller's row
+    let other = me(bystander_token.clone()).await;
+    assert_eq!(other["user"]["display_name"], Value::Null);
+    assert_eq!(other["user"]["bio"], Value::Null);
+
+    // no session, no profile
+    let anon = client
+        .patch(format!("{base}/api/v1/me/profile"))
+        .json(&json!({"bio": "hi"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+
+    // `user:update` is still superadmin-only: a viewer cannot edit an account
+    let denied = client
+        .put(format!("{base}/api/v1/users/{bystander}"))
+        .bearer_auth(&token)
+        .json(&json!({"email": "renamed@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        matches!(denied.status().as_u16(), 403 | 404),
+        "viewer edited an account: {}",
+        denied.status()
+    );
+
+    // audit rows name the fields, never the bio text
+    let rows: Vec<(Value,)> = sqlx::query_as(
+        "select detail from audit_log
+         where action = 'user.profile.update' and target_id = $1 order by at",
+    )
+    .bind(viewer)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        rows.len() >= 4,
+        "expected an audit row per change: {rows:?}"
+    );
+    assert_eq!(rows[0].0, json!({"fields": ["display_name", "bio"]}));
+    assert_eq!(rows[1].0, json!({"fields": ["display_name"]}));
+    assert!(
+        !rows.iter().any(|(d,)| d.to_string().contains("COBOL")),
+        "a bio leaked into the audit log"
+    );
+}
+
+/// A SCIM-provisioned account's `displayName` is authoritative (#1823): it is
+/// copied onto the account, `/auth/me` flags it managed, and the self-service
+/// route refuses to change it while still letting the account edit its bio.
+#[tokio::test]
+async fn a_scim_managed_display_name_is_read_only_but_the_bio_is_not() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "ProfileScimOrg", "slug": "profile-scim-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "hopper@example.com",
+            "displayName": "Grace Hopper",
+            "emails": [{"value": "hopper@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let token = seed_session(&pool, user_id, "profilescimuser").await;
+
+    let me = || async {
+        client
+            .get(format!("{base}/api/v1/auth/me"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let patch = |body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        async move {
+            client
+                .patch(format!("{base}/api/v1/me/profile"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let seen = me().await;
+    assert_eq!(seen["user"]["display_name"], "Grace Hopper");
+    assert_eq!(seen["display_name_managed"], true);
+
+    let refused = patch(json!({"display_name": "Someone Else"})).await;
+    assert_eq!(refused.status(), 409);
+    let cleared = patch(json!({"display_name": null})).await;
+    assert_eq!(cleared.status(), 409);
+    assert_eq!(me().await["user"]["display_name"], "Grace Hopper");
+
+    // the bio is the user's, and resending the managed name unchanged is fine
+    let ok = patch(json!({"display_name": "Grace Hopper", "bio": "Nanoseconds."})).await;
+    assert_eq!(ok.status(), 200);
+    let body: Value = ok.json().await.unwrap();
+    assert_eq!(body["bio"], "Nanoseconds.");
+    assert_eq!(body["display_name_managed"], true);
+
+    // a later SCIM replace moves the name
+    let replaced = client
+        .put(format!("{base}/scim/v2/Users/{user_id}"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "hopper@example.com",
+            "displayName": "Rear Admiral Hopper",
+            "emails": [{"value": "hopper@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), 200);
+    assert_eq!(me().await["user"]["display_name"], "Rear Admiral Hopper");
+    assert_eq!(me().await["user"]["bio"], "Nanoseconds.");
+}
