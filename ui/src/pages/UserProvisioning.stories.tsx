@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
 import {
+  answerSecretClosePrompt,
   cancelConfirmation,
   confirmation,
   confirmDestructive,
@@ -17,6 +18,7 @@ import {
   openOptions,
   pickOption,
   recording,
+  stubClipboard,
   Toasted,
   type FetchStub,
   type Recorder,
@@ -371,6 +373,95 @@ export const IssueRevealsTheSecretOnce: Story = {
     await expect(sheet.queryByText(/your-rolter-host/)).toBeNull();
     // a configured public url raises no warning
     await expect(sheet.queryByRole("note")).toBeNull();
+  },
+};
+
+const SECRET = "rolter_scim_deadbeef";
+
+/** a control plane that answers a mint with the plaintext token */
+const issuing = () =>
+  scoped(async (init) =>
+    init?.method === "POST"
+      ? json({ ...token({ id: "tok-new", name: "Okta production" }), secret: SECRET })
+      : json([]),
+  );
+
+/** Issue a token from the empty screen and return the sheet that reveals it. */
+async function issueAToken(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await userEvent.click((await canvas.findAllByRole("button", { name: /Issue token/ }))[0]);
+  const form = within(await within(document.body).findByRole("dialog"));
+  await userEvent.type(form.getByPlaceholderText("Okta production"), "Okta production");
+  await userEvent.click(form.getByRole("button", { name: /Issue token/ }));
+  await waitFor(() => expect(form.getByTestId("scim-token-secret")).toHaveTextContent(SECRET));
+  return within(await within(document.body).findByRole("dialog"));
+}
+
+/** A token that reached the clipboard closes the sheet without a question (#2217). */
+export const ACopiedTokenClosesTheSheetWithoutAsking: Story = {
+  beforeEach: stubClipboard(async () => {}),
+  render: () => <Harness fetchStub={issuing()} />,
+  play: async ({ canvasElement }) => {
+    const sheet = await issueAToken(canvasElement);
+    const copy = sheet.getByRole("button", { name: /Copy provisioning token/ });
+    await userEvent.click(copy);
+    await waitFor(() => expect(copy).toHaveAttribute("title", en.common.copied));
+    await userEvent.click(sheet.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+/**
+ * The token is stored as a digest, so closing the sheet over one nobody copied
+ * loses it for good. Escape, the scrim, the close button and Done all ask, and
+ * cancelling keeps the token and the base URL beside it (#2217).
+ */
+export const AnUncopiedTokenAsksBeforeTheSheetCloses: Story = {
+  render: () => <Harness fetchStub={issuing()} />,
+  play: async ({ canvasElement }) => {
+    const sheet = await issueAToken(canvasElement);
+    const ways: [string, () => Promise<unknown>][] = [
+      ["Escape", () => userEvent.keyboard("{Escape}")],
+      ["the scrim", () => userEvent.click(within(document.body).getByTestId("sheet-scrim"))],
+      [
+        "the close button",
+        () => userEvent.click(sheet.getByRole("button", { name: en.common.close })),
+      ],
+      ["Done", () => userEvent.click(sheet.getByRole("button", { name: "Done" }))],
+    ];
+    for (const [, close] of ways) {
+      await close();
+      await expect(
+        await within(document.body).findByRole("dialog", {
+          name: en.common.secret.closeTitle,
+        }),
+      ).toHaveAccessibleDescription(en.common.secret.closeBody);
+      await answerSecretClosePrompt(false);
+      await expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent(SECRET);
+      await expect(await sheet.findByTestId("scim-base-url")).toBeVisible();
+    }
+    await userEvent.click(sheet.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(true);
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+/**
+ * A plain-http dashboard has no clipboard, and the token cannot be shown again.
+ * The copy says so in a line that stays, and the token and the base URL stay on
+ * screen, the token selected, so the copy can be made by hand (#2327).
+ */
+export const AFailedTokenCopyLeavesAMessage: Story = {
+  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
+  render: () => <Harness fetchStub={issuing()} />,
+  play: async ({ canvasElement }) => {
+    const sheet = await issueAToken(canvasElement);
+    await userEvent.click(sheet.getByRole("button", { name: /Copy provisioning token/ }));
+    await expect(await sheet.findByRole("alert")).toHaveTextContent(en.common.copyFailed);
+    await expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent(SECRET);
+    await expect(window.getSelection()?.toString()).toBe(SECRET);
+    await expect(await sheet.findByTestId("scim-base-url")).toBeVisible();
+    await expect(sheet.getByRole("button", { name: en.common.secret.select })).toBeVisible();
   },
 };
 

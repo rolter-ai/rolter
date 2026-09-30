@@ -375,6 +375,15 @@ Stories answer the prompt through `answerDiscardPrompt(true | false)` in
 mounted behind it, so `sheet()` cannot tell the two `role="dialog"` nodes apart.
 `expectClosesWithoutPrompting()` covers the pristine case.
 
+## Closing over a one-time secret
+
+A virtual key, a SCIM token and an invitation link are shown once and stored as
+a digest or not at all, so closing the dialog that shows one is the point where
+it is lost. The shared reveal asks before it closes over a value nobody copied,
+through `ConfirmDialog` with `tone="default"`, and asks nothing once the value
+has reached the clipboard. The guard, the failed-copy message and the next step
+are described in [Dashboard one-time secrets](secret-reveal.md).
+
 ## The control names its row too
 
 The dialog naming the row is only half of it. The control that opens it needs

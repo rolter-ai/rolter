@@ -73,6 +73,19 @@
     "viewDocs": "View docs",
     "aboutField": "About {{label}}",
     "copyFailed": "Copy failed — the clipboard is unavailable on this page",
+    "secret": {
+      "copyByHand": "Select the value and copy it by hand.",
+      "select": "Select value",
+      "closeTitle": "Close without copying?",
+      "closeBody": "It will not be shown again.",
+      "closeConfirm": "Close anyway",
+      "nextStep": {
+        "title": "Make your first request",
+        "body": "Export the key as <code>{{env}}</code>, then send this request to the gateway.",
+        "gatewayUrl": "Gateway URL",
+        "request": "First request"
+      }
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",

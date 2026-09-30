@@ -313,6 +313,50 @@ export async function answerDiscardPrompt(discard: boolean): Promise<void> {
 }
 
 /**
+ * The question a one-time secret asks before it closes uncopied (#2217).
+ *
+ * Found by its accessible name for the same reason `discardPrompt` is: the
+ * reveal is still mounted behind it, so there are two `role="dialog"` nodes
+ * and a bare lookup cannot tell them apart.
+ */
+export async function secretClosePrompt(): Promise<HTMLElement> {
+  return within(document.body).findByRole("dialog", { name: en.common.secret.closeTitle });
+}
+
+/**
+ * Answer it: `true` closes the reveal over the value nobody copied, `false`
+ * keeps the reveal and the value on screen.
+ */
+export async function answerSecretClosePrompt(close: boolean): Promise<void> {
+  const prompt = await secretClosePrompt();
+  await userEvent.click(
+    within(prompt).getByRole("button", {
+      name: close ? en.common.secret.closeConfirm : en.common.cancel,
+    }),
+  );
+  await waitFor(() => expect(prompt).not.toBeInTheDocument());
+}
+
+/**
+ * A clipboard the story owns, put back when it ends, for a `beforeEach`.
+ *
+ * The real one is unavailable in a headless browser, and withheld by the
+ * platform on a plain-http dashboard, so neither a copy that lands nor one
+ * that is refused can be observed without standing one in. Pass a `writeText`
+ * that rejects for the refusal.
+ */
+export function stubClipboard(writeText: (value: string) => Promise<void>): () => () => void {
+  return () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    return () => {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    };
+  };
+}
+
+/**
  * Click a button once it is actually clickable.
  *
  * `findByRole` waits for the element to *exist*, not to be enabled, and most of

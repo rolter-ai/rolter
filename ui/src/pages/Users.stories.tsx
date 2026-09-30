@@ -7,6 +7,7 @@ import {
   Harness,
   LOADING_LABEL,
   Toasted,
+  answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmation,
@@ -1442,13 +1443,17 @@ export const TheInviteLinkCopies: Story = {
         en.common.copied,
       ),
     );
+    // a link that reached the clipboard closes without a question (#2217)
+    await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await expectSheetClosed();
   },
 };
 
 /**
  * The clipboard is withheld on a plain-http dashboard, which is common on an
- * air-gapped LAN. The button used to say "Copied" whatever happened; now it
- * says the copy failed, and the link stays on screen until Done is pressed.
+ * air-gapped LAN. The button used to say "Copied" whatever happened; now the
+ * dialog says the copy failed in a line that stays (#2327), the link stays on
+ * screen and selected, and closing it asks, since nobody has it yet (#2217).
  */
 export const TheInviteLinkCopyFails: Story = {
   beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
@@ -1472,9 +1477,49 @@ export const TheInviteLinkCopyFails: Story = {
       ),
     );
     await expect(dialog.queryByText(en.common.copied)).toBeNull();
-    // the link is still there to copy by hand, and only Done takes it away
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(en.common.copyFailed);
+    // the link is still there to copy by hand, selected for it
+    await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
+    await expect(window.getSelection()?.toString()).toBe(INVITE_LINK);
+
+    // and only a confirmed close takes it away
+    await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(false);
     await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
     await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(true);
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The invitation link is shown once and cannot be recovered, so Escape, the
+ * scrim and the close button ask before closing over a link nobody copied.
+ * Cancelling keeps the dialog, the link and what it says to do with it.
+ */
+export const AnUncopiedInviteLinkAsksBeforeClosing: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /invite user/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Email"), "newcomer@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Invite" }));
+    const dialog = within(await confirmation());
+    await waitFor(() => expect(dialog.getByText(INVITE_LINK)).toBeVisible());
+    // the next step is who to send it to and what it grants
+    await expect(dialog.getByText("newcomer@example.com")).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    await answerSecretClosePrompt(false);
+    await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
+    await expect(dialog.getByText(/Accepting it grants/)).toBeVisible();
+
+    await userEvent.click(dialog.getByRole("button", { name: en.common.close }));
+    await answerSecretClosePrompt(true);
     await expectSheetClosed();
   },
 };

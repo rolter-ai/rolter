@@ -17,7 +17,6 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -51,13 +50,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Segmented } from "@/components/ui/segmented";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -572,17 +565,23 @@ function InviteUserDialog({
     project_id: picked.project_id ?? null,
   });
 
-  // the one-time link keeps its own center Dialog rather than the editor sheet:
-  // it is a reveal-once secret with a copy/done footer, not a form — the same
-  // split Keys and Account already use for a freshly minted key
+  // the one-time link keeps its own center dialog rather than the editor sheet:
+  // it is a reveal-once secret, not a form. the shared reveal asks before it
+  // closes over a link nobody copied, and says so when the clipboard is
+  // withheld, which a plain-http dashboard on a LAN always does
   if (link) {
     return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.users.linkTitle")}</DialogTitle>
-          <DialogDescription>{t("pages.users.linkBody")}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
+      <SecretRevealDialog
+        name="user-invite-link"
+        open={open}
+        onOpenChange={onOpenChange}
+        title={t("pages.users.linkTitle")}
+        description={t("pages.users.linkBody")}
+        secret={link}
+        copyLabel={t("pages.users.copyLink")}
+        doneLabel={t("pages.users.done")}
+      >
+        <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.users.linkSendTo"
@@ -593,18 +592,8 @@ function InviteUserDialog({
           <p className="text-sm text-muted-foreground">
             {t("pages.users.linkGrants", { role: roleLabel(t, role), scope: pickedScope })}
           </p>
-          {/* the link stays on screen whether or not the copy worked: the
-              clipboard is withheld on a plain-http dashboard, which is common
-              on a LAN, and `CopyButton` says so when it is */}
-          <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-2">
-            <code className="min-w-0 flex-1 break-all text-xs">{link}</code>
-            <CopyButton value={link} label={t("pages.users.copyLink")} />
-          </div>
         </div>
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>{t("pages.users.done")}</Button>
-        </DialogFooter>
-      </Dialog>
+      </SecretRevealDialog>
     );
   }
 
