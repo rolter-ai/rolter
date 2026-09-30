@@ -97,6 +97,42 @@ nothing; the store now pins it to its default. A toggle that reads like a
 security control and does nothing is worse than an absent one, because it
 converts into a false belief during exactly the review where it matters.
 
+## The Security screen (#2103, #2114)
+
+The dashboard's Security screen (`ui/src/pages/Security.tsx`) saves every field in one
+`PUT /api/v1/security-settings`, and the control plane refuses the whole save when one entry breaks a
+rule in `validate_settings`. Three pieces of the screen exist to keep that refusal from being the
+first the operator hears of it.
+
+- **The list rules are mirrored in `ui/src/lib/security-lists.ts`.** Every list is one entry per
+  line, and an entry that does not parse is kept in the field and named with its line, never
+  dropped. The functions accept what `validate_settings` accepts and refuse what it refuses, no
+  stricter and no looser. The one extra rule is a required header named twice, since the store
+  keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
+  `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
+  rule widened on one side shows up as a red test rather than as a toast.
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only three edits loosen:
+  `virtual_key_required` going on to off, `dashboard_auth_enabled` going on to off, and a path added
+  to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
+  and a save that only tightens goes out without a dialog (see
+  [destructive actions](../development/destructive-actions.md)).
+- **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
+  (the table's trigger), each gateway reports the version it runs on its snapshot poll, and
+  `GET /api/v1/cluster/nodes` compares the two as `converged`. The screen asks for the inventory
+  under a key of its own per save, so an answer read before the save is never taken for one after it,
+  and counts the live gateways that converged. With no live gateway on record, or a failed read, it
+  says pickup cannot be confirmed and when a gateway applies it (next poll, `ROLTER_SNAPSHOT_POLL_SECS`,
+  5 s by default; at once with Redis pub/sub).
+
+The virtual-key switch is narrower than its label in the gateway: `authenticate` in
+`crates/rolter-gateway/src/handlers.rs` reads `virtual_key_required || managed_auth` for a gateway with
+an empty key set, and every gateway that receives the setting through a snapshot is managed, so the
+switch never changes what one of them does (#2357). The confirmation words the consequence as the
+documented one (the gateway "decides by how it was started") and claims no more.
+`dashboard_auth_enabled` and the dashboard credential are stored and returned, and no code path in the
+control plane reads them yet (#2356), so the dashboard-protection row says what the setting asks for
+and nothing about an effect.
+
 ## Egress policy (SSRF)
 
 A provider's `api_base` decides where the gateway sends traffic, so an admin

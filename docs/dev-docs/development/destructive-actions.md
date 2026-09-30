@@ -228,6 +228,19 @@ whose body each screen supplies because what removal does differs: SCIM
 withdraws the role at once, single sign-on stops granting it at the next
 sign-in.
 
+A save on the Security screen that loosens the gateway or the dashboard raises the same dialog
+(#2103), as `security-loosen` with `tone="default"`, since one more save undoes it. Three edits
+loosen and nothing else does: virtual-key enforcement turned off, dashboard protection turned off,
+and each route added to the auth bypass list. `loosenings` in `ui/src/lib/security-loosening.ts`
+decides, comparing the draft with what the store held at the last load or save rather than with the
+previous keystroke, so a switch flipped off and back on asks nothing. The body lists exactly the
+changes that opened something, each with what it means, as `children`, and the title and intro
+count them. A tightening, such as a route removed or a header required, saves at once, and one
+request goes out either way. The dialog is mounted beside the form, and the items it lists are kept
+after it closes so its body does not empty while it fades. The words state the documented meaning of
+each setting and no more: see
+[the Security screen](../architecture/security.md#the-security-screen-2103-2114).
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be
