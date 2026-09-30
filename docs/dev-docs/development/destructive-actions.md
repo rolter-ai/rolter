@@ -103,6 +103,34 @@ direction are latched when it opens: the landing is reported on the render that
 closes it, and by then the version is the live one, so a direction read again
 would file a publish as a roll back.
 
+A change to the sign-in policy raises the same dialog when it can shut members
+out (#2084), on the Single Sign-On screen:
+
+- **Taking a provider out of service** confirms as `sso-provider-disable` with
+  `tone="default"`, since one flip undoes it. Switching a provider back on sends
+  at once. Deleting one keeps `sso-connection-delete`. When the provider is the
+  last enabled one and the saved policy has password sign-in off, both carry a
+  `LockoutNotice` as `children` and the disable button turns `danger`.
+  `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides it. It reads the
+  saved policy, not the draft on the policy card, and a provider that is already
+  out of service never counts. The notice states only what the control plane
+  enforces: superadmins are exempt from `allow_password_login = false`, and an
+  account created through a provider has no password, so turning password
+  sign-in back on does not restore it.
+- **Turning password sign-in off** confirms as `sso-password-off`, and lists the
+  enabled providers with no stored client secret (`secretGap`). It warns and
+  never blocks, since a public client has no secret on purpose. A save that
+  also tightens the second factor raises this dialog first and the second-factor
+  one after it, and sends a single request.
+- **The second-factor confirmation** counts people with `distinctPeople`: the
+  memberships endpoint returns one row per grant, so a person holding a role on
+  the org and another on a team is one member.
+
+The control plane refuses the mirror change, turning passwords off with no
+enabled provider, but does not refuse these (#2233 tracks that guard). The
+dialog stays useful once it lands, as the explanation that comes before the
+refusal.
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be
