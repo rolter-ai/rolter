@@ -2216,9 +2216,7 @@ export function logout(): Promise<void> {
 /**
  * A membership as `/auth/me` serialises it (rolter-store `Membership`).
  *
- * Same row as [`MembershipRow`] plus `source`, which the admin CRUD screens
- * have no use for: `manual` (invitation, seed, admin api) or `sso` (an IdP
- * group mapping).
+ * Same row as [`MembershipRow`], with `source` always present.
  */
 export interface MeMembership extends MembershipRow {
   source: string;
@@ -2419,6 +2417,13 @@ export interface MembershipRow {
   team_id?: string | null;
   project_id?: string | null;
   role: string;
+  /**
+   * Who granted it: `manual` (invitation, seed, admin api), `sso` (an IdP
+   * group mapping, recomputed at each sign-in) or `scim` (a pushed group,
+   * reconciled on each sync). A grant from the IdP comes back after a revoke
+   * unless its mapping changes, which the users screen says before revoking.
+   */
+  source?: string;
   created_at: string;
 }
 
