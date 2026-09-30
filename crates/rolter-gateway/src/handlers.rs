@@ -330,8 +330,12 @@ pub(crate) enum AccessDenial {
 }
 
 impl AccessDenial {
-    pub(crate) fn into_response(self) -> Response {
-        let (message, code) = match self {
+    /// The message and machine-readable `code` this denial answers with.
+    ///
+    /// Split from [`Self::into_response`] so a realtime session that loses
+    /// access mid-stream can say the same thing in an `error` event.
+    pub(crate) fn message_and_code(self) -> (&'static str, &'static str) {
+        match self {
             Self::ModelNotAllowed => ("model not allowed for this key", "model_not_allowed"),
             Self::NotVisible => ("model is not visible to this key", "model_not_allowed"),
             Self::RoutePolicy => (
@@ -350,7 +354,11 @@ impl AccessDenial {
                 "the route this response was created on is no longer configured",
                 "route_not_allowed",
             ),
-        };
+        }
+    }
+
+    pub(crate) fn into_response(self) -> Response {
+        let (message, code) = self.message_and_code();
         crate::error::ApiError::new(StatusCode::FORBIDDEN, message)
             .with_code(code)
             .with_param("model")
@@ -997,6 +1005,62 @@ fn invalid_key_message(key: &str) -> String {
         }
         None => "invalid api key".to_string(),
     }
+}
+
+/// The peppered digest of the key a request presented, the handle a live
+/// session keeps to look its key up again ([`recheck_session_access`]).
+pub(crate) fn presented_key_digest(snap: &Snapshot, headers: &HeaderMap) -> Option<String> {
+    extract_key(headers).map(|key| rolter_auth::hash_key(&snap.pepper, &key))
+}
+
+/// Why a live realtime session lost the access it was opened with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccessRevoked {
+    pub(crate) status: StatusCode,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+}
+
+/// Re-run the upgrade's key, model and route gates against `snap` for a
+/// session that is already open (#1881).
+///
+/// Authentication happens once, at the WebSocket upgrade, so without this a
+/// disabled, expired or deleted key would keep its session until the client
+/// left. The gates are the upgrade's own: the key lookup [`authenticate`] does,
+/// then [`authorize_model`], the route lookup and [`authorize_route`].
+pub(crate) fn recheck_session_access(
+    snap: &Snapshot,
+    digest: &str,
+    model: &str,
+) -> Result<(), AccessRevoked> {
+    let denied = |denial: AccessDenial| {
+        let (message, code) = denial.message_and_code();
+        AccessRevoked {
+            status: StatusCode::FORBIDDEN,
+            code,
+            message: message.to_string(),
+        }
+    };
+    let key = match snap.keys.get(digest) {
+        Some(key) if key.is_active(Utc::now()) => key,
+        // revoked, expired and deleted read alike, as they do at the upgrade
+        Some(_) | None => {
+            return Err(AccessRevoked {
+                status: StatusCode::UNAUTHORIZED,
+                code: "invalid_api_key",
+                message: "invalid api key".to_string(),
+            })
+        }
+    };
+    authorize_model(Some(key), model).map_err(denied)?;
+    let Some(entry) = snap.named_route_for(model, Some(key)) else {
+        return Err(AccessRevoked {
+            status: StatusCode::NOT_FOUND,
+            code: "model_not_found",
+            message: format!("no route for model '{model}'"),
+        });
+    };
+    authorize_route(Some(key), entry).map_err(denied)
 }
 
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
