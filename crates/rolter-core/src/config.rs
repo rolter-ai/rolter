@@ -3053,6 +3053,7 @@ impl GatewayConfig {
     /// dropping one of two colliding rows would be worse than refusing.
     pub fn sanitize_for_snapshot(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
+        self.prune_invalid_prompt_templates(&mut warnings);
 
         // a provider whose own definition is invalid cannot serve traffic, but
         // it is exactly one row: withholding the other fourteen providers and
@@ -3133,6 +3134,37 @@ impl GatewayConfig {
             }
         }
         warnings
+    }
+
+    /// Drop each prompt template that fails validation on its own, saying why
+    /// in `warnings` (#2279).
+    ///
+    /// `validate` rejects the whole config over one malformed template, which
+    /// made a single bad published version stop `/internal/snapshot` for every
+    /// tenant. Granularity is one `(id, version)` entry, which is what the
+    /// snapshot carries. Nothing else references a template (scopes live on the
+    /// template itself and `validate` does not cross-check them against
+    /// routes), so dropping one leaves no dangling reference. A duplicated
+    /// `(id, version)` is a cross-entry defect and is left for `validate`.
+    fn prune_invalid_prompt_templates(&mut self, warnings: &mut Vec<String>) {
+        let before = self.prompt_templates.templates.len();
+        self.prompt_templates.templates.retain(|template| {
+            let problems =
+                crate::prompt_templates::PromptTemplatesConfig::template_problems(template);
+            if problems.is_empty() {
+                return true;
+            }
+            warnings.push(format!(
+                "prompt template '{}' version {} omitted from the snapshot: {}",
+                template.id.trim(),
+                template.version,
+                problems.join("; ")
+            ));
+            false
+        });
+        if before != 0 && self.prompt_templates.templates.is_empty() {
+            self.prompt_templates.enabled = false;
+        }
     }
 
     /// Every problem with `provider` considered on its own — everything
@@ -5534,6 +5566,55 @@ mod tests {
         // "created the route, haven't added targets yet" state
         cfg.routes[1].targets.clear();
         cfg
+    }
+
+    #[test]
+    fn sanitize_prunes_only_the_invalid_prompt_template() {
+        use crate::prompt_templates::{Decorator, PromptTemplate, TemplateVariable};
+        let template = |id: &str, content: &str, vars: Vec<TemplateVariable>| PromptTemplate {
+            id: id.to_string(),
+            version: 1,
+            routes: Vec::new(),
+            scopes: Vec::new(),
+            variables: vars,
+            decorators: vec![Decorator {
+                role: Default::default(),
+                position: Default::default(),
+                content: content.to_string(),
+            }],
+        };
+        let mut cfg = config_with_a_good_and_a_targetless_route();
+        cfg.routes.pop();
+        cfg.prompt_templates.enabled = true;
+        cfg.prompt_templates.templates = vec![
+            template("good", "plain", Vec::new()),
+            template("undeclared", "hi {{ who }}", Vec::new()),
+            template(
+                "both",
+                "x",
+                vec![TemplateVariable {
+                    name: "v".into(),
+                    required: true,
+                    default: Some("d".into()),
+                }],
+            ),
+        ];
+        assert!(cfg.validate().is_err(), "precondition: config invalid");
+
+        let warnings = cfg.sanitize_for_snapshot();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("'undeclared'") && w.contains("undeclared variable 'who'")));
+        assert!(warnings.iter().any(|w| w.contains("'both'")));
+        let ids: Vec<_> = cfg
+            .prompt_templates
+            .templates
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["good"]);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
     }
 
     #[test]

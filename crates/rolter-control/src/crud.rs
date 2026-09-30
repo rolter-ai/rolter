@@ -1277,6 +1277,41 @@ struct CreatePromptTemplateVersion {
     decorators: serde_json::Value,
 }
 
+/// Refuse version content `PromptTemplatesConfig::validate` would reject.
+///
+/// The same check the snapshot's config validation runs, so a version the
+/// gateway could never be served is refused here instead of stored (#2279).
+/// The placeholder id only has to be non-empty; the problems name the content.
+fn check_prompt_template_version(
+    id: Uuid,
+    variables: &serde_json::Value,
+    decorators: &serde_json::Value,
+) -> ApiResult<()> {
+    let malformed = |what: &str, e: serde_json::Error| {
+        ApiError::Core(Error::Config(format!("{what} are malformed: {e}")))
+    };
+    let candidate = rolter_core::prompt_templates::PromptTemplate {
+        id: id.to_string(),
+        version: 1,
+        routes: Vec::new(),
+        scopes: Vec::new(),
+        variables: serde_json::from_value(variables.clone())
+            .map_err(|e| malformed("variables", e))?,
+        decorators: serde_json::from_value(decorators.clone())
+            .map_err(|e| malformed("decorators", e))?,
+    };
+    let problems =
+        rolter_core::prompt_templates::PromptTemplatesConfig::template_problems(&candidate);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Core(Error::Config(format!(
+            "invalid prompt template version: {}",
+            problems.join("; ")
+        ))))
+    }
+}
+
 async fn create_prompt_template_version(
     principal: Principal,
     State(state): State<ControlState>,
@@ -1293,6 +1328,7 @@ async fn create_prompt_template_version(
             "decorators must be a JSON array".to_string(),
         )));
     }
+    check_prompt_template_version(id, &body.variables, &body.decorators)?;
     let repo = PromptTemplateRepo(pool(&state));
     let template = repo.get_template(id).await?;
     authorize(
@@ -1363,6 +1399,16 @@ async fn set_prompt_template_version(
         cap!("prompt_template", Update),
     )
     .await?;
+    // a version stored before create-time validation may still be malformed;
+    // publishing it would only get it pruned from the snapshot
+    if let Some(stored) = repo
+        .list_versions(id)
+        .await?
+        .into_iter()
+        .find(|v| v.version == version)
+    {
+        check_prompt_template_version(id, &stored.variables, &stored.decorators)?;
+    }
     let template = repo.publish_version(id, version).await?;
     log_audit(
         state,
