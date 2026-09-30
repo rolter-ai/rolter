@@ -8146,6 +8146,157 @@ async fn playground_key_is_scoped_by_the_server() {
 /// does revoke the role it granted, and an org can require SSO without locking
 /// out the break-glass superadmin.
 #[tokio::test]
+async fn the_last_enabled_sso_provider_cannot_go_while_passwords_are_off() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "LastIdp", "slug": "last-idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let mut ids = Vec::new();
+    for slug in ["idp-a", "idp-b"] {
+        let p: Value = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": slug,
+                "slug": slug,
+                "issuer": "https://idp.example.com",
+                "client_id": "client"
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(p["id"].as_str().unwrap().to_string());
+    }
+    let disable = |id: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .put(format!("{base}/api/v1/sso-providers/{id}"))
+                .bearer_auth("admintok")
+                .json(&json!({
+                    "name": "idp",
+                    "issuer": "https://idp.example.com",
+                    "client_id": "client",
+                    "enabled": false
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let set_passwords = |allow: bool| {
+        let client = client.clone();
+        let base = base.clone();
+        let org_id = org_id.clone();
+        async move {
+            client
+                .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+                .bearer_auth("admintok")
+                .json(&json!({"allow_password_login": allow, "allow_sso": true}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let enabled_count = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from sso_providers where enabled")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // passwords on: the last provider is free to go, nobody is locked out
+    assert_eq!(disable(ids[0].clone()).await.status(), 200);
+    assert_eq!(disable(ids[1].clone()).await.status(), 200);
+    assert_eq!(enabled_count().await, 0);
+    // re-enable both, then turn passwords off (the reverse guard)
+    for id in &ids {
+        let r = client
+            .put(format!("{base}/api/v1/sso-providers/{id}"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": "idp",
+                "issuer": "https://idp.example.com",
+                "client_id": "client",
+                "enabled": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    assert_eq!(set_passwords(false).await.status(), 200);
+
+    // two enabled: one may go, the second is refused and stays enabled
+    assert_eq!(disable(ids[0].clone()).await.status(), 200);
+    let refused = disable(ids[1].clone()).await;
+    assert_eq!(refused.status(), 409);
+    let body: Value = refused.json().await.unwrap();
+    assert!(
+        body.to_string().contains("another sso provider first"),
+        "the refusal names the fix: {body}"
+    );
+    assert_eq!(enabled_count().await, 1);
+
+    // deleting the last enabled one is refused too
+    let del = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[1]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 409);
+    let exists: i64 = sqlx::query_scalar("select count(*) from sso_providers where id = $1::uuid")
+        .bind(&ids[1])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(exists, 1);
+
+    // the disabled provider is not a way to sign in, so it can still be deleted
+    let del_disabled = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[0]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_disabled.status(), 204);
+
+    // the reverse guard still holds: no enabled provider, no passwords-off
+    assert_eq!(set_passwords(true).await.status(), 200);
+    let del_last = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[1]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_last.status(), 204, "passwords on: the last one may go");
+    assert_eq!(set_passwords(false).await.status(), 409);
+}
+
+#[tokio::test]
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
     let db = fresh_db().await;

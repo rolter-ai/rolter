@@ -171,7 +171,7 @@ chased down. Deleting the provider would also stop the logins, and would take
 the group mappings with it.
 
 <Warning>
-If password sign-in is off for the org and this is its only enabled provider, the confirmation adds a lockout warning and its button turns red. No member could sign in afterwards. Only superadmins still can, because the password setting does not apply to them, and they can turn password sign-in back on from this screen. An account created by signing in through a provider has no password, so turning password sign-in back on does not bring it back: a superadmin has to set one with `PUT /api/v1/users/{id}`. The warning informs the change and does not block it. With another provider enabled, or with password sign-in on, the confirmation carries no warning.
+If password sign-in is off for the org and this is its only enabled provider, the control plane refuses to disable it and answers `409 Conflict`: no member could sign in afterwards. Only superadmins could, because the password setting does not apply to them. Enable another provider or turn password sign-in back on first. With another provider enabled, or with password sign-in on, the change goes through.
 </Warning>
 
 ## Map groups to roles
@@ -227,5 +227,5 @@ The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped iss
 Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
 
 <Warning>
-If the org's policy has password sign-in turned off, deleting its only enabled provider leaves nobody but the superadmin able to sign in. The confirmation carries the same lockout warning as [taking the provider out of service](#taking-a-provider-out-of-service). Turn password sign-in back on first, or register the replacement provider before you delete this one.
+If the org's policy has password sign-in turned off, deleting its only enabled provider is refused with `409 Conflict`, for the same reason as [disabling it](#taking-a-provider-out-of-service). Turn password sign-in back on first, or register the replacement provider before you delete this one. A provider that is already disabled can be deleted freely.
 </Warning>

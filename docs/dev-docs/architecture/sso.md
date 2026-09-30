@@ -99,10 +99,20 @@ not silently gain a second, weaker credential.
   members cannot sign in at all, whatever `allow_password_login` says. The
   dashboard confirms the change when the org has an enabled provider (#2326).
 
-Two guard rails, both returning `409`:
+Three guard rails, all returning `409`:
 
 - Both flags off is not a policy, it is an outage.
 - Password login cannot be disabled before an enabled provider exists.
+- The inverse: while password login is off, the org's last enabled provider can
+  be neither disabled (`PUT /sso-providers/{id}` with `enabled: false`) nor
+  deleted (#2233). The superadmin exemption below would still let someone in,
+  but the guard is about every other member.
+
+Both directions are checked per org, inside the write's transaction, under one
+`pg_advisory_xact_lock` keyed on the org (`lock_org_sign_in` in the store). A
+row lock on either table could not order a provider write against a policy
+write, and without the lock two concurrent disables of different providers
+would each see the other still enabled.
 
 And one exemption: **a superadmin can always log in with a password**, whatever
 the policy says. A mistyped issuer or an IdP outage would otherwise lock the
