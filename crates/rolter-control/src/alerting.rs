@@ -169,12 +169,12 @@ struct RuleInput {
     signal: String,
     threshold: f64,
     /// `above` (the default) fires at `value >= threshold`, `below` at
-    /// `value <= threshold`.
-    #[serde(default = "default_comparison")]
-    comparison: String,
-    /// What a window with no data does: `ignore` (the default), `fire` or `ok`.
-    #[serde(default = "default_no_data")]
-    no_data: String,
+    /// `value <= threshold`. Omitted on an update, the stored value is kept,
+    /// so an editor that predates the field cannot reset it
+    comparison: Option<String>,
+    /// What a window with no data does: `ignore` (the default), `fire` or
+    /// `ok`. Omitted on an update, the stored value is kept
+    no_data: Option<String>,
     window_secs: i32,
     channel_id: Option<Uuid>,
     #[serde(default)]
@@ -187,6 +187,29 @@ fn default_comparison() -> String {
 
 fn default_no_data() -> String {
     "ignore".into()
+}
+
+impl RuleInput {
+    /// The comparison a create stores: the body's, or the default
+    fn comparison(&self) -> String {
+        self.comparison.clone().unwrap_or_else(default_comparison)
+    }
+
+    /// The no-data policy a create stores: the body's, or the default
+    fn no_data(&self) -> String {
+        self.no_data.clone().unwrap_or_else(default_no_data)
+    }
+
+    /// The no-data policy an update writes, `None` to keep the stored one.
+    /// A rule moved to a signal that cannot lack data is written `ignore`,
+    /// since a kept `fire` or `ok` would be a policy that never applies
+    fn no_data_for_update(&self) -> Option<String> {
+        match &self.no_data {
+            Some(policy) => Some(policy.clone()),
+            None if !can_lack_data(&self.signal) => Some(default_no_data()),
+            None => None,
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -260,19 +283,19 @@ fn validate_rule(input: &RuleInput) -> ApiResult<()> {
     if !(60..=86_400).contains(&input.window_secs) {
         return Err(invalid("window_secs must be between 60 and 86400"));
     }
-    if !COMPARISONS.contains(&input.comparison.as_str()) {
+    if !COMPARISONS.contains(&input.comparison().as_str()) {
         return Err(invalid(format!(
             "comparison must be one of {COMPARISONS:?}"
         )));
     }
-    if !NO_DATA_POLICIES.contains(&input.no_data.as_str()) {
+    if !NO_DATA_POLICIES.contains(&input.no_data().as_str()) {
         return Err(invalid(format!(
             "no_data must be one of {NO_DATA_POLICIES:?}"
         )));
     }
     // rejected rather than stored inert: a policy that can never apply reads
     // as protection the rule does not have
-    if input.no_data != "ignore" && !can_lack_data(&input.signal) {
+    if input.no_data() != "ignore" && !can_lack_data(&input.signal) {
         return Err(invalid(
             "no_data applies only to error_rate and p95_latency_ms; the other signals read 0 for an empty window (use comparison below on request_volume to catch stopped traffic)",
         ));
@@ -461,7 +484,7 @@ async fn create_rule(
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Create))?;
     validate_rule(&input)?;
     let rule: Rule = sqlx::query_as(&format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns()))
-        .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(&input.no_data)
+        .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(input.comparison()).bind(input.no_data())
         .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
     audit(
         &state,
@@ -482,8 +505,8 @@ async fn update_rule(
 ) -> ApiResult<Json<Rule>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Update))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(&format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=$8, no_data=$9, updated_at=now() where id=$1 returning {}", rule_columns()))
-        .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(&input.no_data)
+    let rule: Rule = sqlx::query_as(&format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns()))
+        .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(input.no_data_for_update())
         .fetch_optional(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?
         .ok_or_else(|| Error::NotFound(format!("alert rule {id}")))?;
     audit(
@@ -1261,8 +1284,8 @@ mod tests {
             name: "x".into(),
             signal: signal.into(),
             threshold,
-            comparison: default_comparison(),
-            no_data: default_no_data(),
+            comparison: None,
+            no_data: None,
             window_secs,
             channel_id: None,
             enabled: false,
@@ -1296,7 +1319,7 @@ mod tests {
         }))
         .expect("an old-style body still parses");
         assert_eq!(
-            (input.comparison.as_str(), input.no_data.as_str()),
+            (input.comparison().as_str(), input.no_data().as_str()),
             ("above", "ignore")
         );
         assert!(validate_rule(&input).is_ok());
@@ -1305,10 +1328,10 @@ mod tests {
     #[test]
     fn rules_reject_unknown_comparison_and_no_data_values() {
         let mut input = rule("error_rate", 0.5, 60);
-        input.comparison = "equal".into();
+        input.comparison = Some("equal".into());
         assert!(validate_rule(&input).is_err());
         let mut input = rule("error_rate", 0.5, 60);
-        input.no_data = "page".into();
+        input.no_data = Some("page".into());
         assert!(validate_rule(&input).is_err());
     }
 
@@ -1316,14 +1339,14 @@ mod tests {
     fn no_data_policy_is_only_accepted_where_a_window_can_lack_data() {
         for signal in SIGNALS {
             let mut input = rule(signal, 0.5, 60);
-            input.no_data = "fire".into();
+            input.no_data = Some("fire".into());
             assert_eq!(
                 validate_rule(&input).is_ok(),
                 can_lack_data(signal),
                 "{signal}"
             );
-            input.comparison = "below".into();
-            input.no_data = "ignore".into();
+            input.comparison = Some("below".into());
+            input.no_data = Some("ignore".into());
             assert!(validate_rule(&input).is_ok(), "{signal}");
         }
     }
@@ -2058,15 +2081,30 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["comparison"], "below");
             assert_eq!(body["no_data"], "fire");
-            // an omitted field returns to its default
-            let (_, body) = put(
+            // an omitted field keeps the stored value, so an editor that
+            // predates the fields cannot reset them on an unrelated edit
+            let (status, body) = put(
                 &state,
                 format!("/api/v1/alert-rules/{id}"),
-                json!({"name": "stopped", "signal": "error_rate", "threshold": 0.5,
+                json!({"name": "renamed", "signal": "error_rate", "threshold": 0.4,
                        "window_secs": 300}),
             )
             .await;
-            assert_eq!(body["comparison"], "above");
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["name"], "renamed");
+            assert_eq!(body["comparison"], "below");
+            assert_eq!(body["no_data"], "fire");
+            // moved to a signal that cannot lack data, a kept `fire` would
+            // never apply, so the omitted policy is written `ignore`
+            let (status, body) = put(
+                &state,
+                format!("/api/v1/alert-rules/{id}"),
+                json!({"name": "renamed", "signal": "request_volume", "threshold": 1,
+                       "window_secs": 300}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["comparison"], "below");
             assert_eq!(body["no_data"], "ignore");
             let (status, _) = put(
                 &state,
