@@ -83,7 +83,7 @@ This guide takes a deployment from nothing to "our people and our applications c
   <Step title="Bring people in">
     Pick the way your company signs in:
 
-    - **No identity provider:** **Governance → Users → Invite user** at a role and scope. You get a one-time link to send to the person; they choose their own password.
+    - **No identity provider:** **Governance → Users → Invite user** at a role and scope, for the whole organization, a team or a project. You get a one-time link to send to the person; they choose their own password. Links not yet accepted are listed under the users table, where you can revoke one sent to the wrong address. See [Inviting people](/security/rbac#inviting-people-on-the-users-screen).
     - **An OIDC identity provider** (Okta, Entra ID, Google, Keycloak): register it under **Governance → Single Sign-On**, map its groups to roles at scopes, and decide whether passwords stay on. See [Single Sign-On](/security/single-sign-on).
     - **Automatic joiners and leavers:** add SCIM provisioning under **Governance → User Provisioning**. See [User Provisioning](/security/user-provisioning).
 

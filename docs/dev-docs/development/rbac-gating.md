@@ -96,6 +96,16 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
   screen a member opens (#1848).
+- **The pending invitations on the Users screen.** The section reads
+  `invitation:read` through `useCan()` for its presence, the way the checklist
+  does: it waits for the answer, is absent on an explicit `false`, and sends no
+  request then. The control plane filters the list below the org to the teams
+  and projects the caller administers, so a `403` from the list is an answer
+  too and hides the section instead of raising a `forbidden` `LoadError` on a
+  screen a viewer may open. The revoke button is a `RowIconButton` on
+  `invitation:delete`; the confirmation still says what revoking at the
+  invitation's own scope takes when the server refuses a click the gate allowed
+  (#2054).
 - **An action a screen takes on its own.** The Playground mints its session
   key as it opens, and minting is `my_virtual_key:create`, which takes the
   member role. So the automatic mint waits for the answer and does not go out
