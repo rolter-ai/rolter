@@ -42,6 +42,8 @@ import {
 import type { Invitation, MembershipRow, UpdateUserInput, UserRow } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const USERS: UserRow[] = [
@@ -316,6 +318,56 @@ export const Forbidden: Story = {
   },
 };
 
+/**
+ * A server error is not an empty organization. `LoadError` names the failure
+ * with the control plane's own message, and "Try again" asks again for both
+ * reads the screen holds, the users and their grants, then the table fills in.
+ */
+let unavailable: Recorder;
+let storeHealed = false;
+export const LoadFailureOffersARetry: Story = {
+  render: () => {
+    storeHealed = false;
+    unavailable = recording(
+      scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/invitations")) return json([]);
+        if (url.includes("/memberships")) return json(MEMBERSHIPS);
+        if (url.includes("/users")) {
+          return storeHealed ? json(USERS) : json({ error: { message: "store unavailable" } }, 500);
+        }
+        return json([]);
+      }),
+    );
+    return (
+      <Harness fetchStub={unavailable.stub}>
+        <Users />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /store unavailable/);
+    await expectNoFalseEmpty(canvasElement, /No users yet/);
+    // the failed read is not a count either
+    await expect(canvas.queryByRole("radio", { name: /^All \d/ })).toBeNull();
+
+    const reads = (path: string) =>
+      unavailable.calls.filter((c) => c.method === "GET" && c.url.endsWith(path)).length;
+    const [usersBefore, grantsBefore] = [reads("/users"), reads("/memberships")];
+    storeHealed = true;
+    await userEvent.click(
+      within(canvas.getByRole("alert")).getByRole("button", { name: "Try again" }),
+    );
+
+    await waitFor(() => expect(reads("/users")).toBe(usersBefore + 1));
+    await waitFor(() => expect(reads("/memberships")).toBe(grantsBefore + 1));
+    await expect(await canvas.findByText("ada@example.com")).toBeVisible();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await expect(canvas.getByRole("radio", { name: "All 3" })).toBeInTheDocument();
+  },
+};
+
 export const FiltersToDeactivatedAccounts: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
@@ -328,6 +380,248 @@ export const FiltersToDeactivatedAccounts: Story = {
     await userEvent.click(canvas.getByRole("radio", { name: /deactivated/i }));
     await expect(canvas.getByText("former@example.com")).toBeInTheDocument();
     await expect(canvas.queryByText("ada@example.com")).not.toBeInTheDocument();
+  },
+};
+
+/** a filter option's label without the count the screen appends to it */
+const filterWord = (radio: HTMLElement) => (radio.textContent ?? "").replace(/\s*\d+$/, "");
+
+/**
+ * One word for one state. The status filter said "deactivated" and the row
+ * pill said "Blocked" for the same accounts, and the filter was lowercase
+ * where the pill was capitalised by a CSS class (#2059). Both now read the
+ * word the confirmation uses, capitalised in the catalog rather than by CSS.
+ */
+export const OneWordForTheDeactivatedState: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const table = await usersTable(canvasElement);
+    await canvas.findByText("former@example.com");
+
+    const deactivated = canvas.getByRole("radio", { name: "Deactivated 1" });
+    const pill = rowOf(table, "former@example.com").getByText("Deactivated");
+    await expect(filterWord(deactivated)).toBe(pill.textContent);
+    const active = canvas.getByRole("radio", { name: "Active 2" });
+    await expect(within(table).getAllByText("Active")).toHaveLength(2);
+    await expect(filterWord(active)).toBe("Active");
+
+    // the catalog holds the capital, so no label leans on `text-transform`
+    for (const el of [...canvas.getAllByRole("radio"), pill]) {
+      await expect(el.textContent).toMatch(/^\p{Lu}/u);
+      await expect(getComputedStyle(el).textTransform).toBe("none");
+    }
+    // the word the confirmation uses is the word on screen, and the old one is gone
+    await userEvent.click(canvas.getByRole("button", { name: "Deactivate grace@example.com" }));
+    await expect(
+      await within(document.body).findByRole("heading", { name: "Deactivate grace@example.com?" }),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+    await expect(canvasElement.textContent).not.toMatch(/blocked/i);
+  },
+};
+
+/**
+ * The same in Russian, where the filter is a plural ("Заблокированные") and the
+ * pill a singular ("Заблокирован"). The pill used to borrow the filter's plural
+ * for an active account, and the filter said "отключённые" beside a pill that
+ * said "заблокирован".
+ */
+export const OneWordForTheDeactivatedStateInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.users;
+    const canvas = within(canvasElement);
+    // the locale decorator switches language from an effect, after first paint
+    const table = await canvas.findByRole("table", { name: ru.screens["gov-users"].title });
+    const deactivated = await canvas.findByRole("radio", {
+      name: new RegExp(`^${copy.statusDeactivated} 1$`),
+    });
+    await canvas.findByText("former@example.com");
+
+    const pill = rowOf(table, "former@example.com").getByText(copy.rowStatusDeactivated);
+    await expect(filterWord(deactivated).toLowerCase()).toMatch(
+      new RegExp(`^${pill.textContent?.toLowerCase()}`),
+    );
+    // an active account reads "Активен", not the filter's "Активные"
+    await expect(within(table).getAllByText(copy.rowStatusActive)).toHaveLength(2);
+    await expect(canvas.getByRole("radio", { name: `${copy.statusActive} 2` })).toBeInTheDocument();
+    for (const el of [...canvas.getAllByRole("radio"), pill]) {
+      await expect(el.textContent).toMatch(/^\p{Lu}/u);
+    }
+    await expect(canvasElement.textContent).not.toMatch(/отключ/i);
+  },
+};
+
+/**
+ * The chip is the person's, not the row's. It was picked by position, so a
+ * search or a status tab recoloured everyone left on screen (#2059); it is now
+ * derived from the id, and a person keeps the colour they had.
+ */
+export const AvatarColourFollowsThePerson: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("ada@example.com");
+    // the chip is the one element that reads the address's first two letters
+    const chip = (email: string) =>
+      canvas.getByText(email.slice(0, 2).toUpperCase()).style.background;
+    const [ada, grace, former] = [
+      chip("ada@example.com"),
+      chip("grace@example.com"),
+      chip("former@example.com"),
+    ];
+    for (const colour of [ada, grace, former])
+      await expect(colour).toMatch(/^var\(--avatar-[1-6]\)$/);
+    await expect(new Set([ada, grace, former]).size).toBe(3);
+
+    // a search leaves grace alone in the table, at the row where ada was
+    const search = canvas.getByRole("searchbox", { name: "Search users" });
+    await userEvent.type(search, "grace");
+    await waitFor(() => expect(canvas.queryByText("ada@example.com")).toBeNull());
+    await expect(chip("grace@example.com")).toBe(grace);
+
+    // and the status tab that leaves only the deactivated account does the same
+    await userEvent.clear(search);
+    await userEvent.click(canvas.getByRole("radio", { name: /^Deactivated/ }));
+    await waitFor(() => expect(canvas.queryByText("grace@example.com")).toBeNull());
+    await expect(chip("former@example.com")).toBe(former);
+  },
+};
+
+/**
+ * The superadmin marker is a neutral `Badge`: no folk-red border, no 9px
+ * uppercase (#2059). Red is left to state, so the loaded screen has one red
+ * mark, the deactivated pill, and no row action is red.
+ */
+export const SuperadminIsANeutralBadge: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await usersTable(canvasElement);
+    const badge = await within(table).findByText("Superadmin");
+    await expect(within(table).getAllByText("Superadmin")).toHaveLength(1);
+    await expect(rowOf(table, "ada@example.com").getByText("Superadmin")).toBe(badge);
+    await expect(badge).toHaveClass("text-muted-foreground");
+    await expect(getComputedStyle(badge).textTransform).toBe("none");
+    await expect(getComputedStyle(badge).fontSize).toBe("10px");
+  },
+};
+
+export const TheLoadedScreenCarriesOneRedMark: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await usersTable(canvasElement);
+    await within(table).findByText("former@example.com");
+    // the colours red can be drawn in, read the way the page resolves them
+    const resolve = (token: string) => {
+      const probe = document.createElement("span");
+      probe.style.color = `var(${token})`;
+      document.body.append(probe);
+      const colour = getComputedStyle(probe).color;
+      probe.remove();
+      return colour;
+    };
+    const reds = ["--status-danger-text", "--status-danger", "--red-folk-text", "--red-folk"].map(
+      resolve,
+    );
+    // a mark is a control or a run of text drawn in red; an icon or a dot only inherits it
+    const marks = [...table.querySelectorAll<HTMLElement>("button, span")].filter((el) => {
+      const own = [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent);
+      return (el.tagName === "BUTTON" || own) && reds.includes(getComputedStyle(el).color);
+    });
+    await expect(marks.map((el) => el.textContent)).toEqual(["Deactivated"]);
+
+    // the control that deactivates reads like the one beside it
+    const deactivate = within(table).getByRole("button", { name: "Deactivate grace@example.com" });
+    const edit = within(table).getByRole("button", { name: "Edit grace@example.com" });
+    await expect(getComputedStyle(deactivate).color).toBe(getComputedStyle(edit).color);
+  },
+};
+
+/**
+ * Beside the status filter the search field was squeezed to the width of its
+ * icon at 375px, and its placeholder could not be read (#2059). It takes the
+ * row to itself and the filter wraps underneath.
+ */
+async function expectSearchUsable(canvasElement: HTMLElement, name: string): Promise<void> {
+  const canvas = within(canvasElement);
+  const search = await canvas.findByRole<HTMLInputElement>("searchbox", { name });
+  await canvas.findByText("ada@example.com");
+  const field = search.parentElement as HTMLElement;
+  const toolbar = field.parentElement as HTMLElement;
+  await expect(Math.round(field.getBoundingClientRect().width)).toBe(
+    Math.round(toolbar.getBoundingClientRect().width),
+  );
+
+  // the placeholder is readable: the room inside the field is the width of its words
+  const style = getComputedStyle(search);
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+  probe.style.font = style.font;
+  probe.textContent = search.placeholder;
+  document.body.append(probe);
+  const words = probe.getBoundingClientRect().width;
+  probe.remove();
+  const room = search.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  await expect(room).toBeGreaterThanOrEqual(words);
+
+  // the filter and the invite button stay on screen, under it
+  const filter = canvas.getByRole("radiogroup");
+  await expect(filter.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    field.getBoundingClientRect().bottom,
+  );
+  await expect(filter.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+  await expectNoHorizontalOverflow();
+
+  await userEvent.type(search, "grace");
+  await expect(search).toHaveValue("grace");
+  await waitFor(() => expect(canvas.queryByText("ada@example.com")).toBeNull());
+}
+
+export const SearchIsUsableAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSearchUsable(canvasElement, "Search users");
+  },
+};
+
+/** In Russian the filter is wider and already wrapped; the field still takes the row and nothing overflows. */
+export const SearchIsUsableAtPhoneWidthInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSearchUsable(canvasElement, ru.pages.users.searchPlaceholder);
   },
 };
 
@@ -1636,7 +1930,7 @@ const submits = (target: string) =>
  * sessions ended, the keys the account minted for itself stop at the
  * gateway). A cancel sends nothing and is an abandon; a confirm is on the wire
  * with both buttons out of reach until it lands, then the dialog closes, the
- * toast says what happened and the row turns blocked.
+ * toast says what happened and the row turns deactivated.
  */
 let deactivations: Recorder;
 const deactivationHold = held();
@@ -1689,7 +1983,7 @@ export const DeactivatingAnAccountIsConfirmedThenLands: Story = {
     await expectToast(canvasElement, /Deactivated grace@example\.com/);
     const table = await usersTable(canvasElement);
     await waitFor(() =>
-      expect(rowOf(table, "grace@example.com").getByText("blocked")).toBeVisible(),
+      expect(rowOf(table, "grace@example.com").getByText("Deactivated")).toBeVisible(),
     );
     // the control now goes the other way, and says so
     await expect(
@@ -1804,7 +2098,7 @@ export const ReactivatingIsOneClickWithItsOwnIconAndLabel: Story = {
     await expectToast(canvasElement, /Reactivated former@example\.com/);
     const table = await usersTable(canvasElement);
     await waitFor(() =>
-      expect(rowOf(table, "former@example.com").getByText("active")).toBeVisible(),
+      expect(rowOf(table, "former@example.com").getByText("Active")).toBeVisible(),
     );
     await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
@@ -1874,7 +2168,9 @@ export const GrantingSuperadminIsConfirmedThenLands: Story = {
     await expectSheetClosed();
     await expectToast(canvasElement, /grace@example\.com updated/);
     const table = await usersTable(canvasElement);
-    await waitFor(() => expect(rowOf(table, "grace@example.com").getByText("super")).toBeVisible());
+    await waitFor(() =>
+      expect(rowOf(table, "grace@example.com").getByText("Superadmin")).toBeVisible(),
+    );
     const submit = await expectUxEvent("form_submit", "user-superadmin-grant");
     await expect(submit.outcome).toBe("ok");
     await expectUxEvent("save_confirmed", "user-superadmin-grant");
@@ -1954,7 +2250,9 @@ export const TakingSuperadminOffAnotherAccountSavesWithoutAsking: Story = {
     await expectSheetClosed();
     await expectToast(canvasElement, /ada@example\.com updated/);
     const table = await usersTable(canvasElement);
-    await waitFor(() => expect(rowOf(table, "ada@example.com").queryByText("super")).toBeNull());
+    await waitFor(() =>
+      expect(rowOf(table, "ada@example.com").queryByText("Superadmin")).toBeNull(),
+    );
     expectNoUxEvent("form_submit", "user-superadmin-remove");
     expectNoUxEvent("form_submit", "user-superadmin-grant");
   },
@@ -2038,7 +2336,9 @@ export const RemovingYourOwnSuperadminIsConfirmed: Story = {
     });
     await expectSheetClosed();
     const table = await usersTable(canvasElement);
-    await waitFor(() => expect(rowOf(table, "ada@example.com").queryByText("super")).toBeNull());
+    await waitFor(() =>
+      expect(rowOf(table, "ada@example.com").queryByText("Superadmin")).toBeNull(),
+    );
     const submit = await expectUxEvent("form_submit", "user-superadmin-remove");
     await expect(submit.outcome).toBe("ok");
     await expectUxEvent("save_confirmed", "user-superadmin-remove");
