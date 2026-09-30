@@ -11,6 +11,7 @@ import {
   expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
+  expectTableStateInFrame,
   expectToast,
   Harness as ScreenHarness,
   json,
@@ -282,6 +283,35 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("No provisioning tokens yet")).toBeVisible());
+  },
+};
+
+// the token table scrolls sideways inside its card on a phone, and the
+// placeholder and its button were centred on the whole table, off to one side
+// of what the reader sees (#2420)
+export const EmptyFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <Harness fetchStub={scoped(async () => json([]))} />,
+  play: async ({ canvasElement }) => {
+    await expectTableStateInFrame(canvasElement, {
+      says: /No provisioning tokens yet/,
+      body: /Issue a token, paste it into your identity provider/,
+      cta: /Issue token/,
+    });
+  },
+};
+
+export const EmptyFitsThePhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={scoped(async () => json([]))} />,
+  play: async ({ canvasElement }) => {
+    const { emptyTitle, emptyBody, emptyAction } = ru.pages.userProvisioning;
+    await expectTableStateInFrame(canvasElement, {
+      says: new RegExp(emptyTitle),
+      body: new RegExp(emptyBody.slice(0, 24)),
+      cta: new RegExp(emptyAction),
+    });
   },
 };
 

@@ -1160,7 +1160,13 @@ function AlertHistoryScreen() {
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
               <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
-              <ListCell className="truncate text-xs text-muted-foreground">
+              {/* the diagnosis of a failed delivery wraps rather than truncates:
+                  `channel secret could not be unsealed; check ROLTER_KEK` cut to
+                  `channel secret could not be…` names the fault and hides what to
+                  do about it, and a title is a hover a keyboard or a phone never
+                  reaches. `min-w-0` lets a long unbroken token break inside its
+                  column instead of widening it (#2335) */}
+              <ListCell className="min-w-0 break-words text-xs text-muted-foreground">
                 {n.detail ?? "—"}
               </ListCell>
             </ListRow>

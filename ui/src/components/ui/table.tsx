@@ -33,7 +33,9 @@ type TableEmptyProps =
        * Without it the table renders its header over nothing at all, which
        * reads as a screen that is still loading rather than one that loaded and
        * found no rows. Rendered in a single full-width cell so the placeholder
-       * stays inside the table's border instead of floating beneath it.
+       * stays inside the table's border instead of floating beneath it. The cell
+       * spans the table, and the placeholder is held to the width of the frame
+       * the table scrolls in, so on a phone it is centred on what is visible.
        */
       empty: React.ReactNode;
       /**
@@ -69,7 +71,13 @@ export function Table<T extends Record<string, unknown>>({
       // of the table past the right edge is mouse-only (#1181)
       tabIndex={0}
       className={cn(
-        "w-full overflow-x-auto rounded-lg border border-[color:var(--border-default)]",
+        // a size container, so the placeholder can be as wide as what the
+        // reader sees (`100cqw`) and not as wide as the table, which scrolls
+        // sideways inside this frame below its columns' width (#2420).
+        // containment takes the frame's own width off its content: `w-full`
+        // gives it one, but a caller that swaps that for `w-auto` in a row
+        // flex would collapse it to its border
+        "w-full overflow-x-auto rounded-lg border border-[color:var(--border-default)] [container-type:inline-size]",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}
@@ -97,7 +105,12 @@ export function Table<T extends Record<string, unknown>>({
           {empty && read && isEmptyAnswer(read, data.length) && (
             <tr>
               <td colSpan={columns.length} className="p-0">
-                {empty}
+                {/* the cell spans the whole table, which is wider than the
+                    frame below the columns' width. this box is the frame's
+                    width and sticks to its left edge, so the placeholder is
+                    centred on what the reader sees and stays there while the
+                    columns scroll beneath it */}
+                <div className="sticky left-0 w-[100cqw]">{empty}</div>
               </td>
             </tr>
           )}

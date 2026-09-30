@@ -173,7 +173,11 @@ Two rules the wording depends on:
 `Table` takes an `empty` prop rendered in a full-width row, so the placeholder
 sits inside the table's border with the column headers above it rather than
 floating beneath a header row over nothing. It comes with `read`, the query the
-rows came from, and renders only once that read succeeded.
+rows came from, and renders only once that read succeeded. Like the list-table
+state row, the placeholder is as wide as the frame the table scrolls in and not
+as the table (#2420): it sticks to the frame's left edge, so on a 375px phone
+the title, the description and the button are centred on what is visible. See
+[list tables](list-tables.md).
 
 An empty result is never routed through `LoadError`; see
 [error states](error-states.md) for why.
