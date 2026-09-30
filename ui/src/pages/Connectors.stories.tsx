@@ -1198,16 +1198,16 @@ export const AnEditedSheetPromptsBeforeDiscarding: Story = {
   render: () => <Harness fetchStub={async () => json(CONNECTORS)} />,
   play: async ({ canvasElement }) => {
     const copy = en.pages.connectors;
-    let form = await openEditSheet(canvasElement);
+    await openEditSheet(canvasElement);
     await expectClosesWithoutPrompting();
 
-    form = await openEditSheet(canvasElement);
-    await userEvent.type(form.getByLabelText(copy.form.name), "-draft");
-    await userEvent.click(form.getByRole("button", { name: en.common.cancel }));
+    const draft = await openEditSheet(canvasElement);
+    await userEvent.type(draft.getByLabelText(copy.form.name), "-draft");
+    await userEvent.click(draft.getByRole("button", { name: en.common.cancel }));
     await answerDiscardPrompt(true);
     await expectSheetClosed();
 
-    form = await openEditSheet(canvasElement, "honeycomb");
+    const form = await openEditSheet(canvasElement, "honeycomb");
     await expect(form.getByLabelText(copy.form.endpoint)).toHaveValue(
       "https://collector.example.com/v1/logs",
     );
