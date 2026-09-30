@@ -157,6 +157,7 @@
       "skillVersions": "the skill's versions",
       "users": "users",
       "provisioningTokens": "provisioning tokens",
+      "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
@@ -2466,6 +2467,12 @@
       "teamNamePlaceholder": "platform"
     },
     "userProvisioning": {
+      "baseUrl": {
+        "label": "SCIM base URL",
+        "copy": "Copy SCIM base URL",
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
+        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+      },
       "mappings": {
         "title": "Group mappings",
         "subtitle": "A group your identity provider pushes decides nothing on its own. Map it to a role here, and everyone in it is reconciled immediately rather than at the next sync.",
@@ -2507,11 +2514,12 @@
       "sheet": {
         "issueTitle": "Issue provisioning token",
         "copyTitle": "Copy the token now",
-        "subtitle": "scim 2.0 · bearer credential"
+        "subtitle": "scim 2.0 · bearer credential",
+        "tokenLabel": "Bearer token"
       },
       "copyToken": "Copy provisioning token",
       "onceWarning": "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
-      "pasteHint": "Paste it into your identity provider's SCIM connector as the bearer token, alongside the base URL <0>https://your-rolter-host/scim/v2</0>. The token carries the org, so no tenant id goes in the URL.",
+      "pasteHint": "Paste the token into your identity provider's SCIM connector as the bearer token, and point the connector at the base URL. The token carries the org, so no tenant id goes in the URL.",
       "nameLabel": "Name",
       "nameHint": "how you will recognise it later — usually the identity provider it belongs to",
       "namePlaceholder": "Okta production",
