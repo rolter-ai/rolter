@@ -308,6 +308,23 @@ Set the token to close it:
 export ROLTER_ADMIN_TOKEN="$(openssl rand -hex 24)"
 ```
 
+## Your own profile
+
+Any signed-in account, a viewer included, can set a display name and a short bio with `PATCH /api/v1/me/profile`. The route writes only the caller's own row, so it needs no role and does not widen `user:update`, which stays superadmin-only.
+
+```bash
+curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
+  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name": "Grace Hopper", "bio": "Ask me about the nightly batch."}'
+```
+
+- `display_name` is 1 to 80 characters and `bio` up to 500, after surrounding whitespace is trimmed. Control characters are refused (a bio may contain line breaks) and so is a value that is only whitespace.
+- An omitted field is left alone; `null` or `""` clears it.
+- `GET /api/v1/auth/me` returns both fields on `user`, and the users list returns them for admins.
+- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
+- Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
+
 ### Self-service endpoints do not work in open mode
 
 The `/api/v1/me/*` routes — the dashboard's **API Keys** screen — are per-user:

@@ -1825,6 +1825,15 @@ impl ScimIdentityRepo<'_> {
         .map_err(store_err)
     }
 
+    /// whether any org's IdP provisioned this account
+    pub async fn exists_for_user(&self, user_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar("select exists (select 1 from scim_identities where user_id = $1)")
+            .bind(user_id)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
+    }
+
     pub async fn find_by_user_name(
         &self,
         org_id: Uuid,
@@ -3013,7 +3022,8 @@ pub struct UserRepo<'a>(pub &'a PgPool);
 impl UserRepo<'_> {
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where email = $1",
         )
         .bind(email)
@@ -3024,7 +3034,8 @@ impl UserRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where id = $1",
         )
         .bind(id)
@@ -3040,7 +3051,7 @@ impl UserRepo<'_> {
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
         sqlx::query_as(
             "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
-                    u.deactivated_at, u.created_at
+                    u.deactivated_at, u.created_at, u.display_name, u.bio
              from users u
              join memberships m on m.user_id = u.id
              left join teams t on t.id = m.team_id
@@ -3066,7 +3077,8 @@ impl UserRepo<'_> {
         sqlx::query_as(
             "insert into users (email, password_hash, is_superadmin)
              values ($1, $2, $3)
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(email)
         .bind(password_hash)
@@ -3092,7 +3104,8 @@ impl UserRepo<'_> {
                  password_hash = coalesce($3, password_hash),
                  is_superadmin = coalesce($4, is_superadmin)
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(email)
@@ -3111,10 +3124,42 @@ impl UserRepo<'_> {
         sqlx::query_as(
             "update users set deactivated_at = case when $2 then now() else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(deactivated)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// set the self-service profile. each `Some(x)` replaces the column with `x`
+    /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
+    /// from [`Self::update`]: that one names `is_superadmin` in its `set` list
+    /// and so fires the `config_version` trigger, which a name edit must not.
+    /// callers validate and normalise; the table's check constraints are the
+    /// backstop
+    pub async fn set_profile(
+        &self,
+        id: Uuid,
+        display_name: Option<Option<&str>>,
+        bio: Option<Option<&str>>,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "update users set
+                 display_name = case when $2 then $3 else display_name end,
+                 bio = case when $4 then $5 else bio end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                       display_name, bio",
+        )
+        .bind(id)
+        .bind(display_name.is_some())
+        .bind(display_name.flatten())
+        .bind(bio.is_some())
+        .bind(bio.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?

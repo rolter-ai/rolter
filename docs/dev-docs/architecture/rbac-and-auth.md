@@ -474,6 +474,19 @@ the org), so a team admin can revoke an invitation they could send.
 a project member on their own project instead of the first team of the first
 org.
 
+`PATCH /api/v1/me/profile` (#1823) is the one self-service route that writes the
+account itself. It is a bare `CurrentUser` route with no `CAPABILITIES` row: it
+touches only `current.user.id`, so there is nothing to authorize and `user:update`
+stays superadmin-only. It goes through `UserRepo::set_profile`, which names only
+`display_name` and `bio`, so the `users` trigger from `0075` (which fires on
+`deactivated_at` and `is_superadmin`) does not bump `config_version`. Who owns
+the display name is decided by `scim_identities`: SCIM writes `displayName` into
+`users.display_name` on create and replace, so an account with such a row is
+`display_name_managed` and the route answers `409` for a change to it. OIDC's
+`preferred_username` and LDAP's name attribute are read at sign-in but never
+persisted, so those accounts edit their name freely. The audit row
+`user.profile.update` carries `{"fields": [...]}` and never the bio.
+
 A handler that starts from the session (`CurrentUser`) and then authorizes
 builds its principal with `Principal::for_user`, which turns `is_superadmin`
 into `Principal::Superadmin`. Before #1847 the self-service key routes built a
