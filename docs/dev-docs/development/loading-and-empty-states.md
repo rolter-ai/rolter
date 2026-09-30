@@ -119,7 +119,9 @@ states (#1976). The Dashboard's `CardRead` decides from `isAwaiting` and the
 read's data before it lets a card draw anything: a skeleton in the card's own
 shape, then either its own `LoadError` or the content. The empty copy sits
 inside the content, where the read is known to hold data, so an empty answer
-still says so after a failed refresh. An average or a rate over an empty window
+still says so after a failed refresh. When every read has failed holding nothing
+the Dashboard draws no cards and shows one `LoadError` for the screen
+([error states](error-states.md)). An average or a rate over an empty window
 is undefined rather than zero: the Dashboard's latency and error-rate tiles read
 "—" with "No requests in this window" under them, where "0 ms" and "0.00 %"
 claimed a measurement of a quiet deployment.

@@ -630,37 +630,47 @@ const failing = recording(
  * query that never held data sends it back to pending on every refetch, which
  * unmounts its error: the alert and a skeleton would take turns, and a screen
  * reader would hear the alert again each cycle (#1984 found it on LLM Logs).
- * Every card keeps the rule for its own read (#1976): each one holds its alert,
- * and each one's retry asks for that read alone.
+ *
+ * Every read here fails, so the screen says it once (#2342): one alert in place
+ * of the five cards, which used to announce five times on mount, two of them
+ * about the same endpoint. The alert is held across three intervals with
+ * nothing asked, and its one retry asks for each of the four reads.
  */
 export const AFirstLoadThatFailsStopsPolling: Story = {
   render: () => render(failing.stub, undefined, FAST_POLL_MS),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(CARDS.length));
-    const alerts = canvas.getAllByRole("alert");
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(1));
+    const alert = canvas.getByRole("alert");
+    // the control plane's own words stay under it
+    await expect(within(alert).getByText("clickhouse refused")).toBeVisible();
+    // no card is drawn around an error about every read, and none says it
+    // found nothing
+    for (const id of CARDS) await expect(canvas.queryByTestId(id)).toBeNull();
+    await expectNoFalseEmpty(
+      canvasElement,
+      new RegExp(`${en.pages.dashboard.noTraffic}|${en.pages.dashboard.nothingLogged}`),
+    );
     const reads = ENDPOINTS.map((e) => readsOf(failing, e));
 
-    // three intervals later they are the same alert nodes, and nothing was
-    // asked: a poll would have sent each query to pending and unmounted its
-    // alert
+    // three intervals later it is the same alert node, and nothing was asked: a
+    // poll would have sent each query to pending and unmounted it
     await sleep(FAST_POLL_MS * 3);
-    for (const alert of alerts) await expect(alert.isConnected).toBe(true);
+    await expect(alert.isConnected).toBe(true);
     await expect(canvas.queryAllByLabelText(LOADING_LABEL)).toHaveLength(0);
     await expect(ENDPOINTS.map((e) => readsOf(failing, e))).toEqual(reads);
 
-    // the retry the figures offer asks for the figures, and only them
-    await userEvent.click(
-      within(canvas.getByTestId("dashboard-figures")).getByRole("button", { name: "Try again" }),
+    // the screen has one retry, and it asks for every read, once
+    await expect(canvas.getAllByRole("button", { name: "Try again" })).toHaveLength(1);
+    await userEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      ENDPOINTS.forEach((e, i) => expect(readsOf(failing, e)).toBe(reads[i] + 1)),
     );
-    await waitFor(() => expect(readsOf(failing, ENDPOINTS[0])).toBeGreaterThan(reads[0]));
-    // and the recent log's asks for the recent log
-    await userEvent.click(
-      within(canvas.getByTestId("dashboard-recent")).getByRole("button", { name: "Try again" }),
-    );
-    await waitFor(() => expect(readsOf(failing, ENDPOINTS[3])).toBeGreaterThan(reads[3]));
-    await expect(readsOf(failing, ENDPOINTS[1])).toBe(reads[1]);
-    await expect(readsOf(failing, ENDPOINTS[2])).toBe(reads[2]);
+    // they fail again, and the screen goes back to saying it once
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(1));
+    for (const id of CARDS) await expect(canvas.queryByTestId(id)).toBeNull();
   },
 };
 
@@ -769,8 +779,48 @@ export const TheRecentRequestsAreStillLoading: Story = {
     const recent = canvas.getByTestId("dashboard-recent");
     await expectSkeleton(recent);
     await expectNoFalseEmpty(recent, new RegExp(en.pages.dashboard.nothingLogged));
+    // the card is not live until a read has answered, so its label says what it
+    // is doing instead (#2341)
+    await expect(within(recent).getByText(en.pages.dashboard.feed.loading)).toBeVisible();
+    await expect(canvas.queryByText(en.pages.dashboard.live)).toBeNull();
     await expectTheOthersLoaded(canvasElement, ["dashboard-recent"]);
     await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+// the recent read, held until the play lets it go. every call is kept: a story
+// that remounts asks again, and the read in flight is the last one
+let recentHeld: Array<() => void> = [];
+const holdingRecent = except(
+  [ENDPOINTS[3]],
+  () =>
+    new Promise<Response>((resolve) => {
+      recentHeld.push(() => resolve(json({ data: RECENT })));
+    }),
+);
+
+/**
+ * "Live" is a claim about a read that succeeded. The label said it from the
+ * first paint, over a skeleton, because it asked whether the read had failed
+ * and a read nobody has answered has not (#2341). It says "Loading" until the
+ * first read lands, and "Live" once it has.
+ */
+export const TheRecentLabelSaysLiveOnlyAfterTheFirstRead: Story = {
+  beforeEach: () => {
+    recentHeld = [];
+  },
+  render: () => render(holdingRecent),
+  play: async ({ canvasElement }) => {
+    const recent = within(canvasElement).getByTestId("dashboard-recent");
+    await expectSkeleton(recent);
+    await waitFor(() => expect(recentHeld).not.toHaveLength(0));
+    await expect(within(recent).getByText(en.pages.dashboard.feed.loading)).toBeVisible();
+    await expect(within(recent).queryByText(en.pages.dashboard.live)).toBeNull();
+
+    recentHeld.forEach((release) => release());
+    await expect(await within(recent).findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(within(recent).queryByText(en.pages.dashboard.feed.loading)).toBeNull();
+    await expect(within(recent).getByText("gpt-4o", { selector: "td" })).toBeVisible();
   },
 };
 
@@ -836,11 +886,13 @@ let modelsDown = true;
 const byModelDown = recording(except([ENDPOINTS[2]], refused, () => !modelsDown));
 
 /**
- * The donut and the bars read one endpoint, and each owns its error: two cards,
- * two alerts, and neither says "No traffic yet." about a read that failed. Either
- * retry asks for that read once, and both cards come back with it.
+ * The donut and the bars read one endpoint, so one failure of it is one alert.
+ * The traffic share holds the error and its retry; requests by model says it
+ * reads the same data and where to retry, in a plain sentence with no alert role
+ * and no button of its own (#2342). Neither says "No traffic yet." about a read
+ * that failed, and the retry asks for that read once and brings both back.
  */
-export const TheTwoCardsOnOneReadEachOwnItsError: Story = {
+export const TheTwoCardsOnOneReadShareOneAlert: Story = {
   beforeEach: () => {
     modelsDown = true;
   },
@@ -850,18 +902,129 @@ export const TheTwoCardsOnOneReadEachOwnItsError: Story = {
     const traffic = canvas.getByTestId("dashboard-traffic");
     const bars = canvas.getByTestId("dashboard-by-model");
     await expectLoadError(traffic, /failed to return the traffic share/i);
-    await expectLoadError(bars, /failed to return requests by model/i);
-    await expect(canvas.getAllByRole("alert")).toHaveLength(2);
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
+    await expect(within(bars).queryByRole("alert")).toBeNull();
+    await expect(within(bars).queryByRole("button", { name: "Try again" })).toBeNull();
+    // the sentence names the card that holds the alert and the button to use
+    const shared = en.pages.dashboard.sharedRead
+      .replace("{{card}}", en.pages.dashboard.trafficTitle)
+      .replace("{{retry}}", en.errors.load.retry);
+    await expect(within(bars).getByText(shared)).toBeVisible();
     await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
     await expectTheOthersLoaded(canvasElement, ["dashboard-traffic", "dashboard-by-model"]);
 
     const reads = readsOf(byModelDown, ENDPOINTS[2]);
     modelsDown = false;
-    await userEvent.click(within(bars).getByRole("button", { name: "Try again" }));
+    await userEvent.click(within(traffic).getByRole("button", { name: "Try again" }));
     await expect(await within(bars).findByText("claude-sonnet-4")).toBeVisible();
     await expect(await within(traffic).findByText(en.pages.dashboard.requests)).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(canvas.queryByText(shared)).toBeNull();
     await expect(readsOf(byModelDown, ENDPOINTS[2])).toBe(reads + 1);
+  },
+};
+
+// the figures, the spend chart and the recent rows fail; the by-model read
+// answers. three of four is still a partial failure
+const mostDown = recording(except([ENDPOINTS[0], ENDPOINTS[1], ENDPOINTS[3]], refused));
+
+/**
+ * The screen-level alert is for every read failing, not most of them. With one
+ * read still answering, each failed card keeps its own alert and its own retry
+ * (#2343), and the card that loaded stays up. A retry asks for its own read.
+ */
+export const SeveralFailedCardsEachHoldTheirOwnAlert: Story = {
+  render: () => render(mostDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const failed = ["dashboard-figures", "dashboard-spend", "dashboard-recent"];
+    await expectLoadError(
+      canvas.getByTestId("dashboard-figures"),
+      /failed to return the overview figures/i,
+    );
+    await expectLoadError(canvas.getByTestId("dashboard-spend"), /failed to return hourly spend/i);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-recent"),
+      /failed to return recent requests/i,
+    );
+    await expect(canvas.getAllByRole("alert")).toHaveLength(failed.length);
+    for (const id of failed) {
+      await expect(
+        within(canvas.getByTestId(id)).getAllByRole("button", { name: "Try again" }),
+      ).toHaveLength(1);
+    }
+    await expect(canvas.queryByText(/failed to return analytics/i)).toBeNull();
+    await expectTheOthersLoaded(canvasElement, failed);
+
+    // each retry asks for its own read
+    const reads = ENDPOINTS.map((e) => readsOf(mostDown, e));
+    await userEvent.click(
+      within(canvas.getByTestId("dashboard-spend")).getByRole("button", { name: "Try again" }),
+    );
+    await waitFor(() => expect(readsOf(mostDown, ENDPOINTS[1])).toBe(reads[1] + 1));
+    for (const i of [0, 2, 3]) await expect(readsOf(mostDown, ENDPOINTS[i])).toBe(reads[i]);
+  },
+};
+
+// the figures, the spend chart and the recent rows fail while the by-model read
+// has not answered yet
+const lastOneOut = recording(
+  scoped(async (input, init) =>
+    [ENDPOINTS[0], ENDPOINTS[1], ENDPOINTS[3]].includes(pathOf(input))
+      ? refused()
+      : pathOf(input) === ENDPOINTS[2]
+        ? never()
+        : loaded(input, init),
+  ),
+);
+
+/**
+ * A read that has not answered is not a failure, so the screen is not yet an
+ * outage: the three that failed each hold their own alert, and the two cards on
+ * the read still out stand in skeletons rather than saying anything about it.
+ */
+export const AReadStillOutIsNotYetAnOutage: Story = {
+  render: () => render(lastOneOut.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-figures"),
+      /failed to return the overview figures/i,
+    );
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(3));
+    for (const id of ["dashboard-traffic", "dashboard-by-model"]) {
+      await expectSkeleton(canvas.getByTestId(id));
+    }
+    await expect(canvas.queryByText(/failed to return analytics/i)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
+  },
+};
+
+// the spend chart's read never recovers, and the others answer every poll
+const cardDown = recording(except([ENDPOINTS[1]], refused));
+
+/**
+ * The no-polling rule belongs to the read, not to the screen: the spend chart
+ * failed holding nothing, so it stops asking and keeps its alert, while the
+ * figures, the donut, the bars and the rows go on refreshing around it.
+ */
+export const AFailedCardHoldsItsAlertWhileTheOthersKeepPolling: Story = {
+  render: () => render(cardDown.stub, undefined, FAST_POLL_MS),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const spend = canvas.getByTestId("dashboard-spend");
+    await expectLoadError(spend, /failed to return hourly spend/i);
+    const alert = within(spend).getByRole("alert");
+    const reads = ENDPOINTS.map((e) => readsOf(cardDown, e));
+
+    await sleep(FAST_POLL_MS * 3);
+    await expect(alert.isConnected).toBe(true);
+    await expect(readsOf(cardDown, ENDPOINTS[1])).toBe(reads[1]);
+    for (const i of [0, 2, 3]) {
+      await expect(readsOf(cardDown, ENDPOINTS[i])).toBeGreaterThan(reads[i]);
+    }
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
+    await expectTheOthersLoaded(canvasElement, ["dashboard-spend"]);
   },
 };
 
