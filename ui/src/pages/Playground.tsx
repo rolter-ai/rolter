@@ -1,5 +1,6 @@
 import { useMutation, useQuery, type UseMutationResult } from "@tanstack/react-query";
 import {
+  Check,
   GitCompare,
   ImageIcon,
   Mic,
@@ -22,6 +23,7 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Markdown } from "@/components/Markdown";
+import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -691,6 +693,7 @@ function ManualKeyField({ offered, onSaved }: { offered: boolean; onSaved: () =>
               aria-label={t("playground.key.label")}
             />
             <Button size="sm" variant="outline" onClick={save}>
+              {saved && <Check className="h-3.5 w-3.5" />}
               {saved ? t("playground.key.saved") : t("playground.key.save")}
             </Button>
           </div>
@@ -774,13 +777,29 @@ function GatewayButton({
   );
 }
 
+// an error arrives after an action, so it is announced the moment it appears
 function ErrorNote({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <p className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]">
+    <p
+      role="alert"
+      className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
+    >
       {error}
     </p>
   );
+}
+
+/**
+ * Whether a keydown is the Enter that sends.
+ *
+ * Shift+Enter is left alone so a multi-line box can take a newline. The Enter
+ * that confirms an IME candidate belongs to the composition, not to the send:
+ * `isComposing` says so in most browsers, and Safari reports that Enter after
+ * the composition has ended, with the legacy keyCode 229.
+ */
+function isSendKey(e: React.KeyboardEvent): boolean {
+  return e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229;
 }
 
 /* ---------------- chat column ---------------- */
@@ -816,8 +835,21 @@ function ChatColumn({
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
+  // the finished reply, for the live region: `id` makes a reply identical to
+  // the last one a new node, so it is announced again
+  const [announced, setAnnounced] = React.useState<{ id: number; text: string } | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const composer = React.useRef<HTMLTextAreaElement>(null);
   const gate = React.useContext(SendGateContext);
+
+  // the composer grows with the draft up to its max height, then scrolls. a
+  // column under another mode tab measures 0 and is left as it was
+  React.useLayoutEffect(() => {
+    const el = composer.current;
+    if (!el || el.offsetParent === null) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }, [draft]);
 
   const attach = (f: File) => {
     const reader = new FileReader();
@@ -852,6 +884,10 @@ function ChatColumn({
       setMsgs((m) =>
         m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
       );
+      setAnnounced((a) => ({
+        id: (a?.id ?? 0) + 1,
+        text: t("pages.playground.replyAnnounce", { model, reply }),
+      }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
       setError((e as Error).message);
@@ -861,7 +897,7 @@ function ChatColumn({
   };
 
   return (
-    <div className="flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
+    <div className="relative flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
       <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] p-2">
         <ModelSelect models={models} value={model} onChange={onModel} />
         {/* the last thing sent, so the snippet reproduces a call that is known
@@ -915,7 +951,7 @@ function ChatColumn({
             }
           >
             <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[color:var(--text-subtle)]">
-              {m.role}
+              {t(`pages.playground.roles.${m.role}`)}
             </span>
             {/* markdown, unless the operator asked for the characters. the
                 renderer takes a partial reply as readily as a finished one, so
@@ -936,6 +972,12 @@ function ChatColumn({
           </div>
         ))}
       </div>
+      {/* the reply is read out once it is whole, not as it arrives: the thread
+          is not the live region, so neither the message just typed nor the
+          placeholder that holds the reply's place is announced */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {announced && <p key={announced.id}>{announced.text}</p>}
+      </div>
       {(error || image) && (
         <div className="px-3 pb-1">
           {image && (
@@ -953,7 +995,7 @@ function ChatColumn({
           <ErrorNote error={error} />
         </div>
       )}
-      <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
+      <div className="flex items-end gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
         {multimodal && (
           <>
             <input
@@ -974,12 +1016,20 @@ function ChatColumn({
             </Button>
           </>
         )}
-        <Input
+        <Textarea
+          ref={composer}
+          rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
+          onKeyDown={(e) => {
+            if (!isSendKey(e)) return;
+            // held back or empty, Enter still must not land a newline in the box
+            e.preventDefault();
+            void send();
+          }}
           placeholder={t("pages.playground.messagePlaceholder")}
-          className="h-8 flex-1 text-sm"
+          aria-label={t("pages.playground.messageAria", { model })}
+          className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
         />
         <GatewayButton
           size="icon"
@@ -997,7 +1047,11 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
-  const [cols, setCols] = React.useState<{ model: string }[]>([{ model: FAKE }]);
+  // a column's thread lives in the column, so a column needs an identity that
+  // outlasts its position: removing the first of two must not hand its thread
+  // to the one that moved up
+  const nextId = React.useRef(1);
+  const [cols, setCols] = React.useState<{ id: number; model: string }[]>([{ id: 0, model: FAKE }]);
   const [multimodal, setMultimodal] = React.useState(false);
   // the list arrives after the first render, and can be replaced once — the
   // fallback first, then the gateway's own when a renewed or pasted key
@@ -1010,14 +1064,19 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
     if (touched.current || !preferred) return;
     const previous = auto.current;
     auto.current = preferred;
-    setCols((c) => (c.length === 1 && c[0].model === previous ? [{ model: preferred }] : c));
+    setCols((c) =>
+      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferred }] : c,
+    );
   }, [preferred]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
-    setCols((c) => c.map((col, j) => (j === i ? { model: v } : col)));
+    setCols((c) => c.map((col, j) => (j === i ? { ...col, model: v } : col)));
   };
-  const add = () => setCols((c) => [...c, { model: models[c.length % models.length]?.id ?? FAKE }]);
+  const add = () => {
+    const id = nextId.current++;
+    setCols((c) => [...c, { id, model: models[c.length % models.length]?.id ?? FAKE }]);
+  };
   const remove = (i: number) => setCols((c) => c.filter((_, j) => j !== i));
 
   return (
@@ -1051,7 +1110,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
       >
         {cols.map((c, i) => (
           <div
-            key={i}
+            key={c.id}
             style={{
               minWidth: cols.length > 2 ? 340 : 0,
               flex: cols.length > 2 ? "none" : 1,
@@ -1165,6 +1224,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 value={row}
                 onChange={(e) => setText(i, e.target.value)}
                 placeholder={t("pages.playground.textPlaceholder")}
+                aria-label={t("pages.playground.textRowAria", { n: i + 1 })}
                 className="h-8 text-sm"
               />
               <Button
@@ -1246,6 +1306,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          aria-label={t("pages.playground.imagePromptAria")}
           className="min-h-[120px] text-sm"
         />
         <div className="flex gap-2.5">
@@ -1366,6 +1427,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
             <Textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
+              aria-label={t("pages.playground.speechTextAria")}
               className="min-h-[100px] text-sm"
             />
             <div className="flex gap-2.5">
@@ -1554,8 +1616,9 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
               <Input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && send()}
+                onKeyDown={(e) => isSendKey(e) && send()}
                 placeholder={t("pages.playground.framePlaceholder")}
+                aria-label={t("pages.playground.frameAria")}
                 className="h-8 text-sm"
                 disabled={!live}
               />
@@ -1592,7 +1655,7 @@ export default function Playground() {
 
   return (
     <SendGateContext.Provider value={sendGate}>
-      <div className="flex flex-col gap-5 p-[22px]">
+      <PageBody>
         <SessionKeyBar session={session} rejected={catalog.rejected} keyless={catalog.keyless} />
         <ModelSourceNotice source={source} hidden={hidden} />
         <Tabs
@@ -1606,12 +1669,17 @@ export default function Playground() {
             { value: "realtime", label: t("pages.playground.modes.realtime") },
           ]}
         />
-        {mode === "chat" && <ChatMode models={models} preferred={preferred} />}
+        {/* chat stays mounted under the other tabs, so every column's thread,
+            draft and reply still in flight survive a switch. the other modes
+            hold a prompt and one result, and start over */}
+        <div hidden={mode !== "chat"}>
+          <ChatMode models={models} preferred={preferred} />
+        </div>
         {mode === "embeddings" && <EmbeddingsMode models={models} />}
         {mode === "image" && <ImageMode models={models} />}
         {mode === "audio" && <AudioMode models={models} />}
         {mode === "realtime" && <RealtimeMode models={models} />}
-      </div>
+      </PageBody>
     </SendGateContext.Provider>
   );
 }
