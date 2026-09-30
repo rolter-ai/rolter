@@ -14,11 +14,25 @@ import {
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
-import type { ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
+import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
 
 const ORG = { id: "org-1", name: "Acme", slug: "acme", created_at: NOW };
+
+/**
+ * The control plane's configured public url (#2079).
+ *
+ * Deliberately not the story's own origin: a strip or a reveal step that fell
+ * back to `window.location` would show the storybook host and fail the
+ * assertion, which is the bug the server-reported base exists to prevent.
+ */
+const PUBLIC_BASE = "https://rolter.acme.example";
+const PUBLIC_URL: PublicUrl = { public_url: PUBLIC_BASE, configured: true };
+const SCIM_URL = `${PUBLIC_BASE}/scim/v2`;
+// `ROLTER_PUBLIC_URL` unset: the control plane falls back to its default
+const DEFAULT_BASE = "http://localhost:4001";
+const UNSET: PublicUrl = { public_url: DEFAULT_BASE, configured: false };
 
 const token = (over: Partial<ScimTokenRow> = {}): ScimTokenRow => ({
   id: "tok-1",
@@ -89,6 +103,8 @@ function scoped(
     teams?: () => Promise<Response>;
     projects?: () => Promise<Response>;
     orgProjects?: () => Promise<Response>;
+    /** answers `GET /api/v1/public-url`, which every signed-in caller may read */
+    publicUrl?: () => Promise<Response>;
   } = {},
 ): FetchStub {
   return async (input, init) => {
@@ -97,6 +113,7 @@ function scoped(
     if (url.includes("scim-group-mappings")) return mappings(init);
     if (url.includes("scim-tokens")) return tokens(init);
     if (path === "/api/v1/orgs") return json([ORG]);
+    if (path === "/api/v1/public-url") return (chain.publicUrl ?? (async () => json(PUBLIC_URL)))();
     // the projects route also contains "/teams", so it is matched first
     const projects = /^\/api\/v1\/teams\/([^/]+)\/projects$/.exec(path);
     if (projects) return (chain.projects ?? (async () => json(PROJECTS[projects[1]] ?? [])))();
@@ -176,6 +193,9 @@ export const Error_: Story = {
     await expectLoadError(canvasElement, /failed to return provisioning tokens/i);
     await expect(canvas.getByText("/scim/v2/Users")).toBeVisible();
     await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
+    // the connector address is stated beside a token list that was read, not
+    // beside one that failed: a control plane with no store serves no SCIM at all
+    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
   },
 };
 
@@ -189,6 +209,8 @@ export const Forbidden: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/visible to org admins only/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Issue token/ })).toBeDisabled();
+    // a caller who may connect nothing is not handed the address to connect it to
+    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
   },
 };
 
@@ -221,6 +243,144 @@ export const IssueRevealsTheSecretOnce: Story = {
     await expect(sheet.getByText(/only time this token is shown/)).toBeVisible();
     // and it is copyable, because it can never be read back
     await expect(sheet.getByRole("button", { name: /Copy provisioning token/ })).toBeVisible();
+
+    // the other value the connector needs is beside it (#2079): the control
+    // plane's own address, never this page's origin, which is not the host the
+    // identity provider has to call
+    const base = await sheet.findByTestId("scim-base-url");
+    await expect(base.textContent).toBe(SCIM_URL);
+    await expect(base.textContent).not.toContain(window.location.origin);
+    await expect(sheet.getByRole("group", { name: "SCIM base URL" })).toContainElement(base);
+    await expect(
+      sheet.getByRole("button", { name: `Copy SCIM base URL: ${SCIM_URL}` }),
+    ).toBeVisible();
+    // the hint no longer hands over a placeholder host to fill in by hand
+    await expect(sheet.queryByText(/your-rolter-host/)).toBeNull();
+    // a configured public url raises no warning
+    await expect(sheet.queryByRole("note")).toBeNull();
+  },
+};
+
+/**
+ * #2079: the screen states the address an identity provider's SCIM connector is
+ * pointed at, under the line that explains what the provider drives.
+ *
+ * It was a placeholder in the reveal step's hint and only a path in the lead, so
+ * the operator worked out the public host by hand. The value is what the control
+ * plane reports as its public url plus `/scim/v2`, and the story's own origin
+ * is nowhere in it.
+ */
+export const ShowsTheScimBaseUrl: Story = {
+  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByRole("group", { name: "SCIM base URL" });
+    const base = await within(group).findByTestId("scim-base-url");
+    await expect(base.textContent).toBe(SCIM_URL);
+    await expect(base.textContent).not.toContain(window.location.origin);
+    await expect(
+      within(group).getByRole("button", { name: `Copy SCIM base URL: ${SCIM_URL}` }),
+    ).toBeVisible();
+    await expect(within(group).getByText(/same for every token in this org/)).toBeVisible();
+    // a configured public url raises no warning
+    await expect(canvas.queryByRole("note")).toBeNull();
+  },
+};
+
+/**
+ * #2079: with `ROLTER_PUBLIC_URL` unset the control plane's base is its default,
+ * which an identity provider can only reach from the control plane's own host.
+ * Both places the address appears say so, the same way the Single Sign-On screen
+ * does, rather than leaving the provider's test console to say it later.
+ */
+export const WarnsWhenThePublicUrlIsUnset: Story = {
+  render: () => {
+    const stub = scoped(
+      async (init) => {
+        if (init?.method === "POST") {
+          return json({
+            ...token({ id: "tok-new", name: "Okta production" }),
+            secret: "rolter_scim_deadbeef",
+          });
+        }
+        return json(TOKENS);
+      },
+      undefined,
+      { publicUrl: async () => json(UNSET) },
+    );
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByRole("group", { name: "SCIM base URL" });
+    // the default address is still shown and copyable: it is what the control
+    // plane will answer on, from its own host
+    const base = await within(group).findByTestId("scim-base-url");
+    await expect(base.textContent).toBe(`${DEFAULT_BASE}/scim/v2`);
+    const notice = within(group).getByRole("note");
+    await expect(notice).toHaveTextContent("ROLTER_PUBLIC_URL is not set");
+    await expect(notice).toHaveTextContent(DEFAULT_BASE);
+    await expect(notice).toHaveTextContent(/restart the control plane/);
+
+    // and again in the reveal step, where the operator is about to paste it
+    await userEvent.click(await canvas.findByRole("button", { name: /Issue token/ }));
+    const sheet = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(sheet.getByPlaceholderText("Okta production"), "Okta production");
+    await userEvent.click(sheet.getByRole("button", { name: /Issue token/ }));
+    const revealed = await sheet.findByTestId("scim-base-url");
+    await expect(revealed.textContent).toBe(`${DEFAULT_BASE}/scim/v2`);
+    await expect(sheet.getByRole("note")).toHaveTextContent("ROLTER_PUBLIC_URL is not set");
+  },
+};
+
+/**
+ * The public url is still in flight. The screen does not wait on it: the token
+ * list is on screen, and the address holds its space as a labelled skeleton
+ * rather than claiming a value or a failure.
+ */
+export const WaitsForThePublicUrl: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async () => json(TOKENS), undefined, {
+        publicUrl: () => new Promise<Response>(() => {}),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Okta production")).toBeVisible());
+    await expectSkeleton(canvasElement);
+    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
+    await expect(canvas.queryByRole("note")).toBeNull();
+  },
+};
+
+/**
+ * The public url could not be read. The address is not guessed from the
+ * browser: the screen says what failed, offers a retry, and the address
+ * appears once the retry lands.
+ */
+export const PublicUrlUnreadable: Story = {
+  render: () => {
+    let reads = 0;
+    const stub = scoped(async () => json(TOKENS), undefined, {
+      publicUrl: async () =>
+        ++reads === 1
+          ? json({ error: { message: "upstream unavailable" } }, 502)
+          : json(PUBLIC_URL),
+    });
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return the public URL/i);
+    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
+    // the rest of the screen is unaffected: the tokens were read
+    await expect(canvas.getByText("Okta production")).toBeVisible();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    const base = await canvas.findByTestId("scim-base-url");
+    await expect(base.textContent).toBe(SCIM_URL);
   },
 };
 

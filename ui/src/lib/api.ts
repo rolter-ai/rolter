@@ -2648,6 +2648,16 @@ export interface CreatedScimToken extends ScimTokenRow {
   secret: string;
 }
 
+// the base URL an IdP's SCIM connector is pointed at (#2079): the public base
+// from `fetchPublicUrl`, then the path scim.rs mounts its resource endpoints
+// on. appended to the control plane's own answer and never to
+// `window.location.origin`, which is wrong behind a proxy or under a second
+// hostname — the IdP calls this from outside, and a wrong value fails in its
+// test console with no hint from rolter
+export function scimBaseUrl(base: string): string {
+  return `${base}/scim/v2`;
+}
+
 export function fetchScimTokens(orgId: string): Promise<ScimTokenRow[]> {
   return getJson<ScimTokenRow[]>(`/api/v1/orgs/${orgId}/scim-tokens`);
 }
