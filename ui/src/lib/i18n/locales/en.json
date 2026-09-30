@@ -1303,10 +1303,13 @@
         "open": "Collector config",
         "title": "OpenTelemetry Collector config",
         "where": "This is the document your collector runs. Rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
-        "endpoint": "GET /api/v1/connectors/collector-config",
+        "endpoint": "Endpoint",
+        "copyEndpoint": "Copy collector config URL",
+        "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
+        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
-        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — or point the collector straight at the URL above with --config and reload it on a schedule."
+        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — and save it again after a connector is added, switched on or deleted."
       },
       "confirm": {
         "title": "Delete connector {{name}}?",
@@ -1330,6 +1333,9 @@
       "addSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
       "sampled": "{{percent}}% sampled",
       "secretSet": "secret set",
+      "off": "off",
+      "createdOff": "{{name}} created, but switched off",
+      "createdOffNext": "Nothing is sent yet. Run Test delivery on its card, then turn its switch on.",
       "testDelivery": "Test delivery",
       "form": {
         "name": "Name",
@@ -1339,7 +1345,10 @@
         "samplingInvalid": "Enter a number from 0 to 100.",
         "samplingRange": "Sampling is a percentage: use a value from 0 to 100.",
         "secret": "Bearer secret (optional)",
-        "secretPlaceholder": "stored encrypted"
+        "secretPlaceholder": "stored encrypted",
+        "start": "Start sending as soon as it is created",
+        "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
+        "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
       }
     },
     "accessProfiles": {

@@ -8,7 +8,8 @@ import { fetchPublicUrl } from "@/lib/api";
  *
  * One key, so the Single Sign-On and User Provisioning screens share a single
  * request and agree on whether `ROLTER_PUBLIC_URL` is set. Both read it through
- * `usePublicUrl()`, which is the only place the key is spelled out.
+ * `usePublicUrl()`, which is the only place the key is spelled out, and so does
+ * the Connectors screen's collector-config dialog (#2106).
  */
 export const PUBLIC_URL_QUERY_KEY = ["public-url"] as const;
 

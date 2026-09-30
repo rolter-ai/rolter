@@ -1,21 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cable, FileCode2, FlaskConical, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Cable, FileCode2, FlaskConical, Loader2, Plus } from "lucide-react";
 import * as React from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CopyButton } from "@/components/CopyButton";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
+import { CardGridSkeleton, LoadingRegion, PanelSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -23,8 +25,12 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
+  collectorConfigUrl,
   createConnector,
   deleteConnector,
   fetchCollectorConfig,
@@ -36,6 +42,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { parseSamplingPercent } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
+import { usePublicUrl } from "@/lib/use-public-url";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
@@ -52,6 +59,10 @@ const HEALTH_TONE: Record<string, [string, string]> = {
 
 const healthTone = (status: string) => HEALTH_TONE[status] ?? HEALTH_TONE.unknown;
 
+// the created-off toast carries an instruction, so it stays up as long as an
+// error does rather than the few seconds a plain success gets
+const NEXT_STEP_TOAST_MS = 8000;
+
 const asInput = (c: ConnectorRow) => ({
   name: c.name,
   kind: "otlp_http" as const,
@@ -60,6 +71,77 @@ const asInput = (c: ConnectorRow) => ({
   sampling_rate: c.sampling_rate,
   auth_secret_ref: c.auth_secret_ref,
 });
+
+/**
+ * The address the collector config is served from, and what it takes to read it
+ * (#2106).
+ *
+ * The endpoint answers a superadmin principal and nothing narrower, and a
+ * collector has no session to present one, so pointing a collector at it would
+ * mean putting the admin token in the collector's own deployment. The row shows
+ * the address for the operator's own tooling and says so; the document below it
+ * is what goes into the collector's config file.
+ *
+ * The address is the control plane's public base, read from the control plane
+ * (the query the Single Sign-On and User Provisioning screens share), never
+ * `window.location`: the dashboard may be open under a different name than the
+ * one a script calls. Pending holds the space and a failed read says so with a
+ * retry rather than a URL that might be wrong. Unset, the base is the control
+ * plane's default, which only a caller on its own host can reach: still shown
+ * and copyable, with that said under it.
+ *
+ * It mounts only while the dialog is open, so the read happens when somebody
+ * asks for the document and not on every visit to the screen.
+ */
+function CollectorEndpoint() {
+  const { t } = useTranslation();
+  const publicUrl = usePublicUrl();
+  const labelId = React.useId();
+  const value = publicUrl.data ? collectorConfigUrl(publicUrl.data.public_url) : null;
+  return (
+    <div role="group" aria-labelledby={labelId} className="flex min-w-0 flex-col gap-1.5">
+      <FieldLabel id={labelId} label={t("pages.connectors.collectorConfig.endpoint")} />
+      {publicUrl.isError ? (
+        <LoadError
+          error={publicUrl.error}
+          resource={t("errors.resources.publicUrl")}
+          onRetry={() => void publicUrl.refetch()}
+        />
+      ) : value ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] py-1.5 pl-3 pr-1.5">
+          <code
+            data-testid="collector-config-url"
+            className="min-w-0 break-all font-mono text-sm text-foreground"
+          >
+            {value}
+          </code>
+          <CopyButton value={value} label={t("pages.connectors.collectorConfig.copyEndpoint")} />
+        </div>
+      ) : (
+        <LoadingRegion className="w-full">
+          <Skeleton height={46} radius={6} />
+        </LoadingRegion>
+      )}
+      <p className="text-xs text-muted-foreground">
+        {t("pages.connectors.collectorConfig.endpointHint")}
+      </p>
+      {publicUrl.data?.configured === false && (
+        <p
+          role="note"
+          className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]"
+        >
+          <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+          <span>
+            <Trans
+              i18nKey="pages.connectors.collectorConfig.urlUnset"
+              components={{ code: <code className="font-mono" /> }}
+            />
+          </span>
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * The document the connectors are actually delivered through (#1195).
@@ -99,52 +181,53 @@ function CollectorConfigDialog({
         <DialogDescription>{t("pages.connectors.collectorConfig.where")}</DialogDescription>
       </DialogHeader>
 
-      {/* no connectors means no exporters and no pipelines: the document is
-          valid and delivers nothing, which is worth saying rather than
-          rendering as an almost-empty file */}
-      {connectorCount === 0 ? (
-        <EmptyState
-          uxTarget="collector-config"
-          icon={<FileCode2 />}
-          title={t("pages.connectors.collectorConfig.emptyTitle")}
-          description={t("pages.connectors.collectorConfig.emptyBody")}
-        />
-      ) : (
-        <>
-          {config.isLoading && <PanelSkeleton panels={1} height={240} />}
-          {config.isError && (
-            <LoadError
-              error={config.error}
-              resource={t("errors.resources.collectorConfig")}
-              onRetry={() => void config.refetch()}
-            />
-          )}
-          {config.data !== undefined && (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-[color:var(--text-subtle)]">
-                  {t("pages.connectors.collectorConfig.endpoint")}
-                </span>
-              </div>
-              {/* a collector document is YAML an operator pastes into a
+      {/* the body scrolls when the window is short, so the title and Close stay
+          on screen: the address, its note and the document together are taller
+          than a 640 px window (#2003) */}
+      <DialogBody className="space-y-3">
+        {/* no connectors means no exporters and no pipelines: the document is
+            valid and delivers nothing, which is worth saying rather than
+            rendering as an almost-empty file */}
+        {connectorCount === 0 ? (
+          <EmptyState
+            uxTarget="collector-config"
+            icon={<FileCode2 />}
+            title={t("pages.connectors.collectorConfig.emptyTitle")}
+            description={t("pages.connectors.collectorConfig.emptyBody")}
+          />
+        ) : (
+          <>
+            <CollectorEndpoint />
+            {config.isLoading && <PanelSkeleton panels={1} height={240} />}
+            {config.isError && (
+              <LoadError
+                error={config.error}
+                resource={t("errors.resources.collectorConfig")}
+                onRetry={() => void config.refetch()}
+              />
+            )}
+            {config.data !== undefined && (
+              <>
+                {/* a collector document is YAML an operator pastes into a
                   deployment: highlighted, numbered and copyable, because a
                   badly indented exporter is the failure this screen exists to
                   prevent (#949). CodeBlock owns the copy button and the
                   focusable scroll region */}
-              <CodeBlock
-                value={config.data}
-                language="yaml"
-                label={t("pages.connectors.collectorConfig.title")}
-                maxHeight={380}
-                lineNumbers
-              />
-              <p className="text-sm text-muted-foreground">
-                {t("pages.connectors.collectorConfig.deploy")}
-              </p>
-            </>
-          )}
-        </>
-      )}
+                <CodeBlock
+                  value={config.data}
+                  language="yaml"
+                  label={t("pages.connectors.collectorConfig.title")}
+                  maxHeight={380}
+                  lineNumbers
+                />
+                <p className="text-sm text-muted-foreground">
+                  {t("pages.connectors.collectorConfig.deploy")}
+                </p>
+              </>
+            )}
+          </>
+        )}
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -334,11 +417,23 @@ function ConnectorsScreen() {
                 <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
                   {c.kind}
                 </Pill>
+                {/* health is its own axis: a connector that was never turned
+                    on reads `unknown` because nothing has tested it, and the
+                    switch alone does not say that nothing is being sent */}
+                {!c.enabled && (
+                  <Pill color="var(--text-secondary)" border="var(--border-strong)">
+                    {t("pages.connectors.off")}
+                  </Pill>
+                )}
                 <Pill color={tone[0]} tint={tone[1]}>
                   <StatusDot color={tone[0]} className="h-1.5 w-1.5" />
                   {c.health_status}
                 </Pill>
-                <Pill color="var(--status-info-text)" tint={statusTint("info")}>
+                {/* the blue is for a rate that is being applied */}
+                <Pill
+                  color={c.enabled ? "var(--status-info-text)" : "var(--text-secondary)"}
+                  tint={c.enabled ? statusTint("info") : "var(--surface-subtle)"}
+                >
                   {/* a rate is not always a whole percent, and 0.4 % rounded to
                       "0% sampled" says nothing is sent while something is */}
                   {t("pages.connectors.sampled", {
@@ -461,6 +556,10 @@ function AddConnectorDialog({
   const [endpoint, setEndpoint] = React.useState("");
   const [sampling, setSampling] = React.useState("100");
   const [secret, setSecret] = React.useState("");
+  // a connector is an egress path, so it is created switched off unless the
+  // operator says otherwise: the order the docs teach is test it, then turn it
+  // on, and the first request log must not leave before the first test (#2349)
+  const [startNow, setStartNow] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -468,6 +567,7 @@ function AddConnectorDialog({
       setEndpoint("");
       setSampling("100");
       setSecret("");
+      setStartNow(false);
     }
   }, [open]);
 
@@ -483,20 +583,33 @@ function AddConnectorDialog({
           : "pages.connectors.form.samplingInvalid",
       );
 
+  // the switch is read into the variables, not from state when the request
+  // lands: a flip while it is in flight would otherwise announce a state the
+  // request did not carry
   const create = useMutation({
-    mutationFn: (rate: number) =>
+    mutationFn: ({ rate, enabled }: { rate: number; enabled: boolean }) =>
       createConnector({
         name,
         kind: "otlp_http",
         endpoint,
-        enabled: true,
+        enabled,
         sampling_rate: rate,
         ...(secret.trim() ? { managed_auth_secret: secret } : {}),
       }),
-    onSuccess: () => {
+    onSuccess: (_row, { enabled }) => {
       // the sheet closes on success, so the outcome is announced somewhere
-      // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
+      // that outlives it (#1197). one that was left off says so and what to do
+      // next, or nothing ever arrives and nothing says why
+      toast.push(
+        enabled
+          ? { tone: "success", title: t("toast.created", { what: name }) }
+          : {
+              tone: "success",
+              title: t("pages.connectors.createdOff", { name }),
+              detail: t("pages.connectors.createdOffNext"),
+              duration: NEXT_STEP_TOAST_MS,
+            },
+      );
       onDone();
       onOpenChange(false);
     },
@@ -509,7 +622,13 @@ function AddConnectorDialog({
     },
   });
 
-  const dirty = !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100");
+  const dirty = !!(
+    name.trim() ||
+    endpoint.trim() ||
+    secret.trim() ||
+    sampling !== "100" ||
+    startNow
+  );
 
   return (
     <EditorSheet
@@ -524,7 +643,7 @@ function AddConnectorDialog({
       canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
       saving={create.isPending}
       onSave={() => {
-        if (parsed.ok) create.mutate(parsed.rate);
+        if (parsed.ok) create.mutate({ rate: parsed.rate, enabled: startNow });
       }}
     >
       <div className="space-y-3">
@@ -564,6 +683,16 @@ function AddConnectorDialog({
             />
           </Field>
         </div>
+        {/* said again when it is on, because that is the choice with a
+            consequence: request logs leave for the endpoint as Create lands */}
+        <SwitchRow
+          title={t("pages.connectors.form.start")}
+          hint={t(
+            startNow ? "pages.connectors.form.startOnHint" : "pages.connectors.form.startHint",
+          )}
+          checked={startNow}
+          onChange={setStartNow}
+        />
       </div>
     </EditorSheet>
   );

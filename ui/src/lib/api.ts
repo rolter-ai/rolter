@@ -3382,6 +3382,15 @@ export function fetchCollectorConfig(): Promise<string> {
   return getText("/api/v1/connectors/collector-config");
 }
 
+// the full address `fetchCollectorConfig` reads (#2106): the public base from
+// `fetchPublicUrl`, then the path collector_config.rs mounts. appended to the
+// control plane's own answer and never to `window.location.origin`, which is
+// the dashboard's address and not necessarily the one a script can call. the
+// endpoint answers a superadmin only, so a collector cannot fetch it itself
+export function collectorConfigUrl(base: string): string {
+  return `${base}/api/v1/connectors/collector-config`;
+}
+
 // ---------------------------------------------------------------------------
 // mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
 
