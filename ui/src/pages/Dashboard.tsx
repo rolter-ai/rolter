@@ -73,24 +73,31 @@ const failedEmpty = (q: UseQueryResult<unknown>) =>
 // nothing, and `children` once it holds data. the render prop is handed data
 // only then, so a card cannot say "no traffic yet" about a read that has not
 // answered or that failed. data a failed refresh left behind still counts: the
-// card keeps showing it, and `RefreshFailed` says it may be stale
+// card keeps showing it, and `RefreshFailed` says it may be stale. a card that
+// reads what another card reads points at that card's alert instead of
+// repeating it: `failed` replaces its `LoadError` (#2342)
 function CardRead<T>({
   read,
   resource,
   skeleton,
+  failed,
   children,
 }: {
   read: UseQueryResult<T>;
   resource: string;
   skeleton: React.ReactNode;
+  failed?: React.ReactNode;
   children: (data: T) => React.ReactNode;
 }) {
   if (isAwaiting(read)) return <>{skeleton}</>;
   const data = read.data;
   if (data === undefined) {
-    return read.isError ? (
-      <LoadError error={read.error} resource={resource} onRetry={() => void read.refetch()} />
-    ) : null;
+    if (!read.isError) return null;
+    return (
+      failed ?? (
+        <LoadError error={read.error} resource={resource} onRetry={() => void read.refetch()} />
+      )
+    );
   }
   return <>{children(data)}</>;
 }
@@ -168,11 +175,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
     refetchInterval: pollEvery(pollMs ?? RECENT_POLL_MS),
     retry: false,
   });
-  // one signal per error placeholder, named for the card that shows it
-  useErrorState(failedEmpty(summary), "dashboard");
-  useErrorState(failedEmpty(series), "dashboard-spend");
-  useErrorState(failedEmpty(byModel), "dashboard-traffic");
-  useErrorState(failedEmpty(recent), "dashboard-recent");
+  const reads = [summary, series, byModel, recent];
+  // every read failed holding nothing, so the error is one screen-level alert
+  // and not one per card: five alerts on mount is five announcements of one
+  // outage, two of them about the same endpoint (#2342). a read still out, or
+  // one that answered, makes it a partial failure, where each failed card holds
+  // its own alert
+  const outage = reads.every(failedEmpty);
+  // one signal per error placeholder on screen: the screen-level alert while
+  // there is one, else the card that shows it
+  useErrorState(outage, "dashboard-analytics");
+  useErrorState(!outage && failedEmpty(summary), "dashboard");
+  useErrorState(!outage && failedEmpty(series), "dashboard-spend");
+  useErrorState(!outage && failedEmpty(byModel), "dashboard-traffic");
+  useErrorState(!outage && failedEmpty(recent), "dashboard-recent");
 
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
@@ -180,31 +196,45 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // and then as the red alert a 500 gets (#1976). it is a deployment shape, so
   // it is one panel for the screen, not one per card
   const unavailable =
-    [summary, series, byModel, recent].find((q) => q.data === undefined && isUnavailable(q.error))
-      ?.error ?? null;
+    reads.find((q) => q.data === undefined && isUnavailable(q.error))?.error ?? null;
 
-  if (unavailable) {
+  if (unavailable || outage) {
     return (
       <PageBody>
         {/* a deployment with no analytics store still has a first run, and the
-            checklist below reads rows rather than traffic (#1585) */}
+            checklist below reads rows rather than traffic (#1585). an outage
+            leaves it as it is for the same reason */}
         <GettingStarted />
-        <AnalyticsUnavailable error={unavailable} i18nKey="pages.dashboard.noAnalytics" />
+        {unavailable ? (
+          <AnalyticsUnavailable error={unavailable} i18nKey="pages.dashboard.noAnalytics" />
+        ) : (
+          // the figures' error speaks for the screen: it is the read the screen
+          // waits on. the retry asks for every read, since any one of them may
+          // be the one that answers, and each goes back to a skeleton
+          <LoadError
+            error={summary.error}
+            resource={t("errors.resources.analytics")}
+            onRetry={() => reads.forEach((q) => void q.refetch())}
+          />
+        )}
       </PageBody>
     );
   }
 
   const fmtK = fmt.compact;
 
-  // "live" is said only while the last read of this card succeeded (#1984). a
-  // first load that failed has stopped polling, and a failure with rows on
-  // screen is retried by the next poll, so only the second one says retrying
+  // "live" is said only while the last read of this card succeeded (#1984), so
+  // not before the first one has answered either (#2341). a first load that
+  // failed has stopped polling, and a failure with rows on screen is retried by
+  // the next poll, so only the second one says retrying
   const recentFailedAt = fmt.time(recent.errorUpdatedAt);
-  const recentFeed = !recent.isError
-    ? t("pages.dashboard.live")
-    : recent.data === undefined
+  const recentFeed = recent.isError
+    ? recent.data === undefined
       ? t("pages.dashboard.feed.loadFailed", { time: recentFailedAt })
-      : t("pages.dashboard.feed.refreshFailedRetrying", { time: recentFailedAt });
+      : t("pages.dashboard.feed.refreshFailedRetrying", { time: recentFailedAt })
+    : recent.isSuccess
+      ? t("pages.dashboard.live")
+      : t("pages.dashboard.feed.loading");
 
   return (
     <PageBody className="gap-[18px]">
@@ -382,6 +412,16 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
               skeleton={<BarsSkeleton />}
+              // the traffic share reads this endpoint and holds the alert with its
+              // retry, so this card says where the failure is and adds none
+              failed={
+                <p className="py-10 text-center text-sm text-muted-foreground">
+                  {t("pages.dashboard.sharedRead", {
+                    card: t("pages.dashboard.trafficTitle"),
+                    retry: t("errors.load.retry"),
+                  })}
+                </p>
+              }
             >
               {(models) => {
                 const barMax = Math.max(1, ...models.map((m) => num(m.requests)));

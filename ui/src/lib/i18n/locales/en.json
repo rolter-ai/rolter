@@ -511,6 +511,7 @@
       "last24h": "Last 24h",
       "live": "Live",
       "feed": {
+        "loading": "Loading",
         "loadFailed": "Load failed at {{time}}",
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
       },
@@ -520,6 +521,7 @@
       "trafficTitle": "Traffic share",
       "trafficSub": "Requests by model",
       "noTraffic": "No traffic yet.",
+      "sharedRead": "This card reads the same data as {{card}}, which failed to load. Use {{retry}} there.",
       "requests": "requests",
       "byModelTitle": "Requests by model",
       "recentTitle": "Recent requests",
