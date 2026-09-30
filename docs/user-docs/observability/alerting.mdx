@@ -346,7 +346,12 @@ Each rule card shows its state, signal, threshold, window, last value, when it
 was last evaluated and its channel, with an enable switch, **Evaluate now**, an
 edit button and a delete button. The threshold and last value are in the signal's unit
 (`5%`, `840 ms`, `€12.50/h`, `340 requests in 5m`) and the window is a
-duration (`5m`). A rule in `error` shows its `last_error` under the figures.
+duration (`5m`). When it was last evaluated reads as how long ago (`3 min. ago`),
+with the full date and time on hover. A rule in `error` shows its `last_error`
+under the figures, in the same amber as its state. A rule that could not be
+evaluated has no reading to compare, so it does not borrow the red of `firing`.
+The state, like the delivery statuses below, is shown in the dashboard's
+language rather than as the stored identifier.
 
 Some starting points, with the threshold as the API takes it and as the
 dashboard shows it:
@@ -408,8 +413,21 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 ## History
 
 **Alerting → History** lists the 200 most recent rows, newest first, with the
-time, rule, state (`firing` or `resolved`), delivery status and detail. Every
-change of state has a row, including those of rules with no channel.
+state (`firing` or `resolved`), delivery status, time, rule and detail. The state
+and delivery columns come first so they stay in view on a phone. Every change of
+state has a row, including those of rules with no channel.
+
+When the control plane returns a full 200, older rows exist that the screen does
+not reach, and a note above the list says so. The toolbar narrows the list:
+
+- **Rule** is sent to the API as `rule_id`, so it lists that rule's own newest
+  200 rows, which can reach further back than the same rule's rows in the
+  all-rules list.
+- **State** and **Delivery** filter the rows already loaded, because the API has
+  no filter for either. When the list is capped they search those rows only.
+
+The `detail` text comes from the control plane as it is stored, in English, in
+every language.
 
 | Delivery status | Detail                                                                                                                                                                                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

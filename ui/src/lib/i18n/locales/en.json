@@ -1153,7 +1153,10 @@
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretDroppedHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new receiver's secret to keep the channel authenticated.",
-        "secretSet": "secret set"
+        "secretSet": "secret set",
+        "kinds": {
+          "webhook": "Webhook"
+        }
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -1230,6 +1233,18 @@
         "healthFailuresIn_one": "{{value}} failed health event in {{window}}",
         "healthFailuresIn_other": "{{value}} failed health events in {{window}}"
       },
+      "states": {
+        "unknown": "Unknown",
+        "ok": "OK",
+        "firing": "Firing",
+        "error": "Error",
+        "resolved": "Resolved"
+      },
+      "deliveries": {
+        "delivered": "Delivered",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
       "history": {
         "emptyTitle": "No alert transitions yet",
         "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. A failed delivery is retried, and each attempt gets a row. Newest first.",
@@ -1238,7 +1253,18 @@
         "colRule": "Rule",
         "colState": "State",
         "colDelivery": "Delivery",
-        "colDetail": "Detail"
+        "colDetail": "Detail",
+        "ruleFilterAria": "Filter by rule",
+        "allRules": "All rules",
+        "stateFilterAria": "Filter by state",
+        "allStates": "All states",
+        "deliveryFilterAria": "Filter by delivery",
+        "allDeliveries": "All deliveries",
+        "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
+        "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
+        "noMatchTitle": "No transitions match these filters",
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
+        "clearFilters": "Clear filters"
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",

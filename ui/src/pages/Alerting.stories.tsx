@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AlertChannels, AlertHistory, AlertRules } from "./Alerting";
@@ -11,6 +12,7 @@ import {
   expectForbidden,
   expectSheetClosed,
   expectListTable,
+  expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
   expectToast,
@@ -26,6 +28,7 @@ import {
   answerDiscardPrompt,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
+import { formattersFor } from "@/lib/i18n/format";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -184,6 +187,22 @@ const empty = routes([
 // operator actually sees — worth a story of its own rather than a generic error
 const forbidden = scoped(async () => json({ error: { message: "forbidden" } }, 403));
 
+// an empty history links to the rules screen, so it renders under a router
+function HistoryScreen() {
+  return (
+    <MemoryRouter initialEntries={["/alerting-history"]}>
+      <AlertHistory />
+      <PathProbe />
+    </MemoryRouter>
+  );
+}
+
+/** the router's path, on a data attribute with no text, so a play can read where a link went */
+function PathProbe() {
+  const { pathname } = useLocation();
+  return <span data-testid="path" data-pathname={pathname} hidden />;
+}
+
 const meta = {
   title: "Screens/Alerting",
   component: AlertChannels,
@@ -203,6 +222,9 @@ export const ChannelsLoaded: Story = {
     await expect(await canvas.findByText("ops-slack")).toBeInTheDocument();
     // a channel with a stored secret says so; one without must not claim it
     await expect(canvas.getByText("secret set")).toBeInTheDocument();
+    // the kind is a catalog word, not the stored identifier (#2126)
+    await expect(canvas.getAllByText("Webhook")).toHaveLength(2);
+    await expect(canvas.queryByText("webhook")).toBeNull();
   },
 };
 
@@ -228,7 +250,9 @@ export const ChannelsEmpty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("No channels yet")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Add channel" })).toBeVisible();
+    // the toolbar's button and the empty state's, both named by the words alone:
+    // the `+` is an icon, so it is not part of the name (#2126)
+    await expect(canvas.getAllByRole("button", { name: "Add channel" })).toHaveLength(2);
   },
 };
 
@@ -498,8 +522,12 @@ export const RulesLoaded: Story = {
     // a rule with no channel still renders rather than blanking the card
     await expect(canvas.getByText("slow p95")).toBeInTheDocument();
     // a rule whose evaluation failed says why on its card (#1871)
-    await expect(canvas.getByText("error")).toBeInTheDocument();
+    await expect(canvas.getByText("Error")).toBeInTheDocument();
     await expect(canvas.getByText("alert evaluation requires CLICKHOUSE_URL")).toBeInTheDocument();
+    // the states are catalog words, not the stored identifiers (#2126)
+    await expect(canvas.getByText("Firing")).toBeInTheDocument();
+    await expect(canvas.getAllByText("OK")).toHaveLength(3);
+    await expect(canvas.queryByText(/^(firing|ok|error|unknown)$/)).toBeNull();
   },
 };
 
@@ -671,7 +699,7 @@ export const RulesEmpty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("No alert rules")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Add rule" })).toBeVisible();
+    await expect(canvas.getAllByRole("button", { name: "Add rule" })).toHaveLength(2);
   },
 };
 
@@ -893,30 +921,31 @@ export const EditIsOfferedToASuperadmin: Story = {
   },
 };
 
+// evaluating the rule reports a firing transition the channel refused
+const deliveryFails = scoped(async (input, init) => {
+  if (init?.method === "POST") {
+    return json({
+      rule: RULES[0],
+      notified: false,
+      notification: {
+        id: "note-9",
+        rule_id: "rule-1",
+        channel_id: "chan-1",
+        state: "firing",
+        delivery_status: "failed",
+        detail: "HTTP 500",
+        sent_at: "2026-08-11T12:01:00Z",
+      },
+    });
+  }
+  return loaded(input, init);
+});
+
 // a transition the channel refused is an alert nobody received, so the toast
 // says so instead of reading as a plain success (#1871)
 export const EvaluateReportsAFailedDelivery: Story = {
   render: () => (
-    <Harness
-      fetchStub={scoped(async (input, init) => {
-        if (init?.method === "POST") {
-          return json({
-            rule: RULES[0],
-            notified: false,
-            notification: {
-              id: "note-9",
-              rule_id: "rule-1",
-              channel_id: "chan-1",
-              state: "firing",
-              delivery_status: "failed",
-              detail: "HTTP 500",
-              sent_at: "2026-08-11T12:01:00Z",
-            },
-          });
-        }
-        return loaded(input, init);
-      })}
-    >
+    <Harness fetchStub={deliveryFails}>
       <Toasted>
         <AlertRules />
       </Toasted>
@@ -924,7 +953,35 @@ export const EvaluateReportsAFailedDelivery: Story = {
   ),
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
-    await expectToast(canvasElement, /delivery failed: HTTP 500\. It is retried/, "error");
+    await expectToast(
+      canvasElement,
+      /Reported firing, but delivery failed: HTTP 500\. It is retried/,
+      "error",
+    );
+  },
+};
+
+// the state in the toast was the stored identifier in every locale (#2126)
+export const EvaluateNamesTheStateInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={deliveryFails}>
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(
+      canvasElement,
+      ru.pages.alerting.rules.evaluateAria.replace("{{name}}", "high error rate"),
+    );
+    await expectToast(
+      canvasElement,
+      /Отправлено состояние «сработало», но доставка не удалась/,
+      "error",
+    );
+    await expect(within(canvasElement).queryByText(/состояние firing/)).toBeNull();
   },
 };
 
@@ -1092,7 +1149,7 @@ export const EvaluatesARule: Story = {
 export const HistoryLoaded: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -1103,6 +1160,15 @@ export const HistoryLoaded: Story = {
     // a transition with no channel is still recorded, as skipped
     await expect(canvas.getByText("no channel configured")).toBeInTheDocument();
     await expectListTable(canvasElement, "Alert History");
+    // state and delivery are catalog words, not the stored identifiers (#2126)
+    await expect(canvas.getAllByText("Firing")).toHaveLength(2);
+    await expect(canvas.getByText("Resolved")).toBeInTheDocument();
+    for (const delivery of ["Delivered", "Failed", "Skipped"]) {
+      await expect(canvas.getByText(delivery)).toBeInTheDocument();
+    }
+    await expect(canvas.queryByText(/^(firing|resolved|delivered|failed|skipped)$/)).toBeNull();
+    // three rows is everything there is, so nothing says older ones are missing
+    await expect(canvas.queryByText(/older ones exist/)).toBeNull();
   },
 };
 
@@ -1111,7 +1177,7 @@ export const HistoryLoaded: Story = {
 export const HistoryLoading: Story = {
   render: () => (
     <Harness fetchStub={() => new Promise<Response>(() => {})}>
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -1123,19 +1189,41 @@ export const HistoryLoading: Story = {
 export const HistoryEmpty: Story = {
   render: () => (
     <Harness fetchStub={empty}>
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/no alert transitions yet/i)).toBeInTheDocument();
+    // the table keeps its header while it has no rows
+    await expectListTable(canvasElement, "Alert History");
+  },
+};
+
+// the link was a bare `<a href>`, which reloaded the whole app; it is a router
+// link, so the path changes and the page stays (#2126)
+export const TheEmptyHistoryLinksToTheRulesInApp: Story = {
+  render: () => (
+    <Harness fetchStub={empty}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const link = await canvas.findByRole("link", { name: "Open alert rules" });
+    await expect(link).toHaveAttribute("href", "/alerting-rules");
+    await expect(canvas.getByTestId("path").dataset.pathname).toBe("/alerting-history");
+    await userEvent.click(link);
+    await waitFor(() =>
+      expect(canvas.getByTestId("path").dataset.pathname).toBe("/alerting-rules"),
+    );
   },
 };
 
 export const HistoryForbidden: Story = {
   render: () => (
     <Harness fetchStub={forbidden}>
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
@@ -1144,6 +1232,423 @@ export const HistoryForbidden: Story = {
       await canvas.findByText(/You do not have access to alert history/i),
     ).toBeInTheDocument();
     await expectNoFalseEmpty(canvasElement, /No alert transitions yet/);
+  },
+};
+
+// --- #2126: translated states, one tone per fault, dates, history filters ------
+
+/** a colour token as the browser resolves it, to compare with what the screen painted */
+function tokenColor(name: string): string {
+  const probe = document.createElement("span");
+  probe.style.color = `var(${name})`;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+  return resolved;
+}
+
+/** the status dot on a rule card: the first element with an inline background */
+const dotOf = (card: HTMLElement) => card.querySelector<HTMLElement>('span[style*="background"]')!;
+
+// the dot took the -text half of the hue, and a rule whose evaluation failed
+// drew an amber pill over a red error line (#2126). a shape takes the fill, a
+// label takes the -text half, and one fault has one tone
+export const RuleStatesUseOneHuePerMeaning: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const colour = (node: Element) => getComputedStyle(node).color;
+    const fill = (node: Element) => getComputedStyle(node).backgroundColor;
+
+    const firing = await canvas.findByRole("article", { name: "high error rate" });
+    await expect(fill(dotOf(firing))).toBe(tokenColor("--status-danger"));
+    await expect(fill(dotOf(firing))).not.toBe(tokenColor("--status-danger-text"));
+    await expect(colour(within(firing).getByText("Firing"))).toBe(
+      tokenColor("--status-danger-text"),
+    );
+
+    const ok = canvas.getByRole("article", { name: "slow p95" });
+    await expect(fill(dotOf(ok))).toBe(tokenColor("--status-success"));
+    await expect(colour(within(ok).getByText("OK"))).toBe(tokenColor("--status-success-text"));
+
+    // the failed evaluation: the dot, the pill and the line under the card agree,
+    // and none of them is the red a breach is painted in
+    const failed = canvas.getByRole("article", { name: "spend spike" });
+    const pill = colour(within(failed).getByText("Error"));
+    const line = colour(within(failed).getByText("alert evaluation requires CLICKHOUSE_URL"));
+    await expect(fill(dotOf(failed))).toBe(tokenColor("--status-warning"));
+    await expect(pill).toBe(tokenColor("--status-warning-text"));
+    await expect(line).toBe(pill);
+    await expect(line).not.toBe(tokenColor("--status-danger-text"));
+  },
+};
+
+// half a unit over, so the figure a card reads is the same side of the rounding
+// however long the story waited between the fetch and the screen's own clock
+const ago = (seconds: number) => new Date(Date.now() - seconds * 1000).toISOString();
+
+// "Evaluated" was a clock time with no date, so it read `14:00:00` whether that
+// was a minute or three days ago (#2126)
+export const EvaluatedSaysHowLongAgo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/alert-rules")
+          ? json([
+              { ...RULES[0], last_evaluated_at: ago(3.5 * 60) },
+              { ...RULES[1], last_evaluated_at: ago(3.5 * 86_400) },
+              { ...RULES[2], last_evaluated_at: null },
+            ])
+          : loaded(input, init),
+      )}
+    >
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const fmt = formattersFor("en");
+    const recent = await canvas.findByRole("article", { name: "high error rate" });
+    await expect(stat(recent, "Evaluated")).toHaveTextContent(/^3 min\. ago$/);
+    const old = canvas.getByRole("article", { name: "slow p95" });
+    await expect(stat(old, "Evaluated")).toHaveTextContent(/^3 days ago$/);
+    // the exact stamp, with its date, is on hover
+    const when = within(old).getByText("3 days ago");
+    await expect(when).toHaveAttribute("title", fmt.dateTime(when.getAttribute("datetime")!));
+    await expect(when.getAttribute("title")).not.toBe(fmt.time(when.getAttribute("datetime")!));
+    // a rule never evaluated has nothing to be relative to
+    const never = canvas.getByRole("article", { name: "spend spike" });
+    await expect(stat(never, "Evaluated")).toHaveTextContent(/^never$/);
+    await expect(never.querySelector("time")).toBeNull();
+  },
+};
+
+// every stored identifier, in the locale the operator reads (#2126)
+export const ChannelsReadInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findAllByText(ru.pages.alerting.channels.kinds.webhook)).toHaveLength(
+      2,
+    );
+    await expect(canvas.queryByText(/^webhook$/i)).toBeNull();
+  },
+};
+
+export const RuleStatesReadInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { states } = ru.pages.alerting;
+    await expect(await canvas.findByText(states.firing)).toBeInTheDocument();
+    await expect(canvas.getAllByText(states.ok)).toHaveLength(3);
+    await expect(canvas.getByText(states.error)).toBeInTheDocument();
+    await expect(canvas.queryByText(/^(firing|ok|error|unknown)$/i)).toBeNull();
+    // the evaluation time is relative, in Russian too
+    const card = canvas.getByRole("article", { name: "high error rate" });
+    await expect(stat(card, ru.pages.alerting.rules.statEvaluated)).toHaveTextContent(/назад/);
+  },
+};
+
+export const HistoryReadInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { states, deliveries, history } = ru.pages.alerting;
+    await expect(await canvas.findAllByText(states.firing)).toHaveLength(2);
+    await expect(canvas.getByText(states.resolved)).toBeInTheDocument();
+    for (const word of [deliveries.delivered, deliveries.failed, deliveries.skipped]) {
+      await expect(canvas.getByText(word)).toBeInTheDocument();
+    }
+    await expect(canvas.queryByText(/^(firing|resolved|delivered|failed|skipped)$/i)).toBeNull();
+    // the filters are in Russian as well, closed and open
+    await expect(canvas.getByLabelText(history.stateFilterAria)).toHaveValue(history.allStates);
+    await expect(canvas.getByLabelText(history.deliveryFilterAria)).toHaveValue(
+      history.allDeliveries,
+    );
+    await pickOption(canvas.getByLabelText(history.deliveryFilterAria), deliveries.failed);
+    await waitFor(() => expect(canvas.queryByText(deliveries.delivered)).toBeNull());
+    await expect(canvas.getByText(deliveries.failed)).toBeInTheDocument();
+  },
+};
+
+// --- the history: a cap that says so, and a filter --------------------------
+
+// exactly as many rows as the screen asks for: the API gave everything it was
+// allowed to, so older rows may exist
+const CAPPED: AlertNotificationRow[] = Array.from({ length: 200 }, (_, i) => ({
+  ...HISTORY[i % HISTORY.length],
+  id: `note-${i}`,
+  sent_at: new Date(Date.UTC(2026, 7, 11, 12) - i * 60_000).toISOString(),
+}));
+
+const cappedHistory = recording(
+  routes([
+    ["/alert-channels", () => CHANNELS],
+    ["/alert-rules", () => RULES],
+    ["/alert-notifications", () => CAPPED],
+  ]),
+);
+
+// the screen asked for 200 and stopped there with no word about it (#2126)
+export const HistorySaysWhenItIsCapped: Story = {
+  render: () => (
+    <Harness fetchStub={cappedHistory.stub}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(/Only the newest 200 transitions are listed; older ones exist\./),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText("200 transitions · newest first")).toBeInTheDocument();
+    await cappedHistory.expectSent("GET", "limit=200");
+    // a rule's own read is capped the same way, and the note says whose
+    await pickOption(await canvas.findByLabelText("Filter by rule"), "slow p95");
+    await expect(
+      await canvas.findByText(/Only this rule's newest 200 transitions are listed/),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText(/Pick a rule to read/)).toBeNull();
+  },
+};
+
+// the rule filter goes to the API, so it reaches that rule's older rows; the
+// endpoint has no state or delivery filter, so those narrow the rows read
+const historyByRule = recording(
+  scoped(async (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/alert-notifications")) {
+      const rule = url.searchParams.get("rule_id");
+      return json(rule ? HISTORY.filter((n) => n.rule_id === rule) : HISTORY);
+    }
+    return loaded(input, init);
+  }),
+);
+
+export const HistoryFiltersByRule: Story = {
+  render: () => (
+    <Harness fetchStub={historyByRule.stub}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("could not connect to the endpoint")).toBeInTheDocument();
+    await expect(canvas.getByText("3 transitions · newest first")).toBeInTheDocument();
+
+    await pickOption(await canvas.findByLabelText("Filter by rule"), "slow p95");
+    await historyByRule.expectSent("GET", "rule_id=rule-2");
+    await waitFor(() => expect(canvas.queryByText("could not connect to the endpoint")).toBeNull());
+    await expect(canvas.getByText("no channel configured")).toBeInTheDocument();
+    await expect(canvas.getByText("1 transition · newest first")).toBeInTheDocument();
+  },
+};
+
+export const HistoryFiltersByStateAndDelivery: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("HTTP 200")).toBeInTheDocument();
+
+    // delivery: only the alert nobody received
+    await pickOption(canvas.getByLabelText("Filter by delivery"), "Failed");
+    await waitFor(() => expect(canvas.queryByText("HTTP 200")).toBeNull());
+    await expect(canvas.getByText("could not connect to the endpoint")).toBeInTheDocument();
+    await expect(canvas.getByText("1 transition · newest first")).toBeInTheDocument();
+
+    // state: nothing both firing and failed, so the filters have an empty state
+    // of their own, which names them and offers to clear them
+    await pickOption(canvas.getByLabelText("Filter by state"), "Firing");
+    await expect(await canvas.findByText("No transitions match these filters")).toBeVisible();
+    await expect(canvas.queryByText("No alert transitions yet")).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expect(await canvas.findByText("HTTP 200")).toBeInTheDocument();
+    await expect(canvas.getByText("3 transitions · newest first")).toBeInTheDocument();
+    await expect(canvas.getByLabelText("Filter by state")).toHaveValue("All states");
+    await expect(canvas.getByLabelText("Filter by delivery")).toHaveValue("All deliveries");
+  },
+};
+
+// the state and delivery columns, which are the point of the table, sat off the
+// right edge of the scroll area at 375px (#2126)
+export const HistoryStateAndDeliveryAreInViewOnAPhone: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const table = await canvas.findByRole("table", { name: "Alert History" });
+    await within(table).findByText("Delivered");
+    const frame = table.getBoundingClientRect();
+    const inView = async (node: Element) => {
+      const box = node.getBoundingClientRect();
+      await expect(box.left).toBeGreaterThanOrEqual(frame.left);
+      await expect(box.right).toBeLessThanOrEqual(frame.right);
+    };
+    for (const name of ["State", "Delivery"]) {
+      await inView(within(table).getByRole("columnheader", { name }));
+    }
+    for (const word of ["Firing", "Resolved", "Delivered", "Failed", "Skipped"]) {
+      for (const pill of within(table).getAllByText(word)) await inView(pill);
+    }
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the longest Russian words fit their columns as well
+export const HistoryReadInRussianOnAPhone: Story = {
+  ...atMobile,
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { deliveries, states } = ru.pages.alerting;
+    const table = await canvas.findByRole("table", { name: ru.screens["alerting-history"].title });
+    await within(table).findByText(deliveries.failed);
+    const frame = table.getBoundingClientRect();
+    for (const word of [states.firing, states.resolved, deliveries.delivered, deliveries.failed]) {
+      for (const pill of within(table).getAllByText(word)) {
+        const cell = pill.closest('[role="cell"]')!.getBoundingClientRect();
+        const box = pill.getBoundingClientRect();
+        // the pill stays inside its own column and inside the visible frame
+        await expect(box.right).toBeLessThanOrEqual(cell.right + 0.5);
+        await expect(box.right).toBeLessThanOrEqual(frame.right);
+      }
+    }
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// --- a control plane that answers with a 5xx: LoadError offers a retry --------
+
+/**
+ * A stub that answers every read of `path` with a 503 until `recover()`, and
+ * keeps the reads it saw so a story can assert the retry went to the network.
+ */
+function flaky(path: string) {
+  let down = true;
+  const reads: string[] = [];
+  return {
+    reads,
+    reset: () => {
+      down = true;
+      reads.length = 0;
+    },
+    recover: () => {
+      down = false;
+    },
+    stub: scoped(async (input, init) => {
+      const url = String(input);
+      if (url.includes(path)) {
+        reads.push(url);
+        if (down) return json({ error: { message: "control plane unavailable" } }, 503);
+      }
+      return loaded(input, init);
+    }),
+  };
+}
+
+const channelsDown = flaky("/alert-channels");
+const rulesDown = flaky("/alert-rules");
+const historyDown = flaky("/alert-notifications");
+
+export const ChannelsLoadFailsAndRetries: Story = {
+  render: () => {
+    channelsDown.reset();
+    return (
+      <Harness fetchStub={channelsDown.stub}>
+        <AlertChannels />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return alert channels/);
+    await expect(canvas.getByText("control plane unavailable")).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No channels yet/);
+    const before = channelsDown.reads.length;
+    channelsDown.recover();
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("ops-slack")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await expect(channelsDown.reads.length).toBeGreaterThan(before);
+  },
+};
+
+export const RulesLoadFailsAndRetries: Story = {
+  render: () => {
+    rulesDown.reset();
+    return (
+      <Harness fetchStub={rulesDown.stub}>
+        <AlertRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return alert rules/);
+    await expect(canvas.getByText("control plane unavailable")).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No alert rules/);
+    const before = rulesDown.reads.length;
+    rulesDown.recover();
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("high error rate")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await expect(rulesDown.reads.length).toBeGreaterThan(before);
+  },
+};
+
+export const HistoryLoadFailsAndRetries: Story = {
+  render: () => {
+    historyDown.reset();
+    return (
+      <Harness fetchStub={historyDown.stub}>
+        <HistoryScreen />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return alert history/);
+    await expect(canvas.getByText("control plane unavailable")).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No alert transitions yet/);
+    const before = historyDown.reads.length;
+    historyDown.recover();
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("could not connect to the endpoint")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+    await expect(historyDown.reads.length).toBeGreaterThan(before);
   },
 };
 
@@ -1205,7 +1710,7 @@ export const RulesRefusedToAViewer: Story = {
 export const HistoryRefusedToAnAdmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
@@ -1214,7 +1719,7 @@ export const HistoryRefusedToAnAdmin: Story = {
 export const HistoryRefusedToAViewer: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="viewer">
-      <AlertHistory />
+      <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
