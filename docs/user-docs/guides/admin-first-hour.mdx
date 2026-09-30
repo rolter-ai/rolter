@@ -12,24 +12,22 @@ This guide takes a deployment from nothing to "our people and our applications c
 
 <Steps>
   <Step title="Generate the deployment secrets">
-    Do this before the control plane is reachable from anywhere but your own machine. `rolter init` writes a production `rolter.toml` and a `.env` holding four generated values:
+    Do this before the control plane is reachable from anywhere but your own machine. `rolter init` writes a production `rolter.toml` and a `.env` holding five generated values:
 
     - `ROLTER_ADMIN_TOKEN` turns on role-based access control and protects the management API. Without it the control plane runs **open**: everyone who reaches it is a superadmin, whatever accounts exist in the database.
     - `ROLTER_INTERNAL_TOKEN` is what the gateways present to fetch their configuration from the control plane.
     - `ROLTER_KEK` seals provider keys at rest.
     - `ROLTER_KEY_PEPPER` peppers the stored digests of virtual keys.
-
-    `rolter init` does not generate `ROLTER_SESSION_PEPPER` yet ([#1889](https://github.com/rolter-ai/rolter/issues/1889)). It peppers the stored digests of sign-in sessions, so add it yourself:
+    - `ROLTER_SESSION_PEPPER` peppers the stored digests of sign-in sessions, invitation links, SCIM tokens and MFA recovery codes.
 
     ```bash
     rolter init --profile production \
                 --database-url postgres://rolter@db.internal:5432/rolter \
                 --redis-url redis://cache.internal:6379 \
                 --clickhouse-url http://clickhouse.internal:8123
-    echo "ROLTER_SESSION_PEPPER=$(openssl rand -hex 32)" >> .env
     ```
 
-    Keep `.env` out of version control and somewhere it outlives a restart: a new KEK strands every stored provider key, and a new pepper invalidates every virtual key or session issued under the old one. Then run `rolter check` with that environment loaded. It fails on a missing KEK, admin token or database URL, and warns on a missing key pepper or a control plane bound to every interface. It does not check the session pepper yet. See [Production](/deployment/production), [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
+    Keep `.env` out of version control and somewhere it outlives a restart: a new KEK strands every stored provider key, and a new pepper invalidates every virtual key or session issued under the old one. Then run `rolter check` with that environment loaded. It fails on a missing KEK, admin token or database URL, and warns on a missing key pepper, a missing session pepper or a control plane bound to every interface. See [Production](/deployment/production), [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
 
   </Step>
   <Step title="Install the stack">
