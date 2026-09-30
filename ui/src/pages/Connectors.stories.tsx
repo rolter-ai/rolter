@@ -4,6 +4,8 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Connectors from "./Connectors";
 import {
   cancelConfirmation,
+  clickWhenEnabled,
+  confirmation,
   confirmDestructive,
   expectForbidden,
   expectLoadError,
@@ -19,6 +21,12 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { ConnectorRow } from "@/lib/api";
+import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+
+const CHECKED_AT = "2026-08-06T10:00:00Z";
 
 const connector = (over: Partial<ConnectorRow> = {}): ConnectorRow => ({
   id: "c-1",
@@ -31,7 +39,7 @@ const connector = (over: Partial<ConnectorRow> = {}): ConnectorRow => ({
   auth_secret_configured: true,
   health_status: "healthy",
   // fixed rather than relative: nothing here should depend on wall-clock time
-  health_checked_at: "2026-08-06T10:00:00Z",
+  health_checked_at: CHECKED_AT,
   health_error: null,
   created_at: "2026-08-01T10:00:00Z",
   updated_at: "2026-08-06T10:00:00Z",
@@ -55,6 +63,8 @@ const CONNECTORS: ConnectorRow[] = [
   connector({
     id: "c-3",
     name: "datadog-staging",
+    // a rate that is not a whole percent: rounding it would read "0% sampled"
+    sampling_rate: 0.004,
     health_status: "unhealthy",
     health_error: "sink returned HTTP 401",
   }),
@@ -149,6 +159,22 @@ export const Loaded: Story = {
 
     // a failure names the status, never the sink's response body
     await expect(canvas.getByText(/HTTP 401/)).toBeVisible();
+
+    // 0.4 % is not "0% sampled": a card that rounded it away would say nothing
+    // is sent while something is (#2104)
+    await expect(canvas.getByText("0.4% sampled")).toBeVisible();
+    await expect(canvas.getByText("100% sampled")).toBeVisible();
+
+    // a probe from last week must not read as one from today (#2108): the row
+    // says how long ago, as a <time> that keeps the full stamp for the hover
+    const [checked] = canvas.getAllByText(/^checked /);
+    await expect(checked.tagName).toBe("TIME");
+    await expect(checked).toHaveAttribute("datetime", CHECKED_AT);
+    await expect(checked).toHaveAttribute("title", formattersFor("en").dateTime(CHECKED_AT));
+    await expect(checked).toHaveTextContent(
+      en.pages.connectors.checkedAt.replace("{{time}}", formattersFor("en").relative(CHECKED_AT)),
+    );
+    await expect(checked.textContent).not.toMatch(/\d:\d\d/);
   },
 };
 
@@ -167,6 +193,9 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No connectors yet/)).toBeVisible());
+    // the toolbar keeps its create and the empty state offers the same one; the
+    // toolbar's carries the Plus icon, not a "+" typed into the label (#2108)
+    await expect(canvas.getAllByRole("button", { name: "Add connector" })).toHaveLength(2);
   },
 };
 
@@ -180,6 +209,9 @@ export const Error_: Story = {
       expect(canvas.getByText(/You do not have access to connectors/)).toBeVisible(),
     );
     await expectNoFalseEmpty(canvasElement, /No connectors yet/);
+    // nor a count for a list that was not read: "0 connectors" states a figure
+    // the screen does not have (#2211, #2108)
+    await expect(canvas.queryByText(/OTLP\/HTTP sinks for request logs/)).toBeNull();
   },
 };
 
@@ -329,4 +361,339 @@ export const RefusedToAnAdmin: Story = {
 export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} role="viewer" />,
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+// the add sheet: sampling is typed as a percentage and read as typed (#2104).
+// `Number("0") || 100` made a typed 0 a rate of 1, so a connector meant to send
+// nothing shipped every request, and a blank field or 150 became 100 too
+const created = (body: Partial<ConnectorRow> = {}) =>
+  recording(async (_input, init) =>
+    init?.method === "POST"
+      ? json(connector({ id: "c-4", name: "audit-sink", ...body }))
+      : json(CONNECTORS),
+  );
+
+interface SentConnector {
+  name: string;
+  endpoint: string;
+  enabled: boolean;
+  sampling_rate: number;
+}
+
+/** Open the add sheet with the two required rows filled in; sampling is left to the story. */
+async function openAddSheet(canvasElement: HTMLElement, copy = en.pages.connectors) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+  await clickWhenEnabled(canvasElement, copy.add);
+  const form = within(await within(document.body).findByRole("dialog"));
+  await userEvent.type(await form.findByLabelText(copy.form.name), "audit-sink");
+  await userEvent.type(
+    await form.findByLabelText(copy.form.endpoint),
+    "https://otlp.example.com/v1/logs",
+  );
+  return form;
+}
+
+const sentZero = created({ sampling_rate: 0 });
+
+export const SamplingOfZeroIsKept: Story = {
+  render: () => <Harness fetchStub={sentZero.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openAddSheet(canvasElement);
+    const sampling = await form.findByLabelText(copy.form.sampling);
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "0");
+
+    // what 0 means is on the form, and a valid 0 is not an error
+    await expect(form.getByText(copy.form.samplingHint)).toBeVisible();
+    await expect(sampling).not.toHaveAttribute("aria-invalid", "true");
+
+    await userEvent.click(form.getByRole("button", { name: en.common.create }));
+    const body = await sentZero.expectSentBody<SentConnector>("POST", "/api/v1/connectors");
+    await expect(body.sampling_rate).toBe(0);
+    await expect(body).toMatchObject({
+      name: "audit-sink",
+      endpoint: "https://otlp.example.com/v1/logs",
+    });
+    await expectToast(canvasElement, /audit-sink created/);
+  },
+};
+
+const sentDefault = created();
+
+export const UntouchedSamplingSendsEveryRequest: Story = {
+  render: () => <Harness fetchStub={sentDefault.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const form = await openAddSheet(canvasElement);
+    await userEvent.click(form.getByRole("button", { name: en.common.create }));
+    const body = await sentDefault.expectSentBody<SentConnector>("POST", "/api/v1/connectors");
+    await expect(body.sampling_rate).toBe(1);
+  },
+};
+
+const sentTooMuch = created();
+
+export const SamplingAbove100IsRefused: Story = {
+  render: () => <Harness fetchStub={sentTooMuch.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openAddSheet(canvasElement);
+    const sampling = await form.findByLabelText(copy.form.sampling);
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "150");
+
+    // said next to the field and tied to it, not clamped to 100 in silence
+    await expect(await form.findByText(copy.form.samplingRange)).toBeVisible();
+    await expect(sampling).toHaveAttribute("aria-invalid", "true");
+    await expect(sampling).toHaveAccessibleDescription(copy.form.samplingRange);
+    await expect(form.getByRole("button", { name: en.common.create })).toBeDisabled();
+    sentTooMuch.expectNotSent("POST", "/api/v1/connectors");
+  },
+};
+
+const sentBlank = created();
+
+export const BlankSamplingIsRefused: Story = {
+  render: () => <Harness fetchStub={sentBlank.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openAddSheet(canvasElement);
+    const sampling = await form.findByLabelText(copy.form.sampling);
+    await userEvent.clear(sampling);
+
+    await expect(await form.findByText(copy.form.samplingInvalid)).toBeVisible();
+    await expect(sampling).toHaveAttribute("aria-invalid", "true");
+    await expect(sampling).toHaveAccessibleDescription(copy.form.samplingInvalid);
+    await expect(form.getByRole("button", { name: en.common.create })).toBeDisabled();
+    sentBlank.expectNotSent("POST", "/api/v1/connectors");
+
+    // and the same field accepts a value again once one is typed
+    await userEvent.type(sampling, "25");
+    await waitFor(() => expect(form.getByRole("button", { name: en.common.create })).toBeEnabled());
+    await expect(form.queryByText(copy.form.samplingInvalid)).toBeNull();
+  },
+};
+
+// the probe: `delivered` is the whole verdict, and each outcome has to say so
+// where the operator is looking (#2108). a rejected one used to be the only one
+// that spoke, and a failed request printed a raw message below the whole grid
+const probing = (answer: () => Response | Promise<Response>, list = () => CONNECTORS) =>
+  recording(async (input, init) =>
+    init?.method === "POST" && String(input).includes("/test") ? answer() : json(list()),
+  );
+
+const TESTED_AT = "2026-09-30T10:00:00Z";
+
+const deliveredProbe = probing(() =>
+  json({ delivered: true, health_status: "healthy", health_checked_at: TESTED_AT }),
+);
+
+export const TestDeliverySaysItWorked: Story = {
+  render: () => <Harness fetchStub={deliveredProbe.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await userEvent.click(canvas.getByLabelText("Test delivery to signoz"));
+    await deliveredProbe.expectSent("POST", "/connectors/c-1/test");
+
+    // a connector that was already healthy changes nothing else on its card
+    await expectToast(canvasElement, /Test delivery to signoz succeeded/);
+    await expect(
+      within(canvas.getByRole("group", { name: "signoz" })).queryByRole("alert"),
+    ).toBeNull();
+  },
+};
+
+const rejectedProbe = probing(() =>
+  json({
+    delivered: false,
+    health_status: "unhealthy",
+    health_checked_at: TESTED_AT,
+    health_error: "sink returned HTTP 503",
+  }),
+);
+
+export const RejectedTestShowsOnItsCard: Story = {
+  render: () => <Harness fetchStub={rejectedProbe.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await userEvent.click(canvas.getByLabelText("Test delivery to signoz"));
+
+    const card = within(canvas.getByRole("group", { name: "signoz" }));
+    await expect(await card.findByRole("alert")).toHaveTextContent(
+      "Delivery failed: sink returned HTTP 503",
+    );
+    // the other cards are not the probe's business
+    await expect(
+      within(canvas.getByRole("group", { name: "honeycomb" })).queryByRole("alert"),
+    ).toBeNull();
+  },
+};
+
+// once the list is refetched the card carries the reason itself, so the probe's
+// own line steps aside instead of saying the same thing twice
+let probed = false;
+const repeatedProbe = probing(
+  () => {
+    probed = true;
+    return json({
+      delivered: false,
+      health_status: "unhealthy",
+      health_checked_at: TESTED_AT,
+      health_error: "sink returned HTTP 503",
+    });
+  },
+  () =>
+    probed
+      ? [
+          connector({
+            health_status: "unhealthy",
+            health_checked_at: TESTED_AT,
+            health_error: "sink returned HTTP 503",
+          }),
+          ...CONNECTORS.slice(1),
+        ]
+      : CONNECTORS,
+);
+
+export const RejectedTestIsNotRepeatedOnceTheListCatchesUp: Story = {
+  render: () => {
+    probed = false;
+    return <Harness fetchStub={repeatedProbe.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await userEvent.click(canvas.getByLabelText("Test delivery to signoz"));
+
+    const card = within(canvas.getByRole("group", { name: "signoz" }));
+    // only the settled state has the reason in a plain line: the probe's own
+    // line is an alert, so this cannot pass on the moment before the refetch
+    await waitFor(() => {
+      const lines = card.getAllByText(/sink returned HTTP 503/);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toHaveAttribute("role", "alert");
+    });
+  },
+};
+
+const failedProbe = probing(() => json({ error: { message: "probe worker unavailable" } }, 500));
+
+export const TestThatCouldNotRunShowsOnItsCard: Story = {
+  render: () => <Harness fetchStub={failedProbe.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await userEvent.click(canvas.getByLabelText("Test delivery to signoz"));
+
+    const card = within(canvas.getByRole("group", { name: "signoz" }));
+    await expect(await card.findByRole("alert")).toHaveTextContent(
+      "Test did not run: probe worker unavailable",
+    );
+    // the only message on the screen, and it is on the card it belongs to
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
+  },
+};
+
+// a delete that failed reports in the confirmation while it is open. closing it
+// must not orphan the failure below the grid, so the card takes it over
+const refusedDelete = recording(async (_input, init) =>
+  init?.method === "DELETE"
+    ? json({ error: { message: "connector is referenced by a pipeline" } }, 409)
+    : json(CONNECTORS),
+);
+
+export const FailedDeleteShowsOnItsCard: Story = {
+  render: () => <Harness fetchStub={refusedDelete.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+
+    await userEvent.click(canvas.getByLabelText("Delete connector signoz"));
+    await confirmDestructive(/signoz/, /delete connector/i);
+    await refusedDelete.expectSent("DELETE", "/connectors/c-1");
+    await expect(
+      await within(await confirmation()).findByText(/referenced by a pipeline/),
+    ).toBeVisible();
+
+    await cancelConfirmation();
+    const card = within(canvas.getByRole("group", { name: "signoz" }));
+    await expect(await card.findByRole("alert")).toHaveTextContent(
+      "Could not delete this connector: connector is referenced by a pipeline",
+    );
+    await expect(
+      within(canvas.getByRole("group", { name: "honeycomb" })).queryByRole("alert"),
+    ).toBeNull();
+  },
+};
+
+// 375 px in Russian, the longest strings the card carries. a long endpoint
+// wraps instead of ending in an ellipsis nobody can read past, and the footer
+// row's "checked" stamp wraps under the test button rather than off the card
+const LONG_ENDPOINT = "https://otlp-collector.observability.internal.example.com/v1/logs";
+
+export const MobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={async () =>
+        json([
+          connector({
+            id: "c-long",
+            name: "signoz-eu-central",
+            endpoint: LONG_ENDPOINT,
+            sampling_rate: 0.25,
+          }),
+          ...CONNECTORS.slice(1),
+        ])
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.connectors;
+    const canvas = within(canvasElement);
+    // the locale decorator switches language from an effect, after first paint
+    await waitFor(() => expect(canvas.getAllByText(copy.testDelivery)[0]).toBeVisible());
+
+    const endpoint = canvas.getByText(LONG_ENDPOINT);
+    await expect(endpoint).toBeVisible();
+    await expect(endpoint.scrollWidth).toBeLessThanOrEqual(endpoint.clientWidth);
+    await expect(getComputedStyle(endpoint).textOverflow).not.toBe("ellipsis");
+
+    const card = canvas.getByRole("group", { name: "signoz-eu-central" });
+    await expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+    await expect(within(card).getByText(/^проверено /)).toHaveTextContent(
+      copy.checkedAt.replace("{{time}}", formattersFor("ru").relative(CHECKED_AT)),
+    );
+    await expect(within(card).getByText(/^выборка /)).toHaveTextContent("выборка 25%");
+    await expectNoHorizontalOverflow();
+  },
+};
+
+const sentRussian = created();
+
+export const SamplingErrorInRussianAtMobile: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={sentRussian.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.connectors;
+    await waitFor(() => expect(within(canvasElement).getByText("signoz")).toBeVisible());
+    await waitFor(() =>
+      expect(within(canvasElement).getAllByText(copy.testDelivery)[0]).toBeVisible(),
+    );
+    const form = await openAddSheet(canvasElement, copy);
+    await expect(await form.findByText(copy.form.samplingHint)).toBeVisible();
+
+    const sampling = await form.findByLabelText(copy.form.sampling);
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "150");
+    await expect(await form.findByText(copy.form.samplingRange)).toBeVisible();
+    await expect(form.getByRole("button", { name: ru.common.create })).toBeDisabled();
+    await expectNoHorizontalOverflow();
+    sentRussian.expectNotSent("POST", "/api/v1/connectors");
+  },
 };
