@@ -1322,6 +1322,7 @@ mod tests {
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("crud.rs", include_str!("crud.rs")),
+        ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),

@@ -194,13 +194,18 @@ left with nothing is refused — which is exactly what rebinding to a denied
 address produces. The resolver reads the policy from a live handle, so a hot
 reload re-tunes enforcement without discarding pooled connections.
 
-The control plane's own requests to operator-supplied URLs (the connector test
-probe, alert channel delivery, MCP OAuth discovery) check the same policy on
-the stored URL when it is saved and again before each request. Alert delivery
-and MCP OAuth discovery also refuse redirects, so a `3xx` cannot hand the
-request to a host the check never saw. None of them has a connect-time
-resolver yet, and the connector probe still follows redirects; both are
-tracked in #1949.
+The control plane enforces the policy at connect time too. Its own requests to
+operator-supplied URLs (the connector test probe, alert channel delivery, and
+MCP OAuth discovery and token exchange) check the stored URL when it is saved
+and again before each request, and every one of them is sent through the client
+built by `crates/rolter-control/src/egress_client.rs`. That builder installs a
+resolver that drops the addresses `EgressPolicy::filter_resolved` denies, the
+same function the gateway's `EgressResolver` calls, so the two planes cannot
+disagree about an address. It also refuses redirects, so a `3xx` cannot hand a
+request to a host the check never saw; the connector probe used to send through
+the shared `ControlState::http` client, which follows up to ten. The client is
+built per request from the deployment's policy rather than pooled, since these
+calls are rare.
 
 ## Control-plane input validation
 

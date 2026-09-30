@@ -67,6 +67,9 @@ use crate::ControlState;
 /// How long an in-flight consent may take. Long enough for a login plus a
 /// consent screen, short enough that a leaked `state` is worthless by the time
 /// it is found.
+/// Bound on one token-endpoint round trip; the shared client it replaces had none
+const TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 const LOGIN_STATE_TTL_SECS: i64 = 600;
 /// Access-token lifetime assumed when the authorization server omits
 /// `expires_in`. Deliberately short: a wrong guess that is too long leaves a
@@ -1132,8 +1135,13 @@ async fn post_token(
     if let Some(secret) = client_secret {
         form.push(("client_secret", secret.to_string()));
     }
-    let response = state
-        .http
+    // not `state.http`: that client follows redirects and resolves without the
+    // egress policy, and a token endpoint is an operator-supplied url
+    let client = crate::egress_client::builder(&state.egress)
+        .timeout(TOKEN_TIMEOUT)
+        .build()
+        .map_err(|e| TokenError::Transient(format!("token client unavailable: {e}")))?;
+    let response = client
         .post(token_url)
         .form(&form)
         .send()
@@ -1585,6 +1593,26 @@ async fn log_audit_system(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1949: a token endpoint whose name resolves only to an address the
+    /// policy denies is refused before any connection is made.
+    #[tokio::test]
+    async fn a_token_endpoint_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let mut state = crate::tests::state_with_token(None);
+        state.egress = crate::egress_client::testing::deny_loopback();
+        let resource = ResourceUri::parse("https://mcp.example.com").expect("a resource");
+        let result = post_token(
+            &state,
+            &listener.url("/token"),
+            vec![("grant_type", "refresh_token".to_string())],
+            None,
+            &resource,
+        )
+        .await;
+        assert!(matches!(result, Err(TokenError::Transient(_))));
+        assert_eq!(listener.accepted(), 0);
+    }
 
     /// #1564: the KEK is only needed by the one shape that encrypts. Demanding
     /// it for the others left an operator who lost theirs unable to correct a

@@ -3794,6 +3794,46 @@ impl EgressPolicy {
         })
     }
 
+    /// Drop the resolved addresses this policy denies, for a connect-time
+    /// resolver: `host` is the name that was resolved and `addrs` what DNS
+    /// answered.
+    ///
+    /// A partial denial still connects: a multi-homed upstream with one denied
+    /// address is reachable on the others, and refusing the whole name would
+    /// take down a legitimate provider. Only a name left with *nothing* is an
+    /// error, and rebinding to a denied address leaves exactly nothing. An
+    /// empty answer is not a denial; that is the resolver's own failure to
+    /// report.
+    pub fn filter_resolved(
+        &self,
+        host: &str,
+        addrs: Vec<std::net::SocketAddr>,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, String> {
+        if self.host_is_allowed(host) {
+            return Ok(addrs);
+        }
+        let mut denied: Option<&'static str> = None;
+        let allowed: Vec<std::net::SocketAddr> = addrs
+            .into_iter()
+            .filter(|addr| match self.deny_reason(addr.ip()) {
+                Some(reason) => {
+                    denied = Some(reason);
+                    false
+                }
+                None => true,
+            })
+            .collect();
+        if allowed.is_empty() {
+            if let Some(reason) = denied {
+                return Err(format!(
+                    "'{host}' resolves only to {reason} addresses, which the egress policy denies \
+                     (allow it explicitly via egress.allow_hosts if this is intentional)"
+                ));
+            }
+        }
+        Ok(allowed)
+    }
+
     /// Whether `host` is exempt from every check, matched against
     /// `allow_hosts` verbatim or as the same normalized host (an IP literal or
     /// a hostname).
