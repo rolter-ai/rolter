@@ -69,6 +69,21 @@ the header and the rows. It tells the header apart by type, which means the
   row owns, which a screen reader reads outside the table and axe fails as
   `aria-required-children`. The header stays on screen above it, which is the
   point: see [loading and empty states](loading-and-empty-states.md).
+- **The state row is as wide as what the reader sees.** Below its column floor
+  (`minWidth`, 760 by default) the table scrolls sideways inside its card, and
+  a state row the width of the floor centred the empty title and its button in
+  a band that began past the card's right edge: on a 375px phone a first-run
+  admin saw a header and an empty card (#2362). `ListTable` is a size container
+  (`container-type: inline-size`) and `ListStateRow` is `sticky left-0` and
+  `100cqw` wide, so it fills the visible frame and holds there while the
+  header and the rows scroll beneath it. The header band and the rows keep the
+  floor, so the columns stay aligned, and at desktop width, where nothing
+  scrolls, the state row is exactly as wide as the header. Put anything a
+  screen draws in place of rows into a `ListStateRow` (a `LoadError` included)
+  and it is held to the same edge; do not size it yourself. The table's own
+  width must not come from its content, which is true in a block or a column
+  flex (every list screen today) and is not in a row flex, where the table
+  needs `flex-1 min-w-0`.
 - **Hand the state rows the query, not a condition.** Write the skeleton as
   `<ListLoadingRow read={query}>` and the empty state as
   `<ListEmptyRow read={query} rows={rows.length}>`, where `query` is the
@@ -101,11 +116,25 @@ which checks the table by name: two rowgroups, a header row of column headers,
 and body rows whose every child is a cell, one per column (or one across the
 table for a `ListStateRow`). Each list screen's loaded story calls it.
 
+`expectListStateInViewport(canvasElement, name, { says, cta })` is the phone
+half (#2362): `toBeVisible` does not see a box a scroll container has pushed
+past its own edge, so it measures the state row's title and button (or, with
+neither, the skeleton) against the window with `expectInViewport`. It scrolls
+the table into view and never the state, because scrolling the title into view
+would slide the table sideways and pass on the fault. Pair it with an `atMobile`
+story: Users, Providers and the primitive stories below do.
+
 The primitive's own stories, under **Display/ScreenPrimitives**, assert the
 roles (`TableSemantics`), the `aria-sort` cycle and the hidden arrow
 (`SortIsAnnouncedOnTheHeader`), the loading and empty rows
 (`LoadingRowKeepsTheTableWhole`, `NoRows`), and the read they wait on
-(`ParkedReadKeepsTheSkeleton`, `NoEmptyRowUntilTheReadSucceeds`).
+(`ParkedReadKeepsTheSkeleton`, `NoEmptyRowUntilTheReadSucceeds`). At phone
+width `EmptyRowFitsThePhone`, `LoadingRowFitsThePhone` and
+`LoadErrorInTheStateRowFitsThePhone` hold the state row in the frame,
+`StateRowStaysInFrameWhenTheTableScrolls` scrolls the table to its end and
+checks the state has not moved while the header band has, and
+`StateRowSpansTheTableAtDesktopWidth` checks the state row, the header and the
+body share one left edge and one width when nothing scrolls.
 
 The Logs screen is not built from these primitives: it renders a native
 `<table>` and gets its semantics from the elements. So does the Roles &

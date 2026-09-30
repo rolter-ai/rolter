@@ -8,6 +8,7 @@ import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
 import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
+import { expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
@@ -619,6 +620,44 @@ export async function expectListTable(canvasElement: HTMLElement, name: string):
     await expect(cells).toEqual(cells.map(() => "cell"));
     if (cells.length !== 1) await expect(cells.length).toBe(columns.length);
   }
+}
+
+/**
+ * Assert what the `ListTable` named `name` shows in place of rows is on screen
+ * at the width the story runs at (#2362).
+ *
+ * `toBeVisible` cannot say so: it reads `display` and `opacity`, not whether a
+ * scroll container has pushed the box past its own edge, and the table scrolls
+ * sideways below its column floor. The state row once took the width of that
+ * floor, so at 375px the empty title and its button were "visible" 400px to the
+ * right of anything the reader could see. The boxes are measured instead:
+ * `says` and `cta` are the empty state's title and its button, read inside the
+ * table because the toolbar repeats the same action; with neither, the loading
+ * skeleton is what gets measured.
+ *
+ * The table is scrolled into view and the state is not: scrolling the title
+ * into view would slide the table sideways until the title showed, and the
+ * story would pass on the very fault it exists to catch. A second table lower
+ * down the screen (Users' pending invitations) is then measured where a reader
+ * would land on it, not below the fold.
+ */
+export async function expectListStateInViewport(
+  canvasElement: HTMLElement,
+  name: string,
+  { says, cta }: { says?: RegExp; cta?: RegExp } = {},
+): Promise<void> {
+  const table = await within(canvasElement).findByRole("table", { name });
+  table.scrollIntoView({ block: "start" });
+  await expect(table.scrollLeft).toBe(0);
+  const inTable = within(table);
+  if (!says) {
+    await waitFor(() => expect(inTable.getByRole("status")).toBeVisible());
+    await expectInViewport(inTable.getByRole("status"));
+    return;
+  }
+  await waitFor(() => expect(inTable.getByText(says)).toBeVisible());
+  await expectInViewport(inTable.getByText(says));
+  if (cta) await expectInViewport(inTable.getByRole("button", { name: cta }));
 }
 
 /** The open editor sheet. Sheets portal to the body, not into the canvas. */
