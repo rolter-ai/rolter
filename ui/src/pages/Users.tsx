@@ -2,14 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import {
   ArrowLeftRight,
-  Ban,
   Building2,
   Loader2,
   Mail,
   Pencil,
   Plus,
   Trash2,
+  UserCheck,
   UsersRound,
+  UserX,
   X,
 } from "lucide-react";
 import * as React from "react";
@@ -94,7 +95,10 @@ import { useErrorState, useScreenReady } from "@/lib/ux-react";
 // grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
 // everything is scoped to the org selected in the sidebar ScopeSwitcher;
 // account edits (email/password/superadmin) require superadmin on the backend,
-// and an invite or a role grant takes admin at the scope it reaches.
+// and an invite or a role grant takes admin at the scope it reaches. what
+// cuts a person off (deactivate, delete) or raises them to superadmin asks
+// first, through ConfirmDialog (#2055); reactivating only gives access back
+// and is one click.
 export default function Users() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -140,6 +144,8 @@ export default function Users() {
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<GrantTarget | null>(null);
   const [changeTarget, setChangeTarget] = React.useState<GrantTarget | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = React.useState<UserRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<UserRow | null>(null);
   const [search, setSearch] = React.useState("");
   const [statusTab, setStatusTab] = React.useState<"all" | "active" | "deactivated">("all");
 
@@ -154,15 +160,16 @@ export default function Users() {
     return map;
   }, [memberships.data]);
 
-  const toggleActive = useMutation({
-    mutationFn: (user: UserRow) =>
-      updateUser(user.id, { deactivated: !user.deactivated_at ? true : false }),
+  // giving access back is the one account change that needs no question: it
+  // undoes a deactivation and a misfire is one click to reverse. the other
+  // direction goes through `DeactivateUserDialog`
+  const reactivate = useMutation({
+    mutationFn: (user: UserRow) => updateUser(user.id, { deactivated: false }),
     onSuccess: (_result, user) => {
       invalidate();
       toast.push({
         tone: "success",
-        title: t("toast.saved"),
-        detail: t("toast.savedDetail", { what: user.email }),
+        title: t("pages.users.toastReactivated", { email: user.email }),
       });
     },
     onError: (error, user) => {
@@ -366,13 +373,15 @@ export default function Users() {
                   aria-label={t(active ? "pages.users.deactivate" : "pages.users.reactivate", {
                     email: user.email,
                   })}
-                  disabled={toggleActive.isPending && toggleActive.variables?.id === user.id}
-                  onClick={() => toggleActive.mutate(user)}
+                  disabled={reactivate.isPending && reactivate.variables?.id === user.id}
+                  onClick={() => (active ? setDeactivateTarget(user) : reactivate.mutate(user))}
                 >
-                  {toggleActive.isPending && toggleActive.variables?.id === user.id ? (
+                  {reactivate.isPending && reactivate.variables?.id === user.id ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : active ? (
+                    <UserX className="h-3.5 w-3.5" />
                   ) : (
-                    <Ban className="h-3.5 w-3.5" />
+                    <UserCheck className="h-3.5 w-3.5" />
                   )}
                 </RowIconButton>
               </ListCell>
@@ -423,13 +432,14 @@ export default function Users() {
           onDone={invalidate}
         />
       )}
-      {editUser && (
-        <EditUserDialog
-          user={editUser}
-          onOpenChange={(open) => !open && setEditUser(null)}
-          onDone={invalidate}
-        />
-      )}
+      {/* mounted whether or not a sheet is open, so the confirmations it raises
+          over the sheet see their own landing (#2055) */}
+      <EditUserDialog
+        user={editUser}
+        onClose={() => setEditUser(null)}
+        onDone={invalidate}
+        onDelete={setDeleteTarget}
+      />
       {roleUser && orgId && (
         <AddRoleDialog
           user={roleUser}
@@ -440,8 +450,23 @@ export default function Users() {
           onDone={invalidate}
         />
       )}
-      {/* both stay mounted and open on a target, so each sees its own
+      {/* each stays mounted and opens on a target, so each sees its own
           landing and reports it (docs/dev-docs/development/destructive-actions.md) */}
+      <DeactivateUserDialog
+        target={deactivateTarget}
+        onClose={() => setDeactivateTarget(null)}
+        onDone={invalidate}
+      />
+      {/* a delete raised from the edit sheet, which stays open behind it so a
+          cancel returns to the form; a landed delete takes the sheet with it */}
+      <DeleteUserDialog
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDone={() => {
+          invalidate();
+          setEditUser(null);
+        }}
+      />
       {orgId && (
         <RevokeRoleDialog
           target={revokeTarget}
@@ -682,30 +707,92 @@ function InviteUserDialog({
   );
 }
 
+/** the fields the edit sheet holds, which one save sends */
+interface AccountDraft {
+  email: string;
+  password: string;
+  isSuperadmin: boolean;
+}
+
+type PrivilegeChange = "grant" | "removeOwn";
+
+/**
+ * The change a save makes to who may do what, when it asks first (#2055).
+ *
+ * Turning superadmin on hands over every organization and every deployment-wide
+ * setting, so it is confirmed. Turning it off saves directly, except on the
+ * caller's own account: the control plane does not refuse a superadmin
+ * dropping their own flag, and the very next request is then made without it.
+ */
+function privilegeChange(user: UserRow, draft: AccountDraft, own: boolean): PrivilegeChange | null {
+  if (draft.isSuperadmin && !user.is_superadmin) return "grant";
+  if (!draft.isSuperadmin && user.is_superadmin && own) return "removeOwn";
+  return null;
+}
+
+/**
+ * What the control plane's refusal of an account change means here, under the
+ * message it sent. A 403 is a caller who is not a superadmin, which a gate
+ * that answered for another scope can still let through; a 404 is an account
+ * that was deleted in the meantime.
+ */
+function AccountErrorHint({ error }: { error: unknown }) {
+  const { t } = useTranslation();
+  if (!(error instanceof ApiError)) return null;
+  if (error.status !== 403 && error.status !== 404) return null;
+  return (
+    <p className="text-xs text-muted-foreground">
+      {error.status === 403
+        ? t("pages.users.confirm.accountRefused")
+        : t("pages.users.confirm.accountGone")}
+    </p>
+  );
+}
+
+/**
+ * Editing an account: the email, a new password and the superadmin flag, with
+ * a delete at the foot (#2055).
+ *
+ * The component stays mounted whether or not a sheet is open, because the
+ * confirmations it raises sit over the sheet and must outlive it: a save that
+ * lands closes the sheet in the same commit, and a dialog mounted inside it
+ * would go with it before it could report the landing.
+ *
+ * A save asks first when it grants superadmin, or takes it off the account
+ * the caller is signed in with (`privilegeChange`). Every other save goes
+ * straight out. Cancelling the question returns to the sheet with the draft
+ * as it was.
+ */
 function EditUserDialog({
   user,
-  onOpenChange,
+  onClose,
   onDone,
+  onDelete,
 }: {
-  user: UserRow;
-  onOpenChange: (open: boolean) => void;
+  user: UserRow | null;
+  onClose: () => void;
   onDone: () => void;
+  onDelete: (user: UserRow) => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const [email, setEmail] = React.useState(user.email);
-  const [password, setPassword] = React.useState("");
-  const [isSuperadmin, setIsSuperadmin] = React.useState(user.is_superadmin);
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const self = useOptionalAuth()?.user?.id;
+  // the save waiting on an answer, and the account it is for: the account
+  // rides along so the title keeps its name as the sheet closes under it
+  const [asking, setAsking] = React.useState<{
+    kind: PrivilegeChange;
+    user: UserRow;
+    draft: AccountDraft;
+  } | null>(null);
 
   const save = useMutation({
-    mutationFn: () =>
+    mutationFn: ({ user, draft }: { user: UserRow; draft: AccountDraft }) =>
       updateUser(user.id, {
-        email: email.trim() !== user.email ? email.trim() : undefined,
-        password: password.trim() ? password : undefined,
-        is_superadmin: isSuperadmin !== user.is_superadmin ? isSuperadmin : undefined,
+        email: draft.email.trim() !== user.email ? draft.email.trim() : undefined,
+        password: draft.password.trim() ? draft.password : undefined,
+        is_superadmin: draft.isSuperadmin !== user.is_superadmin ? draft.isSuperadmin : undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (_result, { user }) => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       toast.push({
@@ -714,46 +801,117 @@ function EditUserDialog({
         detail: t("toast.savedDetail", { what: user.email }),
       });
       onDone();
-      onOpenChange(false);
+      onClose();
+      setAsking(null);
     },
-    onError: (error) => {
+    onError: (error, { user }) => {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: user.email }),
         detail: errorDetail(error),
       });
+      // deleted elsewhere: the list is stale, so it is read again
+      if (error instanceof ApiError && error.status === 404) onDone();
     },
   });
 
-  const remove = useMutation({
-    mutationFn: () => deleteUser(user.id),
-    onSuccess: () => {
-      toast.push({ tone: "success", title: t("toast.deleted", { what: user.email }) });
-      onDone();
-      onOpenChange(false);
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.deleteFailed", { what: user.email }),
-        detail: errorDetail(error),
-      });
-    },
-  });
+  const requestSave = (draft: AccountDraft) => {
+    if (!user) return;
+    const kind = privilegeChange(user, draft, !!self && self === user.id);
+    if (kind) setAsking({ kind, user, draft });
+    else save.mutate({ user, draft });
+  };
+
+  const stopAsking = (open: boolean) => {
+    if (open) return;
+    setAsking(null);
+    // a refusal of this save would otherwise greet the next one
+    save.reset();
+  };
+  const confirmSave = () => asking && save.mutate({ user: asking.user, draft: asking.draft });
+
+  return (
+    <>
+      {user && (
+        <EditUserSheet
+          key={user.id}
+          user={user}
+          saving={save.isPending}
+          errorMessage={save.isError ? (save.error as Error).message : undefined}
+          onSave={requestSave}
+          onClose={onClose}
+          onDelete={onDelete}
+        />
+      )}
+      {/* raised over the sheet, which stays open behind it: a cancel goes back
+          to the form with every field as it was. granting superadmin is not a
+          removal and one flip undoes it, so its button is not red */}
+      <ConfirmDialog
+        name="user-superadmin-grant"
+        open={asking?.kind === "grant"}
+        onOpenChange={stopAsking}
+        tone="default"
+        title={asking ? t("pages.users.confirm.superadminTitle", { email: asking.user.email }) : ""}
+        description={t("pages.users.confirm.superadminBody")}
+        confirmLabel={t("pages.users.confirm.superadminConfirm")}
+        pending={save.isPending}
+        error={save.error}
+        onConfirm={confirmSave}
+      >
+        <AccountErrorHint error={save.error} />
+      </ConfirmDialog>
+      <ConfirmDialog
+        name="user-superadmin-remove"
+        open={asking?.kind === "removeOwn"}
+        onOpenChange={stopAsking}
+        title={
+          asking ? t("pages.users.confirm.superadminRemoveTitle", { email: asking.user.email }) : ""
+        }
+        description={t("pages.users.confirm.superadminRemoveSelf")}
+        confirmLabel={t("pages.users.confirm.superadminRemoveConfirm")}
+        pending={save.isPending}
+        error={save.error}
+        onConfirm={confirmSave}
+      >
+        <AccountErrorHint error={save.error} />
+      </ConfirmDialog>
+    </>
+  );
+}
+
+function EditUserSheet({
+  user,
+  saving,
+  errorMessage,
+  onSave,
+  onClose,
+  onDelete,
+}: {
+  user: UserRow;
+  saving: boolean;
+  errorMessage?: string;
+  onSave: (draft: AccountDraft) => void;
+  onClose: () => void;
+  onDelete: (user: UserRow) => void;
+}) {
+  const { t } = useTranslation();
+  const [email, setEmail] = React.useState(user.email);
+  const [password, setPassword] = React.useState("");
+  const [isSuperadmin, setIsSuperadmin] = React.useState(user.is_superadmin);
 
   return (
     <EditorSheet
       name="user-edit"
       open
-      onOpenChange={onOpenChange}
+      onOpenChange={(open) => !open && onClose()}
       title={t("pages.users.editTitle")}
       subtitle={t("pages.users.editSubtitle")}
       dirty={email.trim() !== user.email || password !== "" || isSuperadmin !== user.is_superadmin}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={errorMessage}
       saveLabel={t("common.save")}
       canSave
-      saving={save.isPending}
-      onSave={() => save.mutate()}
+      saving={saving}
+      onSave={() => onSave({ email, password, isSuperadmin })}
     >
       <div className="space-y-3">
         <Field label={t("pages.users.email")}>
@@ -777,46 +935,147 @@ function EditUserDialog({
         </label>
 
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
-          {!confirmDelete ? (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">{t("pages.users.deleteHint")}</span>
-              <Button size="sm" variant="destructive" onClick={() => setConfirmDelete(true)}>
-                <Trash2 className="h-3.5 w-3.5" />
-                {t("common.delete")}
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs text-[color:var(--status-danger-text)]">
-                <Trans
-                  i18nKey="pages.users.deleteConfirmBody"
-                  values={{ email: user.email }}
-                  components={[<span key="email" className="font-mono" />]}
-                />
-              </p>
-              {remove.isError && (
-                <p className="text-xs text-[color:var(--status-danger-text)]">
-                  {(remove.error as Error).message}
-                </p>
-              )}
-              <div className="flex justify-end gap-2">
-                <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)}>
-                  {t("common.cancel")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={remove.isPending}
-                  onClick={() => remove.mutate()}
-                >
-                  {t("pages.users.deleteConfirm")}
-                </Button>
-              </div>
-            </div>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">{t("pages.users.deleteHint")}</span>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={saving}
+              onClick={() => onDelete(user)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {t("common.delete")}
+            </Button>
+          </div>
         </div>
       </div>
     </EditorSheet>
+  );
+}
+
+/**
+ * Deactivating an account (#2055).
+ *
+ * The body says what the control plane does with it: sign-in is blocked, every
+ * live session of the account ends, and the virtual keys it minted for itself
+ * stop working at the gateway until it is reactivated. Nothing is deleted, so
+ * the dialog says the way back too. Nothing in the control plane refuses a
+ * superadmin deactivating their own account, so that case says plainly what it
+ * costs.
+ */
+function DeactivateUserDialog({
+  target,
+  onClose,
+  onDone,
+}: {
+  target: UserRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const self = useOptionalAuth()?.user?.id;
+
+  const deactivate = useMutation({
+    mutationFn: (user: UserRow) => updateUser(user.id, { deactivated: true }),
+    onSuccess: (_result, user) => {
+      onDone();
+      toast.push({
+        tone: "success",
+        title: t("pages.users.toastDeactivated", { email: user.email }),
+      });
+      onClose();
+    },
+    onError: (error) => {
+      // deleted elsewhere: the list is stale, so it is read again
+      if (error instanceof ApiError && error.status === 404) onDone();
+    },
+  });
+
+  const body = target ? [t("pages.users.confirm.deactivateBody")] : [];
+  if (target && self && self === target.id) body.push(t("pages.users.confirm.deactivateSelf"));
+
+  return (
+    <ConfirmDialog
+      name="user-deactivate"
+      open={!!target}
+      onOpenChange={(open) => {
+        if (open) return;
+        onClose();
+        // a refusal for one account would otherwise greet the next one opened
+        deactivate.reset();
+      }}
+      title={target ? t("pages.users.confirm.deactivateTitle", { email: target.email }) : ""}
+      description={body.join(" ")}
+      confirmLabel={t("pages.users.confirm.deactivateConfirm")}
+      pending={deactivate.isPending}
+      error={deactivate.error}
+      onConfirm={() => target && deactivate.mutate(target)}
+    >
+      <AccountErrorHint error={deactivate.error} />
+    </ConfirmDialog>
+  );
+}
+
+/**
+ * Deleting an account (#2055), raised from the edit sheet.
+ *
+ * An account is deployment-wide, so the body says it leaves every
+ * organization and not only the one on screen, and what goes with it: its
+ * roles and sessions, and the keys it minted for itself, which are disabled
+ * rather than deleted. It points at deactivating, the reversible way to block
+ * a person, as `CostAttribution` does for retiring. Nothing in the control
+ * plane refuses a superadmin deleting their own account, so that case says
+ * plainly what it costs.
+ */
+function DeleteUserDialog({
+  target,
+  onClose,
+  onDone,
+}: {
+  target: UserRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const self = useOptionalAuth()?.user?.id;
+
+  const remove = useMutation({
+    mutationFn: (user: UserRow) => deleteUser(user.id),
+    onSuccess: (_result, user) => {
+      onDone();
+      toast.push({ tone: "success", title: t("toast.deleted", { what: user.email }) });
+      onClose();
+    },
+    onError: (error) => {
+      // deleted elsewhere: the list is stale, so it is read again
+      if (error instanceof ApiError && error.status === 404) onDone();
+    },
+  });
+
+  const body = target ? [t("pages.users.confirm.deleteBody")] : [];
+  if (target && self && self === target.id) body.push(t("pages.users.confirm.deleteSelf"));
+
+  return (
+    <ConfirmDialog
+      name="user-delete"
+      open={!!target}
+      onOpenChange={(open) => {
+        if (open) return;
+        onClose();
+        // a refusal for one account would otherwise greet the next one opened
+        remove.reset();
+      }}
+      title={target ? t("pages.users.confirm.deleteTitle", { email: target.email }) : ""}
+      description={body.join(" ")}
+      confirmLabel={t("pages.users.confirm.deleteConfirm")}
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => target && remove.mutate(target)}
+    >
+      <AccountErrorHint error={remove.error} />
+    </ConfirmDialog>
   );
 }
 

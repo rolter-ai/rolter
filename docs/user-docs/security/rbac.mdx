@@ -84,6 +84,18 @@ An org admin sees every invitation of the organization, a team admin the ones in
 
 The **×** at the end of a row revokes the invitation. The confirmation names the address, the role and the scope, and says the link stops working straight away; for an expired one it says revoking only frees the address. `DELETE /api/v1/invitations/{id}`. If the person accepted in the meantime, the control plane answers `404` because only unaccepted invitations can be revoked: the dialog says it is no longer pending and the list refreshes. Like the role controls, the button is disabled for callers without admin at the scope the dashboard is showing, and the server checks again at the invitation's own scope.
 
+### Blocking, removing and promoting people on the Users screen
+
+An account reaches across every organization its person belongs to, so these controls need a superadmin: an admin sees them disabled, with a tooltip that says so. Each of them asks first, and every confirmation names the account.
+
+- **Deactivate.** The button at the end of a row opens a confirmation. Deactivating blocks sign-in, ends every session the account has open, and stops the virtual keys the person minted for themselves at the gateway (see [When someone leaves](#when-someone-leaves)). The row turns **blocked** and the button becomes **Reactivate**, with its own icon. Reactivating restores sign-in and those keys at once and asks nothing, because it only gives access back and deactivating again undoes it. `PUT /api/v1/users/{id}` with `deactivated`.
+- **Superadmin.** The **Superadmin** switch in the edit sheet takes effect when you press **Save**. Turning it on asks first: the confirmation says a superadmin reaches every organization, team and project, and every deployment-wide setting and account, whatever roles they hold. Turning it off saves without asking, except on your own account. `PUT /api/v1/users/{id}` with `is_superadmin`.
+- **Delete.** **Delete** at the foot of the edit sheet opens a confirmation that says the account leaves every organization and not only this one, with its roles and sessions, and that the keys it minted for itself are disabled rather than deleted. It cannot be undone. To block sign-in and keep the account, deactivate it instead. `DELETE /api/v1/users/{id}`.
+
+The control plane does not refuse any of these when they are aimed at yourself or at the last superadmin: you can deactivate or delete the account you are signed in with, or take superadmin off it. When the account is your own, the confirmation says you are signed out now, or lose the access you are using, and that only another superadmin can undo it. The dashboard does not warn about the last superadmin, because its users list holds only the people with a role in the selected organization and cannot tell whether another superadmin exists. A guard in the control plane is tracked in [#2344](https://github.com/rolter-ai/rolter/issues/2344). Until it lands, keep `ROLTER_ADMIN_TOKEN` set, or know the `rolter-seed --admin-email` route, so a deployment that loses its last superadmin can get one back.
+
+If the control plane refuses the change, the confirmation stays open with its message and a line saying the change takes a superadmin. If the account was deleted elsewhere in the meantime, the control plane answers `404`: the confirmation says the account no longer exists and the list refreshes.
+
 ## Who sees which request logs
 
 The request log, the usage and spend rollups and provider health are not only gated — each answer is filtered to the caller:
@@ -121,7 +133,7 @@ Someone with no role anywhere in an organization gets `403` for its lists, and n
 
 ## When someone leaves
 
-Deactivating a person — from the Users screen, `PUT /api/v1/users/{id}`, or your identity provider through SCIM — signs them out everywhere and stops the virtual keys they minted for themselves at the gateway on the next config refresh. Removing their last role that reaches a key's project does the same for that key. Reactivating them, or giving the role back, brings the same keys back.
+Deactivating a person — from the [Users screen](#blocking-removing-and-promoting-people-on-the-users-screen), `PUT /api/v1/users/{id}`, or your identity provider through SCIM — signs them out everywhere and stops the virtual keys they minted for themselves at the gateway on the next config refresh. Removing their last role that reaches a key's project does the same for that key. Reactivating them, or giving the role back, brings the same keys back.
 
 Deleting the account disables those keys for good: they stay listed on the project, disabled, and an admin has to re-enable one deliberately.
 
