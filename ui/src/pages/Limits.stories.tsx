@@ -5,16 +5,24 @@ import Limits from "./Limits";
 import {
   Harness,
   Toasted,
+  cancelConfirmation,
   clickWhenEnabled,
+  confirmDestructive,
+  confirmation,
   expectAllowed,
   expectClosesWithoutPrompting,
+  expectLoadError,
+  expectNoFalseEmpty,
+  expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
   expectSkeleton,
   expectToast,
+  expectUxEvent,
   json,
   pickOption,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
@@ -23,7 +31,10 @@ import {
   type Recorder,
 } from "./story-harness";
 import type { BudgetRow, RateLimitRow, VirtualKeyRow } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const BUDGETS: BudgetRow[] = [
   {
@@ -361,7 +372,7 @@ export const EditsABudgetInPlace: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Edit the 30d budget/);
+    await clickWhenEnabled(canvasElement, /Edit the monthly budget/);
     const form = sheet();
     await expect(within(form).getByRole("heading", { name: "Edit budget" })).toBeVisible();
     // the form opens on the row as it stands, not on the create defaults
@@ -404,7 +415,7 @@ export const ClearingAnUnpricedOverrideSendsNull: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Edit the 1d budget/);
+    await clickWhenEnabled(canvasElement, /Edit the daily budget/);
     const picker = within(sheet()).getByLabelText("Unpriced traffic");
     await expect(picker).toHaveValue("Refuse");
     await pickOption(picker, "Inherit deployment setting");
@@ -423,7 +434,7 @@ export const AnUntouchedBudgetEditClosesWithoutPrompting: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Edit the 30d budget/);
+    await clickWhenEnabled(canvasElement, /Edit the monthly budget/);
     await expectClosesWithoutPrompting();
   },
 };
@@ -444,7 +455,7 @@ export const EditsARateLimitInPlace: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150,000 tpm rate limit/);
     const form = sheet();
     await expect(within(form).getByRole("heading", { name: "Edit rate limit" })).toBeVisible();
     const rpm = within(form).getByLabelText("Requests per minute (optional)");
@@ -492,7 +503,7 @@ export const ARefusedEditKeepsTheSheetOpen: Story = {
     );
   },
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150,000 tpm rate limit/);
     const form = sheet();
     const rpm = within(form).getByLabelText("Requests per minute (optional)");
     const tpm = within(form).getByLabelText("Tokens per minute (optional)");
@@ -514,6 +525,540 @@ export const ARefusedEditKeepsTheSheetOpen: Story = {
   },
 };
 
+let budgetDeletes: Recorder;
+let budgetDeleted = false;
+let releaseBudgetDelete: () => void = () => {};
+/**
+ * #1904: a budget used to be deleted on the first click, leaving its scope
+ * uncapped after a misclick on the bin beside the edit pencil. The delete now
+ * confirms through `ConfirmDialog`: the title names the cap, a cancel sends
+ * nothing and is an abandon, and a confirm holds both buttons while the DELETE
+ * is out, then closes, drops the card and lands as `save_confirmed`.
+ */
+export const ABudgetDeleteIsConfirmedFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    budgetDeleted = false;
+    budgetDeletes = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "DELETE") {
+          // held until the play has seen the pending state
+          return new Promise<Response>((resolve) => {
+            releaseBudgetDelete = () => {
+              budgetDeleted = true;
+              resolve(new Response(null, { status: 204 }));
+            };
+          });
+        }
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(budgetDeleted ? BUDGETS.slice(1) : BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={budgetDeletes.stub}>
+        <UxScreenProvider screen="limits">
+          <Toasted>
+            <Limits />
+          </Toasted>
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await clickWhenEnabled(canvasElement, /Delete the monthly budget/);
+    const title = await within(document.body).findByRole("heading", {
+      name: /^Delete the monthly budget of .*500\.00\?$/,
+    });
+    await expect(title).toBeInTheDocument();
+    // the body names the scope by its name and type, never by its uuid
+    await waitFor(() =>
+      expect(
+        within(document.body).getByText(/^Project Gateway is left without this budget/),
+      ).toBeVisible(),
+    );
+    await cancelConfirmation();
+    budgetDeletes.expectNotSent("DELETE", "/budgets/");
+    const abandon = await expectUxEvent("form_abandon", "budget-delete");
+    await expect(abandon.screen).toBe("limits");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "budget-delete");
+
+    await clickWhenEnabled(canvasElement, /Delete the monthly budget/);
+    await confirmDestructive(/monthly budget/, "Delete budget");
+    await budgetDeletes.expectSent("DELETE", "/budgets/budget-1");
+    // the request is on the wire: the confirm spins and neither button
+    // pretends it can call it back
+    const dialog = within(await confirmation());
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Delete budget" })).toBeDisabled(),
+    );
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expectNoUxEvent("save_confirmed", "budget-delete");
+
+    releaseBudgetDelete();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /budget deleted/i);
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: /Delete the monthly budget/ })).toBeNull(),
+    );
+    const submit = await expectUxEvent("form_submit", "budget-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "budget-delete");
+  },
+};
+
+let rateLimitDeletes: Recorder;
+let rateLimitDeleted = false;
+/**
+ * #1904: the rate-limit delete confirms the same way, the title carrying the
+ * caps, since they are all that tells two limits on one scope apart.
+ */
+export const ARateLimitDeleteIsConfirmedFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    rateLimitDeleted = false;
+    rateLimitDeletes = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "DELETE") {
+          rateLimitDeleted = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(BUDGETS);
+        return json(rateLimitDeleted ? RATE_LIMITS.slice(1) : RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={rateLimitDeletes.stub}>
+        <UxScreenProvider screen="limits">
+          <Toasted>
+            <Limits />
+          </Toasted>
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await clickWhenEnabled(canvasElement, /Delete the 600 rpm · 150,000 tpm rate limit/);
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Delete the 600 rpm · 150,000 tpm rate limit?",
+      }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(document.body).getByText(/^Project Gateway is left without this rate limit/),
+      ).toBeVisible(),
+    );
+    await cancelConfirmation();
+    rateLimitDeletes.expectNotSent("DELETE", "/rate-limits/");
+    await expect((await expectUxEvent("form_abandon", "rate-limit-delete")).outcome).toBe(
+      "cancelled",
+    );
+
+    await clickWhenEnabled(canvasElement, /Delete the 600 rpm · 150,000 tpm rate limit/);
+    await confirmDestructive(/600 rpm · 150,000 tpm/, "Delete rate limit");
+    await rateLimitDeletes.expectSent("DELETE", "/rate-limits/rl-1");
+    await expectSheetClosed();
+    await expectToast(canvasElement, /rate limit deleted/i);
+    await waitFor(() =>
+      expect(
+        canvas.queryByRole("button", { name: /Delete the 600 rpm · 150,000 tpm rate limit/ }),
+      ).toBeNull(),
+    );
+    await expectUxEvent("save_confirmed", "rate-limit-delete");
+  },
+};
+
+/**
+ * A refused delete keeps the dialog open with the control plane's reason, so
+ * the operator is not left guessing whether the cap is still there.
+ */
+export const ARefusedBudgetDeleteKeepsTheDialogOpen: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "DELETE") {
+          return json({ error: { message: "the store is read-only while a restore runs" } }, 409);
+        }
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(BUDGETS);
+        return json(RATE_LIMITS);
+      })}
+    >
+      <UxScreenProvider screen="limits">
+        <Toasted>
+          <Limits />
+        </Toasted>
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Delete the daily budget/);
+    await confirmDestructive(/daily budget/, "Delete budget");
+    const dialog = within(await confirmation());
+    await waitFor(() =>
+      expect(dialog.getByRole("alert")).toHaveTextContent("read-only while a restore runs"),
+    );
+    expectNoUxEvent("save_confirmed", "budget-delete");
+    await expect(
+      within(canvasElement).getByRole("button", { name: /Delete the daily budget/, hidden: true }),
+    ).toBeInTheDocument();
+  },
+};
+
+/**
+ * A card's controls, measured from the top of the card that holds them.
+ *
+ * Measured against the card rather than the page so the same read holds when
+ * the grid is one column wide. The card is the nearest column-flex ancestor,
+ * which is how `LimitCard` lays itself out.
+ */
+const offsetInCard = (control: HTMLElement) => {
+  const card = control.closest("div.flex-col") as HTMLElement;
+  return control.getBoundingClientRect().top - card.getBoundingClientRect().top;
+};
+
+/** The edit controls of two cards sit at the same height, whatever else wraps. */
+async function expectControlsShareAHeight(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const edits = (name: RegExp) => canvas.getAllByRole("button", { name });
+  for (const group of [edits(/^Edit the .* budget of /), edits(/^Edit the .* rate limit/)]) {
+    await expect(group).toHaveLength(2);
+    await expect(Math.abs(offsetInCard(group[0]) - offsetInCard(group[1]))).toBeLessThan(1);
+  }
+}
+
+/**
+ * #2095: the budget form asked for dollars whatever the deployment settles in,
+ * while the card beside it formatted the same amount in the settlement
+ * currency, so on a EUR deployment the form asked for dollars and saved euros.
+ */
+export const TheBudgetFormNamesTheSettlementCurrency: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
+        ["/virtual-keys", () => KEYS],
+        ["/budgets", () => BUDGETS],
+        ["/rate-limits", () => RATE_LIMITS],
+      ])}
+    >
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    // the card and the form agree on the currency once the settings have answered
+    await expect(await within(canvasElement).findByText(/€500\.00/)).toBeVisible();
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    await expect(await within(sheet()).findByLabelText("Limit (EUR)")).toHaveValue(100);
+    await expect(within(sheet()).queryByLabelText("Limit (USD)")).toBeNull();
+  },
+};
+
+/**
+ * #2095: the scope badge printed `project` (the stored enum, untranslated in
+ * `ru`) beside the scope's uuid, on every card, repeating what the picker above
+ * already names. The cards now say nothing about it, and the controls and the
+ * confirmation name the scope the way the picker does.
+ */
+export const TheScopeIsNamedNotShownAsAnId: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("button", {
+        name: "Delete the monthly budget of $500.00 for Gateway",
+      }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", {
+        name: "Delete the 600 rpm · 150,000 tpm rate limit for Gateway",
+      }),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText("project")).toBeNull();
+    await expect(canvas.queryByText("project-1")).toBeNull();
+
+    // the forms call the scope the same thing, not `project:project-1`
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    await expect(await within(sheet()).findByText("Spend cap for Gateway")).toBeInTheDocument();
+    await expectClosesWithoutPrompting();
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    await expect(
+      await within(sheet()).findByText(/^Throughput caps for Gateway/),
+    ).toBeInTheDocument();
+    await expect(within(sheet()).queryByText(/project:/)).toBeNull();
+  },
+};
+
+/**
+ * A scope that is not a project is named by its own label, and the
+ * confirmation says what kind of scope it is leaving uncapped.
+ */
+export const AVirtualKeyScopeIsNamedByItsKeyName: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "Virtual key");
+    await pickOption(await canvas.findByLabelText("Scope"), "backend service");
+    await clickWhenEnabled(
+      canvasElement,
+      "Delete the monthly budget of $500.00 for backend service",
+    );
+    await waitFor(() =>
+      expect(
+        within(document.body).getByText(/^Virtual key backend service is left without this budget/),
+      ).toBeVisible(),
+    );
+    await cancelConfirmation();
+  },
+};
+
+// the periods the dashboard can name, and one it cannot
+const PERIOD_BUDGETS: BudgetRow[] = [
+  { ...BUDGETS[0], id: "period-1", period: "30d", limit_usd: "500.00" },
+  { ...BUDGETS[0], id: "period-2", period: "1d", limit_usd: "50.00" },
+  { ...BUDGETS[0], id: "period-3", period: "total", limit_usd: "1000.00" },
+  { ...BUDGETS[0], id: "period-4", period: "7d", limit_usd: "120.00" },
+];
+
+/**
+ * #2095: the period badge printed the stored text. A known period is named in
+ * words, and one the dashboard has no name for is kept exactly as stored, so
+ * the operator reads what the row holds. #1902 owns what the field accepts.
+ */
+export const PeriodsAreNamedAndAnUnknownOneIsKeptAsStored: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/virtual-keys", () => KEYS],
+        ["/budgets", () => PERIOD_BUDGETS],
+        ["/rate-limits", () => RATE_LIMITS],
+      ])}
+    >
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("monthly")).toBeVisible();
+    await expect(canvas.getByText("daily")).toBeVisible();
+    await expect(canvas.getByText("lifetime")).toBeVisible();
+    await expect(canvas.getByText("7d")).toBeVisible();
+    await expect(canvas.queryByText("30d")).toBeNull();
+    await expect(canvas.queryByText("1d")).toBeNull();
+    await expect(canvas.queryByText("total")).toBeNull();
+  },
+};
+
+/**
+ * #2095: the caps were 10px badge text, below the detector's floor, on the card
+ * whose whole point is those numbers. They are set the way the budget's amount
+ * is, and they group digits through the dashboard's locale.
+ */
+export const RateLimitCapsAreTheFigureOfTheCard: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const amount = await canvas.findByText("$500.00");
+    const cap = canvas.getByText("150,000");
+    const type = (node: HTMLElement) => {
+      const { fontSize, fontFamily, fontWeight } = getComputedStyle(node);
+      return { fontSize, fontFamily, fontWeight };
+    };
+    await expect(type(cap)).toEqual(type(amount));
+    await expect(parseFloat(type(cap).fontSize)).toBeGreaterThan(11);
+    await expect(canvas.queryByText(/150000/)).toBeNull();
+    // the unit stays beside its number, once per cap that is set
+    await expect(canvas.getAllByText("tpm")).toHaveLength(2);
+    await expect(canvas.getAllByText("rpm")).toHaveLength(1);
+  },
+};
+
+/**
+ * #2095: a budget with an unpriced override wrapped its edit and delete buttons
+ * onto a second line, so two cards side by side had their controls at
+ * different heights. The controls have a line of their own now.
+ */
+export const CardControlsShareOneHeight: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: /^Edit the daily budget/ });
+    // exactly one of the two budgets carries the badge that used to push them down
+    await expect(canvas.getAllByText(/^unpriced: /)).toHaveLength(1);
+    await expectControlsShareAHeight(canvasElement);
+  },
+};
+
+// a delete that never answers, so the pending state is the one left on screen
+const deleteNeverAnswers = scoped(async (input, init) => {
+  const url = String(input);
+  if (init?.method === "DELETE") return new Promise<Response>(() => {});
+  if (url.includes("/virtual-keys")) return json(KEYS);
+  if (url.includes("/budgets")) return json(BUDGETS);
+  return json(RATE_LIMITS);
+});
+
+/**
+ * #2095: `deleting` was the mutation's own `isPending`, which every card reads,
+ * so one delete put a spinner on every card's bin. Only the row being deleted
+ * is held.
+ */
+export const OnlyTheRowBeingDeletedSpins: Story = {
+  render: () => (
+    <Harness fetchStub={deleteNeverAnswers}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    // the dialog is over the cards and makes them inert, so they are read as hidden
+    const bin = (period: string) =>
+      within(canvasElement).getByRole("button", {
+        name: new RegExp(`^Delete the ${period} budget`),
+        hidden: true,
+      });
+    await clickWhenEnabled(canvasElement, /^Delete the monthly budget/);
+    await confirmDestructive(/monthly budget/, "Delete budget");
+    await waitFor(() => expect(bin("monthly")).toBeDisabled());
+    await expect(bin("daily")).toBeEnabled();
+  },
+};
+
+/** The same holds for the rate limits, which keep their own mutation. */
+export const OnlyTheRateLimitBeingDeletedSpins: Story = {
+  render: () => (
+    <Harness fetchStub={deleteNeverAnswers}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const bin = (caps: string) =>
+      within(canvasElement).getByRole("button", {
+        name: new RegExp(`^Delete the ${caps} rate limit`),
+        hidden: true,
+      });
+    await clickWhenEnabled(canvasElement, /^Delete the 600 rpm · 150,000 tpm rate limit/);
+    await confirmDestructive(/600 rpm · 150,000 tpm/, "Delete rate limit");
+    await waitFor(() => expect(bin("600 rpm · 150,000 tpm")).toBeDisabled());
+    await expect(bin("20,000 tpm")).toBeEnabled();
+  },
+};
+
+/**
+ * #2095: the screen read in `ru` showed `project`, the stored enum, and the raw
+ * period, beside grouped digits that followed the browser rather than the
+ * dashboard. Nothing on a card or in its confirmation is left in English but
+ * the `rpm` and `tpm` notation.
+ */
+export const ReadsInRussianWithNoRawEnglishEnum: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("ежемесячно")).toBeVisible();
+    await expect(canvas.getByText("ежедневно")).toBeVisible();
+    await expect(canvas.queryByText("30d")).toBeNull();
+    await expect(canvas.queryByText("project")).toBeNull();
+    await expect(canvas.getByText(/^150\s000$/)).toBeVisible();
+
+    await clickWhenEnabled(canvasElement, /^Удалить бюджет .*\(ежемесячно\) для Gateway$/);
+    await waitFor(() =>
+      expect(
+        within(document.body).getByRole("heading", {
+          name: /^Удалить бюджет 500,00\s\$ \(ежемесячно\)\?$/,
+        }),
+      ).toBeVisible(),
+    );
+    await waitFor(() =>
+      expect(
+        within(document.body).getByText(/^Проект Gateway останется без этого бюджета/),
+      ).toBeVisible(),
+    );
+    await userEvent.click(
+      within(await confirmation()).getByRole("button", { name: ru.common.cancel }),
+    );
+    await expectSheetClosed();
+
+    await clickWhenEnabled(canvasElement, /добавить бюджет/i);
+    await expect(await within(sheet()).findByLabelText("Лимит (USD)")).toBeInTheDocument();
+    await expect(within(sheet()).getByText("Лимит расходов для Gateway")).toBeInTheDocument();
+    await expect(within(sheet()).queryByText(/project/)).toBeNull();
+  },
+};
+
+let budgetReads: Recorder;
+/**
+ * #2095: the only failure story was a 403, which withholds the retry. A server
+ * error is what offers "Try again", and the retry has to ask the control plane
+ * again rather than redraw the failure.
+ */
+export const AFailedReadCanBeRetried: Story = {
+  render: () => {
+    let attempts = 0;
+    budgetReads = recording(
+      scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) {
+          attempts += 1;
+          return attempts === 1
+            ? json({ error: { message: "the budget store is unavailable" } }, 503)
+            : json(BUDGETS);
+        }
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={budgetReads.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /budgets/i);
+    // a read that failed holds no rows, and the screen claims nothing about them
+    await expectNoFalseEmpty(canvasElement, /no budgets for this scope/i);
+    await expect(canvas.getByText("the budget store is unavailable")).toBeVisible();
+
+    const reads = () =>
+      budgetReads.calls.filter((c) => c.method === "GET" && c.url.includes("/budgets")).length;
+    const before = reads();
+    await userEvent.click(canvas.getByRole("button", { name: en.errors.load.retry }));
+    await waitFor(() => expect(canvas.getByText("$500.00")).toBeVisible());
+    await expect(reads()).toBeGreaterThan(before);
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
 // the toolbars and budget headers wrap instead of pushing the page sideways (#1242)
 export const Mobile: Story = {
   ...atMobile,
@@ -526,6 +1071,8 @@ export const Mobile: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole("button", { name: /add budget/i });
     await expectNoHorizontalOverflow();
+    await canvas.findByRole("button", { name: /^Edit the daily budget/ });
+    await expectControlsShareAHeight(canvasElement);
   },
 };
 
@@ -541,11 +1088,11 @@ export const RefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add budget");
     await expectRefused(canvasElement, "Add rate limit");
-    await expectRefused(canvasElement, /Delete the 30d budget/);
-    await expectRefused(canvasElement, /Delete the 600 rpm · 150000 tpm rate limit/);
+    await expectRefused(canvasElement, /Delete the monthly budget/);
+    await expectRefused(canvasElement, /Delete the 600 rpm · 150,000 tpm rate limit/);
     // editing in place is `update`, a capability of its own (#1285)
-    await expectRefused(canvasElement, /Edit the 30d budget/);
-    await expectRefused(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    await expectRefused(canvasElement, /Edit the monthly budget/);
+    await expectRefused(canvasElement, /Edit the 600 rpm · 150,000 tpm rate limit/);
   },
 };
 
@@ -556,8 +1103,8 @@ export const EditableByAnAdmin: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectAllowed(canvasElement, /Edit the 30d budget/);
-    await expectAllowed(canvasElement, /Edit the 600 rpm · 150000 tpm rate limit/);
+    await expectAllowed(canvasElement, /Edit the monthly budget/);
+    await expectAllowed(canvasElement, /Edit the 600 rpm · 150,000 tpm rate limit/);
   },
 };
 
@@ -570,6 +1117,6 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add budget");
     await expectRefused(canvasElement, "Add rate limit");
-    await expectRefused(canvasElement, /Edit the 30d budget/);
+    await expectRefused(canvasElement, /Edit the monthly budget/);
   },
 };

@@ -99,7 +99,7 @@ That set is read from `GET /api/v1/currency`, which answers from the bootstrap c
 
 A price already stored in a code that is no longer in the table still displays, flagged as unconvertible on both the Pricing screen and the model sheet. Its spend is missing from base-currency totals and budgets until you add the rate back.
 
-Every amount the dashboard renders — LLM Logs, budget cards, team cards, the spend tiles — is formatted in the base currency from that same endpoint, so a deployment budgeting in EUR reads `€` rather than a hardcoded `$`. Model prices are the exception: they are shown in the currency the price row was written in, which is what you typed. Amounts, dates and counts all follow the dashboard's language rather than the browser's, so the separators in a number never disagree with the copy beside it.
+Every amount the dashboard renders — LLM Logs, budget cards, team cards, the spend tiles — is formatted in the base currency from that same endpoint, so a deployment budgeting in EUR reads `€` rather than a hardcoded `$`, and the budget form's **Limit** field is labelled `EUR` rather than `USD`. Model prices are the exception: they are shown in the currency the price row was written in, which is what you typed. Amounts, dates and counts all follow the dashboard's language rather than the browser's, so the separators in a number never disagree with the copy beside it.
 
 ## Step 2 — Configure spend budgets
 
@@ -298,9 +298,20 @@ deleting a budget and creating a new one. What happens to spend already counted:
 - **Changing the period** moves the budget onto the new window's counter, for
   example today's for a switch to `daily`.
 
+The bin on a card deletes that budget or rate limit, and asks first. The
+dialog names the cap, the amount and period for a budget or the caps for a rate
+limit, since a scope can hold several, and says which scope it leaves without
+it. Once you confirm and the gateway picks up the change, that scope runs
+without the cap: uncapped, unless another budget or rate limit covers it.
+
 Budgets defined in `rolter.toml` are edited in the file, and a gateway running
 from that file needs a restart to apply them; see
 [Hot Reload](/configuration/hot-reload).
+
+A card shows a budget's period in words when it is one the gateway recognises:
+`daily` (stored as `daily`, `1d` or `24h`), `monthly` (`monthly`, or the
+dashboard's default `30d`) or `lifetime` (`total`, `lifetime` or `all`). Any
+other text is shown exactly as stored.
 
 ## Realtime sessions
 

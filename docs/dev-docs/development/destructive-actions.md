@@ -69,6 +69,12 @@ Five properties are load-bearing:
   the panel, and keeps everything outside the topmost modal `inert` while it is
   up, so a Tab has nothing behind the scrim to land on (#1998).
 
+The control that opened the dialog carries `pending` too, scoped to its row. A
+list has one mutation for every row, so `pending={remove.isPending}` alone puts a
+spinner on every row's control while one delete is out (#2095). Compare the row
+with the target, `remove.isPending && target?.id === row.id`, the way `Pricing`
+and `Limits` do.
+
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
 key rotation is the case that motivated it.
@@ -254,6 +260,13 @@ deleted through a destructive button that flipped a local flag and swapped in
 its own body, error line and second button (#1893). No `DialogFooter` held it,
 so `check:primitives` never saw it, and it reported none of the rows below.
 #2345 tracks teaching the check that shape.
+
+**No confirmation at all is the case no check catches.** `DeleteIconButton`
+looks the same whether its `onClick` opens a dialog or sends the request, so
+`check:primitives` has nothing to match, and the budget and rate-limit deletes on
+`Limits` fired on the first click long after #1179 swept the other screens
+(#1904). What pins it is the story: its cancel step looks for a dialog to
+dismiss, and a delete that never asked has none.
 
 **A confirmation is not a substitute for a reversible action.** Where retiring
 and deleting both exist — `CostAttribution` — the copy points at the reversible

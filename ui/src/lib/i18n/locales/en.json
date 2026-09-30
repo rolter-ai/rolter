@@ -2369,6 +2369,24 @@
       "editBudgetAria": "Edit the {{period}} budget of {{amount}} for {{scope}}",
       "deleteRateLimitAria": "Delete the {{limit}} rate limit for {{scope}}",
       "editRateLimitAria": "Edit the {{limit}} rate limit for {{scope}}",
+      "confirm": {
+        "budgetTitle": "Delete the {{period}} budget of {{amount}}?",
+        "budgetBody": "{{scope}} is left without this budget once the gateway picks up the change: spend there is no longer stopped at the cap, unless another budget covers it.",
+        "budgetConfirm": "Delete budget",
+        "rateLimitTitle": "Delete the {{limit}} rate limit?",
+        "rateLimitBody": "{{scope}} is left without this rate limit once the gateway picks up the change: requests there are no longer throttled, unless another rate limit covers them.",
+        "rateLimitConfirm": "Delete rate limit"
+      },
+      "periods": {
+        "daily": "daily",
+        "monthly": "monthly",
+        "total": "lifetime"
+      },
+      "units": {
+        "rpm": "rpm",
+        "tpm": "tpm"
+      },
+      "scopeNamed": "{{type}} {{name}}",
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
@@ -2385,7 +2403,7 @@
       "budgetSheetTitle": "Add budget",
       "budgetEditTitle": "Edit budget",
       "budgetSheetSubtitle": "Spend cap for {{scope}}",
-      "budgetLimitLabel": "Limit (USD)",
+      "budgetLimitLabel": "Limit ({{currency}})",
       "budgetPeriodLabel": "Period",
       "budgetPeriodHint": "e.g. 30d, 7d, 1d",
       "rateLimitSheetTitle": "Add rate limit",
