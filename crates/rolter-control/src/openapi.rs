@@ -686,6 +686,12 @@ fn operations() -> Vec<Op> {
             )
             .query(AUDIT_LOG_QUERY),
             Op::get(
+                "/api/v1/audit-log",
+                "listDeploymentAuditLog",
+                "Page the deployment-wide audit log (superadmin)",
+            )
+            .query(AUDIT_LOG_QUERY),
+            Op::get(
                 "/api/v1/orgs/{org_id}/teams",
                 "listTeams",
                 "List an organization's teams",
@@ -3476,7 +3482,11 @@ mod tests {
     #[test]
     fn the_keyset_paged_logs_document_their_cursors() {
         let doc = document();
-        for path in ["/api/v1/mcp/logs", "/api/v1/orgs/{org_id}/audit-log"] {
+        for path in [
+            "/api/v1/mcp/logs",
+            "/api/v1/orgs/{org_id}/audit-log",
+            "/api/v1/audit-log",
+        ] {
             let params = doc["paths"][path]["get"]["parameters"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{path} declares its query parameters"));
