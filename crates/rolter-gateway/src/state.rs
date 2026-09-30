@@ -1046,6 +1046,28 @@ impl AppState {
         self.realtime_sessions.close();
         self.realtime_sessions.drained(grace).await
     }
+
+    /// Flush and stop the request-log writer, the health-event writer and the
+    /// usage-recording workers, waiting at most `grace` for all three together.
+    /// Returns whether they finished inside `grace`.
+    ///
+    /// None of them ends on its own at shutdown: `AppState` clones held by the
+    /// prober, scraper and watcher keep every channel sender alive, so without
+    /// this the runtime is dropped with up to `[logging] flush_ms` of rows in a
+    /// batch and any queued budget or `tpm` records unwritten (#1924). Call it
+    /// after the HTTP and realtime drains, once nothing produces new work. The
+    /// three run concurrently so a dead ClickHouse and a dead Redis share one
+    /// `grace` rather than spending it twice.
+    pub async fn drain_sinks(&self, grace: std::time::Duration) -> bool {
+        let flush = async {
+            tokio::join!(
+                self.log.shutdown(),
+                self.health_events.shutdown(),
+                self.log.usage_recorders().shutdown(),
+            );
+        };
+        tokio::time::timeout(grace, flush).await.is_ok()
+    }
 }
 
 /// How long a closed breaker entry may sit with an unmoved failure count before

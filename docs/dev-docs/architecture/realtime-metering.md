@@ -199,9 +199,30 @@ So the gateway drains realtime sessions itself (`Sessions` in `realtime.rs`,
    A session still open after it is logged as a warning.
 
 The budget and `tpm` writes are awaited by the meter, so they land before the
-process exits. The request-log rows are handed to the shared ClickHouse writer,
-which is not drained at shutdown yet, so rows from the last `[logging]
-flush_ms` can still be lost. That gap is not specific to realtime (#1924).
+process exits. The request-log rows are handed to the shared ClickHouse writer
+and the budget and `tpm` records to the usage-recording workers; both are
+flushed by the sink drain that runs after the realtime drain (below).
+
+### Sink drain
+
+The request-log writer, the health-event writer and the usage-recording workers
+(`SinkTasks` in `sink_drain.rs`, `AppState::drain_sinks`) each hold work that
+only leaves the process once they flush: up to `[logging] flush_ms` of rows in a
+batch, whatever is queued on their channel, and any budget or `tpm` record not
+yet written to Redis. They cannot rely on "every sender dropped" to finish,
+because `AppState` clones live on in the prober, scraper and watcher tasks, so
+at shutdown they used to be cancelled mid-batch (#1924).
+
+After the HTTP and realtime drains, `run()` cancels each sink's token. The task
+closes its receiver, which still yields everything already queued and then
+`None`, so the normal "senders gone" path flushes the remainder and exits. The
+three sinks drain concurrently and the process waits at most 5 seconds for all
+of them. That bound is deliberately short: a healthy ClickHouse or Redis takes
+milliseconds, so it only ever expires when one is unreachable, and it must not
+push the HTTP drain, the 10 second realtime grace and this wait past the 30
+seconds an orchestrator usually allows before `SIGKILL`. When it expires, a
+warning is logged and whatever the sinks still held is lost. A `try_send` that
+races the close is counted as dropped, like any other full or stopped queue.
 
 ## Failure modes
 
@@ -216,8 +237,8 @@ flush_ms` can still be lost. That gap is not specific to realtime (#1924).
 - **The relay task dies.** The meter sees its channel close, flushes what it
   was already handed and stops.
 - **The process shuts down.** Covered by [Shutdown](#shutdown). A `SIGKILL`, or
-  a drain that outlives its 10 seconds, still loses whatever the meter had not
-  written.
+  a drain that outlives its 10 seconds (realtime) or 5 seconds (sinks), still
+  loses whatever the meter or the writers had not written.
 
 ## What is not metered
 
