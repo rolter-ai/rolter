@@ -185,6 +185,14 @@ Sign in first — minting is a per-account action, and a deployment running with
 
 To test one particular key on purpose — a customer's, or one you are about to rotate — open **Use a specific key** and paste it. A pasted key is used exactly as given, with no expiry of rolter's choosing, until you replace it or mint a session key.
 
+## The chat composer
+
+**Enter** sends the message and **Shift+Enter** adds a new line, so a prompt can run over several lines. The box grows with the draft up to about six lines, then scrolls. The **Enter** that confirms a candidate in an input method editor, as when typing Japanese, Chinese or Korean, belongs to the composition and does not send.
+
+Each chat column keeps its conversation, and any draft you have not sent, while you visit another tab. A reply still on its way when you leave lands in its column. Nothing is saved: the conversation lives in the page, so reloading or leaving the Playground clears it, and the other tabs start over each time you return to them.
+
+A screen reader hears each finished reply once it has arrived, as the model's name followed by the reply, and hears a failed send's error as an alert. Every field has a name of its own, not only a placeholder.
+
 ## Markdown in the Playground
 
 Model replies render as markdown: headings, lists, tables, inline code, and fenced code blocks highlighted per their language tag with a copy button of their own. Use the **¶** button in the column header to switch to raw output when the question is exactly what the model emitted, including stray delimiters and whitespace.

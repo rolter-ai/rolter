@@ -746,6 +746,8 @@
       "unservedHidden_one": "{{count}} configured route is left out because the gateway does not serve it.",
       "unservedHidden_other": "{{count}} configured routes are left out because the gateway does not serve them.",
       "modelAria": "Model",
+      "imagePromptAria": "Image prompt",
+      "speechTextAria": "Text to synthesize",
       "imageSizeAria": "Image size",
       "imageCountAria": "Number of images",
       "voiceAria": "Voice",
@@ -758,6 +760,12 @@
       "removeAttachment": "Remove attachment",
       "attachImage": "Attach image",
       "messagePlaceholder": "Message…",
+      "messageAria": "Message to {{model}}",
+      "replyAnnounce": "{{model}} replied: {{reply}}",
+      "roles": {
+        "user": "You",
+        "assistant": "Assistant"
+      },
       "send": "Send",
       "sendNeedsKey": "Sending needs a key the gateway accepts. See Session key above.",
       "sendWaiting": "Waiting for the gateway to accept the session key.",
@@ -766,6 +774,7 @@
       "single": "Single",
       "addModel": "Add model",
       "textPlaceholder": "Enter text…",
+      "textRowAria": "Text {{n}}",
       "removeText": "Remove text",
       "addText": "Add text",
       "embedProject": "Embed & project",
@@ -794,6 +803,7 @@
       "eventLogSubtitle": "Frames sent and received",
       "noEvents": "no events yet",
       "framePlaceholder": "Send a text frame…",
+      "frameAria": "Text frame to send",
       "modes": {
         "chat": "Chat",
         "embeddings": "Embeddings",
@@ -2976,7 +2986,7 @@
       "label": "Virtual key",
       "placeholder": "sk-rolter-… (the key the gateway authenticates)",
       "save": "Save",
-      "saved": "Saved ✓",
+      "saved": "Saved",
       "hint": "A rolter virtual key, minted on the Virtual Keys screen. Not a provider key — those are configured on the provider and are never sent by clients."
     },
     "snippet": "Code snippet",
