@@ -702,11 +702,15 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
-    // MCP tool-call telemetry: written by the gateway, read by an operator
+    // MCP tool-call telemetry: written by the gateway, so only a superadmin
+    // (or the admin token) creates a row. Reads follow the request log
+    // (#1831): a user reads the rows of the orgs, teams and projects they hold
+    // a role in, plus every row of their own OAuth sessions, and the tool
+    // arguments and results need the `request_payload` floor
     Capability {
         resource: "mcp_log",
-        scope: "deployment",
-        read: SUPER,
+        scope: "project",
+        read: VIEWER,
         create: SUPER,
         update: NA,
         delete: NA,

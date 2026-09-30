@@ -337,6 +337,14 @@ The captured request and response bodies follow, or the reason they are absent (
 
 The **Time** column shows the clock with milliseconds, such as `15:34:56.789`, because the milliseconds are what tell requests apart. The date is in the tooltip on the time and at the top of the detail drawer. **Status** and **Cost** stay on screen at every width, with **Time** and **Model**. **Latency**, **Tokens** and **Provider** drop out as the table gets narrower, widest first, and all three are in the detail drawer. The table's own width decides, not the window's, so opening the filter rail or the drawer hides columns instead of scrolling **Cost** out of view. Below 1280 px the drawer opens as a sheet over the table instead of beside it.
 
+## Who reads the MCP call log
+
+`GET /api/v1/mcp/logs`, `/api/v1/mcp/logs/summary` and `/api/v1/mcp/logs/{event_id}` follow the same rule as the request log. A signed-in user reads the tool calls of the orgs, teams and projects where they hold a role, and every call made under their own MCP OAuth sessions, whatever project the gateway attributed it to. A superadmin, the admin token and open mode read everything. Someone with no role anywhere gets an empty list and a summary of zero, and a call outside their reach answers `404` exactly like one that does not exist.
+
+The list carries no tool arguments or results. The single-event read carries them only for a caller who is a member or above at the call's project, or a viewer on a project whose admin set `payload_min_role` to `viewer` (the same setting that shows LLM request bodies). Anyone else gets both fields empty and `payload_withheld: 1`. Recording an event (`POST /api/v1/mcp/events`) stays with the gateway and superadmins.
+
+Calls recorded before an MCP proxy attributed them to an org, project and user carry none of the three, so they stay visible to superadmins only. Nothing needs migrating: new calls are attributed when they are written.
+
 ## Built-in dashboard
 
 The Rolter control plane's dashboard queries ClickHouse directly to give you usage, spend, latency percentiles, and error rates — all sliced by model, project, and virtual key. No extra ETL or data pipeline is needed: the rows Rolter writes are the source of truth for the dashboard.

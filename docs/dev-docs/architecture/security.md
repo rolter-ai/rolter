@@ -345,6 +345,48 @@ design (`/api/v1/ping`, `/roles`, `/provider-kinds`, `/currency`, `/config`,
 `crates/rolter-control/tests/analytics_scoping.rs` pins the row and body rules
 against a real ClickHouse.
 
+## Who reads the MCP tool-call log (#1831)
+
+`GET /api/v1/mcp/logs`, `/summary` and `/{event_id}` were superadmin-only, which
+left the engineer whose agent's tool call failed with no way to read the row that
+said why. They now follow the request-log model above, through the same
+`AnalyticsAccess` filter (`McpLogAccess` in `analytics_access.rs` is the extractor
+for this table), so there is one implementation of "which rows may this caller
+read" rather than two:
+
+| caller                                     | rows                                                                                                | tool arguments and results                                                                                                                |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| admin token, superadmin session, open mode | all, including rows with no tenancy                                                                 | all                                                                                                                                       |
+| a user with memberships or custom roles    | rows whose org, team or project any of their roles reaches, and every row whose `user_id` is theirs | where their role at the row's scope meets the `request_payload` floor (member), or a viewer on a project with `payload_min_role = viewer` |
+| no role anywhere                           | none: an empty list, a summary of zero, `404` on a detail                                           | none                                                                                                                                      |
+| no credentials or a forged bearer          | `401`                                                                                               | `401`                                                                                                                                     |
+
+- **The floors are matrix rows.** `mcp_log:read` is `viewer` at project scope
+  and the body floor is the existing `request_payload:read`; `mcp_log:create`
+  stays superadmin, so only the gateway's credential or a superadmin records an
+  event. A custom role may now grant `mcp_log:read`.
+- **Own rows.** `mcp_tool_call_logs.user_id` carries the id of the user who owns
+  the MCP OAuth session that made the call. The predicate is
+  `user_id = caller`, bound as a parameter, and it admits the row without any
+  role, so the caller sees their own failures even on a call the gateway could
+  not attribute to a project. Their arguments and results still need the body
+  floor, which a row with no scope never meets, so an unattributed row's bodies
+  stay withheld from its owner.
+- **Bodies are masked in the database.** The detail query blanks `arguments` and
+  `result` and sets `payload_withheld` for a caller below the floor, like the
+  invocation list. The flag reads the table-qualified columns; unqualified it
+  would resolve to the masked alias and never fire. A row the caller may not see
+  is a `404`, so an event id cannot be probed across tenants.
+- **Rows from before attribution.** The table already had `org_id`, `team_id`,
+  `project_id` and `user_id`, filled by whoever submits the event, so no
+  migration was needed. A row written with those empty (everything the table
+  holds from before the gateway attributes its calls) has no tenant and no
+  owner, so it stays visible to superadmins and the admin token only.
+
+`crates/rolter-control/tests/mcp_log_scoping.rs` pins the rules against a real
+ClickHouse, and `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller`
+still covers the three routes.
+
 ## One org never reaches another (#1844, #1845)
 
 A provider's credential belongs to the org that stored it, and until #1844 the
