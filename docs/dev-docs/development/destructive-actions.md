@@ -200,6 +200,34 @@ included. The assertion is a z-index comparison, because the sheet is `inert`
 under the dialog and no query tells the layers apart (`expectPaintsOver` in
 `Users.stories.tsx`).
 
+Mapping an identity-provider group to a role confirms when the grant reaches
+far (#2078), on the SCIM and the single sign-on screens alike. Both render the
+shared `GroupMappings` (`ui/src/components/GroupMappings.tsx`), so the rule is
+written once:
+
+- **The form starts on `viewer`**, chosen by name in the component rather than
+  read off `ROLES`, whose order other screens depend on. After a mapping is
+  written it starts over, so the next one does not inherit an admin grant.
+- **`admin`, or any role at the whole organization, confirms** as
+  `<kind>-group-mapping-grant` (`scim` or `sso`) with `tone="default"`, since
+  it is a grant and not a removal. The scope starts on the whole organization,
+  so a mapping left at its defaults confirms. A `member` or `viewer` mapping on
+  one team or one project is sent at once.
+- **The dialog names which of the two raised it.** The title carries the group
+  and the role, the body the scope and, from the screen, when the role
+  arrives (SCIM reconciles on the spot, single sign-on at the member's next
+  sign-in), and `children` lists the reasons: what `admin` is, and that the
+  whole organization is every team and project rather than one. Both reasons
+  appear for `admin` across the organization.
+- **A refusal stays in the dialog.** The mutation is reset on cancel, and the
+  form's own inline error is not drawn while the dialog is up, so the message
+  appears once.
+
+Removing a mapping keeps its own confirmation, `<kind>-group-mapping-remove`,
+whose body each screen supplies because what removal does differs: SCIM
+withdraws the role at once, single sign-on stops granting it at the next
+sign-in.
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be

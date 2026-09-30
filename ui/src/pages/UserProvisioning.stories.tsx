@@ -3,6 +3,10 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
 import {
+  cancelConfirmation,
+  confirmation,
+  confirmDestructive,
+  expectInStatusRegion,
   expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
@@ -12,14 +16,17 @@ import {
   json,
   openOptions,
   pickOption,
+  recording,
   Toasted,
   type FetchStub,
+  type Recorder,
   type StoryRole,
 } from "./story-harness";
 import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
 
@@ -652,40 +659,94 @@ export const GroupMappingsEmpty: Story = {
 // second fetch wrapper: the stub is already the only thing the screen talks to
 const postedMappings: unknown[] = [];
 
-// the scope select is why this is more than a group/role pair — a team-scoped
-// grant has to send the team id, and only the team id
-export const MapGroupPostsTheScopedRole: Story = {
-  render: () => {
-    postedMappings.length = 0;
-    const stub = scoped(
+// the stub of the story being played, so `play` reads what `render` was given.
+// every request is kept, which is what lets a story say a cancel sent nothing
+let sent: Recorder;
+
+const MAPPINGS_URL = "scim-group-mappings";
+
+/**
+ * An org with no mappings whose create answers with the row it was given, and
+ * whose every request is recorded in `sent`.
+ *
+ * The list stays empty: what a story asserts is the request, and the row
+ * appearing is a fixture answering, not the screen.
+ */
+function recordMappings(): FetchStub {
+  sent = recording(
+    scoped(
       async () => json(TOKENS),
       async (init) => {
         if (init?.method === "POST") {
-          postedMappings.push(JSON.parse(String(init.body)));
-          return json(mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" }));
+          return json(mapping({ id: "map-new", ...JSON.parse(String(init.body)) }), 201);
         }
-        return json(
-          postedMappings.length
-            ? [mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" })]
-            : [],
-        );
+        return json([]);
       },
+    ),
+  );
+  return sent.stub;
+}
+
+type Posted = { group_name: string; role: string; team_id?: string; project_id?: string };
+
+/** the dialog's own paragraph of reasons, which is all that names why it was raised */
+const reasonAdmin = en.groupMappings.grant.reasonAdmin;
+const reasonOrg = en.groupMappings.grant.reasonOrg;
+
+// a new mapping starts on the least powerful role (#2078). the row used to
+// preselect `admin` at the whole organization, so typing a name and pressing
+// the button made everyone in the group an org admin. it also had no visible
+// labels and a placeholder that was the name of a mapping already in the list
+export const NewMappingStartsOnViewer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json(MAPPINGS),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByLabelText("Role to grant")).toHaveValue("Viewer");
+    // the picker is a skeleton until the org's teams and projects answer
+    await expect(await canvas.findByLabelText("Where the role applies")).toHaveValue(
+      "Whole organization",
     );
-    return <Harness fetchStub={stub} />;
+
+    // each control carries a label you can read, not only one a screen reader is told
+    for (const label of ["IdP group", "Where the role applies", "Role to grant"]) {
+      await expect(canvas.getByText(label, { selector: "label" })).toBeVisible();
+    }
+
+    // and the empty field cannot be taken for a filled one: the example is marked as one,
+    // and is not the name of a mapping that is listed
+    const group = canvas.getByLabelText("IdP group");
+    await expect(group).toHaveValue("");
+    const placeholder = group.getAttribute("placeholder");
+    await expect(placeholder).toBe(en.groupMappings.groupPlaceholder);
+    await expect(placeholder).toMatch(/^e\.g\. /);
+    await expect(MAPPINGS.map((m) => m.group_name)).not.toContain(placeholder);
   },
+};
+
+// the scope select is why this is more than a group/role pair — a team-scoped
+// grant has to send the team id, and only the team id. a viewer on one team is
+// the narrowest grant there is, so it saves without asking
+export const MapGroupPostsTheScopedRole: Story = {
+  render: () => <Harness fetchStub={recordMappings()} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "sre-oncall");
-    await pickOption(canvas.getByLabelText("Where the role applies"), "core");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-    await waitFor(() => expect(postedMappings).toHaveLength(1));
-    await expect(postedMappings[0]).toEqual({
+    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
       group_name: "sre-oncall",
-      role: "admin",
+      role: "viewer",
       team_id: "team-1",
     });
-    await waitFor(() => expect(canvas.getByText("sre-oncall")).toBeVisible());
+    // nothing came between the press and the request
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
 
@@ -713,7 +774,7 @@ export const MapGroupRejectedByTheServer: Story = {
     const canvas = within(canvasElement);
     const group = await canvas.findByLabelText("IdP group");
     await userEvent.type(group, "sre-oncall");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
 
     await waitFor(() =>
@@ -722,6 +783,245 @@ export const MapGroupRejectedByTheServer: Story = {
       ).toBe(true),
     );
     await expect(group).toHaveValue("sre-oncall");
+  },
+};
+
+/**
+ * Admin is asked about first (#2078), and the question names the group, the
+ * role and the scope. Cancelling sends nothing and keeps what was typed;
+ * confirming sends exactly the body the dialog described, and the form starts
+ * over on Viewer rather than carrying the admin grant into the next mapping.
+ */
+export const AdminGrantAsksFirst: Story = {
+  render: () => <Harness fetchStub={recordMappings()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText("IdP group");
+    await userEvent.type(group, "sre-oncall");
+    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText("Map sre-oncall to Admin?")).toBeVisible();
+    await expect(dialog.getByText(/gets Admin on core\./)).toBeVisible();
+    await expect(dialog.getByText(/applies straight away/)).toBeVisible();
+    // admin is the only reason: the scope is one team, so nothing says "whole organization"
+    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
+    await expect(dialog.queryByText(reasonOrg)).toBeNull();
+    sent.expectNotSent("POST", MAPPINGS_URL);
+
+    await cancelConfirmation();
+    sent.expectNotSent("POST", MAPPINGS_URL);
+    await expect(group).toHaveValue("sre-oncall");
+    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Admin");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+    await confirmDestructive("Map sre-oncall to Admin?", "Map group");
+    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
+      group_name: "sre-oncall",
+      role: "admin",
+      team_id: "team-1",
+    });
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(group).toHaveValue(""));
+    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Viewer");
+    await expect(canvas.getByLabelText("Where the role applies")).toHaveValue("Whole organization");
+  },
+};
+
+/**
+ * A role across the whole organization is asked about too, however small the
+ * role (#2078): the form starts there, so a viewer is the first thing an
+ * operator can grant org-wide by pressing one button. The dialog says it is the
+ * scope that raised it, and sends no team or project id.
+ */
+export const WholeOrgGrantAsksFirst: Story = {
+  render: () => <Harness fetchStub={recordMappings()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("IdP group"), "ops-readers");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
+    await expect(dialog.getByText(/gets Viewer on the whole organization\./)).toBeVisible();
+    await expect(dialog.getByText(reasonOrg)).toBeVisible();
+    await expect(dialog.queryByText(reasonAdmin)).toBeNull();
+
+    await cancelConfirmation();
+    sent.expectNotSent("POST", MAPPINGS_URL);
+
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+    await confirmDestructive("Map ops-readers to Viewer?", "Map group");
+    // an org-wide grant names no scope at all, rather than an empty one
+    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
+      group_name: "ops-readers",
+      role: "viewer",
+    });
+  },
+};
+
+// the two reasons stack: admin across the whole organization is the widest grant
+// there is, and the dialog says both rather than picking one
+export const AdminOnTheWholeOrgNamesBothReasons: Story = {
+  render: () => <Harness fetchStub={recordMappings()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("IdP group"), "platform-admins");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
+    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
+    await expect(dialog.getByText(reasonOrg)).toBeVisible();
+
+    await confirmDestructive("Map platform-admins to Admin?", "Map group");
+    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
+      group_name: "platform-admins",
+      role: "admin",
+    });
+  },
+};
+
+// the confirmation does not close itself: a refusal stays beside the button that
+// caused it, and cancelling does not leave it standing under the next attempt
+export const MapGroupRefusedInsideTheConfirmation: Story = {
+  render: () => {
+    const stub = scoped(
+      async () => json(TOKENS),
+      async (init) => {
+        if (init?.method === "POST") {
+          return json({ error: { message: "platform-admins is already mapped" } }, 409);
+        }
+        return json([]);
+      },
+    );
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText("IdP group");
+    await userEvent.type(group, "platform-admins");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
+    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
+    await confirmDestructive("Map platform-admins to Admin?", "Map group");
+
+    const dialog = within(await confirmation());
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/already mapped/));
+    // said once: behind the dialog the form does not repeat it
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+
+    await cancelConfirmation();
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+    await expect(group).toHaveValue("platform-admins");
+  },
+};
+
+// the list is read separately from the tokens, and its failure is a LoadError
+// with the retry a read has, not a line of red text or an empty list (#2078)
+export const GroupMappingsCannotLoad: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json({ error: { message: "mappings unavailable" } }, 500),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return group mappings/);
+    await expect(canvas.getByRole("button", { name: en.errors.load.retry })).toBeVisible();
+    // a list that could not be read is not a list of nothing
+    await expect(canvas.queryByText(/Nothing is mapped/)).toBeNull();
+    // the form is still there: writing a mapping does not need the list
+    await expect(canvas.getByLabelText("IdP group")).toBeVisible();
+  },
+};
+
+export const GroupMappingsLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        () => new Promise<Response>(() => {}),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectInStatusRegion(canvasElement, "group-mappings-loading");
+    await expect(canvas.queryByText(/Nothing is mapped/)).toBeNull();
+  },
+};
+
+/**
+ * The add row on a phone, in Russian (#2078). The group name shrank to three
+ * characters and the role read "Администрато" because four controls shared one
+ * wrapping line. Each control has its own line now, labelled, and all of them
+ * are as wide as the card.
+ */
+export const AddRowFitsAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={scoped(
+        async () => json(TOKENS),
+        async () => json(MAPPINGS),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.groupMappings;
+    const canvas = within(canvasElement);
+    const group = await canvas.findByLabelText(copy.groupLabel);
+    const scope = await canvas.findByLabelText(copy.scopeLabel);
+    const role = canvas.getByLabelText(copy.roleLabel);
+    const add = canvas.getByRole("button", { name: copy.add });
+    // the row reads in Russian, and the default survives the language
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
+    await expect(canvas.getByText(copy.groupLabel, { selector: "label" })).toBeVisible();
+
+    // the name field is a field, not a sliver: it spans the card
+    await expect(group.getBoundingClientRect().width).toBeGreaterThan(240);
+    // every control sits inside the phone's width. the page is not asked, because the
+    // token table above the row scrolls sideways on its own terms
+    for (const control of [group, scope, role, add]) {
+      const box = control.getBoundingClientRect();
+      await expect(box.left).toBeGreaterThanOrEqual(0);
+      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
+    }
+
+    // a listed mapping keeps its name too: it was squeezed out by the chips on its row
+    const listed = await canvas.findByText("platform-engineering");
+    await expect(listed.getBoundingClientRect().width).toBeGreaterThan(100);
+    await expect(listed.scrollWidth).toBeLessThanOrEqual(listed.clientWidth);
+
+    // the widest role is spelled out in full, in the control that names it
+    await pickOption(role, ru.shell.roles.admin);
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
+    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
+  },
+};
+
+/** The same two, on a desktop: the role fits its column in Russian without the phone's room. */
+export const AddRowFitsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.groupMappings;
+    const canvas = within(canvasElement);
+    const role = await canvas.findByLabelText(copy.roleLabel);
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
+    await pickOption(role, ru.shell.roles.admin);
+    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
+    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
+    // the scope is one of the three, and is not cut either
+    const scope = await canvas.findByLabelText(copy.scopeLabel);
+    await expect(scope.scrollWidth).toBeLessThanOrEqual(scope.clientWidth);
   },
 };
 

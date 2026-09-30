@@ -210,7 +210,7 @@
       "oauthGrants": "OAuth grants",
       "performanceSettings": "performance settings",
       "roleMembers": "role membership counts",
-      "scimGroupMappings": "group mappings",
+      "groupMappings": "group mappings",
       "securitySettings": "security settings",
       "toolGroups": "tool groups",
       "rbacMatrix": "the permission matrix",
@@ -2231,19 +2231,9 @@
         "title": "Group mappings",
         "empty": "No group is mapped and there is no default role, so every sign-in through this provider is refused until you map one.",
         "emptyWithDefault": "No group is mapped yet, so everyone signing in through this provider gets {{role}}.",
-        "groupLabel": "IdP group",
-        "groupPlaceholder": "platform-engineering",
-        "roleLabel": "Role in this org",
-        "scopeLabel": "Where the role applies",
-        "add": "Map group",
         "addNamed": "Map a group in {{provider}}",
-        "remove": "Remove mapping",
-        "removeNamed": "Remove the mapping for {{group}}",
-        "confirm": {
-          "title": "Remove the mapping for {{group}}?",
-          "body": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn.",
-          "confirm": "Remove mapping"
-        }
+        "grantTiming": "Each member gets it at their next sign-in.",
+        "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
     },
     "auditLog": {
@@ -2566,18 +2556,8 @@
         "title": "Group mappings",
         "subtitle": "A group your identity provider pushes decides nothing on its own. Map it to a role here, and everyone in it is reconciled immediately rather than at the next sync.",
         "empty": "Nothing is mapped, so the groups your identity provider pushes grant nothing: every provisioned account joins as a viewer and stops there until you map a group.",
-        "groupLabel": "IdP group",
-        "groupPlaceholder": "platform-engineering",
-        "scopeLabel": "Where the role applies",
-        "roleLabel": "Role to grant",
-        "add": "Map group",
-        "remove": "Remove mapping",
-        "removeNamed": "Remove the mapping for {{group}}",
-        "confirm": {
-          "title": "Remove the mapping for {{group}}?",
-          "body": "Everyone in that group loses {{role}} straight away, not at the next sync. Roles an admin granted by hand are left alone.",
-          "confirm": "Remove mapping"
-        }
+        "grantTiming": "It applies straight away to whoever is already in the group, not at the next sync.",
+        "removeBody": "Everyone in that group loses {{role}} straight away, not at the next sync. Roles an admin granted by hand are left alone."
       },
       "emptyTitle": "No provisioning tokens yet",
       "emptyBody": "Issue a token, paste it into your identity provider's SCIM connector, and it syncs users into this organization. The token is shown once, at creation.",
@@ -3860,5 +3840,22 @@
   "guardrailPanel": {
     "enforced": "enforced",
     "paused": "paused"
+  },
+  "groupMappings": {
+    "groupLabel": "IdP group",
+    "groupPlaceholder": "e.g. platform-engineering",
+    "scopeLabel": "Where the role applies",
+    "roleLabel": "Role to grant",
+    "add": "Map group",
+    "remove": "Remove mapping",
+    "removeNamed": "Remove the mapping for {{group}}",
+    "removeTitle": "Remove the mapping for {{group}}?",
+    "grant": {
+      "title": "Map {{group}} to {{role}}?",
+      "bodyOrg": "Everyone in the {{group}} group at your identity provider gets {{role}} on the whole organization.",
+      "bodyScoped": "Everyone in the {{group}} group at your identity provider gets {{role}} on {{scope}}.",
+      "reasonAdmin": "Admin has full control within that scope: providers, routes, virtual keys, members and budgets.",
+      "reasonOrg": "The whole organization is every team and project in it, not one of them."
+    }
   }
 }
