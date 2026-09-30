@@ -12,6 +12,7 @@ import {
   expectSheetClosed,
   expectUxEvent,
   expectLoadError,
+  expectListStateInViewport,
   expectListTable,
   expectNoFalseEmpty,
   expectSkeleton,
@@ -106,6 +107,37 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No providers yet/, /Add provider/);
+  },
+};
+
+// the empty state and the skeleton sit in the part of the table a phone shows,
+// not in the row's 760px floor past the right edge of the card (#2362)
+export const EmptyIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={routes([["/providers", () => []]])}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Model Providers", {
+      says: /No providers yet/,
+      cta: /Add provider/,
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const LoadingIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={pending}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Model Providers");
+    await expectNoHorizontalOverflow();
   },
 };
 

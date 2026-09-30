@@ -19,6 +19,7 @@ import {
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
+  expectListStateInViewport,
   expectListTable,
   expectNoFalseEmpty,
   expectSkeleton,
@@ -302,6 +303,66 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No users yet/, /Invite user/);
+  },
+};
+
+/**
+ * A first-run admin on a phone (#2362). The tables scroll sideways inside their
+ * cards below their column floor, and the empty state is the screen's one call
+ * to action: it has to be in the part of the table a reader can see, not
+ * centred in a 960px row that begins off the right edge. Both tables, since the
+ * pending invitations sit under the users and are their own scroller.
+ */
+export const EmptyIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={empty}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, en.screens["gov-users"].title, {
+      says: /No users yet/,
+      cta: /invite user/i,
+    });
+    await expectListStateInViewport(canvasElement, en.pages.users.invitations.title, {
+      says: /No pending invitations/,
+      cta: /invite user/i,
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The Russian copy is the longer one; its title, description and button still fit the card. */
+export const EmptyIsOnScreenAtPhoneWidthInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={empty}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, ru.screens["gov-users"].title, {
+      says: new RegExp(ru.pages.users.emptyTitle),
+      cta: new RegExp(ru.pages.users.emptyAction),
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The loading skeleton is the same row as the empty state, so it is held to the same edge. */
+export const LoadingIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={pending}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, en.screens["gov-users"].title);
+    await expectListStateInViewport(canvasElement, en.pages.users.invitations.title);
+    await expectNoHorizontalOverflow();
   },
 };
 

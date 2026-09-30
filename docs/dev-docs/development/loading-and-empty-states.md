@@ -54,6 +54,13 @@ table for a screen reader (see [list tables](list-tables.md)):
 `ListLoadingRow` and its sibling `ListEmptyRow` take the query itself and decide
 from it, for the reason the next rule gives.
 
+The state row is as wide as the part of the table the reader sees, not as its
+column floor (#2362). Below the floor the table scrolls sideways, and a row the
+width of the floor put the empty title and its call to action centred past the
+right edge of a 375px card, so a phone showed a header over a blank body. The
+row sticks to the frame's left edge and fills it; see
+[list tables](list-tables.md) for how, and for the story that measures it.
+
 Every shape wraps itself in one `role="status"` region labelled with
 `common.loading`, so a screen reader hears one announcement rather than one per
 bar, and a story can assert the screen is busy without reaching for a class
