@@ -73,6 +73,19 @@
     "viewDocs": "View docs",
     "aboutField": "About {{label}}",
     "copyFailed": "Copy failed — the clipboard is unavailable on this page",
+    "secret": {
+      "copyByHand": "Select the value and copy it by hand.",
+      "select": "Select value",
+      "closeTitle": "Close without copying?",
+      "closeBody": "It will not be shown again.",
+      "closeConfirm": "Close anyway",
+      "nextStep": {
+        "title": "Make your first request",
+        "body": "Export the key as <code>{{env}}</code>, then send this request to the gateway.",
+        "gatewayUrl": "Gateway URL",
+        "request": "First request"
+      }
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -448,7 +461,7 @@
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
-    "adaptive-dashboard": "Dashboard",
+    "adaptive-dashboard": "Telemetry",
     "adaptive-settings": "Settings",
     "prompt-repo": "Prompt Repository",
     "skills-repo": "Skills Repository",
@@ -511,6 +524,7 @@
       "last24h": "Last 24h",
       "live": "Live",
       "feed": {
+        "loading": "Loading",
         "loadFailed": "Load failed at {{time}}",
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
       },
@@ -520,7 +534,9 @@
       "trafficTitle": "Traffic share",
       "trafficSub": "Requests by model",
       "noTraffic": "No traffic yet.",
-      "requests": "requests",
+      "sharedRead": "This card reads the same data as {{card}}, which failed to load. Use {{retry}} there.",
+      "requests_one": "request",
+      "requests_other": "requests",
       "byModelTitle": "Requests by model",
       "recentTitle": "Recent requests",
       "nothingLogged": "Nothing logged yet.",
@@ -528,6 +544,7 @@
       "colModel": "Model",
       "colStatus": "Status",
       "colMs": "ms",
+      "openRequest": "Open the {{model}} request from {{time}} in LLM Logs",
       "unpriced": {
         "title_one": "{{count}} request in this window is unpriced.",
         "title_other": "{{count}} requests in this window are unpriced.",
@@ -618,8 +635,21 @@
       "editOne": "Edit provider {{name}}",
       "confirm": {
         "deleteTitle": "Delete provider {{name}}?",
-        "deleteBody": "It stops being usable as a route target. This cannot be undone.",
+        "deleteBody": "Requests addressed to <code>{{slug}}/model</code> stop working. This cannot be undone.",
         "deleteConfirm": "Delete provider"
+      },
+      "usage": {
+        "resource": "the routes and groups that use it",
+        "none": "No route or group uses it.",
+        "inUse": "Still in use. The control plane refuses to delete a provider that a route or group still points at, so take it out of those first.",
+        "routes_one": "Target of {{count}} route",
+        "routes_other": "Target of {{count}} routes",
+        "groups_one": "Member of {{count}} group",
+        "groups_other": "Member of {{count}} groups",
+        "onlyTarget": "only target",
+        "onlyMember": "only member",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more"
       }
     },
     "plugins": {
@@ -766,7 +796,11 @@
       "voiceAria": "Voice",
       "multimodal": "Multimodal",
       "pcaChartAria": "PCA projection of the embedded texts",
-      "removeColumn": "Remove column",
+      "removeColumn": "Remove column {{n}} ({{model}})",
+      "columnName": "{{model}}, column {{n}}",
+      "threadAria": "Conversation with {{model}}",
+      "sendTo": "Send to {{model}}",
+      "copyAsCodeFor": "Copy as code for {{model}}",
       "sendMessageTo": "Send a message to {{model}}.",
       "sendMessageNeedsKey": "Send a message to {{model}} once there is a key the gateway accepts.",
       "imageAttached": "image attached",
@@ -788,7 +822,7 @@
       "addModel": "Add model",
       "textPlaceholder": "Enter text…",
       "textRowAria": "Text {{n}}",
-      "removeText": "Remove text",
+      "removeText": "Remove text {{n}}",
       "addText": "Add text",
       "embedProject": "Embed & project",
       "pcaCount_one": "PCA projection · {{count}} vector",
@@ -815,6 +849,7 @@
       "eventLog": "Event log",
       "eventLogSubtitle": "Frames sent and received",
       "noEvents": "no events yet",
+      "realtimeResets": "Leaving this tab closes the session and clears the log.",
       "framePlaceholder": "Send a text frame…",
       "frameAria": "Text frame to send",
       "modes": {
@@ -1308,10 +1343,15 @@
         "open": "Collector config",
         "title": "OpenTelemetry Collector config",
         "where": "This is the document your collector runs. Rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
-        "endpoint": "GET /api/v1/connectors/collector-config",
+        "endpoint": "Endpoint",
+        "copyEndpoint": "Copy collector config URL",
+        "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
+        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
-        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — or point the collector straight at the URL above with --config and reload it on a schedule."
+        "allOffTitle": "Every connector is switched off",
+        "allOffBody": "The config only carries connectors that are switched on, so a collector running it now would deliver nothing. Close this, turn one on from its card, then open it again.",
+        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — and save it again after a connector is added, switched on or deleted."
       },
       "confirm": {
         "title": "Delete connector {{name}}?",
@@ -1329,12 +1369,18 @@
       "toggleAria": "Enable {{name}}",
       "testAria": "Test delivery to {{name}}",
       "deleteAria": "Delete connector {{name}}",
+      "editAria": "Edit connector {{name}}",
+      "editTitle": "Edit connector {{name}}",
+      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",
-      "addSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
+      "sheetSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
       "sampled": "{{percent}}% sampled",
       "secretSet": "secret set",
+      "off": "off",
+      "createdOff": "{{name}} created, but switched off",
+      "createdOffNext": "Nothing is sent yet. Run Test delivery on its card, then turn its switch on.",
       "testDelivery": "Test delivery",
       "form": {
         "name": "Name",
@@ -1344,7 +1390,15 @@
         "samplingInvalid": "Enter a number from 0 to 100.",
         "samplingRange": "Sampling is a percentage: use a value from 0 to 100.",
         "secret": "Bearer secret (optional)",
-        "secretPlaceholder": "stored encrypted"
+        "secretPlaceholder": "stored encrypted",
+        "secretEdit": "Bearer secret (write-only)",
+        "secretNoneHint": "No secret is stored. Type one to add it.",
+        "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+        "secretReplaceHint": "Saving replaces the stored secret with this one.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "start": "Start sending as soon as it is created",
+        "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
+        "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
       }
     },
     "accessProfiles": {
@@ -2198,11 +2252,15 @@
         "nameHint": "What the button on the sign-in screen says.",
         "namePlaceholder": "Acme Okta",
         "slug": "Slug",
-        "slugHint": "Appears in the login URL, so keep it short — it cannot be changed later.",
+        "slugHint": "Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. It appears in the login URL, so keep it short. It cannot be changed later.",
         "slugPlaceholder": "okta",
+        "slugInvalid": "Use only lowercase letters, digits and hyphens, and start with a letter or digit.",
+        "slugSuggest": "Use only lowercase letters, digits and hyphens, and start with a letter or digit. Try {{suggestion}}.",
+        "slugTooLong": "A slug has at most {{max}} characters. This one has {{length}}.",
         "redirectUri": "Redirect URI",
         "redirectUriHint": "Register this in your identity provider when you create the application there. The provider then issues the client ID and secret below.",
         "redirectUriEmpty": "Type a slug to see the redirect URI.",
+        "redirectUriInvalid": "The slug above is not valid, so there is no redirect URI to register yet.",
         "redirectUriDefault": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which reaches rolter only from a browser on the control plane's own host.",
         "redirectUriUnknown": "The control plane's public address could not be read, so only the path is shown. The full redirect URI is the value of <code>ROLTER_PUBLIC_URL</code> followed by this path.",
         "issuer": "Issuer URL",
@@ -2410,7 +2468,20 @@
       "budgetSheetSubtitle": "Spend cap for {{scope}}",
       "budgetLimitLabel": "Limit ({{currency}})",
       "budgetPeriodLabel": "Period",
-      "budgetPeriodHint": "e.g. 30d, 7d, 1d",
+      "budgetPeriodHint": "Counted over calendar windows in UTC. There are no rolling windows, such as the last 7 days.",
+      "periodPlaceholder": "Pick a period",
+      "periodOptions": {
+        "daily": "Daily",
+        "monthly": "Monthly",
+        "total": "Lifetime"
+      },
+      "periodDescriptions": {
+        "daily": "Resets every day at 00:00 UTC",
+        "monthly": "Resets on the 1st of each month at 00:00 UTC",
+        "total": "Never resets"
+      },
+      "periodUnrecognised": "The gateway does not recognise the period “{{period}}” and enforces this budget as monthly. Edit the budget to pick a period.",
+      "periodUnrecognisedHint": "The gateway does not recognise “{{period}}” and enforces this budget as monthly. There are no rolling windows: pick the window to count over.",
       "rateLimitSheetTitle": "Add rate limit",
       "rateLimitEditTitle": "Edit rate limit",
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
@@ -2432,6 +2503,8 @@
       "payloadCaptureOnButAbsent": "Payload capture is on, but nothing was stored for this request: its model or key may fall outside the capture allow-list, or the payload's {{hours}}h retention window has already passed.",
       "payloadSettingsLink": "Open log settings",
       "payloadSettingsOwner": "Payload capture is set by a superadmin, in the deployment's log settings.",
+      "payloadRequestEmpty": "No request body was stored: it was empty when the request was logged.",
+      "payloadResponseEmpty": "No response body was stored: it was empty when the response was logged. For example, the upstream sent no body, or the connection ended before one arrived.",
       "time": "Time",
       "model": "Model",
       "status": "Status",
@@ -2443,12 +2516,14 @@
       "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
+      "unpricedOnly": "Unpriced only",
       "tokens": "Tokens",
       "tokensInOut": "{{in}} in · {{out}} out",
       "virtualKey": "Virtual key",
       "error": "Error",
       "request": "Request",
       "response": "Response",
+      "requestAndResponse": "Request and response",
       "closeDetails": "Close details",
       "prevPage": "Previous page",
       "nextPage": "Next page",
@@ -2491,6 +2566,18 @@
         "loadFailed": "Load failed at {{time}}",
         "refreshFailed": "Refresh failed at {{time}}",
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
+      },
+      "lookup": {
+        "label": "Request ID or trace ID",
+        "placeholder": "Request ID or trace ID",
+        "find": "Find",
+        "clear": "Clear lookup",
+        "clearField": "Clear the ID field",
+        "feedRequest": "Request ID lookup",
+        "feedTrace": "Trace ID lookup",
+        "missTitle": "No request found",
+        "missBody": "No retained request has this ID, or it belongs to a project your role cannot read.",
+        "missFilteredBody": "No retained request with this ID passes the active filters, or it belongs to a project your role cannot read."
       },
       "noAnalytics": {
         "title": "Request logs need ClickHouse",
@@ -2640,10 +2727,11 @@
       "colCreated": "Created",
       "noRoles": "no roles",
       "statusFilterAria": "Filter users by status",
-      "statusAll": "all",
-      "statusActive": "active",
-      "statusDeactivated": "deactivated",
-      "statusBlocked": "blocked",
+      "statusAll": "All",
+      "statusActive": "Active",
+      "statusDeactivated": "Deactivated",
+      "rowStatusActive": "Active",
+      "rowStatusDeactivated": "Deactivated",
       "linkTitle": "Invitation link",
       "linkBody": "Shown once and not recoverable after you close this dialog.",
       "linkSendTo": "Send this link to <0>{{email}}</0>. It works once and expires in seven days.",
@@ -2677,7 +2765,7 @@
       "grantSave": "Grant",
       "scope": "Scope",
       "role": "Role",
-      "superBadge": "super",
+      "superBadge": "Superadmin",
       "rolesUnread": "roles not loaded",
       "scopePhrase": {
         "org": "the whole organization",
@@ -2924,17 +3012,72 @@
       "enforceVk": "Enforce Virtual Keys on Inference",
       "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
-      "allowedOriginsHint": "Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
-      "allowedOriginsPlaceholder": "https://app.example.com, https://console.example.com",
+      "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
+      "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
       "allowedHeaders": "Allowed Headers",
-      "allowedHeadersHint": "Comma-separated list of allowed headers for CORS.",
+      "allowedHeadersHint": "One header name per line, allowed for CORS.",
       "allowedHeadersPlaceholder": "X-Stainless-Timeout",
       "requiredHeaders": "Required Headers",
-      "requiredHeadersHint": "Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected.",
-      "requiredHeadersPlaceholder": "X-Tenant-ID: acme, X-Custom-Header: value",
+      "requiredHeadersHint": "One name: value pair per line that must be present on every request. Requests missing any of them are rejected. A value may contain commas.",
+      "requiredHeadersPlaceholder": "X-Tenant-ID: acme\nX-Custom-Header: value",
       "bypassRoutes": "Auth Bypass Routes",
-      "bypassRoutesHint": "Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open.",
-      "bypassRoutesPlaceholder": "/v1/models, /v1/ping"
+      "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
+      "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
+      "edited": "Edited",
+      "discard": "Discard changes",
+      "status": {
+        "invalid_one": "Fix {{count}} entry to save.",
+        "invalid_other": "Fix {{count}} entries to save.",
+        "changed_one": "{{count}} setting changed, not saved yet.",
+        "changed_other": "{{count}} settings changed, not saved yet.",
+        "saved": "Saved at {{time}}."
+      },
+      "pickup": {
+        "checking": "Checking which gateways run it…",
+        "converged_one": "{{count}} live gateway is running it.",
+        "converged_other": "All {{count}} live gateways are running it.",
+        "lagging_one": "{{converged}} of {{count}} live gateway is running it; the rest pick it up on their next config poll.",
+        "lagging_other": "{{converged}} of {{count}} live gateways are running it; the rest pick it up on their next config poll.",
+        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
+        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
+      },
+      "confirm": {
+        "title_one": "Save a change that loosens security?",
+        "title_other": "Save changes that loosen security?",
+        "body_one": "This save loosens security in the way listed below.",
+        "body_other": "This save loosens security in {{count}} ways, listed below.",
+        "confirm": "Save changes",
+        "virtualKeys": {
+          "label": "Virtual keys are no longer enforced on inference",
+          "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
+        },
+        "dashboardAuth": {
+          "label": "The dashboard is no longer password protected",
+          "effect": "The dashboard stops requiring its credential to open."
+        },
+        "bypassRoute": {
+          "label": "Auth bypass route added:",
+          "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
+        }
+      },
+      "errors": {
+        "originWildcard": "Line {{line}}: {{entry}} has a wildcard. List each origin exactly.",
+        "originScheme": "Line {{line}}: {{entry}} must start with http:// or https://.",
+        "originPart": "Line {{line}}: {{entry}} must not include a query, a fragment or user info (? # @).",
+        "originHost": "Line {{line}}: {{entry}} has no host after the scheme.",
+        "originPath": "Line {{line}}: {{entry}} must be an origin only, with no path.",
+        "originSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "headerName": "Line {{line}}: {{entry}} is not a valid header name. Use letters, digits and ! # $ % & ' * + - . ^ _ ` | ~",
+        "requiredFormat": "Line {{line}}: {{entry}} needs a name and a value, written as name: value.",
+        "requiredValue": "Line {{line}}: {{entry}} has no value after the colon.",
+        "requiredDuplicate": "Line {{line}}: {{entry}} is already set on an earlier line. A header holds one value.",
+        "routePrefix": "Line {{line}}: {{entry}} must be an exact path under /v1/.",
+        "routePattern": "Line {{line}}: {{entry}} has a wildcard, placeholder, query or fragment (* { } ? #). List each path exactly.",
+        "routeSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "commaList": "Line {{line}}: {{entry}} looks like several entries. Put each on its own line.",
+        "more_one": "…and {{count}} more problem.",
+        "more_other": "…and {{count}} more problems."
+      }
     },
     "mcpLibrary": {
       "eyebrow": "curated endpoints",
@@ -3139,7 +3282,10 @@
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
       "resolvesTo": "Requests resolve to"
     },
+    "created": "{{name}} is created but not tested yet",
+    "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",
     "testConnection": "Test connection",
+    "testSavedOnly": "Test connection checks the saved provider, not the edits in this form. Save first, then test.",
     "testAnswered": "Answered, but not with a model list",
     "testFailed": "Could not reach this provider",
     "testOk_one": "Reachable · {{count}} model · {{ms}} ms",
@@ -3149,6 +3295,7 @@
       "add": "Providers are scoped to the current org and used as route targets and provider-group members.",
       "edit": "Leave the provider key blank to keep the stored credential unchanged. Clear the env var or egress proxy field to unset it.",
       "name": "Name",
+      "nameHint": "Fixed once the provider is created.",
       "slugOptional": "Slug (optional)",
       "slugOptionalHint": "URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create",
       "slug": "Slug",
@@ -3162,6 +3309,7 @@
       "providerKeyEnv": "Provider key env var (optional)",
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
+      "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
       "apiKeyUnchanged": "unchanged"
     },
     "title": {
@@ -3541,9 +3689,9 @@
     "noNavMatches": "No screens match",
     "palette": {
       "title": "Command palette",
-      "description": "Jump to a screen, or to a key, provider or route by name.",
+      "description": "Jump to a screen, or to a key, provider or route by name. Paste a request ID or trace ID to open it in LLM Logs.",
       "label": "Search screens and records",
-      "placeholder": "Type a screen or record name…",
+      "placeholder": "Type a name, or paste a request ID…",
       "open": "Search screens and records ({{chord}})",
       "noMatches": "No screens match",
       "noMatchesBody": "Nothing here is called “{{query}}”. Try fewer letters, or a word from the screen's name.",
@@ -3552,12 +3700,17 @@
       "sections": {
         "recent": "Recent",
         "screens": "Screens",
+        "lookup": "Find a request",
         "records": "Records"
       },
+      "openRequest": "Open request {{id}} in LLM Logs",
+      "openTrace": "Open trace {{id}} in LLM Logs",
       "kinds": {
         "virtualKey": "Virtual key",
         "provider": "Provider",
-        "route": "Route"
+        "route": "Route",
+        "requestId": "Request ID",
+        "traceId": "Trace ID"
       }
     },
     "shortcuts": {
@@ -3601,11 +3754,13 @@
         "active": "active",
         "allModels": "all models",
         "usageUnavailable": "usage: unavailable",
-        "usage": "{{requests}} req · {{cost}} (7d)",
+        "usage_one": "{{requests}} request · {{cost}} in the last 7 days",
+        "usage_other": "{{requests}} requests · {{cost}} in the last 7 days",
         "noUsage": "no usage in the last 7 days",
         "rotate": "Rotate",
         "rotateHint": "Rotate: issue a new secret and disable this one",
-        "deleteHint": "Delete this virtual key",
+        "rotateAria": "Rotate key {{name}}",
+        "deleteAria": "Delete key {{name}}",
         "playground": "Playground",
         "playgroundHint": "The Playground minted this key for one sitting. It expires on its own — nothing needs to delete it."
       },
@@ -3613,7 +3768,8 @@
         "title": "New virtual key",
         "subtitle": "Personal virtual key in {{project}} — shown once, right after creation",
         "currentProject": "the current project",
-        "save": "Mint"
+        "save": "Mint",
+        "failed": "Could not create the key"
       },
       "revealed": {
         "title": "Virtual key ready",
@@ -3742,7 +3898,7 @@
     "mcpDetails": "MCP call details",
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
-    "unpriced": "—",
+    "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
   },
   "toast": {

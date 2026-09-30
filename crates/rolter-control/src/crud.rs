@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::{AdvancedModelConfig, Error};
+use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
     AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
@@ -28,8 +28,8 @@ use rolter_store::postgres::models::{
     VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, BusinessUnitRepo,
-    CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
+    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
+    BusinessUnitRepo, CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
     PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
     RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
@@ -205,6 +205,7 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/memberships/{id}", delete(delete_membership))
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
+        .route("/api/v1/audit-log", get(list_deployment_audit_log))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -216,7 +217,16 @@ pub(crate) fn pool(state: &ControlState) -> &PgPool {
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
+    /// An error from the store, the core or a dependency. A `4xx` renders its
+    /// own message, which is validation written for the caller. A `500` renders
+    /// only [`INTERNAL_ERROR`] and logs the rest: `Error::Store` in particular
+    /// carries raw driver text from every `e.to_string()` call site, which can
+    /// name hosts, ports, schemas or query fragments (#2268).
     Core(Error),
+    /// A server-side failure (500) whose message was written for the caller on
+    /// purpose, such as a store that is not configured or a write it refused.
+    /// Rendered verbatim, so it must never carry anything a driver said.
+    Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
     /// missing or invalid credentials (401)
@@ -235,6 +245,10 @@ impl From<Error> for ApiError {
     }
 }
 
+/// What a `500` says when its cause is not one of the [`ApiError::Curated`]
+/// messages. The cause itself goes to the log, not the response.
+pub(crate) const INTERNAL_ERROR: &str = "internal server error";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // read before the match consumes `self`
@@ -243,14 +257,20 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let (status, message) = match self {
-            Self::Core(err) => {
-                let status = match &err {
-                    Error::NotFound(_) => StatusCode::NOT_FOUND,
-                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-                (status, err.to_string())
-            }
+            Self::Core(err) => match &err {
+                Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+                Error::Config(_) | Error::Unauthorized => {
+                    (StatusCode::BAD_REQUEST, err.to_string())
+                }
+                _ => {
+                    tracing::error!(error = %err, "control-plane request failed");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        INTERNAL_ERROR.to_string(),
+                    )
+                }
+            },
+            Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
@@ -501,12 +521,47 @@ async fn list_audit_log(
         cap!("audit_log", Read),
     )
     .await?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page(org_id, &filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count(org_id, &filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Every audit row in the deployment, org-less account events included. Those
+/// are the ones no org read returns: a superadmin's own sign-ins, attempts
+/// against an unregistered address and the events of someone removed from
+/// every org (#1858).
+// a security-auditor role (#1834) would be admitted here alongside superadmin
+async fn list_deployment_audit_log(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(query): Query<AuditLogQuery>,
+) -> ApiResult<Json<AuditLogPageResponse>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_audit_log", Read))?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page_all(&filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count_all(&filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Parse the audit-log query string into a store filter and a clamped page
+/// size; shared by the per-org and the deployment-wide read.
+fn audit_log_filter(query: &AuditLogQuery) -> ApiResult<(AuditLogFilter, i64)> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let direction = query.direction.unwrap_or_default();
     let filter = AuditLogFilter {
         actor_user_id: query.actor,
-        action: normalized_filter(query.action, "action")?,
-        target_type: normalized_filter(query.target_type, "target_type")?,
+        action: normalized_filter(query.action.clone(), "action")?,
+        target_type: normalized_filter(query.target_type.clone(), "target_type")?,
         start_at: query.start_at,
         end_at: query.end_at,
         cursor: query
@@ -514,7 +569,7 @@ async fn list_audit_log(
             .as_deref()
             .map(parse_audit_cursor)
             .transpose()?,
-        direction: direction.into(),
+        direction: query.direction.unwrap_or_default().into(),
     };
     if filter
         .start_at
@@ -524,16 +579,24 @@ async fn list_audit_log(
             "start_at must be before or equal to end_at".to_string(),
         )));
     }
-    let page = AuditLogRepo(pool(&state))
-        .list_page(org_id, &filter, limit)
-        .await?;
-    let has_next = match direction {
-        AuditLogQueryDirection::Next => page.has_more,
-        AuditLogQueryDirection::Previous => !page.entries.is_empty(),
+    Ok((filter, limit))
+}
+
+fn audit_log_response(
+    page: AuditLogPage,
+    filter: &AuditLogFilter,
+    total: Option<i64>,
+) -> AuditLogPageResponse {
+    let previous = matches!(filter.direction, AuditLogDirection::Previous);
+    let has_next = if previous {
+        !page.entries.is_empty()
+    } else {
+        page.has_more
     };
-    let has_previous = match direction {
-        AuditLogQueryDirection::Next => filter.cursor.is_some(),
-        AuditLogQueryDirection::Previous => page.has_more,
+    let has_previous = if previous {
+        page.has_more
+    } else {
+        filter.cursor.is_some()
     };
     let next_cursor = has_next
         .then(|| page.entries.last().map(encode_audit_cursor))
@@ -541,19 +604,14 @@ async fn list_audit_log(
     let previous_cursor = has_previous
         .then(|| page.entries.first().map(encode_audit_cursor))
         .flatten();
-    let total = if query.include_total {
-        Some(AuditLogRepo(pool(&state)).count(org_id, &filter).await?)
-    } else {
-        None
-    };
-    Ok(Json(AuditLogPageResponse {
+    AuditLogPageResponse {
         items: page.entries,
         next_cursor,
         previous_cursor,
         has_next,
         has_previous,
         total,
-    }))
+    }
 }
 
 #[derive(Deserialize)]
@@ -1277,6 +1335,41 @@ struct CreatePromptTemplateVersion {
     decorators: serde_json::Value,
 }
 
+/// Refuse version content `PromptTemplatesConfig::validate` would reject.
+///
+/// The same check the snapshot's config validation runs, so a version the
+/// gateway could never be served is refused here instead of stored (#2279).
+/// The placeholder id only has to be non-empty; the problems name the content.
+fn check_prompt_template_version(
+    id: Uuid,
+    variables: &serde_json::Value,
+    decorators: &serde_json::Value,
+) -> ApiResult<()> {
+    let malformed = |what: &str, e: serde_json::Error| {
+        ApiError::Core(Error::Config(format!("{what} are malformed: {e}")))
+    };
+    let candidate = rolter_core::prompt_templates::PromptTemplate {
+        id: id.to_string(),
+        version: 1,
+        routes: Vec::new(),
+        scopes: Vec::new(),
+        variables: serde_json::from_value(variables.clone())
+            .map_err(|e| malformed("variables", e))?,
+        decorators: serde_json::from_value(decorators.clone())
+            .map_err(|e| malformed("decorators", e))?,
+    };
+    let problems =
+        rolter_core::prompt_templates::PromptTemplatesConfig::template_problems(&candidate);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Core(Error::Config(format!(
+            "invalid prompt template version: {}",
+            problems.join("; ")
+        ))))
+    }
+}
+
 async fn create_prompt_template_version(
     principal: Principal,
     State(state): State<ControlState>,
@@ -1293,6 +1386,7 @@ async fn create_prompt_template_version(
             "decorators must be a JSON array".to_string(),
         )));
     }
+    check_prompt_template_version(id, &body.variables, &body.decorators)?;
     let repo = PromptTemplateRepo(pool(&state));
     let template = repo.get_template(id).await?;
     authorize(
@@ -1363,6 +1457,16 @@ async fn set_prompt_template_version(
         cap!("prompt_template", Update),
     )
     .await?;
+    // a version stored before create-time validation may still be malformed;
+    // publishing it would only get it pruned from the snapshot
+    if let Some(stored) = repo
+        .list_versions(id)
+        .await?
+        .into_iter()
+        .find(|v| v.version == version)
+    {
+        check_prompt_template_version(id, &stored.variables, &stored.decorators)?;
+    }
     let template = repo.publish_version(id, version).await?;
     log_audit(
         state,
@@ -2335,7 +2439,7 @@ async fn test_provider(
 
     let parsed_kind: rolter_core::ProviderKind =
         serde_json::from_value(serde_json::Value::String(kind.clone()))
-            .map_err(|_| Error::Store(format!("unknown provider kind '{kind}'")))?;
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
 
     // same precedence the snapshot uses: a sealed key wins over the env var
     let sealed: Option<(Vec<u8>, Vec<u8>)> =
@@ -4154,18 +4258,17 @@ async fn create_budget(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("budget", Create)).await?;
-    if body.limit_usd.trim().parse::<f64>().is_err() {
-        return Err(ApiError::Core(Error::Config(
-            "limit_usd must be numeric".into(),
-        )));
-    }
+    // the same checks an edit gets (#1903): a cap the gateway would read as
+    // no cap, or as already spent, is refused here rather than stored
+    validate_limit_usd(&body.limit_usd)?;
+    validate_period(&body.period)?;
     validate_unpriced_policy(body.unpriced_policy.as_deref())?;
     let row = BudgetRepo(pool(&state))
         .create(
             &body.scope_type,
             body.scope_id,
-            &body.limit_usd,
-            &body.period,
+            body.limit_usd.trim(),
+            body.period.trim(),
             body.unpriced_policy.as_deref(),
         )
         .await?;
@@ -4214,11 +4317,11 @@ struct UpdateBudget {
 /// cost is a sliver just below the boundary that parses to the same float.
 const LIMIT_USD_CEILING: f64 = 99_999_999.999_95;
 
-/// Validate a budget cap on the update path.
+/// Validate a budget cap, on create and on update.
 ///
-/// Stricter than the bare `f64` parse `create_budget` does: `NaN` parses as a
-/// float and is a valid `numeric`, but the gateway reads it back as no cap at
-/// all, and a negative cap refuses every request as already exhausted. A cap
+/// Stricter than a bare `f64` parse: `NaN` parses as a float and is a valid
+/// `numeric`, but the gateway reads it back as no cap at all, and a negative
+/// cap refuses every request as already exhausted. A cap
 /// too large for the column would pass a parse and then fail in the store as
 /// a 500 carrying the database's own message, so it is refused here as a 400
 /// naming the range. A cap of zero stays legal, since it is how a scope is
@@ -4231,6 +4334,27 @@ fn validate_limit_usd(value: &str) -> ApiResult<()> {
             "limit_usd must be a finite number from 0 to 99999999.9999".into(),
         ))),
     }
+}
+
+/// Validate a budget period, on create and on update (#1902).
+///
+/// The column is free text, and the snapshot loader reads anything it does not
+/// recognise as monthly, so a `7d` budget, which the dashboard itself used to
+/// suggest, was enforced as a calendar-month cap without a word. Refusing the
+/// value here, with every spelling the gateway does recognise, is what stops a
+/// new row from being misread. Rows stored before this check are reported by
+/// `GET /api/v1/config/problems` instead of being rewritten.
+fn validate_period(value: &str) -> ApiResult<()> {
+    if BudgetPeriod::parse(value).is_some() {
+        return Ok(());
+    }
+    let accepted: Vec<&str> = BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect();
+    Err(ApiError::Core(Error::Config(format!(
+        "period must be one of {accepted:?}; there are no rolling windows such as 7d"
+    ))))
 }
 
 /// What an edit actually moved, field by field, for the audit row.
@@ -4285,7 +4409,7 @@ async fn update_budget(
         validate_limit_usd(limit)?;
     }
     if let Some(period) = &body.period {
-        require_non_empty(period, "period")?;
+        validate_period(period)?;
     }
     validate_unpriced_policy(body.unpriced_policy.as_ref().and_then(|p| p.as_deref()))?;
     if body.limit_usd.is_none() && body.period.is_none() && body.unpriced_policy.is_none() {
@@ -4383,6 +4507,9 @@ async fn create_rate_limit(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("rate_limit", Create)).await?;
+    // each cap sent has to limit something, and the store refuses a limit
+    // left with none, as it does for an edit (#1903)
+    validate_rate_limit_caps(body.rpm, body.tpm)?;
     let row = RateLimitRepo(pool(&state))
         .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
         .await?;
@@ -4411,18 +4538,20 @@ struct UpdateRateLimit {
     tpm: Option<Option<i32>>,
 }
 
-/// Check each cap a rate-limit edit sets.
+/// Check each cap a rate-limit create or edit sets.
 ///
-/// A cap the patch sets has to be at least 1: the snapshot loader reads zero
-/// and below as "no cap", so storing one would look like a limit while
-/// admitting everything. Whether the caps left behind still limit anything
-/// depends on the row as it stands when the edit lands, so that half is
-/// [`RateLimitRepo::update`]'s to check, under its row lock.
-fn validate_rate_limit_caps(patch: &UpdateRateLimit) -> ApiResult<()> {
-    for (field, value) in [("rpm", patch.rpm), ("tpm", patch.tpm)] {
-        if matches!(value, Some(Some(cap)) if cap < 1) {
+/// `None` is a cap that is not being set: absent or null on a create, absent or
+/// lifted on an edit. A cap that is set has to be at least 1, since the
+/// snapshot loader reads zero and below as "no cap", so storing one would look
+/// like a limit while admitting everything. Whether any cap is left at all is
+/// the store's to check: on an edit that depends on the row as it stands when
+/// the edit lands, so [`RateLimitRepo::update`] checks it under its row lock,
+/// and [`RateLimitRepo::create`] applies the same rule to a new row.
+fn validate_rate_limit_caps(rpm: Option<i32>, tpm: Option<i32>) -> ApiResult<()> {
+    for (field, value) in [("rpm", rpm), ("tpm", tpm)] {
+        if matches!(value, Some(cap) if cap < 1) {
             return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be at least 1, or null to lift the cap"
+                "{field} must be at least 1, or null for no cap"
             ))));
         }
     }
@@ -4447,7 +4576,7 @@ async fn update_rate_limit(
         // nothing asked for, so nothing written, bumped or audited
         return Ok(Json(existing));
     }
-    validate_rate_limit_caps(&body)?;
+    validate_rate_limit_caps(body.rpm.flatten(), body.tpm.flatten())?;
     let edit = RateLimitRepo(pool(&state))
         .update(id, body.rpm, body.tpm)
         .await?;
@@ -5489,22 +5618,78 @@ mod cap_edit_tests {
         let patch = |body: serde_json::Value| -> UpdateRateLimit {
             serde_json::from_value(body).expect("patch body")
         };
+        let check = |patch: UpdateRateLimit| {
+            validate_rate_limit_caps(patch.rpm.flatten(), patch.tpm.flatten())
+        };
         for ok in [
             serde_json::json!({}),
             serde_json::json!({"rpm": 1}),
             serde_json::json!({"rpm": null, "tpm": 10}),
         ] {
-            assert!(validate_rate_limit_caps(&patch(ok.clone())).is_ok(), "{ok}");
+            assert!(check(patch(ok.clone())).is_ok(), "{ok}");
         }
         for bad in [
             serde_json::json!({"rpm": 0}),
             serde_json::json!({"tpm": -5}),
             serde_json::json!({"rpm": 10, "tpm": 0}),
         ] {
-            assert!(
-                refused(validate_rate_limit_caps(&patch(bad.clone()))),
-                "{bad}"
-            );
+            assert!(refused(check(patch(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1903: a create is held to the per-cap rule an edit already was. The
+    /// "at least one cap" half is the store's, and is covered there.
+    #[test]
+    fn a_cap_a_create_sets_has_to_be_positive() {
+        let body = |caps: serde_json::Value| -> CreateRateLimit {
+            let mut body = serde_json::json!({
+                "scope_type": "org",
+                "scope_id": "00000000-0000-0000-0000-000000000001",
+            });
+            body.as_object_mut()
+                .expect("object")
+                .extend(caps.as_object().expect("object").clone());
+            serde_json::from_value(body).expect("create body")
+        };
+        let check = |create: CreateRateLimit| validate_rate_limit_caps(create.rpm, create.tpm);
+        for ok in [
+            serde_json::json!({"rpm": 1}),
+            serde_json::json!({"tpm": 1000}),
+            serde_json::json!({"rpm": null, "tpm": 10}),
+        ] {
+            assert!(check(body(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!({"rpm": 0}),
+            serde_json::json!({"tpm": -5}),
+            serde_json::json!({"rpm": 60, "tpm": 0}),
+        ] {
+            assert!(refused(check(body(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1902: `7d` used to be stored and enforced as monthly. A period is
+    /// accepted only when the gateway reads it as the window it names, and the
+    /// refusal lists every spelling that would have been accepted.
+    #[test]
+    fn a_period_is_one_the_gateway_recognises() {
+        for ok in [
+            "daily", "1d", "24h", "monthly", "30d", "total", "lifetime", "all", " Daily ",
+        ] {
+            assert!(validate_period(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in ["7d", "weekly", "dialy", "", "  ", "1w", "month"] {
+            match validate_period(bad) {
+                Err(ApiError::Core(Error::Config(message))) => {
+                    for (spelling, _) in BudgetPeriod::SPELLINGS {
+                        assert!(
+                            message.contains(spelling),
+                            "{message} should name {spelling}"
+                        );
+                    }
+                }
+                other => panic!("{bad:?} should be refused, got {other:?}"),
+            }
         }
     }
 
@@ -5514,5 +5699,74 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use super::*;
+
+    async fn rendered(err: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Driver text as `store_err` and every `e.to_string()` call site pass it
+    /// on: it names the host, the credentials in the url and the schema (#2268).
+    const DRIVER_TEXT: &str = "error returned from database: relation \"tenant_a.users\" \
+         does not exist (postgres://rolter:hunter2@db.internal:5432/rolter)";
+
+    #[tokio::test]
+    async fn a_raw_server_error_never_reaches_a_500_body() {
+        for err in [
+            Error::Store(DRIVER_TEXT.into()),
+            Error::Upstream(DRIVER_TEXT.into()),
+            Error::Io(std::io::Error::other(DRIVER_TEXT)),
+        ] {
+            let (status, body) = rendered(ApiError::Core(err)).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(body["error"]["message"], INTERNAL_ERROR);
+            let text = body.to_string();
+            for fragment in ["db.internal", "hunter2", "tenant_a"] {
+                assert!(!text.contains(fragment), "{fragment} reached the body");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_curated_message_still_reaches_a_500_body() {
+        let (status, body) = rendered(ApiError::Curated(
+            crate::ingest_failure::INSERT_FAILED.to_string(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"]["message"],
+            crate::ingest_failure::INSERT_FAILED
+        );
+    }
+
+    /// Validation and lookups are written for the caller, and stay as they are.
+    #[tokio::test]
+    async fn a_4xx_keeps_its_own_message() {
+        let (status, body) = rendered(ApiError::Core(Error::Config(
+            "slug must be lowercase".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("slug must be lowercase"));
+        let (status, body) = rendered(ApiError::Core(Error::NotFound("team 42".into()))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("team 42"));
     }
 }

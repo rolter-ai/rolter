@@ -493,6 +493,11 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "string",
         "exact W3C trace id; with no `since`, searches every retained row",
     ),
+    QueryParam::new(
+        "unpriced",
+        "boolean",
+        "`true` returns only requests recorded as unpriced; omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -678,6 +683,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/audit-log",
                 "listAuditLog",
                 "Page an organization's audit log",
+            )
+            .query(AUDIT_LOG_QUERY),
+            Op::get(
+                "/api/v1/audit-log",
+                "listDeploymentAuditLog",
+                "Page the deployment-wide audit log (superadmin)",
             )
             .query(AUDIT_LOG_QUERY),
             Op::get(
@@ -1130,6 +1141,11 @@ fn operations() -> Vec<Op> {
                 "Spend and usage for the calling account's keys",
             )
             .query(WINDOW_QUERY),
+            Op::patch(
+                "/api/v1/me/profile",
+                "updateMyProfile",
+                "Change the calling account's own display name and bio (any role)",
+            ),
             Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
@@ -1929,6 +1945,18 @@ fn operations() -> Vec<Op> {
                 "/auth/sso/{slug}/callback",
                 "ssoCallback",
                 "OAuth/OIDC redirect target for an SSO login",
+            )
+            .public()
+            .see_other(
+                "sent to a browser (`Accept: text/html`): the dashboard's `/login` screen, with \
+                 `sso_code=` (a one-time code for `POST /auth/sso/exchange`) on success or \
+                 `sso_error=` (a stable code, plus `sso=` once the provider is known) on a \
+                 refusal. Any other caller gets the session JSON or the error",
+            ),
+            Op::post(
+                "/auth/sso/exchange",
+                "exchangeSsoCode",
+                "Redeem the one-time code a browser SSO sign-in ended with for its session",
             )
             .public(),
         ],
@@ -2734,6 +2762,17 @@ fn governance_schemas(p: &Prim) -> Value {
         "type": "string",
         "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
     });
+    // what `validate_period` in `crud.rs` accepts, read off the same table the
+    // snapshot loader uses, so the documented set cannot drift from it (#1902)
+    let periods: Vec<&str> = rolter_core::BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect();
+    let period = json!({
+        "type": "string",
+        "enum": periods,
+        "description": "daily, 1d and 24h reset at 00:00 UTC; monthly and 30d on the first of the calendar month, UTC; total, lifetime and all never reset. Case-insensitive. There are no rolling windows such as 7d"
+    });
     json!({
         "Budget": {
             "type": "object",
@@ -2743,7 +2782,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": {"type": "string", "description": "decimal(12,4) as text"},
-                "period": string,
+                "period": {
+                    "type": "string",
+                    "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
+                },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
                 "created_at": timestamp
             }
@@ -2754,8 +2796,13 @@ fn governance_schemas(p: &Prim) -> Value {
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "limit_usd": string,
-                "period": {"type": "string", "default": "30d"},
+                "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
+                "period": {
+                    "type": "string",
+                    "enum": period["enum"],
+                    "description": period["description"],
+                    "default": "30d"
+                },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
             },
             "additionalProperties": false
@@ -2765,7 +2812,7 @@ fn governance_schemas(p: &Prim) -> Value {
             "description": "every field is optional; omit one to leave it unchanged. The scope is not editable. An edit that changes nothing writes nothing",
             "properties": {
                 "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
-                "period": string,
+                "period": period,
                 "unpriced_policy": {
                     "type": ["string", "null"],
                     "enum": ["ignore", "warn", "block", null],
@@ -2789,12 +2836,13 @@ fn governance_schemas(p: &Prim) -> Value {
         },
         "CreateRateLimit": {
             "type": "object",
+            "description": "at least one of rpm and tpm must be set; omitted or null leaves that dimension uncapped",
             "required": ["scope_type", "scope_id"],
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "rpm": {"type": ["integer", "null"]},
-                "tpm": {"type": ["integer", "null"]}
+                "rpm": {"type": ["integer", "null"], "minimum": 1},
+                "tpm": {"type": ["integer", "null"], "minimum": 1}
             },
             "additionalProperties": false
         },
@@ -3168,6 +3216,11 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
+        // the SSO callback is the only other one (#2297)
+        let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
+        assert!(sso["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3176,7 +3229,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 1);
+        assert_eq!(redirects, 2);
     }
 
     #[test]
@@ -3195,6 +3248,8 @@ mod tests {
         // a request is found by the id its client was handed (#1849)
         assert!(names.contains("request_id"), "{names:?}");
         assert!(names.contains("trace_id"), "{names:?}");
+        // and the unpriced ones can be asked for by themselves
+        assert!(names.contains("unpriced"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");
@@ -3449,7 +3504,11 @@ mod tests {
     #[test]
     fn the_keyset_paged_logs_document_their_cursors() {
         let doc = document();
-        for path in ["/api/v1/mcp/logs", "/api/v1/orgs/{org_id}/audit-log"] {
+        for path in [
+            "/api/v1/mcp/logs",
+            "/api/v1/orgs/{org_id}/audit-log",
+            "/api/v1/audit-log",
+        ] {
             let params = doc["paths"][path]["get"]["parameters"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{path} declares its query parameters"));

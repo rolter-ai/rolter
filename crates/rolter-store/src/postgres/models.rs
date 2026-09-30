@@ -471,6 +471,15 @@ pub struct SsoLoginState {
     pub created_at: DateTime<Utc>,
 }
 
+/// a redeemed sso exchange code (#2297): who the browser's sign-in was for and
+/// what the mapped groups granted, which is all the session is minted from.
+#[derive(Debug, Clone, FromRow)]
+pub struct SsoExchangeCode {
+    pub user_id: Uuid,
+    pub provider_id: Uuid,
+    pub granted_roles: Vec<String>,
+}
+
 /// a SCIM provisioning token. `token_hash` is peppered sha-256; the plaintext
 /// is returned once at creation and never stored.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -761,6 +770,12 @@ pub struct User {
     /// while keeping the row, memberships and audit trail intact
     pub deactivated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// self-service profile (#1823): 1..=80 chars, trimmed, no control characters
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// self-service profile (#1823): up to 500 chars, trimmed
+    #[serde(default)]
+    pub bio: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among

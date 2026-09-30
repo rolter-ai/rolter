@@ -814,17 +814,22 @@ function ChatColumn({
   model,
   onModel,
   onRemove,
-  removable,
+  position,
   multimodal,
 }: {
   models: ModelOption[];
   model: string;
   onModel: (v: string) => void;
   onRemove: () => void;
-  removable: boolean;
+  /** 1-based place among the compared columns; `null` for the only column, which cannot be removed */
+  position: number | null;
   multimodal: boolean;
 }) {
   const { t } = useTranslation();
+  // what a control in this column calls the column. the model alone is not
+  // enough once two columns can hold the same one, so a compare view adds the
+  // place; a lone column is just its model
+  const who = position === null ? model : t("pages.playground.columnName", { model, n: position });
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   // rendered by default, because that is what a model reply is *for*; raw is
   // what an operator switches to when the question is what the model literally
@@ -907,6 +912,7 @@ function ChatColumn({
             model,
             prompt: lastPrompt || draft || "Hello!",
           }}
+          label={t("pages.playground.copyAsCodeFor", { model: who })}
         />
         <Button
           size="icon"
@@ -919,19 +925,28 @@ function ChatColumn({
         >
           <Pilcrow className="h-3.5 w-3.5" />
         </Button>
-        {removable && (
+        {position !== null && (
           <Button
             size="icon"
             variant="ghost"
             className="h-8 w-8"
             onClick={onRemove}
-            aria-label={t("pages.playground.removeColumn")}
+            aria-label={t("pages.playground.removeColumn", { n: position, model })}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         )}
       </div>
-      <div className="flex flex-1 flex-col gap-2.5 overflow-auto p-4">
+      {/* a reply taller than the column scrolls here, and a scroller the keyboard
+          cannot reach leaves the rest of it to a mouse: a prose reply holds no
+          focusable child to carry the focus in. a region named for its column
+          makes it one tab stop that says what it is */}
+      <div
+        tabIndex={0}
+        role="region"
+        aria-label={t("pages.playground.threadAria", { model: who })}
+        className="flex flex-1 flex-col gap-2.5 overflow-auto p-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+      >
         {msgs.length === 0 && (
           <p className="m-auto text-center text-xs text-muted-foreground">
             {/* the invitation waits for a key, rather than inviting a message
@@ -1036,7 +1051,7 @@ function ChatColumn({
           className="h-8 w-8"
           onClick={send}
           disabled={busy}
-          aria-label={t("pages.playground.send")}
+          aria-label={t("pages.playground.sendTo", { model: who })}
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </GatewayButton>
@@ -1121,7 +1136,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
               models={models}
               model={c.model}
               multimodal={multimodal}
-              removable={cols.length > 1}
+              position={compare ? i + 1 : null}
               onModel={(v) => setModel(i, v)}
               onRemove={() => remove(i)}
             />
@@ -1232,7 +1247,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 variant="ghost"
                 className="h-8 w-8"
                 onClick={() => removeField(i)}
-                aria-label={t("pages.playground.removeText")}
+                aria-label={t("pages.playground.removeText", { n: i + 1 })}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -1373,7 +1388,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
 }
 
 /* ---------------- audio ---------------- */
-function AudioMode({ models }: { models: ModelOption[] }) {
+function AudioMode({ models, active }: { models: ModelOption[]; active: boolean }) {
   const { t } = useTranslation();
   const [tab, setTab] = React.useState("tts");
   const [model, setModel] = React.useState(FAKE);
@@ -1384,6 +1399,13 @@ function AudioMode({ models }: { models: ModelOption[] }) {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const clipRef = React.useRef<HTMLAudioElement>(null);
+
+  // the panel stays mounted under another tab, where a clip that kept playing
+  // would have no control left to stop it
+  React.useEffect(() => {
+    if (!active) clipRef.current?.pause();
+  }, [active]);
 
   const speak = async () => {
     setError(null);
@@ -1461,7 +1483,7 @@ function AudioMode({ models }: { models: ModelOption[] }) {
               {t("pages.playground.output")}
             </p>
             {audioUrl ? (
-              <audio controls src={audioUrl} className="w-full" />
+              <audio ref={clipRef} controls src={audioUrl} className="w-full" />
             ) : (
               <p className="py-10 text-center text-sm text-muted-foreground">
                 {t("pages.playground.synthesizeEmpty")}
@@ -1578,6 +1600,11 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
           </GatewayButton>
         </span>
       </div>
+      {/* the other tabs keep their work; this one cannot, and saying so here
+          beats an operator finding an empty log after a glance elsewhere */}
+      <p className="text-xs text-[color:var(--text-subtle)]">
+        {t("pages.playground.realtimeResets")}
+      </p>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -1669,15 +1696,25 @@ export default function Playground() {
             { value: "realtime", label: t("pages.playground.modes.realtime") },
           ]}
         />
-        {/* chat stays mounted under the other tabs, so every column's thread,
-            draft and reply still in flight survive a switch. the other modes
-            hold a prompt and one result, and start over */}
+        {/* chat, embeddings, image and audio stay mounted under the other tabs,
+            so a thread, a prompt, a result and a request still in flight all
+            survive a switch: an image costs money to generate, and glancing at
+            another tab must not throw it away. realtime is the exception, since
+            a mounted one would hold its WebSocket open under a tab nobody is
+            looking at: it is unmounted, which closes the socket, and starts
+            over */}
         <div hidden={mode !== "chat"}>
           <ChatMode models={models} preferred={preferred} />
         </div>
-        {mode === "embeddings" && <EmbeddingsMode models={models} />}
-        {mode === "image" && <ImageMode models={models} />}
-        {mode === "audio" && <AudioMode models={models} />}
+        <div hidden={mode !== "embeddings"}>
+          <EmbeddingsMode models={models} />
+        </div>
+        <div hidden={mode !== "image"}>
+          <ImageMode models={models} />
+        </div>
+        <div hidden={mode !== "audio"}>
+          <AudioMode models={models} active={mode === "audio"} />
+        </div>
         {mode === "realtime" && <RealtimeMode models={models} />}
       </PageBody>
     </SendGateContext.Provider>

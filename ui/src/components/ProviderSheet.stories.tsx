@@ -9,7 +9,12 @@ import type { ProviderRow, ProviderTestResult } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
-import { answerDiscardPrompt, discardPrompt } from "@/pages/story-harness";
+import {
+  answerDiscardPrompt,
+  discardPrompt,
+  recording,
+  type Recorder,
+} from "@/pages/story-harness";
 
 const PROVIDER: ProviderRow = {
   id: "prov-1",
@@ -54,10 +59,15 @@ function stub(test: () => Promise<Response>): FetchStub {
 function Harness({
   fetchStub,
   provider = PROVIDER,
+  mode = "edit",
   onOpenChange = () => {},
+  onDone = () => {},
 }: {
   fetchStub: FetchStub;
   provider?: ProviderRow;
+  /** `add` renders the create sheet, which has no provider behind it yet */
+  mode?: "add" | "edit";
+  onDone?: (created?: ProviderRow) => void;
   /**
    * Threaded through so a story can assert the sheet was never *asked* to
    * close. Rendering `open` unconditionally means the sheet stays on screen
@@ -82,11 +92,11 @@ function Harness({
     <QueryClientProvider client={client}>
       <ProviderSheet
         open
-        mode="edit"
+        mode={mode}
         onOpenChange={onOpenChange}
         orgId={PROVIDER.org_id}
-        provider={provider}
-        onDone={() => {}}
+        provider={mode === "edit" ? provider : null}
+        onDone={onDone}
       />
     </QueryClientProvider>
   );
@@ -472,3 +482,199 @@ export const DiscardGuardThrowsItAway: Story = {
 
 // the story's own recorder, hoisted so `play` can read what `render` wired up
 let closeRequests: boolean[] = [];
+
+// ------------------------------------------------ test right after a create (#2142)
+
+const CREATED: ProviderRow = {
+  ...PROVIDER,
+  id: "prov-new",
+  name: "vllm-eu",
+  slug: "vllm-eu",
+  api_base: "http://vllm.internal:8000",
+};
+
+/** answers the create with `CREATED` and the probe with `test`, everything else inert */
+function createStub(test: () => Promise<Response> = async () => json(result())): FetchStub {
+  return async (input, init) => {
+    const url = String(input);
+    if (url.includes("/provider-kinds")) return json(KINDS);
+    if (url.endsWith("/test")) return test();
+    if (init?.method === "POST") return json(CREATED);
+    return json({});
+  };
+}
+
+const fillTheForm = async (name: string, apiBase: string) => {
+  const canvas = screen();
+  await userEvent.type(await canvas.findByLabelText("Name"), name);
+  await userEvent.type(canvas.getByLabelText("API base"), apiBase);
+};
+
+let creation: Recorder;
+let doneCalls: (ProviderRow | undefined)[] = [];
+
+/**
+ * A create does not close the sheet. It stays open on the new provider with the
+ * test one click away, and does not run it: the test is a call to the upstream,
+ * so the operator chooses when it is spent. Focus moves to the button, since
+ * the one that was pressed is now Save with nothing to save.
+ */
+export const CreateOffersTheTestWithoutRunningIt: Story = {
+  render: () => {
+    const closes: boolean[] = [];
+    closeRequests = closes;
+    doneCalls = [];
+    creation = recording(createStub());
+    return (
+      <Harness
+        mode="add"
+        fetchStub={creation.stub}
+        onOpenChange={(open) => closes.push(open)}
+        onDone={(row) => doneCalls.push(row)}
+      />
+    );
+  },
+  play: async () => {
+    const canvas = screen();
+    // a name is permanent, and the create form says so before it is typed
+    const name = await canvas.findByLabelText("Name");
+    await expect(name).toBeEnabled();
+    await expect(name).toHaveAccessibleDescription(/Fixed once the provider is created/);
+    await expect(canvas.queryByRole("button", { name: "Test connection" })).toBeNull();
+
+    await fillTheForm("vllm-eu", "http://vllm.internal:8000");
+    await userEvent.click(canvas.getByRole("button", { name: "Create provider" }));
+    const body = await creation.expectSentBody<{ name: string; api_base: string }>(
+      "POST",
+      "/orgs/",
+    );
+    await expect(body).toMatchObject({ name: "vllm-eu", api_base: "http://vllm.internal:8000" });
+
+    // the sheet says what happened and what is next, and is now the edit sheet
+    await canvas.findByText(/vllm-eu is created but not tested yet/);
+    await expect(canvas.getByRole("heading", { name: "Edit vllm-eu" })).toBeVisible();
+    await expect(canvas.getByLabelText("Name")).toBeDisabled();
+    const test = canvas.getByRole("button", { name: "Test connection" });
+    await waitFor(() => expect(test).toHaveFocus());
+    await waitFor(() => expect(test).toBeEnabled());
+    // Cancel has become Done, and Save waits for an edit
+    await expect(canvas.getByRole("button", { name: "Done" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Cancel" })).toBeNull();
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Save provider" })).toBeDisabled(),
+    );
+    // nothing closed the sheet and nothing probed the upstream
+    await expect(closeRequests).toEqual([]);
+    await expect(doneCalls).toEqual([CREATED]);
+    creation.expectNotSent("POST", "/test");
+
+    await userEvent.click(test);
+    await creation.expectSent("POST", "/providers/prov-new/test");
+    await waitFor(() => expect(canvas.getByText(/Reachable · 38 models/)).toBeVisible());
+    // the result replaces the note rather than standing beside it
+    await expect(canvas.queryByText(/not tested yet/)).toBeNull();
+  },
+};
+
+/** a create the control plane refuses is still a create: nothing to test yet */
+export const RefusedCreateStaysACreate: Story = {
+  render: () => (
+    <Harness
+      mode="add"
+      fetchStub={async (input, init) => {
+        if (String(input).includes("/provider-kinds")) return json(KINDS);
+        if (init?.method === "POST") {
+          return json({ error: { message: "provider name 'vllm-eu' is already in use" } }, 409);
+        }
+        return json({});
+      }}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    await fillTheForm("vllm-eu", "http://vllm.internal:8000");
+    await userEvent.click(canvas.getByRole("button", { name: "Create provider" }));
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/already in use/);
+    await expect(canvas.getByRole("heading", { name: "Add provider" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Test connection" })).toBeNull();
+    await expect(canvas.queryByText(/not tested yet/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Cancel" })).toBeVisible();
+  },
+};
+
+/** the created footer on a phone, in Russian: note, test, Done and Save all reachable */
+export const CreatedFooterFitsAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness mode="add" fetchStub={createStub()} />,
+  play: async () => {
+    const canvas = screen();
+    await userEvent.type(await canvas.findByLabelText(ru.providerSheet.fields.name), "vllm-eu");
+    await userEvent.type(
+      canvas.getByLabelText(ru.providerSheet.fields.apiBase),
+      "http://vllm.internal:8000",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: ru.providerSheet.cta.create }));
+    const note = await canvas.findByText(/vllm-eu создан, но ещё не проверен/);
+    const test = canvas.getByRole("button", { name: ru.providerSheet.testConnection });
+    const done = canvas.getByRole("button", { name: ru.common.done });
+    const save = canvas.getByRole("button", { name: ru.providerSheet.cta.save });
+    for (const element of [note, test, done, save]) await expectInViewport(element);
+  },
+};
+
+let tested: Recorder;
+
+/**
+ * The probe reads the saved row, so with edits in the form its answer would
+ * speak for the old values. The button is off and the reason is on screen, as
+ * the button's own description, since a disabled control cannot carry a tooltip.
+ * Putting the value back makes the form match what is stored, and the test is
+ * offered again.
+ */
+export const TestIsOffWhileTheFormHasUnsavedEdits: Story = {
+  render: () => {
+    tested = recording(stub(async () => json(result())));
+    return <Harness fetchStub={tested.stub} />;
+  },
+  play: async () => {
+    const canvas = screen();
+    const test = await canvas.findByRole("button", { name: "Test connection" });
+    await waitFor(() =>
+      expect(canvas.getByLabelText("API base")).toHaveValue("https://api.openai.com"),
+    );
+    await expect(canvas.queryByText(/checks the saved provider/)).toBeNull();
+
+    await userEvent.type(canvas.getByLabelText("API base"), "/eu");
+    await waitFor(() => expect(test).toBeDisabled());
+    await waitFor(() => expect(canvas.getByText(/checks the saved provider/)).toBeVisible());
+    await expect(test).toHaveAccessibleDescription(/Save first, then test/);
+
+    await userEvent.type(canvas.getByLabelText("API base"), "{Backspace}{Backspace}{Backspace}");
+    await waitFor(() => expect(test).toBeEnabled());
+    await expect(canvas.queryByText(/checks the saved provider/)).toBeNull();
+    tested.expectNotSent("POST", "/test");
+  },
+};
+
+/** the name is fixed after create, and the field says so instead of just greying out */
+export const NameIsFixedAfterCreate: Story = {
+  render: () => <Harness fetchStub={stub(async () => json(result()))} />,
+  play: async () => {
+    const name = await screen().findByLabelText("Name");
+    await expect(name).toBeDisabled();
+    await expect(name).toHaveAccessibleDescription(/Fixed once the provider is created/);
+  },
+};
+
+/** what the egress proxy is for, what it takes and what it touches, on the field itself */
+export const EgressProxyHintSaysWhatItTakes: Story = {
+  render: () => <Harness fetchStub={stub(async () => json(result()))} />,
+  play: async () => {
+    const proxy = await screen().findByLabelText("Egress proxy (optional)");
+    await expect(proxy).toHaveAccessibleDescription(/Only this provider's upstream calls/);
+    await expect(proxy).toHaveAccessibleDescription(/http, https, socks5 or socks5h/);
+    await expect(proxy).toHaveAccessibleDescription(/\$\{ENV_VAR\}/);
+  },
+};

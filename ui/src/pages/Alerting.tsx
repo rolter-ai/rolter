@@ -71,6 +71,7 @@ import {
 } from "@/lib/alert-states";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
@@ -327,18 +328,6 @@ function AlertChannelsScreen() {
       />
     </PageBody>
   );
-}
-
-// whether an edit moves the endpoint to another scheme, host or port: the API
-// drops a stored secret on such a move unless the same request brings a new
-// one, since it was given for the receiver at the old endpoint. an endpoint
-// that does not parse moves nothing here, because the API refuses it anyway
-function movesOrigin(stored: string, next: string): boolean {
-  try {
-    return new URL(stored).origin !== new URL(next.trim()).origin;
-  } catch {
-    return false;
-  }
 }
 
 function ChannelSheet({
@@ -1171,7 +1160,13 @@ function AlertHistoryScreen() {
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
               <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
-              <ListCell className="truncate text-xs text-muted-foreground">
+              {/* the diagnosis of a failed delivery wraps rather than truncates:
+                  `channel secret could not be unsealed; check ROLTER_KEK` cut to
+                  `channel secret could not be…` names the fault and hides what to
+                  do about it, and a title is a hover a keyboard or a phone never
+                  reaches. `min-w-0` lets a long unbroken token break inside its
+                  column instead of widening it (#2335) */}
+              <ListCell className="min-w-0 break-words text-xs text-muted-foreground">
                 {n.detail ?? "—"}
               </ListCell>
             </ListRow>

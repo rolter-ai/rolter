@@ -72,9 +72,10 @@ role field is named for the scope (`pages.users.orgRole`, `teamRole`,
 `projectRole`) and its options are labelled through `shell.roles.*`. The
 password method creates the account through `POST /orgs/{org_id}/users`, which
 has no scope, so the picker is locked to the org while it is chosen. The link
-dialog copies with the shared `CopyButton`: a clipboard the browser withholds
-(a plain-http dashboard) is reported as a failed copy, and the dialog stays
-open with the link.
+dialog is the shared `SecretRevealDialog`: a clipboard the browser withholds
+(a plain-http dashboard) leaves a failed-copy message under the link, which
+stays on screen and selected, and closing the dialog before the link was copied
+asks first. See [Dashboard one-time secrets](../development/secret-reveal.md).
 
 `PendingInvitations`, below the users table, keeps the rows with neither
 `accepted_at` nor `revoked_at`, including expired ones (marked), and revokes

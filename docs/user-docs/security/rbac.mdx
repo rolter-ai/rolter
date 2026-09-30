@@ -76,7 +76,7 @@ Each control is disabled for callers who do not hold admin at the scope the dash
 - **Email and method.** The default method is an invitation link: the person chooses their own password, so nobody else ever knows it. **Set a password now** creates the account yourself and is the exception below.
 - **Scope.** The whole organization, any team, or any project in any team, picked by name, the same picker as when you grant a role. The role field is named for the scope you pick (**Org role**, **Team role**, **Project role**) and lists **Admin**, **Member** and **Viewer**. An invitation is authorized at the scope it grants, so a team admin invites into their own team or its projects without an org admin. If the control plane refuses it, the sheet stays open with its message and says that inviting at that scope takes admin there or on a scope above it. `POST /api/v1/orgs/{org_id}/invitations` with `scope_type` and `scope_id`.
 - **An account created with a password** takes its role on the whole organization only, because that endpoint has no scope. The scope picker is locked to the organization and says so. Invite by link to choose a team or a project.
-- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. rolter does not send email, so you send the link yourself. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the button says the copy failed and the link stays on screen until you press **Done**: select it and copy it by hand.
+- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. rolter does not send email, so you send the link yourself. The link cannot be shown again, so closing the dialog before you have copied it asks "Close without copying?"; Cancel keeps it open. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the dialog says the copy failed in a message that stays, and the link stays on screen, selected: copy it by hand with Ctrl+C or Cmd+C, which counts as copied. **Select value** selects it again.
 
 Under the users table, **Pending invitations** lists every invitation that has not been accepted or revoked: the address, the role, the scope by name, who sent it and when it expires. A link works once and expires after seven days. An invitation past its expiry stays in the list, marked **Expired**, because it still holds its address: an organization keeps one unaccepted invitation per address, and inviting an address that already has one is refused with the control plane's own message. Revoke the listed one first. **Sent by** is read from the users list, so it says **not recorded** for an invitation sent with the admin token or by an account since deleted, and **unknown** for a sender you cannot list.
 
@@ -88,7 +88,7 @@ The **×** at the end of a row revokes the invitation. The confirmation names th
 
 An account reaches across every organization its person belongs to, so these controls need a superadmin: an admin sees them disabled, with a tooltip that says so. Each of them asks first, and every confirmation names the account.
 
-- **Deactivate.** The button at the end of a row opens a confirmation. Deactivating blocks sign-in, ends every session the account has open, and stops the virtual keys the person minted for themselves at the gateway (see [When someone leaves](#when-someone-leaves)). The row turns **blocked** and the button becomes **Reactivate**, with its own icon. Reactivating restores sign-in and those keys at once and asks nothing, because it only gives access back and deactivating again undoes it. `PUT /api/v1/users/{id}` with `deactivated`.
+- **Deactivate.** The button at the end of a row opens a confirmation. Deactivating blocks sign-in, ends every session the account has open, and stops the virtual keys the person minted for themselves at the gateway (see [When someone leaves](#when-someone-leaves)). The row's status turns **Deactivated**, the account also shows under the **Deactivated** tab above the table, and the button becomes **Reactivate**, with its own icon. Reactivating restores sign-in and those keys at once and asks nothing, because it only gives access back and deactivating again undoes it. `PUT /api/v1/users/{id}` with `deactivated`.
 - **Superadmin.** The **Superadmin** switch in the edit sheet takes effect when you press **Save**. Turning it on asks first: the confirmation says a superadmin reaches every organization, team and project, and every deployment-wide setting and account, whatever roles they hold. Turning it off saves without asking, except on your own account. `PUT /api/v1/users/{id}` with `is_superadmin`.
 - **Delete.** **Delete** at the foot of the edit sheet opens a confirmation that says the account leaves every organization and not only this one, with its roles and sessions, and that the keys it minted for itself are disabled rather than deleted. It cannot be undone. To block sign-in and keep the account, deactivate it instead. `DELETE /api/v1/users/{id}`.
 
@@ -143,7 +143,7 @@ Keys an admin minted for a project — the ones applications use — have no own
 
 Sign-ins, failed sign-ins, lockouts, second-factor changes, break-glass resets and account edits belong to a person rather than an organization. An organization's audit log (**Governance → Audit Logs**, or `GET /api/v1/orgs/{org_id}/audit-log`) shows them for the organization's own people — anyone holding a role in it, its teams or its projects — and never for anyone else's. Filter on the `auth.*` actions to find them. Deleting an account is recorded in the audit log of every organization the account belonged to.
 
-Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered are recorded, but not yet shown in any organization's audit log.
+Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered belong to no organization's audit log. A superadmin reads them, together with every other row, through the deployment-wide `GET /api/v1/audit-log`. It takes the same query parameters as the per-organization read (`limit`, `actor`, `action`, `target_type`, `start_at`, `end_at`, `cursor`, `direction`, `include_total`) and answers with the same page shape, newest first, each page carrying the `next_cursor` for the one after it. Everyone else, organization admins included, gets `403`. The `deployment_audit_log:read` capability in `GET /api/v1/rbac/matrix` is superadmin-only.
 
 ## Ask the server what a role can do
 
@@ -307,6 +307,23 @@ Set the token to close it:
 ```bash
 export ROLTER_ADMIN_TOKEN="$(openssl rand -hex 24)"
 ```
+
+## Your own profile
+
+Any signed-in account, a viewer included, can set a display name and a short bio with `PATCH /api/v1/me/profile`. The route writes only the caller's own row, so it needs no role and does not widen `user:update`, which stays superadmin-only.
+
+```bash
+curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
+  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name": "Grace Hopper", "bio": "Ask me about the nightly batch."}'
+```
+
+- `display_name` is 1 to 80 characters and `bio` up to 500, after surrounding whitespace is trimmed. Control characters are refused (a bio may contain line breaks) and so is a value that is only whitespace.
+- An omitted field is left alone; `null` or `""` clears it.
+- `GET /api/v1/auth/me` returns both fields on `user`, and the users list returns them for admins.
+- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
+- Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
 
 ### Self-service endpoints do not work in open mode
 

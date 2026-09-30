@@ -55,6 +55,7 @@ mod realtime_metering;
 mod redis_conn;
 mod response_registry;
 mod semantic;
+mod sink_drain;
 mod state;
 mod status_page;
 mod trace;
@@ -326,6 +327,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             "realtime sessions still open after the drain grace; their unflushed usage is lost"
         );
     }
+    // last, so the rows the requests and realtime meters above produced are
+    // already queued when the sinks are told to stop
+    if !realtime.drain_sinks(SINK_DRAIN_GRACE).await {
+        tracing::warn!(
+            grace_secs = SINK_DRAIN_GRACE.as_secs(),
+            "request-log, health-event or usage sinks did not finish flushing; what they still held is lost"
+        );
+    }
     tracing::info!("rolter-gateway shut down cleanly");
     Ok(())
 }
@@ -451,6 +460,14 @@ pub fn build_router_from_config(config: &GatewayConfig) -> Router {
 /// were told to close when the signal arrived, so this only covers a meter
 /// still waiting on Redis.
 const REALTIME_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long shutdown waits for the request-log writer, the health-event writer
+/// and the usage-recording workers to flush and stop, after the realtime drain.
+/// A healthy ClickHouse or Redis takes milliseconds; the bound only matters when
+/// one is unreachable, and it is kept short so the HTTP drain, the realtime
+/// grace and this still fit inside the 30 seconds an orchestrator usually allows
+/// before `SIGKILL`.
+const SINK_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
 /// or `SIGTERM` on Unix — the signal orchestrators send on rollout/scale-down).

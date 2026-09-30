@@ -20,6 +20,7 @@ import {
   expectToast,
   expectUxEvent,
   json,
+  openOptions,
   pickOption,
   pending,
   recordUxEvents,
@@ -237,7 +238,7 @@ export const BudgetCreateRejectedByTheServer: Story = {
 /**
  * The seeded-defaults case #868 introduced and #879 called out by name.
  *
- * `Add budget` opens pre-filled with `100` / `30d` rather than blank, so its
+ * `Add budget` opens pre-filled with `100` / monthly rather than blank, so its
  * dirty flag is "differs from the seed", not "is non-empty". Getting that
  * backwards makes an untouched form prompt on every close — and a typecheck
  * cannot tell the two apart.
@@ -252,7 +253,7 @@ export const AnUntouchedSeededBudgetFormClosesWithoutPrompting: Story = {
     await clickWhenEnabled(canvasElement, /add budget/i);
     // the seed itself, which is what makes this case interesting
     await expect(within(sheet()).getByLabelText("Limit (USD)")).toHaveValue(100);
-    await expect(within(sheet()).getByLabelText("Period")).toHaveValue("30d");
+    await expect(within(sheet()).getByLabelText("Period")).toHaveValue("Monthly");
     await expectClosesWithoutPrompting();
   },
 };
@@ -312,6 +313,171 @@ export const AnEditedBudgetFormPromptsBeforeDiscarding: Story = {
     await answerDiscardPrompt(false);
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
     await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(999);
+  },
+};
+
+let periodPicked: Recorder;
+/**
+ * #1902: the period is picked from the windows the gateway has, never typed.
+ * The free-text field suggested `7d`, which the gateway read as monthly, so
+ * this pins what is offered, that typing cannot add another, that the keyboard
+ * reaches the list, and what is sent.
+ */
+export const ThePeriodIsPickedFromTheWindowsTheGatewayHas: Story = {
+  render: () => {
+    periodPicked = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST") return json({ ...BUDGETS[1], id: "budget-3" }, 201);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json(BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={periodPicked.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add budget/i);
+    const form = sheet();
+    const picker = await within(form).findByRole("combobox", { name: "Period" });
+    // the old hint offered `7d` as an example; this one says there is no such window
+    await expect(within(form).getByText(/There are no rolling windows/)).toBeVisible();
+    await expect(within(form).queryByText(/e\.g\./)).toBeNull();
+
+    const listbox = await openOptions(picker);
+    const options = within(listbox).getAllByRole("option");
+    await expect(options.map((option) => option.textContent)).toEqual([
+      "DailyResets every day at 00:00 UTC",
+      "MonthlyResets on the 1st of each month at 00:00 UTC",
+      "LifetimeNever resets",
+    ]);
+    await expect(within(listbox).getByRole("option", { name: /^Monthly/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await userEvent.click(picker);
+
+    // typing filters the list, it does not add to it: `7d` matches nothing, and
+    // leaving the field puts the picked window back
+    await userEvent.clear(picker);
+    await userEvent.type(picker, "7d");
+    await expect(within(document.body).queryAllByRole("option")).toHaveLength(0);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(picker).toHaveValue("Monthly"));
+
+    // arrows name the active option while focus stays on the input
+    picker.focus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(picker).toHaveAttribute("aria-expanded", "true");
+    await userEvent.keyboard("{Home}");
+    const active = picker.getAttribute("aria-activedescendant");
+    await expect(document.getElementById(active ?? "")).toHaveTextContent(/^Daily/);
+    await expect(picker).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect(picker).toHaveValue("Daily");
+
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
+    await expect(await periodPicked.expectSentBody("POST", "/budgets")).toMatchObject({
+      period: "daily",
+    });
+    await expectSheetClosed();
+  },
+};
+
+const MISREAD: BudgetRow = {
+  id: "budget-7d",
+  scope_type: "project",
+  scope_id: "project-1",
+  limit_usd: "70.0000",
+  period: "7d",
+  unpriced_policy: null,
+  created_at: "2026-06-01T00:00:00Z",
+};
+
+let misreadFixed: Recorder;
+/**
+ * #1902: a budget stored as `7d` before the control plane checked the period.
+ * Nothing rewrites it, and the gateway enforces it as monthly, so the card has
+ * to say so rather than wear a badge that reads as a weekly cap. The edit sheet
+ * opens on no period at all and cannot be saved until a real window is picked,
+ * so the operator decides what replaces it.
+ */
+export const AnUnrecognisedPeriodIsFlaggedAndHasToBeReplaced: Story = {
+  render: () => {
+    misreadFixed = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "PATCH") return json({ ...MISREAD, period: "monthly" });
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return json([...BUDGETS, MISREAD]);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={misreadFixed.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(
+        /does not recognise the period “7d” and enforces this budget as monthly/,
+      ),
+    ).toBeVisible();
+    // the badge keeps what is stored, and only that row carries the warning: a
+    // stored shorthand such as `30d` is a window the gateway reads
+    await expect(canvas.getByText("7d")).toBeVisible();
+    await expect(canvas.getAllByText(/does not recognise the period/)).toHaveLength(1);
+    await expect(canvas.getByText("monthly")).toBeVisible();
+    await expect(canvas.getByText("daily")).toBeVisible();
+
+    await clickWhenEnabled(canvasElement, /Edit the 7d budget/);
+    const form = sheet();
+    const picker = await within(form).findByRole("combobox", { name: "Period" });
+    await expect(picker).toHaveValue("");
+    await expect(picker).toHaveAttribute("placeholder", "Pick a period");
+    await expect(
+      within(form).getByText(/does not recognise “7d” and enforces this budget as monthly/),
+    ).toBeVisible();
+    // the stored text is not offered back as a window of its own
+    const listbox = await openOptions(picker);
+    await expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual([
+      "DailyResets every day at 00:00 UTC",
+      "MonthlyResets on the 1st of each month at 00:00 UTC",
+      "LifetimeNever resets",
+    ]);
+    await userEvent.click(picker);
+
+    // nothing moved, and then only the cap moved: neither can be saved while
+    // the period is still the one the gateway misreads
+    const save = within(form).getByRole("button", { name: "Save" });
+    await expect(save).toBeDisabled();
+    const limit = within(form).getByLabelText("Limit (USD)");
+    await userEvent.clear(limit);
+    await userEvent.type(limit, "80");
+    await expect(save).toBeDisabled();
+
+    await pickOption(picker, /^Monthly/);
+    await expect(picker).toHaveValue("Monthly");
+    await waitFor(() => expect(save).toBeEnabled());
+    await expect(within(form).queryByText(/does not recognise “7d”/)).toBeNull();
+    await userEvent.click(save);
+
+    await expect(await misreadFixed.expectSentBody("PATCH", "/budgets/budget-7d")).toEqual({
+      limit_usd: "80",
+      period: "monthly",
+    });
+    await expectSheetClosed();
   },
 };
 
@@ -375,9 +541,11 @@ export const EditsABudgetInPlace: Story = {
     await clickWhenEnabled(canvasElement, /Edit the monthly budget/);
     const form = sheet();
     await expect(within(form).getByRole("heading", { name: "Edit budget" })).toBeVisible();
-    // the form opens on the row as it stands, not on the create defaults
+    // the form opens on the row as it stands, not on the create defaults: the
+    // stored `30d` is the monthly window, and since nobody picked it again the
+    // body below carries no period at all
     await expect(within(form).getByLabelText("Limit (USD)")).toHaveValue(500);
-    await expect(within(form).getByLabelText("Period")).toHaveValue("30d");
+    await expect(within(form).getByLabelText("Period")).toHaveValue("Monthly");
     // the workaround the sheet used to advertise is gone
     await expect(within(form).queryByText(/delete and recreate/i)).toBeNull();
     // nothing moved yet, so there is nothing to save
@@ -840,7 +1008,8 @@ const PERIOD_BUDGETS: BudgetRow[] = [
 /**
  * #2095: the period badge printed the stored text. A known period is named in
  * words, and one the dashboard has no name for is kept exactly as stored, so
- * the operator reads what the row holds. #1902 owns what the field accepts.
+ * the operator reads what the row holds. The warning beside it, and what the
+ * edit sheet accepts instead, are the stories above (#1902).
  */
 export const PeriodsAreNamedAndAnUnknownOneIsKeptAsStored: Story = {
   render: () => (
@@ -1011,6 +1180,19 @@ export const ReadsInRussianWithNoRawEnglishEnum: Story = {
     await expect(await within(sheet()).findByLabelText("Лимит (USD)")).toBeInTheDocument();
     await expect(within(sheet()).getByText("Лимит расходов для Gateway")).toBeInTheDocument();
     await expect(within(sheet()).queryByText(/project/)).toBeNull();
+    // the period picker reads in Russian too: its value and every window it offers
+    const picker = within(sheet()).getByRole("combobox", { name: "Период" });
+    await expect(picker).toHaveValue(ru.pages.limits.periodOptions.monthly);
+    const listbox = await openOptions(picker);
+    await expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(
+      (["daily", "monthly", "total"] as const).map(
+        (kind) => ru.pages.limits.periodOptions[kind] + ru.pages.limits.periodDescriptions[kind],
+      ),
+    );
   },
 };
 

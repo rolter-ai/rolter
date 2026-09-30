@@ -372,6 +372,248 @@ export const PreviewsTheRedirectUriFromTheSlug: Story = {
   },
 };
 
+// the slug is registered at the identity provider as part of the redirect uri,
+// and the database refuses anything outside `^[a-z0-9][a-z0-9-]{0,62}$`. the
+// sheet states that rule up front and marks a slug outside it before anything
+// is saved, instead of letting the admin copy a uri the server would refuse
+// (#2304)
+const SLUG_RULE = /Lowercase letters, digits and hyphens.*up to 63 characters/;
+const SLUG_INVALID =
+  "Use only lowercase letters, digits and hyphens, and start with a letter or digit.";
+const REDIRECT_URI_INVALID =
+  "The slug above is not valid, so there is no redirect URI to register yet.";
+
+/** the fields other than the slug, so the slug is the only thing that can block Save */
+async function fillTheRest(panel: ReturnType<typeof within>): Promise<void> {
+  await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
+  await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
+  await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4");
+}
+
+const refusals = recording(api({ providers: () => [provider()] }));
+
+export const RefusesASlugOutsideTheCharset: Story = {
+  render: () => (
+    <Harness fetchStub={refusals.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await fillTheRest(panel);
+    const slug = panel.getByLabelText("Slug");
+    const save = panel.getByRole("button", { name: "Add provider" });
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+
+    // the rule is stated before a character is typed, and nothing is marked yet
+    await expect(slug).toHaveAccessibleDescription(SLUG_RULE);
+    await expect(slug).not.toHaveAttribute("aria-invalid");
+
+    await userEvent.type(slug, "Acme Okta");
+
+    // what was typed stays exactly as typed: the slug ends up at the identity
+    // provider, so the admin has to see what will be saved, not a rewrite of it
+    await expect(slug).toHaveValue("Acme Okta");
+    await expect(slug).toHaveAttribute("aria-invalid", "true");
+    const reason = `${SLUG_INVALID} Try acme-okta.`;
+    await expect(panel.getByText(reason)).toBeVisible();
+    // the field announces the rule and the reason together
+    await expect(slug).toHaveAccessibleDescription(/up to 63 characters.*Try acme-okta\./);
+
+    // there is nothing to copy for a slug the server would refuse
+    await expect(within(preview).getByText(REDIRECT_URI_INVALID)).toBeVisible();
+    await expect(within(preview).queryByRole("button")).toBeNull();
+    await expect(panel.queryByText(/\/auth\/sso\//)).toBeNull();
+
+    // and Save is blocked until it is fixed, so no request leaves
+    await expect(save).toBeDisabled();
+    refusals.expectNotSent("POST", "/sso-providers");
+  },
+};
+
+/**
+ * Each way a slug can miss the rule is named, and a corrected value is offered
+ * when one can be worked out. The boundary is the store's: 63 characters pass,
+ * 64 do not.
+ */
+export const NamesWhatIsWrongWithTheSlug: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    const slug = panel.getByLabelText("Slug");
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+
+    // a leading hyphen is refused, and the suggestion drops it
+    await userEvent.type(slug, "-okta");
+    await expect(panel.getByText(`${SLUG_INVALID} Try okta.`)).toBeVisible();
+
+    // nothing Latin to fold down to: the rule is all there is to say
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "日本語");
+    await expect(panel.getByText(SLUG_INVALID)).toBeVisible();
+    await expect(panel.queryByText(/Try /)).toBeNull();
+    await expect(slug).toHaveAttribute("aria-invalid", "true");
+
+    // 64 characters is one too many, and the message counts them
+    await userEvent.clear(slug);
+    await userEvent.click(slug);
+    await userEvent.paste("a".repeat(64));
+    await expect(
+      panel.getByText("A slug has at most 63 characters. This one has 64."),
+    ).toBeVisible();
+    await expect(within(preview).getByText(REDIRECT_URI_INVALID)).toBeVisible();
+
+    // 63 is the longest the store accepts: no error, and the uri is offered
+    await userEvent.clear(slug);
+    await userEvent.click(slug);
+    const longest = "a".repeat(63);
+    await userEvent.paste(longest);
+    await expect(panel.queryByText(/at most 63 characters\. This one/)).toBeNull();
+    await expect(slug).not.toHaveAttribute("aria-invalid");
+    await expect(
+      within(preview).getByText(`${PUBLIC_BASE}/auth/sso/${longest}/callback`),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * Correcting the slug clears the mark and brings the preview and Save back; the
+ * request then carries the slug exactly as typed.
+ */
+const corrected = recording(api({ providers: () => [provider()] }));
+
+export const SavesTheSlugOnceItIsCorrected: Story = {
+  render: () => (
+    <Harness fetchStub={corrected.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await fillTheRest(panel);
+    const slug = panel.getByLabelText("Slug");
+    const save = panel.getByRole("button", { name: "Add provider" });
+    const preview = await panel.findByRole("group", { name: "Redirect URI" });
+
+    await userEvent.type(slug, "Okta");
+    await expect(panel.getByText(`${SLUG_INVALID} Try okta.`)).toBeVisible();
+    await expect(save).toBeDisabled();
+
+    await userEvent.clear(slug);
+    await userEvent.type(slug, "acme-okta");
+    const uri = `${PUBLIC_BASE}/auth/sso/acme-okta/callback`;
+    await expect(panel.queryByText(/Use only lowercase letters/)).toBeNull();
+    await expect(slug).not.toHaveAttribute("aria-invalid");
+    // the hint stays once the error is gone, and is what the field describes itself with
+    await expect(slug).toHaveAccessibleDescription(SLUG_RULE);
+    await expect(within(preview).getByText(uri)).toBeVisible();
+    await expect(
+      within(preview).getByRole("button", { name: `Copy redirect URI: ${uri}` }),
+    ).toBeVisible();
+
+    await waitFor(() => expect(save).toBeEnabled());
+    await userEvent.click(save);
+    const created = await corrected.expectSentBody<Record<string, unknown>>(
+      "POST",
+      `/api/v1/orgs/${ORG.id}/sso-providers`,
+    );
+    await expect(created.slug).toBe("acme-okta");
+    await expect(created.name).toBe("Acme Okta");
+  },
+};
+
+/**
+ * The server's own 400 is shown in the sheet, with what was typed kept.
+ *
+ * The dashboard's copy of the rule can lag the control plane it talks to, so a
+ * slug it lets through can still be refused. The message is the server's, which
+ * states the rule, and the sheet stays open so nothing has to be typed again.
+ */
+export const ShowsTheServersRefusalOfASlug: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        (init?.method ?? "GET").toUpperCase() === "POST" && String(input).includes("/sso-providers")
+          ? json(
+              {
+                error: {
+                  message:
+                    "config error: slug must be lowercase letters, digits and hyphens, start with a letter or digit, and be at most 63 characters",
+                },
+              },
+              400,
+            )
+          : api({ providers: () => [provider()] })(input, init),
+      )}
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Add provider/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await fillTheRest(panel);
+    await userEvent.type(panel.getByLabelText("Slug"), "okta");
+    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
+
+    await waitFor(() =>
+      expect(panel.getByRole("alert")).toHaveTextContent(
+        /slug must be lowercase letters, digits and hyphens.*at most 63 characters/,
+      ),
+    );
+    await expect(panel.getByLabelText("Slug")).toHaveValue("okta");
+    await expect(panel.getByLabelText("Issuer URL")).toHaveValue("https://acme.okta.com");
+  },
+};
+
+/**
+ * The reason and the preview's note on a phone, in Russian, the longest copy
+ * the sheet carries for this. Both read in Russian and stay inside the sheet's
+ * width instead of running off it.
+ */
+export const ExplainsAnInvalidSlugInRussianOnAPhone: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.sso.create;
+    await clickWhenEnabled(canvasElement, new RegExp(ru.pages.sso.providers.add));
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await userEvent.type(panel.getByLabelText(copy.slug), "Acme Okta");
+
+    const reason = await panel.findByText(copy.slugSuggest.replace("{{suggestion}}", "acme-okta"));
+    const note = panel.getByText(copy.redirectUriInvalid);
+    // the sheet slides in from the edge, so it is measured once it has come to rest
+    await waitFor(() =>
+      expect(sheet().getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth),
+    );
+    for (const text of [reason, note]) {
+      await expect(text).toBeVisible();
+      const box = text.getBoundingClientRect();
+      await expect(box.left).toBeGreaterThanOrEqual(0);
+      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
+      await expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth);
+    }
+    await expect(panel.getByLabelText(copy.slug)).toHaveAttribute("aria-invalid", "true");
+  },
+};
+
 /**
  * #2083: with `ROLTER_PUBLIC_URL` unset the control plane builds every address
  * from its default, which an identity provider can only send a browser back to
@@ -611,6 +853,8 @@ export const EditsAProviderInPlace: Story = {
     // the slug is in the login url, so it is shown but not editable
     await expect(panel.getByLabelText("Slug")).toBeDisabled();
     await expect(panel.getByText(/cannot be changed/)).toBeVisible();
+    // and it is not held to the charset rule again: it was accepted once
+    await expect(panel.getByLabelText("Slug")).not.toHaveAttribute("aria-invalid");
     // and the redirect uri beside it is the saved provider's own, from the row
     const preview = await panel.findByRole("group", { name: "Redirect URI" });
     await waitFor(() =>

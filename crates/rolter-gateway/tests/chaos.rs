@@ -14,6 +14,9 @@
 //!   `SIGTERM` while a request is pinned upstream; the in-flight request must
 //!   still return 200, new connections must be refused, and the process must
 //!   exit 0
+//! - **sink flush on SIGTERM** — with a `flush_ms` far longer than the test, the
+//!   request-log and health-event rows of a finished request must still reach a
+//!   ClickHouse stand-in before the process exits (#1924)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -392,6 +395,115 @@ provider = "hold"
             .unwrap()
             .unwrap();
         assert_eq!(status.code(), Some(0), "gateway did not exit cleanly");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ClickHouse stand-in: records the target table and body of every
+    /// `INSERT` the gateway posts.
+    async fn serve_clickhouse() -> (SocketAddr, Arc<parking_lot::Mutex<Vec<(String, String)>>>) {
+        use axum::extract::Query;
+        use std::collections::HashMap;
+        let seen: Arc<parking_lot::Mutex<Vec<(String, String)>>> = Arc::default();
+        let sink = seen.clone();
+        let app = Router::new().route(
+            "/",
+            post(
+                move |Query(q): Query<HashMap<String, String>>, body: String| {
+                    let sink = sink.clone();
+                    async move {
+                        sink.lock()
+                            .push((q.get("query").cloned().unwrap_or_default(), body));
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (addr, seen)
+    }
+
+    #[tokio::test]
+    async fn sigterm_flushes_request_log_and_health_rows_before_exiting() {
+        let (upstream, _arrivals, release) = serve_holding_upstream().await;
+        release.add_permits(1);
+        let (clickhouse, seen) = serve_clickhouse().await;
+        let port = reserve_port().await;
+        let gw: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let dir = std::env::temp_dir().join(format!("rolter-chaos-sinks-{port}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("rolter.toml");
+        // an hour-long flush window: only the shutdown drain can deliver the rows
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[server]
+host = "127.0.0.1"
+port = {port}
+
+[logging]
+clickhouse_url = "http://{clickhouse}"
+flush_ms = 3600000
+
+[[providers]]
+name = "hold"
+kind = "openai_compatible"
+api_base = "http://{upstream}"
+
+[[routes]]
+model = "chaos-sinks"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "hold"
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rolter-gateway"))
+            .arg("--config")
+            .arg(&config_path)
+            .env_remove("CLICKHOUSE_URL")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_until_serving(gw, &mut child).await;
+
+        let client = reqwest::Client::new();
+        let (status, _) = chat(&client, gw, "chaos-sinks").await;
+        assert_eq!(status, 200);
+        assert!(
+            seen.lock().is_empty(),
+            "a row was written before the flush window elapsed; the test proves nothing"
+        );
+
+        let pid = child.id() as libc::pid_t;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let status = tokio::task::spawn_blocking(move || child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.code(), Some(0), "gateway did not exit cleanly");
+
+        // the stand-in is in this process, so whatever the child delivered
+        // before exiting is already recorded
+        let seen = seen.lock();
+        let body_for = |table: &str| {
+            seen.iter()
+                .find(|(query, _)| query.contains(table))
+                .map(|(_, body)| body.clone())
+        };
+        let logs = body_for("INTO request_logs").expect("request-log row lost at shutdown");
+        assert!(logs.contains("chaos-sinks"), "unexpected row: {logs}");
+        let health =
+            body_for("INTO provider_health_events").expect("health-event row lost at shutdown");
+        assert!(health.contains("\"provider\":\"hold\""), "{health}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

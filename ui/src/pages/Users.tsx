@@ -17,7 +17,6 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -51,13 +50,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Segmented } from "@/components/ui/segmented";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -81,6 +74,7 @@ import {
   type Role,
   type UserRow,
 } from "@/lib/api";
+import { avatarColor } from "@/lib/avatar";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan, useCapabilities } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
@@ -212,23 +206,15 @@ export default function Users() {
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
   const GRID = "1.5fr 2.2fr 110px 0.9fr 110px";
-  // the categorical chip palette, one token per entry: a raw hex here is not
-  // retunable and is contrast-checked by nobody, which is how the gold entry
-  // reached white initials at 3.25:1 (#1181, #1245). the ratios are recorded
-  // beside the tokens in index.css
-  const AVATARS = [
-    "var(--avatar-1)",
-    "var(--avatar-2)",
-    "var(--avatar-3)",
-    "var(--avatar-4)",
-    "var(--avatar-5)",
-    "var(--avatar-6)",
-  ];
 
   return (
     <PageBody>
       <Toolbar>
+        {/* flex-1 alone lets the field shrink to its icon beside the status
+            filter at phone width; a full-width floor sends the filter to its
+            own line instead */}
         <SearchInput
+          className="min-w-full max-w-full sm:min-w-0 sm:max-w-[320px]"
           placeholder={t("pages.users.searchPlaceholder")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -284,7 +270,7 @@ export default function Users() {
         <ListLoadingRow read={users}>
           <ListSkeleton rows={4} className="p-3" />
         </ListLoadingRow>
-        {rows.map((user, i) => {
+        {rows.map((user) => {
           const active = !user.deactivated_at;
           const grants = byUser.get(user.id) ?? [];
           const initials = user.email.slice(0, 2).toUpperCase();
@@ -292,14 +278,14 @@ export default function Users() {
             <ListRow
               key={user.id}
               grid={GRID}
-              // a blocked account reads as a quieter band, not as faded text
+              // a deactivated account reads as a quieter band, not as faded text
               // — container opacity takes every glyph under 4.5:1 (#1181)
               className={active ? undefined : "bg-[color:var(--surface-subtle)]/60"}
             >
               <ListCell className="flex min-w-0 items-center gap-2.5">
                 <span
                   className="flex h-8 w-8 flex-none items-center justify-center rounded-full font-mono text-[11px] font-semibold text-white"
-                  style={{ background: AVATARS[i % AVATARS.length] }}
+                  style={{ background: avatarColor(user.id) }}
                 >
                   {initials}
                 </span>
@@ -307,9 +293,9 @@ export default function Users() {
                   <div className="flex items-center gap-1.5">
                     <span className="truncate font-mono text-sm">{user.email}</span>
                     {user.is_superadmin && (
-                      <span className="flex-none rounded-[3px] border border-[color:var(--red-folk)] px-1 text-[9px] uppercase tracking-[0.06em] text-[color:var(--red-folk-text)]">
+                      <Badge tone="neutral" className="flex-none">
                         {t("pages.users.superBadge")}
-                      </span>
+                      </Badge>
                     )}
                   </div>
                 </div>
@@ -325,19 +311,11 @@ export default function Users() {
                 />
               </ListCell>
               <ListCell>
-                <span
-                  className="inline-flex items-center gap-[5px] rounded-full px-[9px] py-0.5 text-[11px] font-semibold capitalize"
-                  style={{
-                    color: active ? "var(--status-success-text)" : "var(--status-danger-text)",
-                    background: active ? "rgba(22,163,74,.14)" : "rgba(229,57,53,.14)",
-                  }}
-                >
-                  <span
-                    className="h-1.5 w-1.5 rounded-full"
-                    style={{ background: "currentColor" }}
-                  />
-                  {active ? t("pages.users.statusActive") : t("pages.users.statusBlocked")}
-                </span>
+                <Badge dot tone={active ? "success" : "danger"}>
+                  {active
+                    ? t("pages.users.rowStatusActive")
+                    : t("pages.users.rowStatusDeactivated")}
+                </Badge>
               </ListCell>
               <ListCell className="font-mono text-xs text-muted-foreground">
                 {fmt.date(user.created_at ?? "")}
@@ -366,7 +344,6 @@ export default function Users() {
                 <RowIconButton
                   gate="user:update"
                   control="user-deactivate"
-                  danger={active}
                   title={t(active ? "pages.users.deactivate" : "pages.users.reactivate", {
                     email: user.email,
                   })}
@@ -588,17 +565,23 @@ function InviteUserDialog({
     project_id: picked.project_id ?? null,
   });
 
-  // the one-time link keeps its own center Dialog rather than the editor sheet:
-  // it is a reveal-once secret with a copy/done footer, not a form — the same
-  // split Keys and Account already use for a freshly minted key
+  // the one-time link keeps its own center dialog rather than the editor sheet:
+  // it is a reveal-once secret, not a form. the shared reveal asks before it
+  // closes over a link nobody copied, and says so when the clipboard is
+  // withheld, which a plain-http dashboard on a LAN always does
   if (link) {
     return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogHeader>
-          <DialogTitle>{t("pages.users.linkTitle")}</DialogTitle>
-          <DialogDescription>{t("pages.users.linkBody")}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
+      <SecretRevealDialog
+        name="user-invite-link"
+        open={open}
+        onOpenChange={onOpenChange}
+        title={t("pages.users.linkTitle")}
+        description={t("pages.users.linkBody")}
+        secret={link}
+        copyLabel={t("pages.users.copyLink")}
+        doneLabel={t("pages.users.done")}
+      >
+        <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
             <Trans
               i18nKey="pages.users.linkSendTo"
@@ -609,18 +592,8 @@ function InviteUserDialog({
           <p className="text-sm text-muted-foreground">
             {t("pages.users.linkGrants", { role: roleLabel(t, role), scope: pickedScope })}
           </p>
-          {/* the link stays on screen whether or not the copy worked: the
-              clipboard is withheld on a plain-http dashboard, which is common
-              on a LAN, and `CopyButton` says so when it is */}
-          <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-2">
-            <code className="min-w-0 flex-1 break-all text-xs">{link}</code>
-            <CopyButton value={link} label={t("pages.users.copyLink")} />
-          </div>
         </div>
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)}>{t("pages.users.done")}</Button>
-        </DialogFooter>
-      </Dialog>
+      </SecretRevealDialog>
     );
   }
 
