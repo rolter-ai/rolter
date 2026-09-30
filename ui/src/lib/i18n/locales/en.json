@@ -1181,11 +1181,16 @@
       "title": "Join {{org}}",
       "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",
+      "existingIntro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. That address already has a rolter account, so there is no password to choose: accepting adds the role to it, and you then sign in as usual.",
       "password": "Password (at least 8 characters)",
       "confirm": "Confirm password",
       "mismatch": "The two passwords do not match.",
       "creating": "Creating account…",
-      "accept": "Accept invitation"
+      "accepting": "Accepting…",
+      "accept": "Accept invitation",
+      "doneExisting": "The {{role}} role in {{org}} is now on your account. Sign in with your usual password to continue.",
+      "doneSecondFactor": "Your account is ready. {{org}} requires a second factor, so sign in with the password you just chose and set one up.",
+      "toSignIn": "Continue to sign in"
     },
     "alerting": {
       "channels": {

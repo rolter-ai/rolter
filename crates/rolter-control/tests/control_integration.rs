@@ -9445,6 +9445,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert_eq!(preview["org_name"], "InviteOrg");
     assert_eq!(preview["email"], "ada@example.com");
     assert_eq!(preview["role"], "admin");
+    assert_eq!(preview["has_account"], false, "nobody holds this email yet");
 
     // a made-up token is refused, and so is a short password
     let unknown = client
@@ -9584,6 +9585,215 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.create"));
     assert!(actions.iter().any(|a| a == "invitation.accept"));
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
+}
+
+/// An invitation token proves someone was sent the link, not who holds it: the
+/// inviter gets the same token back. So an org admin who invites an existing
+/// account's email -- a superadmin's here, one with a password and one that
+/// signs in through sso only -- and accepts it themselves gets no session for
+/// that account, and cannot give it a password either (#1935). The role is
+/// still granted, and the owner signs in with their own credentials as before.
+#[tokio::test]
+async fn accepting_an_invitation_never_signs_in_to_an_existing_account() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("sekrit")
+        .json(&json!({"name": "Tenant", "slug": "tenant"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = uuid::Uuid::parse_str(org["id"].as_str().unwrap()).unwrap();
+    let org_admin = seed_user(&pool, "tenant-admin@example.com", false).await;
+    seed_membership(&pool, org_admin, Some(org_id), None, None, "admin").await;
+    let org_admin_token = seed_session(&pool, org_admin, "tenantadmin").await;
+
+    let root_password = random_password();
+    // what the inviter would type into the accept form; random so no scanner
+    // mistakes a fixture for a leaked credential
+    let inviter_password = random_password();
+    let root = seed_local_user(&pool, "root@example.com", &root_password).await;
+    let sso_root = seed_user(&pool, "sso-root@example.com", true).await;
+
+    for (email, target) in [
+        ("root@example.com", root),
+        ("sso-root@example.com", sso_root),
+    ] {
+        let created = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+            .bearer_auth(&org_admin_token)
+            .json(&json!({"email": email, "role": "viewer"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), 200, "an org admin may invite anyone");
+        let created: Value = created.json().await.unwrap();
+        let token = created["token"].as_str().unwrap().to_string();
+
+        let preview: Value = client
+            .get(format!("{base}/api/v1/invitations/accept/{token}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(preview["has_account"], true, "{email}: {preview}");
+
+        let accepted = client
+            .post(format!("{base}/api/v1/invitations/accept/{token}/accept"))
+            .json(&json!({"password": inviter_password}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), 200);
+        let accepted: Value = accepted.json().await.unwrap();
+        assert_eq!(accepted["sign_in_required"], true, "{email}: {accepted}");
+        assert_eq!(accepted["reason"], "existing_account");
+        assert!(
+            accepted["token"].is_null(),
+            "{email}: the invite link minted a session for an existing account: {accepted}"
+        );
+        let sessions: i64 = sqlx::query_scalar("select count(*) from sessions where user_id = $1")
+            .bind(target)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sessions, 0, "{email}: no session for the account");
+
+        // the role is granted all the same, tagged like any invited role
+        let roles: Vec<(String, String)> = sqlx::query_as(
+            "select role, source from memberships where user_id = $1 and org_id = $2",
+        )
+        .bind(target)
+        .bind(org_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(roles, vec![("viewer".to_string(), "manual".to_string())]);
+    }
+
+    // the password the inviter sent opens neither account
+    for email in ["root@example.com", "sso-root@example.com"] {
+        let response = client
+            .post(format!("{base}/api/v1/auth/login"))
+            .json(&json!({"email": email, "password": inviter_password}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            401,
+            "{email} took the inviter's password"
+        );
+    }
+    let sso_hash: Option<String> =
+        sqlx::query_scalar("select password_hash from users where id = $1")
+            .bind(sso_root)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        sso_hash.is_none(),
+        "an sso-only account gained a password from an invite link"
+    );
+    // and the owner's own password still works
+    let signed_in = login_as(&client, &base, "root@example.com", &root_password).await;
+    assert!(signed_in["token"].is_string(), "{signed_in}");
+
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'invitation.accept' and actor_user_id = $1",
+    )
+    .bind(root)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["account_created"], false, "{detail}");
+    assert_eq!(detail["signed_in"], false, "{detail}");
+}
+
+/// A new account created by an invitation into an org whose `required_all`
+/// policy is in force gets no session from the link: it signs in with the
+/// password it just chose, and that sign-in is the enrolment the policy asks
+/// for (#1935, #1852). A missing password is refused without spending the link.
+#[tokio::test]
+async fn an_invitation_into_a_required_org_sends_the_new_account_to_enrol() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_, org_id) = seed_bound_member(
+        &pool,
+        "required-admin@example.com",
+        &random_password(),
+        "required_all",
+        "null",
+    )
+    .await;
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+        .bearer_auth("sekrit")
+        .json(&json!({"email": "newcomer@example.com", "role": "member"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = created["token"].as_str().unwrap().to_string();
+
+    let no_password = client
+        .post(format!("{base}/api/v1/invitations/accept/{token}/accept"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_password.status(), 400, "a new account needs a password");
+
+    let password = random_password();
+    let accepted = client
+        .post(format!("{base}/api/v1/invitations/accept/{token}/accept"))
+        .json(&json!({"password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200, "the refusal left the link live");
+    let accepted: Value = accepted.json().await.unwrap();
+    assert_eq!(accepted["sign_in_required"], true, "{accepted}");
+    assert_eq!(accepted["reason"], "second_factor");
+    assert!(accepted["token"].is_null(), "{accepted}");
+    let sessions: i64 = sqlx::query_scalar(
+        "select count(*) from sessions s join users u on u.id = s.user_id where u.email = $1",
+    )
+    .bind("newcomer@example.com")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sessions, 0, "no factor-less session under required_all");
+
+    // the sign-in is where the policy is met
+    let challenge = login_as(&client, &base, "newcomer@example.com", &password).await;
+    assert_eq!(challenge["mfa_enrolment_required"], true, "{challenge}");
+    assert!(challenge["token"].is_null(), "{challenge}");
 }
 
 /// A failure the database reports reaches the caller as a plain 500, never as

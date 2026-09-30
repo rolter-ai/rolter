@@ -18,11 +18,16 @@ someone else holding their credential — usually in a chat log.
    treatment sessions and virtual keys get, so a database dump alone yields no
    usable link.
 2. `GET /api/v1/invitations/accept/{token}` — unauthenticated preview returning
-   the org name, the invited email, the role and the expiry. Nothing else: a
-   link that leaked should not also leak a directory.
-3. `POST /api/v1/invitations/accept/{token}/accept` with the invitee's chosen
-   password creates the account, grants the membership, and returns a live
-   session so they land signed in.
+   the org name, the invited email, the role, the expiry, and `has_account`
+   (whether an account already exists under that email, so the accept screen
+   knows whether to ask for a password). Nothing else: a link that leaked
+   should not also leak a directory.
+3. `POST /api/v1/invitations/accept/{token}/accept` grants the membership. For
+   an email with no account yet it takes the invitee's chosen `password`,
+   creates the account and returns a live session so they land signed in,
+   unless the org requires a second factor (below). For an existing account it
+   takes no password and returns no session (see
+   [Existing accounts](#existing-accounts)).
 4. `DELETE /api/v1/invitations/{id}` revokes a pending invitation.
 
 Links expire after seven days.
@@ -87,9 +92,34 @@ Acceptance adopts an account that already exists under the invited email rather
 than forking a second row for the same person. Someone may already hold a login
 in another org, or have arrived through SSO first.
 
-- An account with a password keeps it. An invite link is not a password reset.
-- An SSO-only account (no password) gains the password it was invited to set.
+The token proves that someone was sent the link, not who holds it: whoever
+created the invitation got the same token back. So an invitation never signs
+anyone in to an account that existed before it (#1935). Otherwise an org admin
+could invite a superadmin's email, accept the link themselves, and walk away
+with that superadmin's session.
+
+- Accepting grants the invited role and answers
+  `{"sign_in_required": true, "reason": "existing_account", "email": …}` with
+  no session. The invitee signs in through `POST /api/v1/auth/login` as usual,
+  so their own password and any second factor still apply.
+- No credential changes. An account with a password keeps it, and an SSO-only
+  account (no password) stays SSO-only: a `password` in the body is ignored.
+  An invite link is neither a sign-in nor a password reset; a superadmin sets a
+  password through `PUT /api/v1/users/{id}` when one is really wanted.
 - A deactivated account cannot be revived by an invitation (`403`).
+
+## Second-factor policy
+
+A new account created by an invitation goes through the decision a password
+sign-in makes ([two-factor auth](two-factor-auth.md)), once the membership that
+binds it to the org's policy exists. When a `required_*` policy is in force the
+answer is `{"sign_in_required": true, "reason": "second_factor", …}` and no
+session: the invitee signs in with the password they just chose, and that
+sign-in issues the enrolment challenge. While the policy is only announced, the
+session goes through with `mfa_enrol_by`, as on a sign-in.
+
+A missing or too-short password for a new account is refused with `400` before
+the invitation is claimed, so the link stays usable.
 
 ## Relationship to single sign-on
 

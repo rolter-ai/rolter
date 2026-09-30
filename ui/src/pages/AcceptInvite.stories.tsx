@@ -14,7 +14,15 @@ const PREVIEW = {
   email: "anya@acme.co",
   role: "admin",
   expires_at: "2026-09-30T00:00:00Z",
+  has_account: false,
 };
+
+/** the same invitation, to an address that already has an account (#1935) */
+const EXISTING = { ...PREVIEW, has_account: true };
+
+/** the answer to an accept that granted the role but minted no session */
+const signInRequired = (reason: "existing_account" | "second_factor") => () =>
+  json({ sign_in_required: true, email: PREVIEW.email, reason });
 
 /**
  * The invitee has no session — the token in the url is the only credential the
@@ -174,5 +182,52 @@ export const AcceptRejected: Story = {
     await waitFor(() => expect(canvas.getByText(/already been accepted/)).toBeVisible());
     // the form stays, because a different link can still be pasted into it
     await expect(canvas.getByLabelText(/^Password/)).toBeVisible();
+  },
+};
+
+/**
+ * The address already has an account, so the screen asks for no password: an
+ * invite link never signs anyone in to an existing account, since the inviter
+ * holds the same token (#1935). Accepting grants the role and hands over to
+ * the ordinary sign-in, where the account's own password and factor apply.
+ */
+export const ExistingAccount: Story = {
+  render: () => <Stage stub={invite(() => json(EXISTING), signInRequired("existing_account"))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/already has a rolter account/)).toBeVisible();
+    // "choose a password" would be untrue here: the account keeps its own
+    await expect(canvas.queryByLabelText(/^Password/)).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
+    const body = await calls.expectSentBody<Record<string, unknown>>(
+      "POST",
+      `/invitations/accept/${TOKEN}/accept`,
+    );
+    await expect(body).toEqual({});
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      /now on your account.*usual password/,
+    );
+    await expect(canvas.getByRole("button", { name: /continue to sign in/i })).toBeVisible();
+    // nothing to sign in with: the answer carried no session
+    await expect(localStorage.getItem("rolter.session.token")).toBeNull();
+  },
+};
+
+/**
+ * A new account in an org whose policy requires a second factor: the account
+ * is created, but the session waits for the sign-in that enrols the factor.
+ */
+export const SecondFactorRequired: Story = {
+  render: () => <Stage stub={invite(() => json(PREVIEW), signInRequired("second_factor"))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText(/^Password/), "correct-horse");
+    await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-horse");
+    await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      /Acme requires a second factor/,
+    );
+    await expect(canvas.queryByLabelText(/^Password/)).not.toBeInTheDocument();
+    await expect(localStorage.getItem("rolter.session.token")).toBeNull();
   },
 };

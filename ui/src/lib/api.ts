@@ -2395,6 +2395,33 @@ export interface InvitationPreview {
   email: string;
   role: Role;
   expires_at: string;
+  /**
+   * An account already exists under this email. Accepting then adds the role
+   * to it and asks for no password: the invitee signs in as usual afterwards,
+   * because an invite link never signs anyone in to an existing account (#1935).
+   */
+  has_account: boolean;
+}
+
+/**
+ * The invitation was accepted and its role granted, but no session came with
+ * it: the invitee signs in through the normal sign-in (#1935).
+ * `existing_account` — the email already had an account, whose own password
+ * (and second factor) still apply. `second_factor` — a new account in an org
+ * whose `required_*` policy is in force; the sign-in is where it enrols.
+ */
+export interface InvitationSignInRequired {
+  sign_in_required: true;
+  email: string;
+  reason: "existing_account" | "second_factor";
+}
+
+export type AcceptInvitationOutcome = LoginResponse | InvitationSignInRequired;
+
+export function isInvitationSignInRequired(
+  outcome: AcceptInvitationOutcome,
+): outcome is InvitationSignInRequired {
+  return "sign_in_required" in outcome && outcome.sign_in_required === true;
 }
 
 // unauthenticated: the invitee has no account yet, the token is the credential
@@ -2402,11 +2429,16 @@ export function previewInvitation(token: string): Promise<InvitationPreview> {
   return getJson<InvitationPreview>(`/api/v1/invitations/accept/${encodeURIComponent(token)}`);
 }
 
-export function acceptInvitation(token: string, password: string): Promise<LoginResponse> {
-  return sendJson<LoginResponse>(
+// `password` only for an invitation that creates the account; an existing
+// account keeps its own and is sent to sign in with it
+export function acceptInvitation(
+  token: string,
+  password?: string,
+): Promise<AcceptInvitationOutcome> {
+  return sendJson<AcceptInvitationOutcome>(
     "POST",
     `/api/v1/invitations/accept/${encodeURIComponent(token)}/accept`,
-    { password },
+    password === undefined ? {} : { password },
   );
 }
 
