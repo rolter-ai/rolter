@@ -255,6 +255,14 @@ describe("formatters", () => {
     expect(en.dayUnlessToday("not a date", now)).toBe("");
   });
 
+  test("the clock with milliseconds carries no date, in either locale", () => {
+    // a log row is told apart from its neighbour by the fraction of a second,
+    // and the day is said elsewhere, so the stamp is only the clock
+    expect(formattersFor("en").timeMs(at)).toBe("15:34:56.789");
+    expect(formattersFor("ru").timeMs(at)).toBe("15:34:56,789");
+    expect(formattersFor("en").timeMs("not a date")).toBe("");
+  });
+
   test("the house date is unambiguous in every locale", () => {
     // `10/5/2026` reads as 5 October in half the world; a named month cannot
     expect(formattersFor("en").date(at)).toBe("Oct 5, 2026");

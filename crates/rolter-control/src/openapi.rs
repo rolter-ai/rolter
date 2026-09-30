@@ -493,6 +493,11 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "string",
         "exact W3C trace id; with no `since`, searches every retained row",
     ),
+    QueryParam::new(
+        "unpriced",
+        "boolean",
+        "`true` returns only requests recorded as unpriced; omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -3215,6 +3220,8 @@ mod tests {
         // a request is found by the id its client was handed (#1849)
         assert!(names.contains("request_id"), "{names:?}");
         assert!(names.contains("trace_id"), "{names:?}");
+        // and the unpriced ones can be asked for by themselves
+        assert!(names.contains("unpriced"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

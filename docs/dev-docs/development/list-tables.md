@@ -168,7 +168,14 @@ checks the state has not moved while the header band has, and
 body share one left edge and one width when nothing scrolls.
 
 The Logs screen is not built from these primitives: it renders a native
-`<table>` and gets its semantics from the elements. So does the Roles &
+`<table>` and gets its semantics from the elements. It does not scroll to fit
+its columns either. Its scroll area is a size container, and Provider, Tokens
+and Latency are `display: none` below 840, 720 and 600px of the table's own
+width (`@min-[…]` variants on the `th`, the `td` and the `col`), so Time, Model,
+Status and Cost are in the frame however much the sidebar, the filter rail and
+the detail drawer have taken. The width that decides is the table's, not the
+window's (#1986). `TheColumnsFollowTheWidthTheTableHas` and the 375px stories
+read the drawn columns and assert no cell sits past the frame. So does the Roles &
 Permissions matrix (#2081), which needs what the list primitives do not have: a
 row header per resource (`th scope="row"`) and a `tbody` per scope under its own
 full-width header. Each of its chips pairs an `aria-hidden` mark with the same
