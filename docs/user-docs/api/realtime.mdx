@@ -91,6 +91,16 @@ It then receives a close frame with code `1008` (policy violation). A session
 can overspend by at most one flush window, plus the response in flight when the
 budget ran out; lower `usage_flush_secs` to tighten that.
 
+**When the key is revoked mid-session**, rolter closes the session too. Every flush
+tick looks the session's virtual key up again in the current configuration. A key
+that was disabled, has expired or was deleted, a `models` list that no longer
+names the session's model, and a route the key can no longer reach all end the
+session, so revoking access is not left waiting on `max_session_secs`. The client
+receives a Realtime `error` event with code `invalid_api_key` (key gone),
+`model_not_allowed` or `route_not_allowed`, then a close frame with code `1008`.
+The bound is one flush interval, `usage_flush_secs` (one second when that is `0`),
+plus the time for the change to reach the gateway.
+
 **A response cut short** (the client leaves, the upstream drops, or the session
 is closed mid-answer) never reports its usage, although the provider bills
 what it generated. Its row is written with `usage_unknown = 1` so the gap is

@@ -772,6 +772,64 @@ async fn a_budget_spent_elsewhere_closes_an_idle_session_on_the_timer() {
     }
 }
 
+/// Read the `error` event and policy close a revoked session ends with.
+async fn expect_revoked(client: &mut Client, code: &str) {
+    let error = next_event(client).await;
+    assert_eq!(error["type"], "error", "{error}");
+    assert_eq!(error["error"]["code"], code, "{error}");
+    match next(client).await {
+        Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Policy),
+        other => panic!("expected a policy close, got {other:?}"),
+    }
+}
+
+/// Authentication happens once, at the upgrade. Disabling the key must still
+/// reach a session that is already open, on the next tick (#1881).
+#[tokio::test]
+async fn a_session_is_closed_when_its_key_is_disabled() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-revoke");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    run_turn(&mut client).await;
+    // the other key stays valid, so the snapshot still has keys in it
+    config.db_virtual_keys[0].disabled = true;
+    state.reload(&config, 2);
+    expect_revoked(&mut client, "invalid_api_key").await;
+    refused(gw, KEY).await;
+}
+
+/// Narrowing `models` is the same class of change as disabling the key.
+#[tokio::test]
+async fn a_session_is_closed_when_its_models_are_narrowed() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-narrow");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    config.db_virtual_keys[0].models = vec!["some-other-model".to_string()];
+    state.reload(&config, 2);
+    expect_revoked(&mut client, "model_not_allowed").await;
+}
+
+/// A key that is left alone keeps its session across ticks.
+#[tokio::test]
+async fn an_unchanged_key_keeps_its_session_across_ticks() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-keep");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    state.reload(&config, 2);
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    run_turn(&mut client).await;
+}
+
 /// With `usage_flush_secs = 0` there is no flush timer, since every turn is
 /// flushed as it finishes. A quiet session still re-reads its budgets, so
 /// spend elsewhere closes it without waiting for a turn of its own.
