@@ -3133,6 +3133,47 @@ impl GatewayConfig {
                 ));
             }
         }
+
+        // a route override naming a guardrail rule the effective set lacks is
+        // pruned here, not refused: the store loads only enabled rows, so a
+        // rule paused, renamed or deleted in the dashboard leaves its overrides
+        // dangling, and refusing would freeze propagation of every config
+        // change (#2306). Pruning is safe in both directions: an `enable` for a
+        // missing rule has nothing to enable, and a `disable` for a rule that is
+        // not running has nothing to switch off. `validate` keeps rejecting an
+        // unknown name in a file config, where it is a typo and a typo in
+        // `disable` must not read as "this rule is off here"; only the snapshot
+        // path, which is store-sourced, prunes
+        let rule_names: Vec<String> = self
+            .guardrails
+            .rules
+            .iter()
+            .map(|rule| rule.name.clone())
+            .collect();
+        for route in &mut self.routes {
+            let unknown = route.advanced.guardrails.unknown_rules(&rule_names);
+            if unknown.is_empty() {
+                continue;
+            }
+            route
+                .advanced
+                .guardrails
+                .disable
+                .retain(|name| rule_names.contains(name));
+            route
+                .advanced
+                .guardrails
+                .enable
+                .retain(|name| rule_names.contains(name));
+            let mut seen = std::collections::HashSet::new();
+            for name in unknown.into_iter().filter(|name| seen.insert(name.clone())) {
+                warnings.push(format!(
+                    "route '{}' override of guardrail rule '{name}' omitted from the snapshot: \
+                     no enabled rule has that name (paused, renamed or deleted)",
+                    route.model
+                ));
+            }
+        }
         warnings
     }
 
@@ -5606,6 +5647,54 @@ mod tests {
         // "created the route, haven't added targets yet" state
         cfg.routes[1].targets.clear();
         cfg
+    }
+
+    fn config_with_guardrail_override(disable: &[&str], enable: &[&str]) -> GatewayConfig {
+        let mut cfg: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "good"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[guardrails.rules]]
+            name = "live"
+            pattern = "secret"
+            action = "block"
+            "#,
+        )
+        .unwrap();
+        let overrides = &mut cfg.routes[0].advanced.guardrails;
+        overrides.disable = disable.iter().map(|s| s.to_string()).collect();
+        overrides.enable = enable.iter().map(|s| s.to_string()).collect();
+        cfg
+    }
+
+    #[test]
+    fn sanitize_prunes_a_guardrail_override_naming_an_absent_rule() {
+        let mut cfg = config_with_guardrail_override(&["paused", "live"], &["gone"]);
+        let warnings = cfg.sanitize_for_snapshot();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("'paused'")));
+        assert!(warnings.iter().any(|w| w.contains("'gone'")));
+        let overrides = &cfg.routes[0].advanced.guardrails;
+        assert_eq!(overrides.disable, vec!["live".to_string()]);
+        assert!(overrides.enable.is_empty());
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn a_file_config_with_an_unknown_guardrail_override_still_fails_validation() {
+        let cfg = config_with_guardrail_override(&["typo"], &[]);
+        let problems = cfg.validate().expect_err("typo must be refused");
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("overrides guardrail rule 'typo'")));
     }
 
     #[test]
