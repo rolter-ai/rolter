@@ -39,6 +39,7 @@ pub mod health;
 mod health_events;
 mod load;
 mod logging;
+mod mcp_log;
 mod mcp_proxy;
 mod metrics;
 pub mod model_catalog;

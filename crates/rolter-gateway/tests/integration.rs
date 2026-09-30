@@ -186,6 +186,237 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
     );
 }
 
+/// A ClickHouse stand-in recording the `(query, body)` of every INSERT.
+async fn serve_clickhouse() -> (SocketAddr, Arc<parking_lot::Mutex<Vec<(String, String)>>>) {
+    use std::collections::HashMap;
+    let seen: Arc<parking_lot::Mutex<Vec<(String, String)>>> = Arc::default();
+    let sink = seen.clone();
+    let app = Router::new().route(
+        "/",
+        post(
+            move |axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+                  body: String| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock()
+                        .push((q.get("query").cloned().unwrap_or_default(), body));
+                }
+            },
+        ),
+    );
+    (serve(app).await, seen)
+}
+
+/// Rows written to `mcp_tool_call_logs` so far, one parsed JSON object each.
+fn mcp_rows(seen: &parking_lot::Mutex<Vec<(String, String)>>) -> Vec<Value> {
+    seen.lock()
+        .iter()
+        .filter(|(query, _)| query.contains("INTO mcp_tool_call_logs"))
+        .flat_map(|(_, body)| body.lines().map(|line| serde_json::from_str(line).unwrap()))
+        .collect()
+}
+
+async fn wait_for_mcp_rows(
+    seen: &parking_lot::Mutex<Vec<(String, String)>>,
+    count: usize,
+) -> Vec<Value> {
+    for _ in 0..100 {
+        let rows = mcp_rows(seen);
+        if rows.len() >= count {
+            return rows;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("expected {count} mcp rows, saw {:?}", mcp_rows(seen));
+}
+
+/// A gateway with one per-user OAuth MCP server whose upstream answers every
+/// `tools/call` with `reply`, JSON or SSE, and a ClickHouse stand-in.
+async fn mcp_logging_config(
+    reply: Value,
+    sse: bool,
+    flush_ms: u64,
+) -> (
+    GatewayConfig,
+    Arc<parking_lot::Mutex<Vec<(String, String)>>>,
+) {
+    let reply = Arc::new(reply);
+    let upstream = serve(Router::new().route(
+        "/{*path}",
+        any(move |body: String| {
+            let reply = reply.clone();
+            async move {
+                let request: Value = serde_json::from_str(&body).unwrap_or_default();
+                let mut answer = (*reply).clone();
+                answer["id"] = request["id"].clone();
+                if sse {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        format!(
+                            "event: message\ndata: {{\"method\":\"notifications/progress\"}}\n\nevent: message\ndata: {answer}\n\n"
+                        ),
+                    )
+                        .into_response()
+                } else {
+                    Json(answer).into_response()
+                }
+            }
+        }),
+    ))
+    .await;
+    let (clickhouse, seen) = serve_clickhouse().await;
+    let mut config = GatewayConfig::default();
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = flush_ms;
+    config.logging.payload_capture.enabled = true;
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        access_policy: None,
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-log"),
+        id: "key-1".to_string(),
+        org_id: "org-1".to_string(),
+        team_id: "team-1".to_string(),
+        project_id: "project-1".to_string(),
+        user_id: "user-1".to_string(),
+        models: Vec::new(),
+        providers: Vec::new(),
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+    });
+    config.mcp_servers.push(McpServerConfig {
+        id: "server-1".to_string(),
+        org_id: "org-1".to_string(),
+        slug: "docs".to_string(),
+        url: format!("http://{upstream}/rpc"),
+        transport: "streamable_http".to_string(),
+        auth_kind: rolter_core::McpAuthKind::Oauth,
+        ..Default::default()
+    });
+    config.mcp_oauth_sessions.push(McpOAuthSessionConfig {
+        id: "session-1".to_string(),
+        server_id: "server-1".to_string(),
+        user_id: "user-1".to_string(),
+        scopes: Vec::new(),
+        expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        access_token: "oauth-downstream".to_string(),
+    });
+    (config, seen)
+}
+
+async fn mcp_call(gateway: SocketAddr, method: &str) -> Value {
+    reqwest::Client::new()
+        .post(format!("http://{gateway}/mcp/docs"))
+        .header("x-api-key", "sk-mcp-log")
+        .json(&json!({"jsonrpc": "2.0", "id": 41, "method": method,
+            "params": {"name": "search", "arguments": {"q": "rust", "token": "hunter2"}}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+async fn mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution() {
+    let (config, seen) = mcp_logging_config(
+        json!({"jsonrpc": "2.0", "result": {"content": []}}),
+        false,
+        20,
+    )
+    .await;
+    let gateway = serve_gateway(&config).await;
+
+    let response = mcp_call(gateway, "tools/call").await;
+    // the caller still gets the upstream's reply untouched
+    assert_eq!(response["result"], json!({"content": []}));
+
+    let rows = wait_for_mcp_rows(&seen, 1).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(row["server"], "docs");
+    assert_eq!(row["tool"], "search");
+    assert_eq!(row["transport"], "streamable_http");
+    assert_eq!(row["status"], "success");
+    assert_eq!(row["org_id"], "org-1");
+    assert_eq!(row["team_id"], "team-1");
+    assert_eq!(row["project_id"], "project-1");
+    assert_eq!(row["virtual_key_id"], "key-1");
+    assert_eq!(row["user_id"], "user-1");
+    assert!(!row["event_id"].as_str().unwrap().is_empty());
+    let arguments = row["arguments"].as_str().unwrap();
+    assert!(arguments.contains("rust"), "{arguments}");
+    assert!(arguments.contains("[REDACTED]") && !arguments.contains("hunter2"));
+    assert_eq!(row["result"], r#"{"content":[]}"#);
+}
+
+#[tokio::test]
+async fn mcp_proxy_records_a_tool_error_result_and_an_sse_reply() {
+    for sse in [false, true] {
+        let (config, seen) = mcp_logging_config(
+            json!({"jsonrpc": "2.0", "result": {"isError": true, "content": []}}),
+            sse,
+            20,
+        )
+        .await;
+        let gateway = serve_gateway(&config).await;
+        let _ = mcp_call(gateway, "tools/call").await;
+        let rows = wait_for_mcp_rows(&seen, 1).await;
+        assert_eq!(rows[0]["status"], "error", "sse={sse}: {rows:?}");
+        assert_eq!(rows[0]["error"], "tool invocation failed");
+        assert_eq!(rows[0]["user_id"], "user-1");
+    }
+}
+
+#[tokio::test]
+async fn mcp_proxy_records_a_json_rpc_error_as_a_tool_error() {
+    let (config, seen) = mcp_logging_config(
+        json!({"jsonrpc": "2.0", "error": {"code": -32602, "message": "bad params"}}),
+        false,
+        20,
+    )
+    .await;
+    let gateway = serve_gateway(&config).await;
+    let _ = mcp_call(gateway, "tools/call").await;
+    assert_eq!(wait_for_mcp_rows(&seen, 1).await[0]["status"], "error");
+}
+
+#[tokio::test]
+async fn mcp_proxy_records_nothing_for_other_methods() {
+    let (config, seen) =
+        mcp_logging_config(json!({"jsonrpc": "2.0", "result": {}}), false, 20).await;
+    let gateway = serve_gateway(&config).await;
+    for method in ["initialize", "tools/list", "notifications/initialized"] {
+        let _ = mcp_call(gateway, method).await;
+    }
+    // several flush windows: a row that was going to arrive has arrived
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(mcp_rows(&seen).is_empty(), "{:?}", mcp_rows(&seen));
+}
+
+/// A queued event is flushed by the shutdown drain, not lost to the flush
+/// window (#1924 covers the other sinks).
+#[tokio::test]
+async fn mcp_events_are_flushed_by_the_shutdown_drain() {
+    let (config, seen) =
+        mcp_logging_config(json!({"jsonrpc": "2.0", "result": {}}), false, 3_600_000).await;
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gateway = serve(rolter_gateway::build_router(
+        state.clone(),
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+    let _ = mcp_call(gateway, "tools/call").await;
+    // the event is emitted as the body ends, which can trail the client's read
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(mcp_rows(&seen).is_empty(), "flushed before the drain");
+    assert!(state.drain_sinks(std::time::Duration::from_secs(5)).await);
+    assert_eq!(mcp_rows(&seen).len(), 1);
+}
+
 /// A static credential is the point of #952: before it, a `bearer`/`header`
 /// server was refused for want of an OAuth session however it was configured,
 /// so the stored credential could not be observed on the wire at all.

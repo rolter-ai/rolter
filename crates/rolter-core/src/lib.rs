@@ -17,6 +17,7 @@ pub mod currency;
 pub mod error;
 pub mod guardrail_webhook;
 pub mod guardrails;
+pub mod mcp_log;
 pub mod node_identity;
 pub mod pii_sanitizer;
 pub mod plugin_dispatch;

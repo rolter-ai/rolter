@@ -213,6 +213,14 @@ where withheld = 1 and ts > now() - interval 30 day;
 
 `usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. It is also set on a `502` whose upstream answered and then failed to deliver the body the gateway was reading (a reset, a truncated response): the provider may have billed an answer nobody received. Rows written before these columns existed default to `0`.
 
+## MCP tool calls
+
+When ClickHouse is configured, the gateway records each `tools/call` it proxies on `/mcp/{server}` as one row in **Observability → MCP Logs**. Nothing else is recorded: `initialize`, `tools/list` and notifications leave no row, and with no `clickhouse_url` the gateway records nothing.
+
+Each row carries the server, the tool, the latency and a status: `success`, `error` (the tool reported `isError: true` or the server answered with a JSON-RPC error), `auth_denied` (the gateway refused the caller's OAuth session, or the server answered `401`/`403`), `timeout`, or `transport_error`. It is attributed to the calling virtual key's organization, team and project, and to the user who owns the key, which is the user whose OAuth session the call used.
+
+The call's arguments and result are stored only when `[logging.payload_capture]` is `enabled`, redacted with `redact_fields` and cut to `max_bytes`, the same policy as LLM payloads. Recording never slows or fails the call: if the write queue is full the row is dropped and `rolter_mcp_events_dropped_total` goes up. For a streamed (SSE) reply the row is written when the stream ends, so its latency includes the whole stream.
+
 ## Time windows
 
 Every usage, spend, provider-health and MCP-log read takes an optional `since` (inclusive) and `until` (exclusive). Left out, or sent empty, they cover the last 7 days up to now. Each accepts:

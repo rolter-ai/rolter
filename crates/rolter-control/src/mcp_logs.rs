@@ -24,15 +24,8 @@ use crate::rbac_matrix::superadmin_cap;
 use crate::time_bounds::{InvalidParam, Query, TimeBounds};
 use crate::ControlState;
 
+use rolter_core::mcp_log::{capture, safe_error, MCP_STATUSES};
 use rolter_core::MCP_TRANSPORTS;
-const MCP_STATUSES: &[&str] = &[
-    "success",
-    "timeout",
-    "auth_denied",
-    "transport_error",
-    "error",
-];
-
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/mcp/events", post(ingest_event))
@@ -112,58 +105,6 @@ fn event_ts(supplied: Option<&str>) -> Result<String, String> {
         None => Utc::now(),
     };
     Ok(ts.to_rfc3339_opts(SecondsFormat::Millis, true))
-}
-
-fn redact(value: &mut Value, fields: &[String]) {
-    match value {
-        Value::Object(object) => {
-            for (key, nested) in object.iter_mut() {
-                if fields.iter().any(|field| field.eq_ignore_ascii_case(key)) {
-                    *nested = Value::String("[REDACTED]".to_string());
-                } else {
-                    redact(nested, fields);
-                }
-            }
-        }
-        Value::Array(values) => values.iter_mut().for_each(|nested| redact(nested, fields)),
-        _ => {}
-    }
-}
-
-fn capture(value: Option<Value>, enabled: bool, max_bytes: usize, fields: &[String]) -> String {
-    if !enabled || max_bytes == 0 {
-        return String::new();
-    }
-    let Some(mut value) = value else {
-        return String::new();
-    };
-    redact(&mut value, fields);
-    let mut rendered = serde_json::to_string(&value).unwrap_or_default();
-    if rendered.len() > max_bytes {
-        let end = rendered.floor_char_boundary(max_bytes);
-        rendered.truncate(end);
-        rendered.push_str("…[truncated]");
-    }
-    rendered
-}
-
-/// Never persist a caller-supplied diagnostic verbatim. The status is the
-/// durable machine-readable signal; this optional display string is a bounded,
-/// secret-free category for the log detail viewer.
-fn safe_error(status: &str, error: Option<&str>) -> String {
-    if status == "success" || error.is_none() {
-        return String::new();
-    }
-    let error = error.unwrap_or_default().to_ascii_lowercase();
-    if error.contains("timeout") {
-        "timeout".to_string()
-    } else if error.contains("auth") || error.contains("forbidden") || error.contains("denied") {
-        "authentication denied".to_string()
-    } else if error.contains("connect") || error.contains("transport") || error.contains("dns") {
-        "transport failure".to_string()
-    } else {
-        "tool invocation failed".to_string()
-    }
 }
 
 async fn ingest_event(
@@ -430,18 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_redacts_nested_sensitive_arguments_before_truncation() {
-        let captured = capture(
-            Some(json!({"nested": {"token": "secret"}, "query": "hello"})),
-            true,
-            1024,
-            &["token".to_string()],
-        );
-        assert!(captured.contains("[REDACTED]"));
-        assert!(!captured.contains("secret"));
-    }
-
-    #[test]
     fn list_query_never_strict_parses_an_absent_cursor() {
         // an absent cursor binds `cursor_ts` to ''; clickhouse still evaluates
         // the parse of that constant, so a strict parse failed every first page
@@ -478,14 +407,6 @@ mod tests {
         assert_eq!(
             parse_keyset_cursor(Some("not-a-cursor"), "event_id"),
             Err("cursor must be timestamp|event_id".to_string())
-        );
-    }
-
-    #[test]
-    fn error_message_is_reduced_to_a_safe_category() {
-        assert_eq!(
-            safe_error("transport_error", Some("connect failed: bearer secret")),
-            "transport failure"
         );
     }
 }
