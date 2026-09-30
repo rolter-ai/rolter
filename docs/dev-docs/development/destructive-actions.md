@@ -122,9 +122,29 @@ out (#2084), on the Single Sign-On screen:
   never blocks, since a public client has no secret on purpose. A save that
   also tightens the second factor raises this dialog first and the second-factor
   one after it, and sends a single request.
+- **Turning single sign-on off** confirms as `sso-single-sign-on-off` (#2326)
+  when the org has an enabled provider, with a `SsoOffNotice` as `children`.
+  `locksOutSsoMembers` in `ui/src/lib/sso-lockout.ts` decides it from the saved
+  policy and the draft: only the flip from on to off counts, and with no enabled
+  provider (none at all, or every one out of service) nobody signs in through
+  one, so the save goes straight out. Turning it on asks nothing. The notice
+  states only what the control plane enforces: the callback refuses every
+  provider of the org while `allow_sso` is off, and an account created through a
+  provider has no password, so those members cannot sign in until single sign-on
+  is back on or a superadmin sets one. An account that holds a password, such as
+  one made from an invitation, keeps signing in, because password sign-in stays
+  on (the control plane refuses both off). It warns and never blocks, since one
+  flip undoes it. The providers come from the list the screen already read, so a
+  caller refused that list gets no confirmation.
 - **The second-factor confirmation** counts people with `distinctPeople`: the
   memberships endpoint returns one row per grant, so a person holding a role on
   the org and another on a team is one member.
+
+A save that needs more than one of these asks them in turn, password sign-in
+first, then single sign-on, then the second factor, and sends one request after
+the last. The steps are listed once in `SignInPolicyCard`, and only the last
+confirmation passes `pending`: a confirmation that merely moves on runs no
+request, so it must not report a landing.
 
 The control plane refuses the mirror change, turning passwords off with no
 enabled provider, but does not refuse these (#2233 tracks that guard). The

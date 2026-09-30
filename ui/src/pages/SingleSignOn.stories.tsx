@@ -134,6 +134,10 @@ const POLICY: OrgAuthPolicy = {
 // provider the last way in for everyone but a superadmin
 const PASSWORDS_OFF: OrgAuthPolicy = { ...POLICY, allow_password_login: false };
 
+// single sign-on already off: every provider of the org is refused at the
+// callback, so turning it back on is what restores the way in
+const SSO_OFF: OrgAuthPolicy = { ...POLICY, allow_sso: false };
+
 /**
  * The screen's endpoints, routed by path.
  *
@@ -1236,6 +1240,205 @@ export const PasswordsOffAndASecondFactorAreConfirmedInTurn: Story = {
       mfa_enforce_after: null,
     });
     await expectToast(canvasElement, /the sign-in policy updated/i);
+  },
+};
+
+const ssoOff = recording(api({ providers: () => [provider()] }));
+
+/**
+ * Turning single sign-on off while a provider is enabled confirms first and says
+ * who it shuts out (#2326). An account a provider created has no password, so
+ * password sign-in being on does not bring those members back; an account that
+ * holds one keeps signing in. Backing out sends nothing, and confirming sends
+ * the same body a plain save does.
+ */
+export const TurningSingleSignOnOffConfirmsFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={ssoOff.stub}>
+      <UxScreenProvider screen="sso">
+        <SingleSignOn />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialogElement = await confirmation();
+    // the dialog animates in, so visibility is polled rather than read once (#2287)
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Turn off single sign-on?" }),
+    ).toBeInTheDocument();
+    await expect(dialogElement).toHaveTextContent(
+      "every sign-in through this organization's identity providers is refused",
+    );
+    const notice = dialog.getByRole("note");
+    await expect(notice).toHaveTextContent(
+      "Members who only sign in through a provider would be locked out",
+    );
+    await expect(notice).toHaveTextContent(
+      "Accounts created through a provider have no password, so they cannot sign in until single sign-on is back on or a superadmin sets one",
+    );
+    // and who still gets in
+    await expect(notice).toHaveTextContent(
+      "Accounts that have a password, such as those created from an invitation, keep signing in with it",
+    );
+
+    // backing out sends nothing and is recorded as a cancel, not a decision
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+    ssoOff.expectNotSent("PUT", "/auth-policy");
+    const abandon = await expectUxEvent("form_abandon", "sso-single-sign-on-off");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "sso-single-sign-on-off");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await confirmDestructive(/Turn off single sign-on/, "Turn it off");
+    await expect(await ssoOff.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
+      allow_password_login: true,
+      allow_sso: false,
+      mfa_policy: "off",
+      mfa_enforce_after: null,
+    });
+    await expectUxEvent("form_submit", "sso-single-sign-on-off");
+    await expectUxEvent("save_confirmed", "sso-single-sign-on-off");
+  },
+};
+
+/**
+ * The play shared by the two cases with nobody to shut out: with no enabled
+ * provider nobody signs in through one, so switching single sign-on off takes
+ * nobody's route away and the save goes straight out.
+ */
+const savesSingleSignOnOffAtOnce =
+  (sent: Recorder): NonNullable<Story["play"]> =>
+  async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await expect(await sent.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
+      allow_password_login: true,
+      allow_sso: false,
+      mfa_policy: "off",
+      mfa_enforce_after: null,
+    });
+    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+    await expectToast(canvasElement, /the sign-in policy updated/i);
+  };
+
+// a provider that is out of service has no `/start`, so it is not a route either
+const ssoOffParked = recording(api({ providers: () => [provider({ enabled: false })] }));
+
+export const TurningSingleSignOnOffWithOnlyParkedProvidersDoesNotConfirm: Story = {
+  render: () => (
+    <Harness fetchStub={ssoOffParked.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: savesSingleSignOnOffAtOnce(ssoOffParked),
+};
+
+const ssoOffBare = recording(api({ providers: () => [] }));
+
+export const TurningSingleSignOnOffWithNoProviderDoesNotConfirm: Story = {
+  render: () => (
+    <Harness fetchStub={ssoOffBare.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: savesSingleSignOnOffAtOnce(ssoOffBare),
+};
+
+const ssoOn = recording(api({ providers: () => [provider()], policy: () => SSO_OFF }));
+
+/** Turning it back on restores a route, so it saves at once. */
+export const TurningSingleSignOnOnDoesNotConfirm: Story = {
+  render: () => (
+    <Harness fetchStub={ssoOn.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sso = await canvas.findByRole("switch", { name: "Single sign-on" });
+    await expect(sso).not.toBeChecked();
+    await userEvent.click(sso);
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+    await expect(await ssoOn.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
+      allow_password_login: true,
+      allow_sso: true,
+      mfa_policy: "off",
+      mfa_enforce_after: null,
+    });
+    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+    await expectToast(canvasElement, /the sign-in policy updated/i);
+  },
+};
+
+const ssoOffAndMfa = recording(api({ providers: () => [provider()] }));
+
+/**
+ * One save that turns single sign-on off and requires a second factor raises
+ * both confirmations, the single sign-on one first, and sends a single request
+ * after the second. Only the last confirmation reports a landing.
+ */
+export const SingleSignOnOffAndASecondFactorAreConfirmedInTurn: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={ssoOffAndMfa.stub}>
+      <UxScreenProvider screen="sso">
+        <Toasted>
+          <SingleSignOn />
+        </Toasted>
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
+    await pickOption(canvas.getByLabelText("Second factor"), "Required for everyone");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    await confirmDestructive(/Turn off single sign-on/, "Turn it off");
+    // the first answer only moves on: nothing is sent until the second
+    await waitFor(async () =>
+      expect(
+        within(await confirmation()).getByRole("heading", {
+          name: "Require a second factor to sign in?",
+        }),
+      ).toBeInTheDocument(),
+    );
+    ssoOffAndMfa.expectNotSent("PUT", "/auth-policy");
+
+    await confirmDestructive(/before they get a session/, "Require it");
+    await expect(
+      await ssoOffAndMfa.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
+    ).toEqual({
+      allow_password_login: true,
+      allow_sso: false,
+      mfa_policy: "required_all",
+      mfa_enforce_after: null,
+    });
+    await expectToast(canvasElement, /the sign-in policy updated/i);
+
+    // one request for two answers, and the landing belongs to the one that sent it
+    const puts = ssoOffAndMfa.calls.filter(
+      (call) => call.method === "PUT" && call.url.includes("/auth-policy"),
+    );
+    await expect(puts).toHaveLength(1);
+    await expectUxEvent("form_submit", "sso-single-sign-on-off");
+    await expectUxEvent("save_confirmed", "sso-mfa-policy");
+    expectNoUxEvent("save_confirmed", "sso-single-sign-on-off");
   },
 };
 

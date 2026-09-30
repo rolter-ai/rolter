@@ -7,8 +7,8 @@ import { fetchPublicUrl } from "@/lib/api";
  * reads the control plane's public base through (#2083, #2079).
  *
  * One key, so the Single Sign-On and User Provisioning screens share a single
- * request and agree on whether `ROLTER_PUBLIC_URL` is set. The Single Sign-On
- * screen spells the same key out itself.
+ * request and agree on whether `ROLTER_PUBLIC_URL` is set. Both read it through
+ * `usePublicUrl()`, which is the only place the key is spelled out.
  */
 export const PUBLIC_URL_QUERY_KEY = ["public-url"] as const;
 
