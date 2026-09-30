@@ -136,10 +136,6 @@
         "title": "{{resource}} needs a database on the control plane",
         "body": "This control plane is running from a config file alone, so the endpoint behind this screen is not mounted at all. Retrying or signing in will not change that: start it with a database (ROLTER_DATABASE_URL) to manage {{resource}} here, or keep editing rolter.toml."
       },
-      "noAnalytics": {
-        "title": "Analytics are not configured on this control plane",
-        "body": "It answered, and the answer was that it keeps no analytics store, so it cannot serve {{resource}}: it runs without CLICKHOUSE_URL, or is older than the endpoint behind this screen. Retrying or signing in will not change that — configure ClickHouse and restart it."
-      },
       "unreachable": {
         "title": "Cannot reach the control plane",
         "body": "The request for {{resource}} got no answer at all. Check that the control plane is running and that this dashboard points at the right address."
@@ -1668,6 +1664,10 @@
       "lagging_other": "{{count}} still applying the newest config"
     },
     "costAttribution": {
+      "noAnalytics": {
+        "title": "Spend figures need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no spend to total. The list below does not need it and works as usual. Set <0>CLICKHOUSE_URL</0> and restart the control plane: every request logged from then on is counted here."
+      },
       "confirm": {
         "title": "Delete {{name}}?",
         "unitBody": "The business unit is removed outright and the spend already attributed to it loses its label. Retire it instead to keep the history.",
@@ -2479,6 +2479,10 @@
       }
     },
     "mcpLogs": {
+      "noAnalytics": {
+        "title": "MCP tool-call logs need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
+      },
       "emptyTitle": "No MCP tool calls yet",
       "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy.",
       "noMatchTitle": "No calls match these filters",
@@ -3570,6 +3574,10 @@
       "body": "This control plane is running in open mode with no admin token, so it has no user accounts — there is no \"you\" to mint a key for. Set ROLTER_ADMIN_TOKEN and create a local account to use this screen, or manage keys from the admin Virtual Keys screen instead."
     },
     "keys": {
+      "noAnalytics": {
+        "title": "Usage figures need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it cannot total what your keys have used. Your keys are listed below and can still be created, rotated and deleted. Ask whoever runs the control plane to set <0>CLICKHOUSE_URL</0>: requests and cost per key appear here from then on."
+      },
       "explainer": "These are rolter virtual keys (sk-rolter-…) — the credential your code sends to the gateway. Provider keys are configured on the provider and are never sent by clients.",
       "summary_one": "{{count}} virtual key · yours to rotate or revoke",
       "summary_other": "{{count}} virtual keys · yours to rotate or revoke",

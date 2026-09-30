@@ -136,7 +136,7 @@ The rolling windows and month to date send only `since`, so the control plane's 
 Amounts are rendered in the deployment's settlement currency, not a hardcoded `$`.
 
 <Note>
-The rollup needs ClickHouse. A deployment with no `clickhouse_url` shows an "Analytics are not configured on this control plane" notice in place of the spend figures, naming `CLICKHOUSE_URL` as the setting to add, and the roster itself keeps working — it is backed by Postgres.
+The rollup needs ClickHouse. A deployment with no `clickhouse_url` shows a "Spend figures need ClickHouse" note in place of the spend figures, naming `CLICKHOUSE_URL` as the setting to add. The note is information about the deployment rather than an error, so it offers no retry and stays until the setting changes. The roster itself keeps working — it is backed by Postgres.
 </Note>
 
 ---

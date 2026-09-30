@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
 import {
+  expectAnalyticsUnavailable,
   expectEmptyState,
   expectForbidden,
   expectLoadError,
@@ -15,6 +16,9 @@ import {
   scoped,
 } from "./story-harness";
 import type { McpLogRow } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const call = (over: Partial<McpLogRow> = {}): McpLogRow => ({
   ts: "2026-08-06T10:00:00Z",
@@ -229,8 +233,10 @@ export const Forbidden: Story = {
   },
 };
 
-// the same deployment shape as Logs, plus a control plane too old to serve
-// /api/v1/mcp/logs at all — a 404 the fetcher reads the same way (#1236)
+// the same deployment shape as Logs: a control plane with no clickhouse_url
+// answers 503. It is a status, not the alert a 500 gets, and the stats and
+// filters around it are not drawn, since every figure in them would be a zero
+// the store never counted (#1236, #2016)
 export const NoAnalyticsStore: Story = {
   render: () => (
     <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
@@ -239,9 +245,90 @@ export const NoAnalyticsStore: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /Analytics are not configured/i);
-    await expect(canvas.getByText(/CLICKHOUSE_URL/)).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    // what the screen will show once the store is there is named
+    await expect(panel).toHaveTextContent(/every tool call they proxy/);
+    await expect(canvas.queryByText(en.pages.mcpLogs.calls24h)).toBeNull();
+    await expect(canvas.queryByRole("combobox")).toBeNull();
+  },
+};
+
+// a control plane too old to serve /api/v1/mcp/logs at all answers 404, which
+// the fetcher reads as the same answer (#1236)
+export const NoAnalyticsRoute: Story = {
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "not found" } }, 404))}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.mcpLogs.noAnalytics.title,
+      "not found",
+    );
+  },
+};
+
+/**
+ * The same panel at 375px and in Russian, where the title is the longest line
+ * the screen says: it wraps inside the screen rather than pushing the page
+ * sideways.
+ */
+export const NoAnalyticsStoreAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      ru.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the list loaded, so the store was there a moment ago: one row's detail read
+// answering 503 is the same answer the list would have given, and it is said
+// inside the drawer in the same calm voice rather than as a red alert (#2016)
+export const TheStoreGoingAwayUnderADetail: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+        if (url.includes("/mcp/logs/evt-1")) {
+          return json({ error: { message: "no clickhouse_url" } }, 503);
+        }
+        return json({ data: [call()], next_cursor: null });
+      })}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
+    );
+    const drawer = await canvas.findByRole("complementary", { name: "MCP call details" });
+    const panel = await expectAnalyticsUnavailable(
+      drawer,
+      en.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    await expect(drawer).toContainElement(panel);
+    // the list is still there: only the one read was refused
+    await expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0);
   },
 };
 

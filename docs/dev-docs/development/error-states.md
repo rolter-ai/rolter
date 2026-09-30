@@ -27,8 +27,8 @@ Never render a load failure by hand. Use `LoadError`:
 ```
 
 `resource` is the translated noun for what failed — it is interpolated into
-both the title and the body, so each reads as a sentence in every locale. Five
-of the eight bodies name it, so a call site that filled only the title showed
+both the title and the body, so each reads as a sentence in every locale. Some
+bodies name it, so a call site that filled only the title showed
 the reader a raw `{{resource}}` (#1362); catalog parity cannot catch that,
 because the placeholder is present in every locale and it is the render that
 drops it. `src/lib/load-error.test.ts` holds the copy to the one variable the
@@ -39,19 +39,18 @@ honest.
 ## What it distinguishes
 
 `classifyLoadError` in `ui/src/lib/load-error.ts` maps a thrown value to one of
-eight kinds. `ApiError` already carries `status` and the control plane's `code`,
+seven kinds. `ApiError` already carries `status` and the control plane's `code`,
 so no screen has to parse a message to find out what happened.
 
-| kind              | cause                                                                                                                         | recovery offered                 |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `unauthenticated` | 401                                                                                                                           | sign in again                    |
-| `forbidden`       | 403                                                                                                                           | none — ask an administrator      |
-| `openMode`        | 401 with code `open_mode_no_session`                                                                                          | none — set `ROLTER_ADMIN_TOKEN`  |
-| `noStore`         | 404 with code `no_such_endpoint` (or that message prefix from an older control plane)                                         | none — set `ROLTER_DATABASE_URL` |
-| `noAnalytics`     | an `AnalyticsUnavailableError`: 503 from a control plane with no `clickhouse_url`, or 404 from one too old to serve the route | none — set `CLICKHOUSE_URL`      |
-| `unreachable`     | the thrown value is not an `ApiError`, so `fetch` never connected                                                             | retry                            |
-| `server`          | 5xx                                                                                                                           | retry                            |
-| `unknown`         | any other non-ok status                                                                                                       | retry                            |
+| kind              | cause                                                                                 | recovery offered                 |
+| ----------------- | ------------------------------------------------------------------------------------- | -------------------------------- |
+| `unauthenticated` | 401                                                                                   | sign in again                    |
+| `forbidden`       | 403                                                                                   | none — ask an administrator      |
+| `openMode`        | 401 with code `open_mode_no_session`                                                  | none — set `ROLTER_ADMIN_TOKEN`  |
+| `noStore`         | 404 with code `no_such_endpoint` (or that message prefix from an older control plane) | none — set `ROLTER_DATABASE_URL` |
+| `unreachable`     | the thrown value is not an `ApiError`, so `fetch` never connected                     | retry                            |
+| `server`          | 5xx                                                                                   | retry                            |
+| `unknown`         | any other non-ok status                                                               | retry                            |
 
 `noStore` is the third one that looks like something else. Every CRUD and
 settings route is mounted only when the control plane runs with a database, so
@@ -59,29 +58,46 @@ a config-file-only deployment answers Users, Keys, Providers and every settings
 screen with the API's JSON 404. That is the deployment's shape, not a wrong URL
 and not a failure a retry can change (#1204).
 
-`noAnalytics` is its sibling and the fourth (#1236). The analytics routes _are_
-mounted; they just have no ClickHouse behind them, so they answer 503 —
-`getAnalytics` turns that, and the 404 an older control plane gives, into an
-`AnalyticsUnavailableError` rather than an `ApiError`. Without a kind of its
-own that error carried no status, so the status-less rule read it as
-`unreachable` and told the operator the control plane could not be reached
-while it was answering every request. Logs, McpLogs and Dashboard each used to
-hand-roll their own paragraph for it — two of them untranslated, one shaped as
-an empty state — which is three different answers to one deployment setting.
-CostAttribution's spend strip and Account's usage figures followed in #1270:
-the strip had the Dashboard's old empty state, and Account now states any usage
-failure once above the key cards instead of letting each card read "no usage".
+## No analytics store is not a load error
 
-LLM Logs has since taken `noAnalytics` out of `LoadError` altogether (#1984),
-and the Dashboard followed (#1976). A red `role="alert"` put a deployment shape
-rolter supports in the voice of a 500, and a screen reader announced it as
-urgent on every visit. Both screens now state the same cause in an
-informational `role="status"` panel, the shared `AnalyticsUnavailable` in
-`ui/src/components/`: the `CLICKHOUSE_URL` guidance in monospace, the control
-plane's own message under it, and still no retry. A screen passes its own copy
-as `i18nKey`, with a `title` and a `body` under it, and the body says what the
-screen will show once the store is there. MCP Logs, CostAttribution and Account
-follow in #2016.
+A control plane with no ClickHouse is a deployment shape rolter supports, so
+`LoadError` has no kind for it. The analytics routes _are_ mounted; they just
+have no ClickHouse behind them, so they answer 503, and a control plane too old
+to serve a route answers 404. `getAnalytics` turns both into an
+`AnalyticsUnavailableError` rather than an `ApiError`, which carries no status.
+Read as a load failure it would be wrong twice over: the status-less rule calls
+it `unreachable` and tells the operator the control plane could not be reached
+while it was answering every request (#1236), and a red `role="alert"` puts a
+deployment shape in the voice of a 500 that a screen reader announces as urgent
+on every visit (#1984, #1976, #2016).
+
+Every screen that reads analytics states the answer in the shared
+`AnalyticsUnavailable` panel in `ui/src/components/`, an informational
+`role="status"`: a neutral surface, the `CLICKHOUSE_URL` guidance in monospace,
+the control plane's own message under it, and no retry, because no retry can
+help. A screen passes its own copy as `i18nKey`, with a `title` and a `body`
+under it, and the body says what the screen will show once the store is there.
+The panel is chosen on the error's class, before `LoadError` is reached:
+
+```tsx
+{error instanceof AnalyticsUnavailableError ? (
+  <AnalyticsUnavailable error={error} i18nKey="pages.logs.noAnalytics" />
+) : (
+  <LoadError error={error} resource={t("errors.resources.requestLogs")} onRetry={retry} />
+)}
+```
+
+| screen                   | where the panel goes                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| LLM Logs (#1984)         | in place of the table and its filters                                                                                 |
+| Dashboard (#1976)        | in place of every card, once any read answers it while holding nothing; the setup checklist above it stays            |
+| MCP Logs (#2016)         | in place of the stats and the table; also inside a call's detail drawer if the store goes away under an open list     |
+| Cost Attribution (#2016) | in place of the spend strip; the business units or customers below it keep working, since they are read from Postgres |
+| Account (#2016)          | above the key cards; each card still says its usage is unavailable, and the keys can still be created and rotated     |
+
+A screen that hands an `AnalyticsUnavailableError` to `LoadError` anyway gets
+the `server` kind, not `unreachable`: the control plane did answer. That is a
+fallback for a screen that forgot the panel, not a way to show the state.
 
 On the Dashboard the panel is one answer for the screen rather than one per
 card. It replaces every card as soon as any of the four reads answers

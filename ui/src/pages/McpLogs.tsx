@@ -3,6 +3,7 @@ import { ChevronRight, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
@@ -101,7 +102,8 @@ function McpLogsScreen() {
 
   // a deployment with no analytics store, or a control plane too old to serve
   // /api/v1/mcp/logs at all: both arrive as AnalyticsUnavailableError, and both
-  // are a load state LoadError already knows how to explain (#1236)
+  // are a supported shape the screen states calmly rather than a failure (#1236,
+  // #2016)
   const unavailable =
     logs.error instanceof AnalyticsUnavailableError
       ? logs.error
@@ -112,7 +114,7 @@ function McpLogsScreen() {
   if (unavailable) {
     return (
       <PageBody>
-        <LoadError error={unavailable} resource={t("errors.resources.mcpLogs")} />
+        <AnalyticsUnavailable error={unavailable} i18nKey="pages.mcpLogs.noAnalytics" />
       </PageBody>
     );
   }
@@ -351,13 +353,18 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
   const body = (
     <>
       {detail.isLoading && <FormSkeleton fields={3} />}
-      {detail.isError && (
-        <LoadError
-          error={detail.error}
-          resource={t("errors.resources.mcpLogDetail")}
-          onRetry={() => void detail.refetch()}
-        />
-      )}
+      {detail.isError &&
+        // the store going away between the list and one of its rows is the same
+        // answer the list would have given, so it gets the same panel (#2016)
+        (detail.error instanceof AnalyticsUnavailableError ? (
+          <AnalyticsUnavailable error={detail.error} i18nKey="pages.mcpLogs.noAnalytics" />
+        ) : (
+          <LoadError
+            error={detail.error}
+            resource={t("errors.resources.mcpLogDetail")}
+            onRetry={() => void detail.refetch()}
+          />
+        ))}
       {d && (
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
