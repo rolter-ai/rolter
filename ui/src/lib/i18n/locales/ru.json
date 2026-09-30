@@ -2505,6 +2505,24 @@
       "editBudgetAria": "Изменить бюджет {{amount}} ({{period}}) для {{scope}}",
       "deleteRateLimitAria": "Удалить лимит {{limit}} для {{scope}}",
       "editRateLimitAria": "Изменить лимит {{limit}} для {{scope}}",
+      "confirm": {
+        "budgetTitle": "Удалить бюджет {{amount}} ({{period}})?",
+        "budgetBody": "{{scope}} останется без этого бюджета, когда шлюз получит изменение: расходы перестанут останавливаться на лимите, если их не ограничивает другой бюджет.",
+        "budgetConfirm": "Удалить бюджет",
+        "rateLimitTitle": "Удалить лимит скорости {{limit}}?",
+        "rateLimitBody": "{{scope}} останется без этого лимита скорости, когда шлюз получит изменение: запросы перестанут ограничиваться по частоте, если не действует другой лимит скорости.",
+        "rateLimitConfirm": "Удалить лимит скорости"
+      },
+      "periods": {
+        "daily": "ежедневно",
+        "monthly": "ежемесячно",
+        "total": "за всё время"
+      },
+      "units": {
+        "rpm": "rpm",
+        "tpm": "tpm"
+      },
+      "scopeNamed": "{{type}} {{name}}",
       "scopeBlocked": "Область по умолчанию недоступна: {{detail}}. Выберите область вручную ниже.",
       "scopeTitle": "Область",
       "scopeBody": "Бюджеты и лимиты скорости ниже применяются к этой области.",
@@ -2521,7 +2539,7 @@
       "budgetSheetTitle": "Новый бюджет",
       "budgetEditTitle": "Изменить бюджет",
       "budgetSheetSubtitle": "Лимит расходов для {{scope}}",
-      "budgetLimitLabel": "Лимит (USD)",
+      "budgetLimitLabel": "Лимит ({{currency}})",
       "budgetPeriodLabel": "Период",
       "budgetPeriodHint": "например 30d, 7d, 1d",
       "rateLimitSheetTitle": "Новый лимит скорости",
