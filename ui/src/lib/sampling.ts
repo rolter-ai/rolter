@@ -1,5 +1,6 @@
 // the request-log sample rate read the way an operator reasons about it:
-// "about 1 in 4 requests" rather than 0.25 (#2088)
+// "about 1 in 4 requests" rather than 0.25 (#2088), and a percentage typed into
+// a form read back as the rate the control plane stores (#2104)
 
 /** A share of requests, read as `numerator in denominator`. */
 export interface SampleShare {
@@ -37,4 +38,39 @@ export function sampleShare(rate: number): SampleShare | null {
     }
   }
   return best;
+}
+
+/** What a sampling percentage typed into a form comes to. */
+export type SamplingInput =
+  | { ok: true; rate: number }
+  /**
+   * `invalid` is anything that is not a number, blank included; `range` is a
+   * number outside 0 to 100. The form words them differently: one asks for a
+   * number, the other says what the bounds are.
+   */
+  | { ok: false; problem: "invalid" | "range" };
+
+// a decimal the way a number input reports one: a sign, digits with an optional
+// point, an optional exponent. `Number()` alone also reads "0x10" as 16 and ""
+// as 0, and a form must not turn either into a rate
+const DECIMAL = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+
+/**
+ * A sampling percentage (0 to 100) read as the 0 to 1 rate the control plane
+ * takes.
+ *
+ * Zero is a rate: it sends nothing, which is a legitimate way to park a
+ * connector. Nothing is coerced, so a blank field, text and 150 are refused
+ * instead of becoming 100 %, the rate that ships every request and the worst
+ * direction for a value to fail in.
+ */
+export function parseSamplingPercent(text: string): SamplingInput {
+  const typed = text.trim();
+  if (!DECIMAL.test(typed)) return { ok: false, problem: "invalid" };
+  const percent = Number(typed);
+  if (!Number.isFinite(percent)) return { ok: false, problem: "invalid" };
+  if (percent < 0 || percent > 100) return { ok: false, problem: "range" };
+  // `-0` would serialise as 0 anyway, but a rate that compares unequal to 0
+  // is a surprise waiting in whatever reads it next
+  return { ok: true, rate: percent === 0 ? 0 : percent / 100 };
 }

@@ -1322,6 +1322,9 @@
       "emptyBody": "Add an OTLP/HTTP collector and request logs are mirrored to it — Datadog, Langfuse, or your own stack.",
       "emptyAction": "Add connector",
       "testFailed": "Delivery failed: {{message}}",
+      "testError": "Test did not run: {{message}}",
+      "testDelivered": "Test delivery to {{name}} succeeded",
+      "deleteError": "Could not delete this connector: {{message}}",
       "toggleAria": "Enable {{name}}",
       "testAria": "Test delivery to {{name}}",
       "deleteAria": "Delete connector {{name}}",
@@ -1336,6 +1339,9 @@
         "name": "Name",
         "endpoint": "Endpoint URL",
         "sampling": "Sampling (%)",
+        "samplingHint": "Share of requests sent to this endpoint: 100 sends all of them, 0 sends none.",
+        "samplingInvalid": "Enter a number from 0 to 100.",
+        "samplingRange": "Sampling is a percentage: use a value from 0 to 100.",
         "secret": "Bearer secret (optional)",
         "secretPlaceholder": "stored encrypted"
       }
