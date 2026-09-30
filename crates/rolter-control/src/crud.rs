@@ -217,7 +217,16 @@ pub(crate) fn pool(state: &ControlState) -> &PgPool {
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
+    /// An error from the store, the core or a dependency. A `4xx` renders its
+    /// own message, which is validation written for the caller. A `500` renders
+    /// only [`INTERNAL_ERROR`] and logs the rest: `Error::Store` in particular
+    /// carries raw driver text from every `e.to_string()` call site, which can
+    /// name hosts, ports, schemas or query fragments (#2268).
     Core(Error),
+    /// A server-side failure (500) whose message was written for the caller on
+    /// purpose, such as a store that is not configured or a write it refused.
+    /// Rendered verbatim, so it must never carry anything a driver said.
+    Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
     /// missing or invalid credentials (401)
@@ -236,6 +245,10 @@ impl From<Error> for ApiError {
     }
 }
 
+/// What a `500` says when its cause is not one of the [`ApiError::Curated`]
+/// messages. The cause itself goes to the log, not the response.
+pub(crate) const INTERNAL_ERROR: &str = "internal server error";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // read before the match consumes `self`
@@ -244,14 +257,20 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let (status, message) = match self {
-            Self::Core(err) => {
-                let status = match &err {
-                    Error::NotFound(_) => StatusCode::NOT_FOUND,
-                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-                (status, err.to_string())
-            }
+            Self::Core(err) => match &err {
+                Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+                Error::Config(_) | Error::Unauthorized => {
+                    (StatusCode::BAD_REQUEST, err.to_string())
+                }
+                _ => {
+                    tracing::error!(error = %err, "control-plane request failed");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        INTERNAL_ERROR.to_string(),
+                    )
+                }
+            },
+            Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
@@ -2374,7 +2393,7 @@ async fn test_provider(
 
     let parsed_kind: rolter_core::ProviderKind =
         serde_json::from_value(serde_json::Value::String(kind.clone()))
-            .map_err(|_| Error::Store(format!("unknown provider kind '{kind}'")))?;
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
 
     // same precedence the snapshot uses: a sealed key wins over the env var
     let sealed: Option<(Vec<u8>, Vec<u8>)> =
@@ -5634,5 +5653,74 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use super::*;
+
+    async fn rendered(err: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Driver text as `store_err` and every `e.to_string()` call site pass it
+    /// on: it names the host, the credentials in the url and the schema (#2268).
+    const DRIVER_TEXT: &str = "error returned from database: relation \"tenant_a.users\" \
+         does not exist (postgres://rolter:hunter2@db.internal:5432/rolter)";
+
+    #[tokio::test]
+    async fn a_raw_server_error_never_reaches_a_500_body() {
+        for err in [
+            Error::Store(DRIVER_TEXT.into()),
+            Error::Upstream(DRIVER_TEXT.into()),
+            Error::Io(std::io::Error::other(DRIVER_TEXT)),
+        ] {
+            let (status, body) = rendered(ApiError::Core(err)).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(body["error"]["message"], INTERNAL_ERROR);
+            let text = body.to_string();
+            for fragment in ["db.internal", "hunter2", "tenant_a"] {
+                assert!(!text.contains(fragment), "{fragment} reached the body");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_curated_message_still_reaches_a_500_body() {
+        let (status, body) = rendered(ApiError::Curated(
+            crate::ingest_failure::INSERT_FAILED.to_string(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"]["message"],
+            crate::ingest_failure::INSERT_FAILED
+        );
+    }
+
+    /// Validation and lookups are written for the caller, and stay as they are.
+    #[tokio::test]
+    async fn a_4xx_keeps_its_own_message() {
+        let (status, body) = rendered(ApiError::Core(Error::Config(
+            "slug must be lowercase".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("slug must be lowercase"));
+        let (status, body) = rendered(ApiError::Core(Error::NotFound("team 42".into()))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("team 42"));
     }
 }

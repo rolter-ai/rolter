@@ -8842,6 +8842,58 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
 }
 
+/// A failure the database reports reaches the caller as a plain 500, never as
+/// the driver's own text, which names relations and the schema a tenant's data
+/// lives in (#2268). Both ways a handler meets one are covered: its own `sqlx`
+/// call, and a store repository. The table is dropped inside this test's
+/// isolated schema, so the error is a real one from Postgres.
+#[tokio::test]
+async fn a_database_error_reaches_the_caller_as_a_plain_500() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Broken", "slug": "broken"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    sqlx::query("drop table observability_connectors")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("drop table teams cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for (path, relation) in [
+        ("/api/v1/connectors".to_string(), "observability_connectors"),
+        (format!("/api/v1/orgs/{org_id}/teams"), "teams"),
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await.unwrap();
+        assert_eq!(response.status(), 500, "{path}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body["error"]["message"], "internal server error",
+            "{path}: {body}"
+        );
+        assert!(
+            !body.to_string().contains(relation),
+            "{path}: the driver's text reached the body"
+        );
+    }
+}
+
 #[tokio::test]
 async fn adaptive_routing_telemetry_round_trips_from_the_data_plane() {
     skip_without_db!();

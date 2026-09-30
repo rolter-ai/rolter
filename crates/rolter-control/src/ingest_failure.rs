@@ -145,7 +145,7 @@ pub(crate) fn insert_failed(
         Reason::Insert,
         &format!("{err:#}"),
     );
-    ApiError::Core(rolter_core::Error::Store(INSERT_FAILED.to_string()))
+    ApiError::Curated(INSERT_FAILED.to_string())
 }
 
 /// A write with nowhere to go, because no column store is configured.
@@ -165,7 +165,7 @@ pub(crate) fn unconfigured(
         Reason::Unconfigured,
         message,
     );
-    ApiError::Core(rolter_core::Error::Store(message.to_string()))
+    ApiError::Curated(message.to_string())
 }
 
 /// Count the failure and, when the gate admits it, log it.
