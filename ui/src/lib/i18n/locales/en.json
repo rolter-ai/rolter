@@ -2919,17 +2919,72 @@
       "enforceVk": "Enforce Virtual Keys on Inference",
       "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
-      "allowedOriginsHint": "Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
-      "allowedOriginsPlaceholder": "https://app.example.com, https://console.example.com",
+      "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
+      "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
       "allowedHeaders": "Allowed Headers",
-      "allowedHeadersHint": "Comma-separated list of allowed headers for CORS.",
+      "allowedHeadersHint": "One header name per line, allowed for CORS.",
       "allowedHeadersPlaceholder": "X-Stainless-Timeout",
       "requiredHeaders": "Required Headers",
-      "requiredHeadersHint": "Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected.",
-      "requiredHeadersPlaceholder": "X-Tenant-ID: acme, X-Custom-Header: value",
+      "requiredHeadersHint": "One name: value pair per line that must be present on every request. Requests missing any of them are rejected. A value may contain commas.",
+      "requiredHeadersPlaceholder": "X-Tenant-ID: acme\nX-Custom-Header: value",
       "bypassRoutes": "Auth Bypass Routes",
-      "bypassRoutesHint": "Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open.",
-      "bypassRoutesPlaceholder": "/v1/models, /v1/ping"
+      "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
+      "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
+      "edited": "Edited",
+      "discard": "Discard changes",
+      "status": {
+        "invalid_one": "Fix {{count}} entry to save.",
+        "invalid_other": "Fix {{count}} entries to save.",
+        "changed_one": "{{count}} setting changed, not saved yet.",
+        "changed_other": "{{count}} settings changed, not saved yet.",
+        "saved": "Saved at {{time}}."
+      },
+      "pickup": {
+        "checking": "Checking which gateways run it…",
+        "converged_one": "{{count}} live gateway is running it.",
+        "converged_other": "All {{count}} live gateways are running it.",
+        "lagging_one": "{{converged}} of {{count}} live gateway is running it; the rest pick it up on their next config poll.",
+        "lagging_other": "{{converged}} of {{count}} live gateways are running it; the rest pick it up on their next config poll.",
+        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
+        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
+      },
+      "confirm": {
+        "title_one": "Save a change that loosens security?",
+        "title_other": "Save changes that loosen security?",
+        "body_one": "This save loosens security in the way listed below.",
+        "body_other": "This save loosens security in {{count}} ways, listed below.",
+        "confirm": "Save changes",
+        "virtualKeys": {
+          "label": "Virtual keys are no longer enforced on inference",
+          "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
+        },
+        "dashboardAuth": {
+          "label": "The dashboard is no longer password protected",
+          "effect": "The dashboard stops requiring its credential to open."
+        },
+        "bypassRoute": {
+          "label": "Auth bypass route added:",
+          "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
+        }
+      },
+      "errors": {
+        "originWildcard": "Line {{line}}: {{entry}} has a wildcard. List each origin exactly.",
+        "originScheme": "Line {{line}}: {{entry}} must start with http:// or https://.",
+        "originPart": "Line {{line}}: {{entry}} must not include a query, a fragment or user info (? # @).",
+        "originHost": "Line {{line}}: {{entry}} has no host after the scheme.",
+        "originPath": "Line {{line}}: {{entry}} must be an origin only, with no path.",
+        "originSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "headerName": "Line {{line}}: {{entry}} is not a valid header name. Use letters, digits and ! # $ % & ' * + - . ^ _ ` | ~",
+        "requiredFormat": "Line {{line}}: {{entry}} needs a name and a value, written as name: value.",
+        "requiredValue": "Line {{line}}: {{entry}} has no value after the colon.",
+        "requiredDuplicate": "Line {{line}}: {{entry}} is already set on an earlier line. A header holds one value.",
+        "routePrefix": "Line {{line}}: {{entry}} must be an exact path under /v1/.",
+        "routePattern": "Line {{line}}: {{entry}} has a wildcard, placeholder, query or fragment (* { } ? #). List each path exactly.",
+        "routeSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "commaList": "Line {{line}}: {{entry}} looks like several entries. Put each on its own line.",
+        "more_one": "…and {{count}} more problem.",
+        "more_other": "…and {{count}} more problems."
+      }
     },
     "mcpLibrary": {
       "eyebrow": "curated endpoints",
