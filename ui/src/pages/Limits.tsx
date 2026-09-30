@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gauge, Pencil, Plus, Wallet } from "lucide-react";
+import { AlertTriangle, Gauge, Pencil, Plus, Wallet } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -37,7 +37,7 @@ import {
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
 } from "@/lib/api";
-import { periodKind } from "@/lib/budget-period";
+import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
@@ -579,6 +579,9 @@ function BudgetCard({
 }) {
   const { t } = useTranslation();
   const periodLabel = usePeriodLabel();
+  // the gateway enforces a period it does not recognise as monthly, which a
+  // budget stored before the control plane checked the value may still hold
+  const recognised = periodKind(budget.period) !== null;
   // the label names the row: the grid is a wall of identical cards otherwise,
   // and "Delete budget" said three times tells a screen reader nothing (#1214)
   const names = useBudgetNames(scope)(budget);
@@ -609,7 +612,7 @@ function BudgetCard({
       }
     >
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone="outline">{periodLabel(budget.period)}</Badge>
+        <Badge tone={recognised ? "outline" : "warning"}>{periodLabel(budget.period)}</Badge>
         {/* an override is worth showing on the card because it changes what
             the gateway will serve, not just what it counts (#996). a budget
             without one inherits the deployment setting and says nothing */}
@@ -621,6 +624,14 @@ function BudgetCard({
           </Badge>
         )}
       </div>
+      {/* the card is the one place the row's claim meets what the gateway does
+          with it: a `7d` badge alone reads as a weekly cap (#1902) */}
+      {!recognised && (
+        <p className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
+          <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+          {t("pages.limits.periodUnrecognised", { period: budget.period })}
+        </p>
+      )}
     </LimitCard>
   );
 }
@@ -726,13 +737,17 @@ function BudgetSheet({
   // the field is in the settlement currency the cards are formatted in, not in
   // dollars whatever the deployment settles in (#2095)
   const currency = useCurrencyCode();
-  // a new budget opens on 100 / 30d; an edit opens on the row as it stands.
+  // a new budget opens on 100 / monthly; an edit opens on the row as it stands.
   // `limit_usd` arrives in the column's `numeric(12,4)` spelling, which reads
-  // as 250.5 in a number field rather than 250.5000
+  // as 250.5 in a number field rather than 250.5000. a stored `30d` opens on
+  // the window it is enforced as, monthly, and since nobody picked it again no
+  // period is sent. one the gateway does not recognise opens on nothing: it is
+  // enforced as monthly whatever the row says, so the form cannot be saved
+  // until the operator picks the window it should count over (#1902)
   const seed = React.useMemo(
     () => ({
       limitUsd: budget ? String(Number(budget.limit_usd)) : "100",
-      period: budget?.period ?? "30d",
+      period: budget ? (periodKind(budget.period) ?? "") : "monthly",
       // "" is the inherit case, which is what the API means by a null override
       unpriced: (budget?.unpriced_policy ?? "") as UnpricedPolicy | "",
     }),
@@ -751,6 +766,10 @@ function BudgetSheet({
   }, [open, seed]);
 
   const dirty = limitUsd !== seed.limitUsd || period !== seed.period || unpriced !== seed.unpriced;
+  // the row being edited holds a period the gateway does not recognise, and no
+  // window has been picked to replace it yet
+  const unrecognised =
+    budget !== undefined && periodKind(budget.period) === null && periodKind(period) === null;
 
   const save = useMutation({
     mutationFn: () => {
@@ -798,7 +817,7 @@ function BudgetSheet({
       dirty={dirty}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={t(budget ? "common.save" : "common.create")}
-      canSave={Boolean(limitUsd.trim() && period.trim()) && (!budget || dirty)}
+      canSave={Boolean(limitUsd.trim() && periodKind(period)) && (!budget || dirty)}
       saving={save.isPending}
       onSave={() => save.mutate()}
     >
@@ -814,11 +833,34 @@ function BudgetSheet({
             onChange={(e) => setLimitUsd(e.target.value)}
           />
         </Field>
+        {/* a picker rather than free text: the gateway has no rolling windows,
+            and read any period it did not know as monthly, so the `7d` the old
+            hint suggested was a calendar-month cap (#1902) */}
         <Field
           label={t("pages.limits.budgetPeriodLabel")}
-          hint={t("pages.limits.budgetPeriodHint")}
+          hint={
+            unrecognised ? (
+              <span className="flex items-start gap-1.5 text-[color:var(--status-warning-text)]">
+                <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+                {t("pages.limits.periodUnrecognisedHint", { period: budget.period })}
+              </span>
+            ) : (
+              t("pages.limits.budgetPeriodHint")
+            )
+          }
+          htmlFor="budget-period"
         >
-          <Input value={period} onChange={(e) => setPeriod(e.target.value)} />
+          <Combobox
+            id="budget-period"
+            value={period}
+            onChange={setPeriod}
+            placeholder={t("pages.limits.periodPlaceholder")}
+            options={PERIOD_KINDS.map((kind) => ({
+              value: kind,
+              label: t(`pages.limits.periodOptions.${kind}`),
+              description: t(`pages.limits.periodDescriptions.${kind}`),
+            }))}
+          />
         </Field>
         <Field
           label={t("pages.limits.unpricedLabel")}

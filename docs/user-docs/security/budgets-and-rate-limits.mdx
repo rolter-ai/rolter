@@ -282,6 +282,16 @@ card opens the same form used to create one, filled in with the current values.
 Only the fields you change are sent. On a rate limit, clearing a field lifts
 that cap, and at least one of the two has to stay.
 
+The period is picked from **Daily**, **Monthly** and **Lifetime**, the windows
+the gateway has. They follow the calendar in UTC, so there is no rolling
+seven-day budget. A budget stored with a period the gateway does not recognise,
+such as `7d` from an older release, is enforced as monthly. Its card keeps the
+stored text in a warning badge and says so, the Providers screen lists it among
+the config problems, and its edit form opens with no period selected and cannot
+be saved until you pick one of the three windows. The API accepts a few more
+spellings of the same three windows; see
+[Periods](/api/budgets-and-rate-limits#periods).
+
 Over the API the same edit is `PATCH /api/v1/budgets/{id}` or
 `PATCH /api/v1/rate-limits/{id}`. See
 [Budgets & rate limits API](/api/budgets-and-rate-limits) for the body and its
@@ -311,7 +321,7 @@ from that file needs a restart to apply them; see
 A card shows a budget's period in words when it is one the gateway recognises:
 `daily` (stored as `daily`, `1d` or `24h`), `monthly` (`monthly`, or the
 dashboard's default `30d`) or `lifetime` (`total`, `lifetime` or `all`). Any
-other text is shown exactly as stored.
+other text is shown exactly as stored, in a warning badge.
 
 ## Realtime sessions
 

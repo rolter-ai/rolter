@@ -234,6 +234,35 @@ describe("formatters", () => {
     expect(en.timeShort(at)).toBe("15:34");
   });
 
+  test("a day is named only when the moment did not fall today", () => {
+    const en = formattersFor("en");
+    const now = new Date(2026, 9, 5, 15, 34, 56);
+    // the same local day, at either end of it, is today
+    expect(en.dayUnlessToday(new Date(2026, 9, 5, 0, 0, 1), now)).toBe("");
+    expect(en.dayUnlessToday(new Date(2026, 9, 5, 23, 59, 59), now)).toBe("");
+    // a window that crosses midnight: one minute before it is yesterday
+    const justBefore = new Date(2026, 9, 4, 23, 59, 0);
+    expect(en.dayUnlessToday(justBefore, new Date(2026, 9, 5, 0, 1, 0))).toBe("Oct 4");
+    // the day later on is as much "not today" as the day before
+    expect(en.dayUnlessToday(new Date(2026, 9, 6, 1, 0, 0), now)).toBe("Oct 6");
+    // the month is the locale's, and the year is left out
+    const russian = formattersFor("ru").dayUnlessToday(justBefore, now);
+    expect(russian).toContain("4");
+    expect(russian).not.toContain("2026");
+    expect(russian).not.toBe("Oct 4");
+    // a missing or malformed moment renders empty instead of throwing
+    expect(en.dayUnlessToday("", now)).toBe("");
+    expect(en.dayUnlessToday("not a date", now)).toBe("");
+  });
+
+  test("the clock with milliseconds carries no date, in either locale", () => {
+    // a log row is told apart from its neighbour by the fraction of a second,
+    // and the day is said elsewhere, so the stamp is only the clock
+    expect(formattersFor("en").timeMs(at)).toBe("15:34:56.789");
+    expect(formattersFor("ru").timeMs(at)).toBe("15:34:56,789");
+    expect(formattersFor("en").timeMs("not a date")).toBe("");
+  });
+
   test("the house date is unambiguous in every locale", () => {
     // `10/5/2026` reads as 5 October in half the world; a named month cannot
     expect(formattersFor("en").date(at)).toBe("Oct 5, 2026");

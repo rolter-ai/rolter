@@ -46,6 +46,10 @@ function relativeFormat(locale: string): Intl.RelativeTimeFormat {
 /** the house short date — `medium` so `10/5` is never read as 5 October */
 const DATE: Intl.DateTimeFormatOptions = { dateStyle: "medium" };
 
+// the day without its year, for a stamp that sits beside a clock in a narrow
+// column: a named month for the same reason as `DATE`
+const DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+
 // log and audit rows are scanned as a column, so the clock is always h23: an
 // AM/PM stamp sorts badly by eye and doubles the width of the cell
 const CLOCK: Intl.DateTimeFormatOptions = {
@@ -55,6 +59,14 @@ const CLOCK: Intl.DateTimeFormatOptions = {
   second: "2-digit",
 };
 
+// `fractionalSecondDigits` is an ES2021 Intl option and the tsconfig lib stops
+// at ES2020, so it is attached through an assertion rather than by widening the
+// lib for one field. every engine the dashboard supports honours it
+const CLOCK_MS = {
+  ...CLOCK,
+  fractionalSecondDigits: 3,
+} as Intl.DateTimeFormatOptions;
+
 const STAMP: Intl.DateTimeFormatOptions = {
   year: "numeric",
   month: "2-digit",
@@ -62,9 +74,6 @@ const STAMP: Intl.DateTimeFormatOptions = {
   ...CLOCK,
 };
 
-// `fractionalSecondDigits` is an ES2021 Intl option and the tsconfig lib stops
-// at ES2020, so it is attached through an assertion rather than by widening the
-// lib for one field. every engine the dashboard supports honours it
 const STAMP_MS = {
   ...STAMP,
   fractionalSecondDigits: 3,
@@ -95,8 +104,17 @@ export interface Formatters {
   dateTimeMs: (value: Date | string | number) => string;
   /** clock only, for a column whose rows all sit in the same day */
   time: (value: Date | string | number) => string;
+  /** the clock with milliseconds, for log rows that land inside one second */
+  timeMs: (value: Date | string | number) => string;
   /** clock without seconds, for chart buckets */
   timeShort: (value: Date | string | number) => string;
+  /**
+   * The short date (`Oct 5`) a moment fell on, or `""` when it fell on the same
+   * local day as `now` (defaults to the current time). For a column of clock
+   * times over a window that can cross midnight: the clock is always shown, and
+   * the day only on the rows where the clock alone would read as today's
+   */
+  dayUnlessToday: (value: Date | string | number, now?: Date | string | number) => string;
   /** `3m ago` / `in 2h`, relative to `now` (defaults to the current time) */
   relative: (value: Date | string | number, now?: Date | string | number) => string;
 }
@@ -145,7 +163,15 @@ export function formattersFor(locale: Locale): Formatters {
     dateTime: (value) => stamp(value, STAMP),
     dateTimeMs: (value) => stamp(value, STAMP_MS),
     time: (value) => stamp(value, CLOCK),
+    timeMs: (value) => stamp(value, CLOCK_MS),
     timeShort: (value) => stamp(value, { ...CLOCK, second: undefined }),
+    dayUnlessToday: (value, now) => {
+      const date = toDate(value);
+      if (date === null) return "";
+      const today = (now === undefined ? null : toDate(now)) ?? new Date();
+      if (date.toDateString() === today.toDateString()) return "";
+      return stamp(date, DAY);
+    },
     relative: (value, now) => {
       const date = toDate(value);
       if (date === null) return "";

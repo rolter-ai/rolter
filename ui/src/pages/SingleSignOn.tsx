@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -55,6 +56,7 @@ import {
   secretGap,
   type SecretGap,
 } from "@/lib/sso-lockout";
+import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
@@ -234,11 +236,15 @@ function NoSecretNotice({ gap }: { gap: SecretGap }) {
  */
 function RedirectUriRow({
   value,
+  invalid = false,
   hint,
   children,
 }: {
-  /** null until there is a slug to build it from */
+  /** null until there is a valid slug to build it from */
   value: string | null;
+  /** the slug typed is one the server refuses, so there is nothing to offer for
+   * copying: a redirect uri registered for it would never work (#2304) */
+  invalid?: boolean;
   hint: string;
   /** a note under the hint: why the value is incomplete or only a default */
   children?: React.ReactNode;
@@ -261,7 +267,9 @@ function RedirectUriRow({
           </>
         ) : (
           <span className="text-sm text-muted-foreground">
-            {t("pages.sso.create.redirectUriEmpty")}
+            {invalid
+              ? t("pages.sso.create.redirectUriInvalid")
+              : t("pages.sso.create.redirectUriEmpty")}
           </span>
         )}
       </div>
@@ -927,7 +935,11 @@ function ProviderSheet({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
+  const fmt = useFormat();
   const toast = useToast();
+  const slugId = React.useId();
+  const slugHintId = React.useId();
+  const slugErrorId = React.useId();
   const editing = !!provider;
   const initial = React.useMemo(() => (provider ? draftFrom(provider) : EMPTY_DRAFT), [provider]);
   const [draft, setDraft] = React.useState<Draft>(initial);
@@ -999,19 +1011,40 @@ function ProviderSheet({
   const dirty = editing
     ? (Object.keys(draft) as (keyof Draft)[]).some((k) => draft[k] !== initial[k])
     : Object.values(draft).some((v) => v !== "");
+
+  // the slug is checked as it will be sent, which is trimmed like every other
+  // field, and never rewritten: it is registered at the identity provider, so
+  // the admin has to see exactly what will be saved. a saved provider's slug
+  // cannot change, so only a new one is checked (#2304)
+  const slug = draft.slug.trim();
+  const slugProblem = editing ? null : ssoSlugProblem(slug);
+  const slugInvalid = slugProblem === "charset" || slugProblem === "length";
+  const suggestion = slugProblem === "charset" ? suggestSsoSlug(slug) : null;
+  const slugError =
+    slugProblem === "length"
+      ? t("pages.sso.create.slugTooLong", {
+          max: fmt.number(SSO_SLUG_MAX),
+          length: fmt.number(slug.length),
+        })
+      : slugProblem === "charset"
+        ? suggestion
+          ? t("pages.sso.create.slugSuggest", { suggestion })
+          : t("pages.sso.create.slugInvalid")
+        : undefined;
+
   const canSave =
     !!draft.name.trim() &&
-    (editing || !!draft.slug.trim()) &&
+    (editing || slugProblem === null) &&
     !!draft.issuer.trim() &&
     !!draft.clientId.trim();
 
   // a saved provider carries the server's own redirect uri. a new one is
   // previewed from the typed slug on the server's public base, never the
-  // browser's origin; with the base unread, only the path is honest to show
-  const slug = draft.slug.trim();
+  // browser's origin; with the base unread, only the path is honest to show.
+  // a slug the server refuses previews nothing, so no uri is copied for it
   const redirect = provider
     ? provider.redirect_uri
-    : slug
+    : slug && !slugInvalid
       ? ssoRedirectUri(publicUrl?.public_url ?? "", slug)
       : null;
   const redirectNote =
@@ -1042,19 +1075,24 @@ function ProviderSheet({
           placeholder={t("pages.sso.create.namePlaceholder")}
         />
       </Field>
-      <Field
-        label={t("pages.sso.create.slug")}
-        hint={editing ? t("pages.sso.edit.slugImmutable") : t("pages.sso.create.slugHint")}
-      >
+      <Field label={t("pages.sso.create.slug")} htmlFor={slugId}>
         <Input
+          id={slugId}
           value={draft.slug}
           disabled={editing}
+          aria-invalid={slugInvalid || undefined}
+          aria-describedby={describedBy(slugHintId, slugInvalid && slugErrorId)}
           onChange={(e) => set({ slug: e.target.value })}
           placeholder={t("pages.sso.create.slugPlaceholder")}
         />
+        <p id={slugHintId} className="text-xs text-muted-foreground">
+          {editing ? t("pages.sso.edit.slugImmutable") : t("pages.sso.create.slugHint")}
+        </p>
+        <FieldError id={slugErrorId} error={slugError} />
       </Field>
       <RedirectUriRow
         value={redirect}
+        invalid={slugInvalid}
         hint={editing ? t("pages.sso.edit.redirectUriHint") : t("pages.sso.create.redirectUriHint")}
       >
         {redirectNote && (

@@ -370,6 +370,7 @@ async fn create_user(
             body.display_name.as_deref().unwrap_or_default(),
         )
         .await?;
+    sync_display_name(pool, user.id, &identity).await?;
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
@@ -387,6 +388,23 @@ async fn create_user(
     .await;
     let user = UserRepo(pool).get(user.id).await?;
     Ok((StatusCode::CREATED, Json(user_resource(&user, &identity))).into_response())
+}
+
+/// Copy the directory's `displayName` onto the account so the dashboard shows
+/// it, and so it is authoritative: `PATCH /api/v1/me/profile` refuses to change
+/// a name a SCIM identity owns. An IdP that sends no name leaves the stored one
+/// as it was rather than blanking a name the user set before being provisioned.
+async fn sync_display_name(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    identity: &ScimIdentity,
+) -> ScimResult<()> {
+    if let Some(name) = crate::me::sanitise_directory_name(&identity.display_name) {
+        UserRepo(pool)
+            .set_profile(user_id, Some(Some(name.as_str())), None)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Grant the provisioned account its org membership if it has none there yet.
@@ -449,6 +467,7 @@ async fn replace_user(
                 .unwrap_or(&identity.display_name),
         )
         .await?;
+    sync_display_name(pool, user.id, &identity).await?;
     let mut detail = json!({"user_name": identity.user_name});
     if let Some(active) = body.active {
         detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
@@ -744,6 +763,9 @@ impl From<ApiError> for ScimError {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
             ApiError::Core(err) => err.into(),
+            ApiError::Curated(message) => {
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
+            }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }

@@ -8,6 +8,14 @@ export type StatTrend = "up" | "down" | "flat";
 /** what that move means to whoever reads the tile */
 export type StatTone = "good" | "bad" | "neutral";
 
+/**
+ * The grid a strip of stat cards sits in: one column on a phone, two from `sm`,
+ * four from `xl`. `StatGridSkeleton` stands in for the strip with this same
+ * grid, so the tiles do not change columns, and the page does not jump, when
+ * the figures land (#1994).
+ */
+export const STAT_GRID = "grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4";
+
 // metric tile: label, big mono value, optional unit + delta
 //
 // direction and meaning are two props (#1974). an error rate or a latency that

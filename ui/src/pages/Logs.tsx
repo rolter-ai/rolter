@@ -6,6 +6,8 @@ import {
   Filter,
   FilterX,
   ScrollText,
+  Search,
+  SearchX,
   X,
 } from "lucide-react";
 import * as React from "react";
@@ -14,7 +16,12 @@ import { Link, useSearchParams } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { CopyButton } from "@/components/CopyButton";
-import { FilterPanel, FilterSearchList, FilterSection } from "@/components/ui/filter-panel";
+import {
+  FilterCheckList,
+  FilterPanel,
+  FilterSearchList,
+  FilterSection,
+} from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
@@ -39,10 +47,11 @@ import type { CodeLanguage } from "@/lib/code";
 import { useCurrencyCode } from "@/lib/currency";
 import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
+import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
-import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
+import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -89,7 +98,8 @@ function readStatus(raw: string | null): StatusFilter {
   return raw === "error" || raw === "success" ? raw : "all";
 }
 
-type FilterParam = "status" | "model" | "business_unit" | "customer";
+type FilterParam =
+  "status" | "model" | "business_unit" | "customer" | "unpriced" | "request_id" | "trace_id";
 
 /**
  * The rail's filters, kept in the address rather than in component state
@@ -100,6 +110,13 @@ type FilterParam = "status" | "model" | "business_unit" | "customer";
  * plane's own names, so the address reads like the query the screen sends.
  * Every write replaces the history entry, so the back button leaves the screen
  * instead of stepping back through each click in the rail.
+ *
+ * The id a reader pasted lives there too (#1861), as `request_id` or
+ * `trace_id`, so `/logs?request_id=…` opens that request. An address that
+ * names both reads as the request id, the narrower of the two.
+ *
+ * `unpriced=true` narrows the log to requests with no price (#1986). Any other
+ * value reads as the filter left off, the way an unknown status does.
  */
 function useLogFilters() {
   const [params, setParams] = useSearchParams();
@@ -107,10 +124,22 @@ function useLogFilters() {
   const model = params.get("model") ?? "";
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
+  const unpriced = params.get("unpriced") === "true";
+  const requestId = (params.get("request_id") ?? "").trim();
+  const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
   // changed filter to anything that depends on it
   const units = React.useMemo(() => unitParam.split(",").filter(Boolean), [unitParam]);
   const customers = React.useMemo(() => customerParam.split(",").filter(Boolean), [customerParam]);
+  const lookup = React.useMemo<LogLookup | null>(
+    () =>
+      requestId
+        ? { kind: "request_id", value: requestId }
+        : traceId
+          ? { kind: "trace_id", value: traceId }
+          : null,
+    [requestId, traceId],
+  );
   const update = React.useCallback(
     (patch: Partial<Record<FilterParam, string>>) =>
       setParams(
@@ -132,19 +161,42 @@ function useLogFilters() {
     model,
     units,
     customers,
+    unpriced,
+    /** the id being looked up, if any */
+    lookup,
     /** changes whenever any filter does */
-    key: [status, model, unitParam, customerParam].join("|"),
+    key: [status, model, unitParam, customerParam, unpriced, lookup?.kind, lookup?.value].join("|"),
     setStatus: (next: StatusFilter) => update({ status: next === "all" ? "" : next }),
     setModel: (next: string) => update({ model: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
-    clear: () => update({ status: "", model: "", business_unit: "", customer: "" }),
+    setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
+    clear: () => update({ status: "", model: "", business_unit: "", customer: "", unpriced: "" }),
+    setLookup: (next: LogLookup | null) =>
+      update({
+        request_id: next?.kind === "request_id" ? next.value : "",
+        trace_id: next?.kind === "trace_id" ? next.value : "",
+        // a new lookup starts from the whole log: the rail's picks would
+        // narrow it without the field saying so
+        ...(next ? { status: "", model: "", business_unit: "", customer: "", unpriced: "" } : {}),
+      }),
   };
 }
 
+// the columns a reader cannot do without stay at every width: time, model,
+// status and cost, then the way into the drawer. the others give way as the
+// table narrows, the widest to go first, and each is also in the drawer. it is
+// the table's own width that decides rather than the window's, because the
+// sidebar, the filter rail and the detail drawer all take width the window
+// still reports as free, so a table that kept its columns scrolled Cost out of
+// view (#1986). `@container` is on the scroll area below
 const TH =
-  "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-4 py-2.5 text-left text-xs font-medium text-muted-foreground";
-const TD = "border-b border-[color:var(--border-subtle)] px-3 py-[9px] font-mono text-xs";
+  "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-2 py-2.5 text-left text-xs font-medium text-muted-foreground @min-[480px]:px-3";
+const TD =
+  "border-b border-[color:var(--border-subtle)] px-2 py-[9px] font-mono text-xs @min-[480px]:px-3";
+const PROVIDER_COL = "hidden @min-[840px]:table-cell";
+const TOKENS_COL = "hidden @min-[720px]:table-cell";
+const LATENCY_COL = "hidden @min-[600px]:table-cell";
 
 // LLM logs: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
@@ -157,7 +209,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const filters = useLogFilters();
-  const { status, model, units: unitSel, customers: customerSel } = filters;
+  const { status, model, units: unitSel, customers: customerSel, unpriced, lookup } = filters;
+  const lookupKey = lookup ? `${lookup.kind}:${lookup.value}` : "";
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
   // "previous" has to return to a cursor it was handed rather than compute a
@@ -165,11 +218,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const [cursors, setCursors] = React.useState<string[]>([]);
   const page = cursors.length;
   const [selected, setSelected] = React.useState<InvocationRow | null>(null);
-  // below `md` the 248px filter rail would leave the table 127px; below `lg`
-  // the 380px detail drawer pushes it off screen entirely (#1203). both become
-  // overlays at those widths — the same panels, out of the flow
+  // below `md` the 248px filter rail would leave the table 127px. the 380px
+  // detail drawer beside the 232px sidebar leaves it 412px at `lg`, and 164px
+  // with the rail open too, which is where Cost scrolled out of view (#1203,
+  // #1986), so the drawer is a sheet below `xl`. both become overlays at those
+  // widths: the same panels, out of the flow
   const railOverlays = useMediaQuery(BELOW_MD);
-  const detailAsSheet = useMediaQuery(BELOW_LG);
+  const detailAsSheet = useMediaQuery(BELOW_XL);
   const drawer = useDrawerA11y(selected != null && !detailAsSheet, () => setSelected(null));
   const filterPanel = React.useRef<HTMLDivElement>(null);
   const filterA11y = useModalA11y(filterPanel, {
@@ -197,39 +252,49 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     retry: false,
   });
 
-  // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
-
-  // `models` is the query the user is actually waiting on for this screen
-
-  useScreenReady(!models.isLoading);
-
-  useErrorState(!!models.error, "logs");
-
   React.useEffect(() => setCursors([]), [filters.key]);
+  // the drawer belongs to the lookup it was opened by
+  React.useEffect(() => setSelected(null), [lookupKey]);
 
   const query = useQuery({
     queryKey: [
       "invocations",
-      LOG_WINDOW,
+      lookup ? "lookup" : LOG_WINDOW,
       status,
       model,
       unitSel.join(","),
       customerSel.join(","),
+      unpriced,
       cursors[page - 1] ?? "",
+      lookupKey,
     ],
     queryFn: () =>
       fetchInvocationsPage({
-        ...windowBounds(LOG_WINDOW),
+        // an id names one request wherever it sits in the retained log, so a
+        // lookup carries no window: the control plane reads an id with no
+        // `since` as every retained row, and a 24 hour bound would answer an
+        // older request with an empty page that reads as "no such request"
+        ...(lookup ? {} : windowBounds(LOG_WINDOW)),
+        request_id: lookup?.kind === "request_id" ? lookup.value : undefined,
+        trace_id: lookup?.kind === "trace_id" ? lookup.value : undefined,
         model: model || undefined,
         // the rail allows several of each, so the whole selection travels
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
+        unpriced: unpriced || undefined,
         status,
         limit: PAGE_SIZE,
         cursor: cursors[page - 1],
       }),
     retry: (n, error) => !isUnavailable(error) && n < 2,
-    placeholderData: (prev) => prev,
+    // the page on screen stays up while the next one loads, but only when it
+    // answers the same question: rows from the feed are not a lookup's rows,
+    // and a lookup holds nothing back while it is out
+    placeholderData: (prev, prevQuery) =>
+      !lookup && prevQuery?.queryKey[1] === LOG_WINDOW ? prev : undefined,
+    // a lookup reads every retained row, so it is asked again on request
+    // (Find) rather than on a timer or on every return to the tab
+    refetchOnWindowFocus: !lookup,
     // a query that has never held data goes back to pending on every refetch,
     // which unmounts its error: polling one that failed swapped the alert for
     // a skeleton and back every cycle, and a screen reader heard the alert
@@ -237,8 +302,61 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     // retry button. a failure with rows already on screen keeps its error
     // through a refetch, so that one goes on polling and says it is retrying
     refetchInterval: (q) =>
-      streaming && !(q.state.status === "error" && q.state.data === undefined) ? pollMs : false,
+      streaming && !lookup && !(q.state.status === "error" && q.state.data === undefined)
+        ? pollMs
+        : false,
   });
+
+  // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
+  // both follow the log read, the one this screen exists for: `models` only
+  // feeds the rail's model picker, so keying off it reported the screen ready
+  // over a skeleton and missed a ClickHouse outage altogether (#2017). ready
+  // means answered rather than not loading, because a retry parked in a hidden
+  // tab is pending and not fetching and is still no answer. a deployment with no
+  // analytics store is an answer and a supported one, so it is neither pending
+  // nor an error state. the region is named like the empty state's, so the two
+  // pair up in the dead-states query
+  useScreenReady(!query.isPending);
+  useErrorState(query.isError && !isUnavailable(query.error), "request-logs");
+
+  // the one row a lookup finds is what was asked for, so its drawer opens. it
+  // opens once per lookup: a refetch, or closing the drawer, must not bring it
+  // back. Find on the lookup already showing clears the mark to ask again
+  const opened = React.useRef("");
+  const found = query.data?.data;
+  React.useEffect(() => {
+    if (!lookupKey) {
+      opened.current = "";
+      return;
+    }
+    if (!query.isSuccess || opened.current === lookupKey) return;
+    opened.current = lookupKey;
+    if (found?.length === 1) setSelected(found[0]);
+  }, [lookupKey, query.isSuccess, query.dataUpdatedAt, found]);
+
+  // what the field shows follows the address, which a link or the command
+  // palette can change from outside
+  const [draft, setDraft] = React.useState(lookup?.value ?? "");
+  React.useEffect(() => setDraft(lookup?.value ?? ""), [lookup?.value]);
+  const lookupField = React.useRef<HTMLInputElement>(null);
+  const submitLookup = (event: React.FormEvent) => {
+    event.preventDefault();
+    const next = parseLogLookup(draft);
+    if (!next) return;
+    // a traceparent pasted whole is shown as the trace id read out of it
+    setDraft(next.value);
+    if (next.kind === lookup?.kind && next.value === lookup.value) {
+      opened.current = "";
+      void query.refetch();
+      return;
+    }
+    filters.setLookup(next);
+  };
+  const clearLookup = () => {
+    setDraft("");
+    filters.setLookup(null);
+    lookupField.current?.focus();
+  };
 
   // every filter is applied by the server now (#1247). filtering the page
   // here instead made `limit` mean something else: a unit that served 3 of
@@ -262,7 +380,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const cost = (row: InvocationRow) =>
     isUnpriced(row) ? null : fmt.currency(num(row.cost_usd), currency);
   const filterCount =
-    (status === "all" ? 0 : 1) + (model ? 1 : 0) + unitSel.length + customerSel.length;
+    (status === "all" ? 0 : 1) +
+    (model ? 1 : 0) +
+    unitSel.length +
+    customerSel.length +
+    (unpriced ? 1 : 0);
   // the list the model filter picks from. a model the address names but the
   // catalogue no longer lists still filters the log, so it is offered too:
   // otherwise the control would read as unset while the rows are narrowed
@@ -302,15 +424,25 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       }
     : query.isPending
       ? { dot: "bg-[color:var(--text-subtle)]", label: t("pages.logs.feed.loading") }
-      : {
-          dot: streaming
-            ? "rl-pulse bg-[color:var(--status-success)]"
-            : "bg-[color:var(--text-subtle)]",
-          label: `${streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} · ${t(
-            "pages.logs.requests",
-            { count: rows.length },
-          )}`,
-        };
+      : lookup
+        ? {
+            // a lookup is an answer, not a feed, so nothing pulses
+            dot: "bg-[color:var(--text-subtle)]",
+            label: `${t(
+              lookup.kind === "trace_id"
+                ? "pages.logs.lookup.feedTrace"
+                : "pages.logs.lookup.feedRequest",
+            )} · ${t("pages.logs.requests", { count: rows.length })}`,
+          }
+        : {
+            dot: streaming
+              ? "rl-pulse bg-[color:var(--status-success)]"
+              : "bg-[color:var(--text-subtle)]",
+            label: `${streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} · ${t(
+              "pages.logs.requests",
+              { count: rows.length },
+            )}`,
+          };
 
   const ms = (value: number | string) =>
     t("analytics.ms", { value: fmt.number(Math.round(num(value))) });
@@ -381,9 +513,16 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           })}
         </DetailRow>
         <DetailRow label={t("pages.logs.cost")} mono>
-          <span title={isUnpriced(selected) ? t("analytics.unpricedHint") : undefined}>
-            {cost(selected) ?? t("analytics.unpriced")}
-          </span>
+          {cost(selected) ?? (
+            // room enough here to say it, so the explanation is text on the
+            // screen and not a tooltip a keyboard or a touch never reaches
+            <span className="flex flex-col items-start gap-1.5">
+              <Unpriced />
+              <span className="font-sans text-xs text-muted-foreground">
+                {t("analytics.unpricedHint")}
+              </span>
+            </span>
+          )}
         </DetailRow>
       </DetailSection>
       <DetailSection title={t("pages.logs.detail.attribution")}>
@@ -399,16 +538,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           <NamedId id={selected.customer_id} name={customerName(selected.customer_id)} />
         </DetailRow>
       </DetailSection>
-      <PayloadBlock
-        label={t("pages.logs.request")}
-        raw={selected.request_payload}
-        withheld={Number(selected.payload_withheld ?? 0) === 1}
-      />
-      <PayloadBlock
-        label={t("pages.logs.response")}
-        raw={selected.response_payload}
-        withheld={Number(selected.payload_withheld ?? 0) === 1}
-      />
+      <Payloads row={selected} />
     </div>
   );
 
@@ -476,6 +606,15 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 clearable
               />
             </FilterSection>
+            {/* the flag the gateway recorded per request, applied by the server
+                before the page is cut like every other filter here (#1986) */}
+            <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
+              <FilterCheckList
+                options={[{ value: "unpriced", label: t("pages.logs.unpricedOnly") }]}
+                selected={unpriced ? ["unpriced"] : []}
+                onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
+              />
+            </FilterSection>
             {(units.data ?? []).length > 0 && (
               <FilterSection title={t("pages.logs.businessUnit")} count={unitSel.length}>
                 <FilterSearchList
@@ -514,7 +653,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-none items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3">
+        {/* wraps: at 375px in russian the feed's own words, the pause button and the
+            pager do not fit one row, and the label was squeezed under the button */}
+        <div className="flex flex-none flex-wrap items-center gap-x-2.5 gap-y-2 px-[18px] py-3">
           <button
             type="button"
             onClick={() => setFiltersOpen((v) => !v)}
@@ -532,9 +673,12 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {feed.label}
           </span>
           <div className="ml-auto flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
-              {streaming ? t("pages.logs.pause") : t("pages.logs.resume")}
-            </Button>
+            {/* a lookup does not stream, so there is nothing to pause */}
+            {!lookup && (
+              <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
+                {streaming ? t("pages.logs.pause") : t("pages.logs.resume")}
+              </Button>
+            )}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -563,17 +707,61 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[880px] table-fixed border-collapse text-sm">
+        {/* the id a client was handed, pasted here: a request id or a trace
+            id, told apart by its shape. it lives in the address like the
+            rail's filters, and Clear (or the empty result's button) returns
+            to the feed (#1861) */}
+        <form
+          role="search"
+          aria-label={t("pages.logs.lookup.label")}
+          onSubmit={submitLookup}
+          className="flex flex-none items-center gap-2 border-b border-[color:var(--border-subtle)] px-[18px] pb-3"
+        >
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[color:var(--text-subtle)]"
+            />
+            <Input
+              ref={lookupField}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label={t("pages.logs.lookup.label")}
+              placeholder={t("pages.logs.lookup.placeholder")}
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              enterKeyHint="search"
+              className="h-8 pl-8 pr-8 font-mono text-xs placeholder:font-sans"
+            />
+            {draft && (
+              <button
+                type="button"
+                aria-label={t("pages.logs.lookup.clearField")}
+                onClick={clearLookup}
+                className="absolute right-0.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <X aria-hidden className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <Button type="submit" size="sm" variant="outline" disabled={!draft.trim()}>
+            {t("pages.logs.lookup.find")}
+          </Button>
+        </form>
+
+        <div className="@container min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[320px] table-fixed border-collapse text-sm">
             <colgroup>
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "20%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "10%" }} />
-              <col style={{ width: "11%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "11%" }} />
-              <col style={{ width: "36px" }} />
+              <col className="w-[104px] @min-[480px]:w-28" />
+              {/* what is left once the fixed ones have theirs */}
+              <col />
+              <col className="hidden w-[148px] @min-[840px]:table-column" />
+              <col className="w-[58px] @min-[480px]:w-[68px]" />
+              <col className="hidden w-24 @min-[600px]:table-column" />
+              <col className="hidden w-[88px] @min-[720px]:table-column" />
+              <col className="w-[84px] @min-[480px]:w-24" />
+              <col className="w-7 @min-[480px]:w-9" />
             </colgroup>
             <thead>
               <tr>
@@ -583,16 +771,16 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 <th scope="col" className={TH}>
                   {t("pages.logs.model")}
                 </th>
-                <th scope="col" className={TH}>
+                <th scope="col" className={cn(TH, PROVIDER_COL)}>
                   {t("common.provider")}
                 </th>
                 <th scope="col" className={TH}>
                   {t("pages.logs.status")}
                 </th>
-                <th scope="col" className={cn(TH, "text-right")}>
+                <th scope="col" className={cn(TH, LATENCY_COL, "text-right")}>
                   {t("pages.logs.latency")}
                 </th>
-                <th scope="col" className={cn(TH, "text-right")}>
+                <th scope="col" className={cn(TH, TOKENS_COL, "text-right")}>
                   {t("pages.logs.tokens")}
                 </th>
                 <th scope="col" className={cn(TH, "text-right")}>
@@ -623,11 +811,19 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         : "hover:bg-[color:var(--surface-hover)]",
                     )}
                   >
-                    <td className={cn(TD, "truncate whitespace-nowrap")}>{fmt.dateTimeMs(r.ts)}</td>
+                    {/* the clock and its milliseconds, which tell rows apart.
+                        the day is in the title and in the drawer's verdict,
+                        not repeated on every row of a 24 hour window */}
+                    <td className={cn(TD, "truncate whitespace-nowrap")}>
+                      <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
+                        {fmt.timeMs(r.ts)}
+                      </time>
+                    </td>
                     <td className={cn(TD, "[overflow-wrap:anywhere]")}>{r.model}</td>
                     <td
                       className={cn(
                         TD,
+                        PROVIDER_COL,
                         "truncate whitespace-nowrap text-[color:var(--text-secondary)]",
                       )}
                     >
@@ -641,23 +837,38 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         {st || "ERR"}
                       </span>
                     </td>
-                    <td className={cn(TD, "text-right text-[color:var(--text-secondary)]")}>
+                    <td
+                      className={cn(
+                        TD,
+                        LATENCY_COL,
+                        "text-right text-[color:var(--text-secondary)]",
+                      )}
+                    >
                       {t("analytics.ms", { value: fmt.number(Math.round(num(r.latency_ms))) })}
                     </td>
-                    <td className={cn(TD, "text-right text-[color:var(--text-secondary)]")}>
+                    <td
+                      className={cn(
+                        TD,
+                        TOKENS_COL,
+                        "text-right text-[color:var(--text-secondary)]",
+                      )}
+                    >
                       {fmt.number(num(r.total_tokens))}
                     </td>
-                    <td className={cn(TD, "text-right text-[color:var(--text-secondary)]")}>
-                      {cost(r) ?? (
-                        <span
-                          className="text-[color:var(--text-subtle)]"
-                          title={t("analytics.unpricedHint")}
-                        >
-                          {t("analytics.unpriced")}
-                        </span>
+                    <td
+                      className={cn(
+                        TD,
+                        "whitespace-nowrap text-right text-[color:var(--text-secondary)]",
                       )}
+                    >
+                      {cost(r) ?? <Unpriced titled />}
                     </td>
-                    <td className={cn(TD, "pr-2.5 text-right")}>
+                    <td
+                      className={cn(
+                        TD,
+                        "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5 text-right",
+                      )}
+                    >
                       {/* the row's click target is a mouse convenience; this
                           button is the keyboard's and the screen reader's way
                           into the same drawer */}
@@ -715,7 +926,34 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               }
             />
           )}
-          {query.isSuccess && rows.length === 0 && page === 0 && (
+          {/* an id that matches nothing and an id the caller may not read are the
+              same answer: the control plane filters by visibility in the query,
+              so it cannot say which, and neither does this (#1861) */}
+          {query.isSuccess && rows.length === 0 && page === 0 && lookup && (
+            <EmptyState
+              uxTarget="request-logs"
+              icon={<SearchX />}
+              title={t("pages.logs.lookup.missTitle")}
+              description={
+                filterCount
+                  ? t("pages.logs.lookup.missFilteredBody")
+                  : t("pages.logs.lookup.missBody")
+              }
+              actions={
+                <>
+                  <Button variant="outline" onClick={clearLookup}>
+                    {t("pages.logs.lookup.clear")}
+                  </Button>
+                  {filterCount > 0 && (
+                    <Button variant="outline" onClick={filters.clear}>
+                      {t("pages.logs.clearFilters")}
+                    </Button>
+                  )}
+                </>
+              }
+            />
+          )}
+          {query.isSuccess && rows.length === 0 && page === 0 && !lookup && (
             <EmptyState
               uxTarget="request-logs"
               icon={<ScrollText />}
@@ -770,13 +1008,69 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
 }
 
 /**
- * One request or response body in the detail drawer, and — when there is none —
- * why (#954).
+ * The request and response bodies in the detail drawer, and, when one or both
+ * are missing, why (#954, #2131).
  *
- * An empty panel used to say "payload logging is off", which is one of three
- * possible reasons and was often the wrong one. A payload is absent when
- * capture is off, when it is on but this request's model or key falls outside
- * the allow-list, or when the payload's retention window (shorter than the log
+ * Two bodies that are missing for the same reason are explained once, under a
+ * heading that names both. The row does not record the reasons apart, and the
+ * gateway stores a request's two bodies together, so a request with neither
+ * almost always has the same story for each, and printing it per panel made the
+ * drawer about a screen longer for nothing. A request that has one body is
+ * different: the panel for the body that is there says nothing, and the one for
+ * the body that is not says what is left to say about it.
+ */
+function Payloads({ row }: { row: InvocationRow }) {
+  const { t } = useTranslation();
+  const request = pretty(row.request_payload);
+  const response = pretty(row.response_payload);
+  const withheld = Number(row.payload_withheld ?? 0) === 1;
+
+  if (request !== null && response !== null) {
+    return (
+      <>
+        <DrawerBlock
+          label={t("pages.logs.request")}
+          content={request}
+          language={payloadLanguage(row.request_payload)}
+        />
+        <DrawerBlock
+          label={t("pages.logs.response")}
+          content={response}
+          language={payloadLanguage(row.response_payload)}
+        />
+      </>
+    );
+  }
+  if (request === null && response === null) {
+    return <PayloadMissing label={t("pages.logs.requestAndResponse")} withheld={withheld} />;
+  }
+  return request !== null ? (
+    <>
+      <DrawerBlock
+        label={t("pages.logs.request")}
+        content={request}
+        language={payloadLanguage(row.request_payload)}
+      />
+      <PayloadMissing label={t("pages.logs.response")} emptyKey="pages.logs.payloadResponseEmpty" />
+    </>
+  ) : (
+    <>
+      <PayloadMissing label={t("pages.logs.request")} emptyKey="pages.logs.payloadRequestEmpty" />
+      <DrawerBlock
+        label={t("pages.logs.response")}
+        content={response ?? ""}
+        language={payloadLanguage(row.response_payload)}
+      />
+    </>
+  );
+}
+
+/**
+ * Why a body is not in the drawer.
+ *
+ * With neither body there are four reasons. A payload is absent when capture is
+ * off, when it is on but this request's model or key falls outside the
+ * allow-list, or when the payload's retention window (shorter than the log
  * row's, by design) has already elapsed. The row itself does not record which,
  * so the copy names all three rather than asserting one.
  *
@@ -791,44 +1085,49 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
  * a viewer may not read and says so with `payload_withheld`, and that one is
  * certain rather than a guess, so it is stated plainly and points at the
  * project's settings rather than the deployment's log settings.
+ *
+ * With one body stored the three guesses are gone: the other body was captured,
+ * so capture was on, the request passed the allow-list and the retention window
+ * is still open. The gateway keeps nothing for a body that was empty when it
+ * was logged, and that is what is left, so the note says it and sends the
+ * reader nowhere.
  */
-function PayloadBlock({
+function PayloadMissing({
   label,
-  raw,
+  emptyKey,
   withheld = false,
 }: {
   label: string;
-  raw: string | undefined;
+  /** set when only this one body is missing and the other is stored: what to say of it */
+  emptyKey?: "pages.logs.payloadRequestEmpty" | "pages.logs.payloadResponseEmpty";
   withheld?: boolean;
 }) {
   const { t } = useTranslation();
   const can = useCan();
   const readsSettings = can("logging_settings", "read");
-  const body = pretty(raw);
+  const neither = emptyKey === undefined;
   const settings = useQuery({
     queryKey: ["logging-settings", "payload-hint"],
     queryFn: fetchLoggingSettings,
     // only asked when the answer is readable, and a failure is not worth
     // surfacing: the generic explanation below is still true
-    enabled: readsSettings === true && body === null && !withheld,
+    enabled: readsSettings === true && neither && !withheld,
     retry: false,
     staleTime: 60_000,
   });
 
-  if (body !== null) {
-    return <DrawerBlock label={label} content={body} language={payloadLanguage(raw)} />;
-  }
-
   const captureOff = settings.data ? !settings.data.payload_capture_enabled : undefined;
-  const reason = withheld
-    ? t("pages.logs.payloadWithheld")
-    : captureOff === true
-      ? t("pages.logs.payloadCaptureOff")
-      : captureOff === false
-        ? t("pages.logs.payloadCaptureOnButAbsent", {
-            hours: settings.data?.payload_retention_hours ?? 0,
-          })
-        : t("pages.logs.payloadAbsent");
+  const reason = emptyKey
+    ? t(emptyKey)
+    : withheld
+      ? t("pages.logs.payloadWithheld")
+      : captureOff === true
+        ? t("pages.logs.payloadCaptureOff")
+        : captureOff === false
+          ? t("pages.logs.payloadCaptureOnButAbsent", {
+              hours: settings.data?.payload_retention_hours ?? 0,
+            })
+          : t("pages.logs.payloadAbsent");
 
   return (
     <div>
@@ -836,9 +1135,11 @@ function PayloadBlock({
       <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
         <p className="text-xs leading-relaxed text-muted-foreground">{reason}</p>
         {/* the deployment's log settings cannot change a role, so a withheld
-            body has nowhere there to point. only an explicit "no" hides the
-            link, the rule the rail follows for the same screen */}
-        {!withheld &&
+            body has nowhere there to point, and cannot fill a body that was
+            empty. only an explicit "no" hides the link, the rule the rail
+            follows for the same screen */}
+        {neither &&
+          !withheld &&
           (readsSettings === false ? (
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
               {t("pages.logs.payloadSettingsOwner")}
@@ -1012,6 +1313,27 @@ function DetailRow({
 /** An empty field, quieter than a value so it is not read as one. */
 function Absent() {
   return <span className="text-[color:var(--text-subtle)]">—</span>;
+}
+
+/**
+ * The label a request with no price carries where its cost would be (#1986).
+ *
+ * A dash reads as "nothing to show", the same as a missing provider, and a zero
+ * claims the request was free, so it says what is true: no price was configured
+ * when it ran. The table has no room for the explanation and carries it as a
+ * title; the drawer has, and prints it beside the label instead.
+ */
+function Unpriced({ titled = false }: { titled?: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <Badge
+      tone="neutral"
+      className="font-mono"
+      title={titled ? t("analytics.unpricedHint") : undefined}
+    >
+      {t("analytics.unpriced")}
+    </Badge>
+  );
 }
 
 /** A governance id by its name, falling back to the id itself when no row names it. */

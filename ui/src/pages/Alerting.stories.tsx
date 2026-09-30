@@ -30,7 +30,7 @@ import {
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { atMobile, atWide, expectInFrame, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const CHANNELS: AlertChannelRow[] = [
   {
@@ -1547,6 +1547,112 @@ export const HistoryReadInRussianOnAPhone: Story = {
       }
     }
     await expectNoHorizontalOverflow();
+  },
+};
+
+// --- #2335: the detail is the diagnosis, so it is read in full ----------------
+
+const UNSEALED = "channel secret could not be unsealed; check ROLTER_KEK";
+const EGRESS = "endpoint denied by the egress policy";
+// one token with no space in it: it has to break inside its column, since a
+// column that grew to hold it would push every row wider than the header
+const ONE_TOKEN = "https://alerts.example.com/rolter/pagerduty/v2/enqueue/9f8e7d6c5b4a39281716";
+
+const DIAGNOSES: AlertNotificationRow[] = [UNSEALED, EGRESS, ONE_TOKEN].map((detail, i) => ({
+  id: `note-diagnosis-${i}`,
+  rule_id: "rule-1",
+  channel_id: "chan-1",
+  state: "firing",
+  delivery_status: "failed",
+  detail,
+  sent_at: "2026-08-11T12:00:00Z",
+}));
+
+const diagnosed = routes([
+  ["/alert-notifications", () => DIAGNOSES],
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => RULES],
+]);
+
+/**
+ * Every failed delivery's detail is on screen in full, and the columns did not
+ * move to make room for it.
+ *
+ * `toBeVisible` and the text being in the document say nothing here: a cell cut
+ * with an ellipsis holds all of its text and is visible. A cut shows as the
+ * cell's content being wider than the cell (`scrollWidth`), and as a line that
+ * runs past the edge of the frame the table scrolls in. The table is scrolled to
+ * its end first, since the detail is the last column and sits off the edge of a
+ * phone until the reader gets to it.
+ */
+async function expectDetailsInFull(canvasElement: HTMLElement, name: string) {
+  const table = await within(canvasElement).findByRole("table", { name });
+  const [header] = within(table).getAllByRole("row");
+  const floor = header.getBoundingClientRect().width;
+  table.scrollLeft = table.scrollWidth;
+  for (const detail of DIAGNOSES.map((row) => row.detail!)) {
+    const cell = await within(table).findByText((_, el) => el?.textContent === detail);
+    await expect(cell).toHaveAttribute("role", "cell");
+    await expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth);
+    await expect(getComputedStyle(cell).textOverflow).not.toBe("ellipsis");
+    const text = document.createRange();
+    text.selectNodeContents(cell);
+    await expectInFrame(text, table);
+    // the row is the header's width: a long token broke inside its column
+    await expect(cell.parentElement!.getBoundingClientRect().width).toBe(floor);
+  }
+}
+
+export const HistoryDetailIsReadInFullOnADesktop: Story = {
+  ...atWide,
+  render: () => (
+    <Harness fetchStub={diagnosed}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectDetailsInFull(canvasElement, "Alert History");
+    // a 1440px window has room for the columns: nothing scrolls
+    const table = within(canvasElement).getByRole("table", { name: "Alert History" });
+    await expect(table.scrollWidth).toBe(table.clientWidth);
+  },
+};
+
+export const HistoryDetailIsReadInFullOnAPhone: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={diagnosed}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectDetailsInFull(canvasElement, "Alert History");
+  },
+};
+
+export const HistoryDetailIsReadInFullInRussianOnADesktop: Story = {
+  ...atWide,
+  globals: { ...atWide.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={diagnosed}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectDetailsInFull(canvasElement, ru.screens["alerting-history"].title);
+  },
+};
+
+export const HistoryDetailIsReadInFullInRussianOnAPhone: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={diagnosed}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectDetailsInFull(canvasElement, ru.screens["alerting-history"].title);
   },
 };
 

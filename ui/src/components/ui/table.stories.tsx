@@ -1,9 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
+import { Button } from "./button";
 import { EmptyState } from "./empty-state";
 import { Table, type TableColumn } from "./table";
 import { ANSWERED, type ReadState } from "@/lib/read-state";
+import { atMobile, expectInFrame } from "@/lib/story-viewport";
+import { expectTableStateInFrame } from "@/pages/story-harness";
 
 interface Row extends Record<string, unknown> {
   id: string;
@@ -105,6 +108,105 @@ export const Empty: Story = {
     await expect(canvas.getByText("No traffic in this window")).toBeVisible();
     // the columns survive the empty state — they say what a row would carry
     await expect(canvas.getByRole("columnheader", { name: "Provider" })).toBeVisible();
+  },
+};
+
+// a table whose columns need more than a phone's card gives them, so it scrolls
+// sideways inside its frame. headers do not wrap, so their text is the floor
+// each column is held to: `width` alone is a preference a narrow table gives up
+const WIDE_COLUMNS: TableColumn<Row>[] = [
+  { key: "model", header: "Model identifier", mono: true },
+  { key: "provider", header: "Provider account" },
+  { key: "requests", header: "Requests in the last hour", align: "right" },
+  { key: "p95", header: "p95 latency in milliseconds", align: "right", mono: true },
+];
+
+const NoTraffic = () => (
+  <EmptyState
+    title="No traffic in this window"
+    description="Widen the time range, or send a request through the gateway to see it here."
+    actions={<Button>Send a request</Button>}
+  />
+);
+
+const EmptyWide = ({ columns = WIDE_COLUMNS }: { columns?: TableColumn<Row>[] }) => (
+  <Table columns={columns} data={[]} read={ANSWERED} empty={<NoTraffic />} />
+);
+
+/** The frame, the box the placeholder sits in, and the first header cell, read off the title. */
+function parts(canvasElement: HTMLElement) {
+  const title = within(canvasElement).getByText("No traffic in this window");
+  const table = title.closest("table")!;
+  return {
+    title,
+    table,
+    frame: table.parentElement!,
+    state: title.closest("td")!.firstElementChild as HTMLElement,
+    header: table.querySelector("th")!,
+  };
+}
+
+/**
+ * Below its columns' width the table scrolls sideways inside its card, and the
+ * placeholder's cell spans the whole table (#2420). Centred on it, the title
+ * and the button sat past the card's right edge, or off to one side of it. The
+ * placeholder is as wide as the frame the reader sees instead, so the title,
+ * the description and the button are inside it and centred in it.
+ */
+export const EmptyFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <EmptyWide />,
+  play: async ({ canvasElement }) => {
+    await expectTableStateInFrame(canvasElement, {
+      says: /No traffic in this window/,
+      body: /Widen the time range/,
+      cta: /Send a request/,
+    });
+    const { frame } = parts(canvasElement);
+    // the premise: this table really is wider than the frame that shows it
+    await expect(frame.scrollWidth).toBeGreaterThan(frame.clientWidth);
+  },
+};
+
+/**
+ * The header and the columns keep the width their content needs, so they scroll
+ * under the frame; the placeholder is stuck to the frame's left edge and stays
+ * in front of a reader who scrolls the table to its end.
+ */
+export const EmptyStaysInFrameWhenTheTableScrolls: Story = {
+  ...atMobile,
+  render: () => <EmptyWide />,
+  play: async ({ canvasElement }) => {
+    const { title, frame, state, header } = parts(canvasElement);
+    const edge = frame.getBoundingClientRect().left + frame.clientLeft;
+    await expect(state.getBoundingClientRect().width).toBeCloseTo(frame.clientWidth, 0);
+    const before = header.getBoundingClientRect().left;
+
+    frame.scrollLeft = frame.scrollWidth;
+    await expect(frame.scrollLeft).toBeGreaterThan(0);
+    // the columns have moved under the frame and the placeholder has not
+    await expect(header.getBoundingClientRect().left).toBeLessThan(before);
+    await expect(state.getBoundingClientRect().left).toBeCloseTo(edge, 0);
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    await expectInFrame(range, frame);
+  },
+};
+
+/**
+ * Where the columns fit nothing scrolls, and the placeholder is the width of the
+ * table and of its header row: one left edge, one right edge, so it stays
+ * centred under the columns it stands in for.
+ */
+export const EmptySpansTheTableAtDesktopWidth: Story = {
+  render: () => <EmptyWide columns={COLUMNS} />,
+  play: async ({ canvasElement }) => {
+    const { table, frame, state, header } = parts(canvasElement);
+    await expect(frame.scrollWidth).toBe(frame.clientWidth);
+    const box = table.getBoundingClientRect();
+    await expect(state.getBoundingClientRect().left).toBeCloseTo(box.left, 0);
+    await expect(state.getBoundingClientRect().right).toBeCloseTo(box.right, 0);
+    await expect(header.closest("tr")!.getBoundingClientRect().width).toBeCloseTo(box.width, 0);
   },
 };
 

@@ -4,7 +4,8 @@
 # brings up the production-shaped topology (postgres, redis, clickhouse, gateway,
 # control) via docker-compose.yml + the CI overlay, waits for both health
 # endpoints, then exercises the gateway (models + fake-llm chat, non-streaming
-# and SSE) and the control-plane snapshot path. no provider secrets are needed.
+# and SSE), the control-plane snapshot path, and that a route created through the
+# control plane's API reaches the gateway. no provider secrets are needed.
 #
 # always dumps compose logs and tears the stack down (including volumes) on exit,
 # so the job leaves nothing behind whether it passes or fails.
@@ -69,5 +70,35 @@ echo "== control: GET /internal/snapshot (postgres-backed, after DB is ready) ==
 curl -fsS http://127.0.0.1:4001/internal/snapshot | tee /tmp/snap.json; echo
 grep -q '"version"' /tmp/snap.json
 grep -q '"config"' /tmp/snap.json
+
+echo "== control -> gateway: a route created through the control plane reaches the gateway =="
+# the stack is open, so the management API needs no token. the gateway polls
+# /internal/snapshot (and listens on redis), so the route shows up in its model
+# list without a restart. a gateway that ignored the control plane, as this one
+# did until #1890, would never list it
+json_id() { python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'; }
+post() { curl -fsS -H 'content-type: application/json' -d "$2" "http://127.0.0.1:4001$1"; }
+org=$(post /api/v1/orgs '{"name":"smoke","slug":"smoke"}' | json_id)
+team=$(post "/api/v1/orgs/$org/teams" '{"name":"smoke"}' | json_id)
+project=$(post "/api/v1/teams/$team/projects" '{"name":"smoke"}' | json_id)
+# a route needs a target on a known provider, or the snapshot leaves it out. the
+# provider never has to answer: the check is that the route arrives
+provider=$(post "/api/v1/orgs/$org/providers" \
+  '{"name":"smoke-upstream","kind":"openai","api_base":"http://smoke-upstream.invalid","api_key_env":"SMOKE_UPSTREAM_KEY"}' | json_id)
+route=$(post "/api/v1/projects/$project/routes" '{"model":"smoke-follow","strategy":"round_robin"}' | json_id)
+post "/api/v1/routes/$route/targets" "{\"provider_id\":\"$provider\",\"upstream_model\":\"gpt-4o\"}" >/dev/null
+followed=0
+for _ in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:4000/v1/models | grep -q 'smoke-follow'; then
+    followed=1
+    break
+  fi
+  sleep 1
+done
+if [ "$followed" -ne 1 ]; then
+  echo "FAILED: the gateway never listed a route created in the control plane" >&2
+  exit 1
+fi
+echo "gateway lists smoke-follow"
 
 echo "ALL SMOKE CHECKS PASSED"

@@ -31,7 +31,6 @@ use axum::{http::header, http::StatusCode, Router};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use rolter_core::Error;
 use rolter_store::postgres::crypto::Kek;
 
 use crate::crud::pool;
@@ -110,9 +109,9 @@ async fn render(principal: Principal, State(state): State<ControlState>) -> Resp
             .collect(),
         Err(err) => {
             tracing::warn!(error = %err, "failed to query observability connectors");
-            return crate::crud::ApiError::Core(Error::Store(
+            return crate::crud::ApiError::Curated(
                 "failed to query observability connectors".to_string(),
-            ))
+            )
             .into_response();
         }
     };
@@ -411,9 +410,8 @@ mod tests {
     #[tokio::test]
     async fn render_error_redacts_store_details() {
         let err = sqlx::Error::RowNotFound;
-        let api_err = crate::crud::ApiError::Core(Error::Store(
-            "failed to query observability connectors".to_string(),
-        ));
+        let api_err =
+            crate::crud::ApiError::Curated("failed to query observability connectors".to_string());
         let resp = api_err.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)

@@ -11,14 +11,17 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
-use rolter_store::postgres::repo::{RouteRepo, VirtualKeyRepo};
+use rolter_store::postgres::repo::{
+    AuditLogRepo, RouteRepo, ScimIdentityRepo, UserRepo, VirtualKeyRepo,
+};
 
 use crate::analytics::{client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
 use crate::auth::CurrentUser;
@@ -47,6 +50,180 @@ pub fn router() -> Router<ControlState> {
             axum::routing::delete(delete_my_key),
         )
         .route("/api/v1/me/usage", get(my_usage))
+        .route("/api/v1/me/profile", patch(update_my_profile))
+}
+
+/// longest display name, in characters; matches `users_display_name_shape`
+pub(crate) const MAX_DISPLAY_NAME_LEN: usize = 80;
+/// longest bio, in characters; matches `users_bio_shape`
+pub(crate) const MAX_BIO_LEN: usize = 500;
+
+/// Keep "field omitted" apart from "field sent as null": a plain `Option`
+/// collapses both to `None`, and a PATCH must leave the first alone while the
+/// second clears the value.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+struct ProfilePatch {
+    #[serde(default, deserialize_with = "present")]
+    display_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    bio: Option<Option<String>>,
+}
+
+/// Normalise one profile field: `None` and `""` clear it, anything else is
+/// trimmed and bounded. A value that is only whitespace is refused rather than
+/// quietly cleared, since a client that sent it did not mean "remove".
+fn normalise_field(
+    field: &str,
+    raw: Option<String>,
+    max: usize,
+    allow_newlines: bool,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw else { return Ok(None) };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(bad_request(&format!(
+            "{field} must not be only whitespace; send an empty string or null to clear it"
+        )));
+    }
+    if let Some(bad) = trimmed
+        .chars()
+        .find(|c| c.is_control() && !(allow_newlines && matches!(c, '\n' | '\r' | '\t')))
+    {
+        return Err(bad_request(&format!(
+            "{field} must not contain control characters (found U+{:04X})",
+            bad as u32
+        )));
+    }
+    if trimmed.chars().count() > max {
+        return Err(bad_request(&format!(
+            "{field} must be at most {max} characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Coerce an IdP-supplied name into something `users.display_name` accepts.
+/// Unlike [`normalise_field`] this never refuses: a directory owns the value,
+/// and a provisioning call must not fail because of how a name is spelled.
+pub(crate) fn sanitise_directory_name(raw: &str) -> Option<String> {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let trimmed: String = cleaned.trim().chars().take(MAX_DISPLAY_NAME_LEN).collect();
+    let trimmed = trimmed.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// What `PATCH /me/profile` returns: the editable fields and whether the
+/// name is owned by a directory.
+#[derive(Serialize)]
+struct ProfileResponse {
+    display_name: Option<String>,
+    bio: Option<String>,
+    display_name_managed: bool,
+}
+
+/// Whether a SCIM-provisioned identity owns this account's display name.
+///
+/// SCIM is the only source treated as authoritative: its `displayName` is
+/// written into `users.display_name` on every provision and replace, so a
+/// local edit would be overwritten on the next sync. OIDC's claim is read at
+/// login but never persisted, and LDAP's is likewise unused, so those accounts
+/// keep an editable name.
+pub(crate) async fn display_name_managed(
+    state: &ControlState,
+    user_id: Uuid,
+) -> Result<bool, rolter_core::Error> {
+    ScimIdentityRepo(pool(state)).exists_for_user(user_id).await
+}
+
+/// change the caller's own profile. any signed-in account may do this at any
+/// role: it writes only the caller's row, so it needs no capability and does
+/// not widen `user:update`.
+async fn update_my_profile(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<ProfilePatch>,
+) -> ApiResult<Json<ProfileResponse>> {
+    let user: &User = &current.user;
+    let managed = display_name_managed(&state, user.id).await?;
+
+    let display_name = match body.display_name {
+        Some(raw) => Some(normalise_field(
+            "display_name",
+            raw,
+            MAX_DISPLAY_NAME_LEN,
+            false,
+        )?),
+        None => None,
+    };
+    let bio = match body.bio {
+        Some(raw) => Some(normalise_field("bio", raw, MAX_BIO_LEN, true)?),
+        None => None,
+    };
+
+    // only fields that actually change count, so a form that resubmits both
+    // values still works for a directory-managed name it did not touch
+    let name_changes = display_name
+        .as_ref()
+        .is_some_and(|new| *new != user.display_name);
+    let bio_changes = bio.as_ref().is_some_and(|new| *new != user.bio);
+    if managed && name_changes {
+        return Err(ApiError::Conflict(
+            "display_name is managed by your identity provider (SCIM) and cannot be changed here"
+                .to_string(),
+        ));
+    }
+
+    let mut changed = Vec::new();
+    if name_changes {
+        changed.push("display_name");
+    }
+    if bio_changes {
+        changed.push("bio");
+    }
+    let updated = if changed.is_empty() {
+        user.clone()
+    } else {
+        let updated = UserRepo(pool(&state))
+            .set_profile(
+                user.id,
+                display_name
+                    .as_ref()
+                    .filter(|_| name_changes)
+                    .map(|v| v.as_deref()),
+                bio.as_ref().filter(|_| bio_changes).map(|v| v.as_deref()),
+            )
+            .await?;
+        // field names only: a bio is free text the user may not want in a log
+        if let Err(err) = AuditLogRepo(pool(&state))
+            .create(
+                None,
+                Some(user.id),
+                "user.profile.update",
+                Some("user"),
+                Some(user.id),
+                Some(serde_json::json!({ "fields": changed })),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "failed to write profile audit entry");
+        }
+        updated
+    };
+    Ok(Json(ProfileResponse {
+        display_name: updated.display_name,
+        bio: updated.bio,
+        display_name_managed: managed,
+    }))
 }
 
 /// the plaintext key is returned once on mint/rotate and never again

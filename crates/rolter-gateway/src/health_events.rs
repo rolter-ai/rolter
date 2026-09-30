@@ -15,9 +15,11 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::logging::{clickhouse_ts, BEST_EFFORT_DATES};
 use crate::metrics::Metrics;
+use crate::sink_drain::SinkTasks;
 
 /// Which signal produced a health observation. Serializes to the string names of
 /// the ClickHouse `source` enum.
@@ -70,12 +72,18 @@ pub struct HealthEvent {
 pub struct HealthEventSink {
     tx: Option<mpsc::Sender<HealthEvent>>,
     metrics: Arc<Metrics>,
+    /// stop handle for the writer; `None` on a disabled sink
+    tasks: Option<Arc<SinkTasks>>,
 }
 
 impl HealthEventSink {
     /// A sink that discards everything (writing disabled / used in tests).
     pub fn disabled(metrics: Arc<Metrics>) -> Self {
-        Self { tx: None, metrics }
+        Self {
+            tx: None,
+            metrics,
+            tasks: None,
+        }
     }
 
     /// Build a sink and spawn the background batch writer targeting the
@@ -99,10 +107,20 @@ impl HealthEventSink {
             flush,
             metrics: metrics.clone(),
         };
-        tokio::spawn(writer.run(rx));
+        let tasks = Arc::new(SinkTasks::default());
+        tasks.track(tokio::spawn(writer.run(rx, tasks.token())));
         Self {
             tx: Some(tx),
             metrics,
+            tasks: Some(tasks),
+        }
+    }
+
+    /// Flush the batch and queue the writer holds and stop it. Returns once it
+    /// has exited; the caller bounds the wait. A no-op on a disabled sink.
+    pub async fn shutdown(&self) {
+        if let Some(tasks) = &self.tasks {
+            tasks.stop().await;
         }
     }
 
@@ -130,12 +148,19 @@ struct BatchWriter {
 }
 
 impl BatchWriter {
-    async fn run(self, mut rx: mpsc::Receiver<HealthEvent>) {
+    async fn run(self, mut rx: mpsc::Receiver<HealthEvent>, stop: CancellationToken) {
         let mut batch: Vec<HealthEvent> = Vec::with_capacity(self.batch_max);
         let mut ticker = tokio::time::interval(self.flush);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut stopping = false;
         loop {
             tokio::select! {
+                // shutdown: closing the receiver keeps what is queued readable
+                // and then yields `None`, so the arm below flushes it all
+                _ = stop.cancelled(), if !stopping => {
+                    stopping = true;
+                    rx.close();
+                }
                 maybe = rx.recv() => match maybe {
                     Some(record) => {
                         batch.push(record);

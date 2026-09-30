@@ -544,6 +544,9 @@ pub struct InvocationsQuery {
     pub(crate) request_id: Option<String>,
     /// exact trace id, the W3C trace a request's spans were recorded under
     pub(crate) trace_id: Option<String>,
+    /// `true` narrows the log to requests the gateway recorded as unpriced;
+    /// `false` or omitted applies no filter
+    pub(crate) unpriced: Option<bool>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -601,7 +604,10 @@ impl TimeBounds for InvocationsQuery {
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
 /// applied at the time, so a caller that instead re-derives it from today's
-/// model prices re-judges old rows against new prices and drifts (#1226).
+/// model prices re-judges old rows against new prices and drifts (#1226). The
+/// `unpriced` filter reads that same recorded flag, in the database, for the
+/// reason the attribution dimensions do: a page cut first and filtered after
+/// would hold fewer rows than `limit` asked for.
 ///
 /// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
@@ -643,6 +649,7 @@ fn invocations_sql(status_expr: &str) -> String {
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
+           and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -698,6 +705,10 @@ async fn invocations(
     });
     params.push(("param_request_id".to_string(), request_id));
     params.push(("param_trace_id".to_string(), trace_id));
+    params.push((
+        "param_unpriced".to_string(),
+        u8::from(q.unpriced.unwrap_or(false)).to_string(),
+    ));
     params.push((
         "param_model".to_string(),
         q.model.clone().unwrap_or_default(),
@@ -868,6 +879,30 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
+    }
+
+    #[test]
+    fn invocations_sql_filters_unpriced_on_the_recorded_flag_as_a_param() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // the flag the gateway recorded, bound as a value: the filter must not
+        // re-derive "unpriced" from the live catalogue (#1226), and an unset
+        // filter has to let every row through
+        assert!(sql.contains("({unpriced:UInt8} = 0 or unpriced = 1)"));
+    }
+
+    #[test]
+    fn the_unpriced_filter_reads_true_and_nothing_else_narrows() {
+        let read = |query: &str| {
+            let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
+                .parse()
+                .expect("a valid uri");
+            axum::extract::Query::<InvocationsQuery>::try_from_uri(&uri).map(|q| q.0.unpriced)
+        };
+        assert_eq!(read("").expect("no filter"), None);
+        assert_eq!(read("?unpriced=true").expect("on"), Some(true));
+        assert_eq!(read("?unpriced=false").expect("off"), Some(false));
+        // a value that is neither is a refused query, not a filter left off
+        assert!(read("?unpriced=maybe").is_err());
     }
 
     #[test]

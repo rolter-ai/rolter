@@ -31,7 +31,6 @@
 //! egress policy, and a client that does not follow redirects. See
 //! `docs/dev-docs/architecture/mcp-oauth.md` for the SSRF reasoning.
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -340,7 +339,7 @@ async fn protected_resource_metadata(
 async fn challenge_metadata_url(state: &ControlState, resource: &ResourceUri) -> Option<String> {
     let url = resource.as_str();
     guard_url(state, url).ok()?;
-    let response = client().ok()?.get(url).send().await.ok()?;
+    let response = client(state).ok()?.get(url).send().await.ok()?;
     let header = response
         .headers()
         .get(reqwest::header::WWW_AUTHENTICATE)?
@@ -493,7 +492,7 @@ async fn fetch_metadata<T: DeserializeOwned>(
     url: &str,
 ) -> Result<T, DiscoveryError> {
     guard_url(state, url)?;
-    let response = client()?
+    let response = client(state)?
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
@@ -543,27 +542,38 @@ fn guard_url(state: &ControlState, url: &str) -> Result<(), DiscoveryError> {
         .map_err(DiscoveryError::Refused)
 }
 
-/// The client discovery fetches with. Separate from [`ControlState::http`] for
-/// one reason: it does not follow redirects. A `302` from an upstream is how a
-/// host that passed the egress check hands the request to one that would not
-/// have, and a redirect chain is not something an allowlist can see.
-fn client() -> Result<&'static reqwest::Client, DiscoveryError> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(DISCOVERY_TIMEOUT)
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or(DiscoveryError::NoClient)
+/// The client discovery fetches with. Separate from [`ControlState::http`]
+/// because it resolves through the egress policy, so a name that answers with a
+/// denied address is refused at connect time, and because it does not follow
+/// redirects. A `302` from an upstream is how a host that passed the egress
+/// check hands the request to one that would not have, and a redirect chain is
+/// not something an allowlist can see.
+fn client(state: &ControlState) -> Result<reqwest::Client, DiscoveryError> {
+    crate::egress_client::builder(&state.egress)
+        .timeout(DISCOVERY_TIMEOUT)
+        .build()
+        .map_err(|_| DiscoveryError::NoClient)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1949: a metadata host whose name resolves only to an address the
+    /// policy denies is refused before any connection is made.
+    #[tokio::test]
+    async fn a_metadata_host_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let mut state = crate::tests::state_with_token(None);
+        state.egress = crate::egress_client::testing::deny_loopback();
+        let result: Result<serde_json::Value, _> = fetch_metadata(
+            &state,
+            &listener.url("/.well-known/oauth-protected-resource"),
+        )
+        .await;
+        assert!(matches!(result, Err(DiscoveryError::Refused(_))));
+        assert_eq!(listener.accepted(), 0);
+    }
 
     #[test]
     fn a_resource_uri_is_canonicalised_the_way_rfc_8707_asks() {

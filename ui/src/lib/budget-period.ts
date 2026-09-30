@@ -1,13 +1,20 @@
 /** The window a budget resets on, as the dashboard names it. */
 export type PeriodKind = "daily" | "monthly" | "total";
 
-// a budget's `period` is free text, and these are the spellings the gateway
-// reads: `parse_period` in rolter-store takes `daily`, `1d` and `24h` as a day,
-// `total`, `lifetime` and `all` as a lifetime cap, and everything else as a
-// month. `30d` is the dashboard's own default for that last case, so it is
-// named here too. anything further is left to the caller to print as stored —
-// `7d` is enforced as a month but was never a month's name (#1902)
-const KINDS = new Map<string, PeriodKind>([
+/**
+ * The windows the gateway has, in the order the picker offers them. They are
+ * calendar windows in UTC: there are no rolling windows, so a budget cannot
+ * count "the last 7 days" (#1902).
+ */
+export const PERIOD_KINDS: readonly PeriodKind[] = ["daily", "monthly", "total"];
+
+// every spelling of a period the gateway reads, mirroring
+// `BudgetPeriod::SPELLINGS` in `crates/rolter-core/src/config.rs`, which is
+// also what the control plane accepts on create and edit. the shorthands are
+// what budgets stored through the api have always used, `30d` being the column
+// default; it means the calendar month, not thirty rolling days.
+// `budget-period.test.ts` fails when the two tables disagree
+export const PERIOD_SPELLINGS: ReadonlyMap<string, PeriodKind> = new Map([
   ["daily", "daily"],
   ["1d", "daily"],
   ["24h", "daily"],
@@ -18,7 +25,14 @@ const KINDS = new Map<string, PeriodKind>([
   ["all", "total"],
 ]);
 
-/** The window `period` names, or `null` for text the dashboard has no name for. */
+/**
+ * The window `period` names, or `null` for text the gateway does not recognise.
+ *
+ * The control plane refuses such a value now, but a budget stored before it did
+ * keeps it, and the gateway enforces that budget as monthly whatever the row
+ * says. `7d` is the example: it was never a month's name, so the caller prints
+ * it as stored and says what it is enforced as.
+ */
 export function periodKind(period: string): PeriodKind | null {
-  return KINDS.get(period.trim().toLowerCase()) ?? null;
+  return PERIOD_SPELLINGS.get(period.trim().toLowerCase()) ?? null;
 }

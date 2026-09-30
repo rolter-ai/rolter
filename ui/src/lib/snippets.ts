@@ -48,7 +48,7 @@ function proxyNote(base: GatewayBase, comment: string, name: string): string {
  * chat leaks a working credential. An env var is also what the provider SDK
  * docs do, so the snippet reads as idiomatic rather than defensive.
  */
-const KEY_ENV = "ROLTER_API_KEY";
+export const KEY_ENV = "ROLTER_API_KEY";
 
 /** JSON-encode for embedding inside a source literal. */
 const j = (v: unknown) => JSON.stringify(v);

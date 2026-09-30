@@ -625,12 +625,32 @@ When enabled, a background task periodically probes each provider with a lightwe
   The request path appended to each provider's `api_base` when probing. Left at the default `/`, Rolter probes each provider kind's free non-inference liveness endpoint instead (`/v1/models` for `openai`/`openai_compatible`, and `/v1/models` with an `anthropic-version` header for `anthropic`) — no token cost. Set an explicit path (e.g. `/health`) to override this for all providers.
 </ParamField>
 
+<ParamField path="probe_concurrency" default="2" type="usize">
+  Maximum probes in flight at once during a sweep. Each provider also starts at a stable offset of up to a quarter of the interval (at most two seconds), so a sweep never hits every upstream at the same moment. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="consecutive_failure_threshold" default="3" type="u32">
+  Consecutive probe failures before a provider is marked unhealthy and its targets are skipped. One failed probe never removes a provider on its own. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="recovery_success_threshold" default="2" type="u32">
+  Consecutive probe successes before an unhealthy provider returns to rotation, so a flapping upstream does not bounce in and out. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="status_page_interval_secs" default="60" type="u64">
+  Seconds between polls of provider status pages. Only providers with a `status_page_url` are polled, and the poller runs even with `enabled = false`. A status page is a secondary signal: it records a `status_page` event and never changes routing on its own. See [Health checks](/reliability/health-checks).
+</ParamField>
+
 ```toml
 [health]
 enabled = true
 interval_secs = 10
 timeout_secs = 2
 path = "/"
+probe_concurrency = 2
+consecutive_failure_threshold = 3
+recovery_success_threshold = 2
+status_page_interval_secs = 60
 ```
 
 ---

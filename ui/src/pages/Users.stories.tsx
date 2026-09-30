@@ -7,6 +7,7 @@ import {
   Harness,
   LOADING_LABEL,
   Toasted,
+  answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmation,
@@ -19,6 +20,7 @@ import {
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
+  expectListStateInViewport,
   expectListTable,
   expectNoFalseEmpty,
   expectSkeleton,
@@ -302,6 +304,66 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No users yet/, /Invite user/);
+  },
+};
+
+/**
+ * A first-run admin on a phone (#2362). The tables scroll sideways inside their
+ * cards below their column floor, and the empty state is the screen's one call
+ * to action: it has to be in the part of the table a reader can see, not
+ * centred in a 960px row that begins off the right edge. Both tables, since the
+ * pending invitations sit under the users and are their own scroller.
+ */
+export const EmptyIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={empty}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, en.screens["gov-users"].title, {
+      says: /No users yet/,
+      cta: /invite user/i,
+    });
+    await expectListStateInViewport(canvasElement, en.pages.users.invitations.title, {
+      says: /No pending invitations/,
+      cta: /invite user/i,
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The Russian copy is the longer one; its title, description and button still fit the card. */
+export const EmptyIsOnScreenAtPhoneWidthInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={empty}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, ru.screens["gov-users"].title, {
+      says: new RegExp(ru.pages.users.emptyTitle),
+      cta: new RegExp(ru.pages.users.emptyAction),
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The loading skeleton is the same row as the empty state, so it is held to the same edge. */
+export const LoadingIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={pending}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, en.screens["gov-users"].title);
+    await expectListStateInViewport(canvasElement, en.pages.users.invitations.title);
+    await expectNoHorizontalOverflow();
   },
 };
 
@@ -1381,13 +1443,17 @@ export const TheInviteLinkCopies: Story = {
         en.common.copied,
       ),
     );
+    // a link that reached the clipboard closes without a question (#2217)
+    await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await expectSheetClosed();
   },
 };
 
 /**
  * The clipboard is withheld on a plain-http dashboard, which is common on an
- * air-gapped LAN. The button used to say "Copied" whatever happened; now it
- * says the copy failed, and the link stays on screen until Done is pressed.
+ * air-gapped LAN. The button used to say "Copied" whatever happened; now the
+ * dialog says the copy failed in a line that stays (#2327), the link stays on
+ * screen and selected, and closing it asks, since nobody has it yet (#2217).
  */
 export const TheInviteLinkCopyFails: Story = {
   beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
@@ -1411,9 +1477,49 @@ export const TheInviteLinkCopyFails: Story = {
       ),
     );
     await expect(dialog.queryByText(en.common.copied)).toBeNull();
-    // the link is still there to copy by hand, and only Done takes it away
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(en.common.copyFailed);
+    // the link is still there to copy by hand, selected for it
+    await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
+    await expect(window.getSelection()?.toString()).toBe(INVITE_LINK);
+
+    // and only a confirmed close takes it away
+    await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(false);
     await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
     await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(true);
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The invitation link is shown once and cannot be recovered, so Escape, the
+ * scrim and the close button ask before closing over a link nobody copied.
+ * Cancelling keeps the dialog, the link and what it says to do with it.
+ */
+export const AnUncopiedInviteLinkAsksBeforeClosing: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /invite user/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Email"), "newcomer@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Invite" }));
+    const dialog = within(await confirmation());
+    await waitFor(() => expect(dialog.getByText(INVITE_LINK)).toBeVisible());
+    // the next step is who to send it to and what it grants
+    await expect(dialog.getByText("newcomer@example.com")).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    await answerSecretClosePrompt(false);
+    await expect(dialog.getByText(INVITE_LINK)).toBeVisible();
+    await expect(dialog.getByText(/Accepting it grants/)).toBeVisible();
+
+    await userEvent.click(dialog.getByRole("button", { name: en.common.close }));
+    await answerSecretClosePrompt(true);
     await expectSheetClosed();
   },
 };
