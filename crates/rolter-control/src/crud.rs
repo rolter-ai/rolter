@@ -243,14 +243,18 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let (status, message) = match self {
-            Self::Core(err) => {
-                let status = match &err {
-                    Error::NotFound(_) => StatusCode::NOT_FOUND,
-                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-                (status, err.to_string())
-            }
+            Self::Core(err) => match &err {
+                Error::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+                Error::Config(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+                Error::Unauthorized => (StatusCode::BAD_REQUEST, err.to_string()),
+                _ => {
+                    tracing::error!(error = %err, "internal server error");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "an internal server error occurred".to_string(),
+                    )
+                }
+            },
             Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
@@ -5514,5 +5518,23 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+
+    #[tokio::test]
+    async fn internal_core_error_redacts_sensitive_details() {
+        let sensitive = "postgres connection failed at postgres://user:secret@10.0.0.1:5432/db";
+        let api_err = ApiError::Core(Error::Store(sensitive.to_string()));
+        let response = api_err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = body_json["error"]["message"].as_str().unwrap();
+
+        assert_eq!(message, "an internal server error occurred");
+        assert!(!message.contains("postgres"));
+        assert!(!message.contains(sensitive));
     }
 }
