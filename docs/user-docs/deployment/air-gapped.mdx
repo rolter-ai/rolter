@@ -1,40 +1,129 @@
 ---
 title: "Air-Gapped Installation & Operation"
 sidebarTitle: "Air-gapped"
-description: "Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, runtime egress guarantees, an operator checklist, and an offline smoke test."
+description: "Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, every outbound network path with the setting that controls it, an operator checklist, and an offline smoke test."
 ---
 
 Rolter is built to run in fully air-gapped environments with no public internet at
-build or run time. The runtime is egress-free by design — it talks only to the
-backends you configure and to nothing else. This page shows how to install Rolter
-behind an internal mirror, exactly what the runtime does and does not reach, and
-how to verify the deployment offline.
+build or run time. One outbound call is on by default, the release check, and you
+turn it off with `ROLTER_UPDATE_CHECK=false`. Every other call goes to an endpoint
+you configure, and this page lists each one with the setting that turns it on or
+off. It also shows how to install Rolter behind an internal mirror and how to
+verify the deployment offline.
 
-## Runtime egress guarantees
+## Runtime egress
 
-Rolter makes outbound network calls **only** to endpoints you configure:
+### The release check is on by default
 
-- **Upstream providers** — the `base_url` of each configured provider.
-- **Postgres / Redis / ClickHouse** — only when their URLs are set (`ROLTER_DATABASE_URL`, `ROLTER_REDIS_URL`, `CLICKHOUSE_URL` or `[logging].clickhouse_url`).
-- **Control-plane snapshot** — only when the gateway runs with `--snapshot-url` (Redis pub/sub only with `--redis-url`).
-- **Alert channels** — only when a rule changes state and the channel it points at is enabled; the control plane then POSTs the transition to that channel's endpoint. See [Alerting](/observability/alerting#delivery).
-- **OTLP traces** — only when an `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. With no `OTEL_*` env, no exporter is built and there is zero tracing egress.
+Left alone, two parts of Rolter ask `https://api.github.com/repos/rolter-ai/rolter/releases/latest`
+whether a newer stable release exists:
 
-Everything else is self-contained. The interactive API reference at `/docs`
-embeds the Scalar JS bundle in the binary and sets `withDefaultFonts: false`, so
-it never reaches a CDN or `fonts.scalar.com` — a guarantee enforced by the
-`docs_page_is_self_contained` and `scalar_bundle_is_embedded` tests in
-`crates/rolter-gateway/src/openapi.rs`. The dashboard SPA is served as static
-assets by the control plane and loads no third-party scripts, fonts, or styles.
-Its documentation links are off unless you configure a documentation host, so an
-enclave with no mirror of this site simply sees no links — see
-[Documentation links](/deployment/documentation-links).
+- The control plane asks once at boot and every six hours. The answer feeds the
+  version hint in the dashboard footer and [`GET /api/v1/version`](/api/version).
+- The `rolter` command asks beside whatever subcommand you run, `gateway`,
+  `control`, `easy-up` and `check` included, and prints one line to stderr when a
+  newer release exists. A successful answer is cached for 24 hours in
+  `~/.cache/rolter/update-check.json`. A failed one is not cached, so a host that
+  cannot reach GitHub tries again on every invocation.
 
-<Warning>
-  If a provider sets `status_page_url`, the gateway periodically fetches that URL
-  as a secondary health signal. Leave `status_page_url` unset in air-gapped
-  configs (or point it at an internal mirror) so the poller stays inside the enclave.
-</Warning>
+The request is one `GET` with a 5-second timeout and a `User-Agent: rolter/<version>`
+header. It carries no installation id, configuration or credentials. A failure is
+logged at `debug`, never delays a command and never changes an exit status, so an
+enclave keeps working with the check left on. The attempts still show up in a
+firewall or DNS log, and a policy that treats an unexpected external lookup as an
+incident will flag them.
+
+Turn it off with one environment variable:
+
+```bash
+export ROLTER_UPDATE_CHECK=false   # also 0, no or off
+```
+
+Set it on the control plane and on every host or container that runs the `rolter`
+command. With the Docker image that is every container, because its default command
+is `rolter easy-up`. The `rolter-control` binary carries the control plane's check;
+`rolter-gateway` run directly has none.
+
+With the Helm chart, `control.updateCheck: false` reaches the control plane pods. The
+gateway pods' preflight init container also runs `rolter check`, so until
+[#2382](https://github.com/rolter-ai/rolter/issues/2382) is fixed, set the variable
+for the gateway as well:
+
+```yaml
+control:
+  updateCheck: false
+gateway:
+  extraEnv:
+    - name: ROLTER_UPDATE_CHECK
+      value: "false"
+```
+
+With the check off, the dashboard footer shows the running version alone and
+`/api/v1/version` reports `"enabled": false`. See
+[Update check](/configuration/environment-variables#update-check).
+
+### Every outbound path
+
+The release check is the only path that is on without configuration. Each of the
+others stays idle until you set the setting in its row, so a deployment that never
+sets them makes no other outbound call.
+
+| Path                        | What it reaches                                                                                                                                                                                                                                                                                       | Setting                                                                                                                                     | Default                                              |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Release check               | `api.github.com`, described above                                                                                                                                                                                                                                                                     | `ROLTER_UPDATE_CHECK=false` turns it off                                                                                                    | **On**                                               |
+| Upstream providers          | Each provider's `api_base`, a model's advanced `base_url` and the provider's `egress_proxy` when set. Also the embeddings provider of a semantic cache and the **Test** button on the Providers screen                                                                                                | The providers and routes you configure                                                                                                      | None. The built-in `fake-llm` makes no outbound call |
+| Postgres                    | The host in `ROLTER_DATABASE_URL`, from the control plane                                                                                                                                                                                                                                             | `ROLTER_DATABASE_URL`                                                                                                                       | Unset: in-memory store                               |
+| Redis                       | The host in `ROLTER_REDIS_URL`, from both planes: budgets, rate limits, the response cache, the sign-in throttle and config pub/sub                                                                                                                                                                   | `ROLTER_REDIS_URL`, or `--redis-url` on the gateway                                                                                         | Unset                                                |
+| ClickHouse                  | Request logs, captured payloads, provider health events and the control plane's analytics and alert queries                                                                                                                                                                                           | `CLICKHOUSE_URL` or `[logging].clickhouse_url`. A gateway with neither inherits the control plane's                                         | Unset: nothing is logged                             |
+| Gateway to control plane    | Config poll every 5 seconds, the log destination at boot and adaptive-routing telemetry, all to the snapshot URL's host. The `/admin/*` proxy goes to the admin URL                                                                                                                                   | `ROLTER_SNAPSHOT_URL` and `ROLTER_SNAPSHOT_POLL_SECS`, `ROLTER_ADMIN_URL`                                                                   | Unset: static bootstrap config                       |
+| Control plane to gateway    | Dashboard Playground requests, sent through `/gw/*`. No traffic while nobody uses the Playground                                                                                                                                                                                                      | `ROLTER_GATEWAY_URL`                                                                                                                        | `http://localhost:4000`                              |
+| Alert channels              | Each enabled channel's `endpoint`: one JSON `POST` when a rule changes state. See [Alerting](/observability/alerting#delivery)                                                                                                                                                                        | **Alerting → Channels**                                                                                                                     | No channels                                          |
+| OTLP export                 | The OTLP receiver, for traces, metrics and logs from both planes. See [Tracing](/observability/tracing)                                                                                                                                                                                               | `OTEL_EXPORTER_OTLP_ENDPOINT`, or its `_TRACES_`, `_METRICS_` and `_LOGS_` variants. `ROLTER_TELEMETRY_ENABLED=false` blocks every exporter | Unset: no exporter is built                          |
+| Connector test              | The connector's `endpoint`: one empty OTLP request when someone presses **Test**, whether or not the connector is enabled. Rolter sends nothing else to a connector. See [Connectors](/observability/connectors)                                                                                      | **Observability → Connectors**                                                                                                              | No connectors                                        |
+| Dashboard browser tracing   | The OTLP/HTTP endpoint named in the served page, called from each user's browser                                                                                                                                                                                                                      | `ROLTER_UI_OTEL_ENDPOINT`. `ROLTER_TELEMETRY_ENABLED=false` drops it                                                                        | Unset: the dashboard loads no tracing code           |
+| Active health probes        | Each provider's `api_base` plus `[health].path`, every `interval_secs` (10). `also_track_via_llm_call` sends a one-token completion. See [Health checks](/reliability/health-checks)                                                                                                                  | `[health] enabled`                                                                                                                          | `false`                                              |
+| Engine metrics scrape       | Each provider's `api_base` plus `/metrics`, every `interval_secs` (5). See [Load balancing](/concepts/load-balancing)                                                                                                                                                                                 | `[metrics_scrape] enabled`                                                                                                                  | `false`                                              |
+| Provider status pages       | A provider's `status_page_url`, every `[health].status_page_interval_secs` (60), even with `[health]` off                                                                                                                                                                                             | `status_page_url` on a provider. Leave it unset, or point it at an internal mirror                                                          | Unset                                                |
+| Cache-aware routing signals | A provider's `kv_events.endpoint` (a ZeroMQ subscription such as `tcp://vllm-0:5557`) and its `lmcache.endpoint` (an HTTP poll every `refresh_secs`, 2 by default). See [Cache-aware routing](/concepts/cache-aware-routing)                                                                          | `kv_events` and `lmcache` on a provider                                                                                                     | Unset                                                |
+| MCP servers                 | The `url` of each registered server, when a client calls it through `/mcp/<server>`. See [MCP servers](/configuration/mcp-servers)                                                                                                                                                                    | The registered MCP servers                                                                                                                  | None                                                 |
+| MCP OAuth                   | For a server that uses OAuth, the control plane fetches the server's resource metadata and its authorization server's metadata when consent starts, posts to the token endpoint when it completes, and refreshes tokens near expiry in a sweep every 60 seconds. See [MCP OAuth](/security/mcp-oauth) | MCP servers set to OAuth                                                                                                                    | None                                                 |
+| Single sign-on              | For each identity provider, the control plane fetches `<issuer>/.well-known/openid-configuration` and the `jwks_uri`, and posts to the `token_endpoint`, at each sign-in. See [Single sign-on](/security/single-sign-on)                                                                              | **Governance → Single Sign-On**                                                                                                             | No providers                                         |
+| Guardrail webhook           | The webhook URL: one `POST` per request, before it goes upstream. See [Guardrails](/security/guardrails)                                                                                                                                                                                              | `[guardrail_webhook] enabled`, or activating a provider under **Guardrails → Providers**                                                    | Disabled                                             |
+| PII sanitizer               | `[pii_sanitizer].url`, and `restore_url` when restoration is on. See [PII sanitizer](/security/pii-sanitizer)                                                                                                                                                                                         | `[pii_sanitizer] enabled`                                                                                                                   | Disabled                                             |
+| Webhook plugins             | The `endpoint` of each enabled plugin instance, on every matching request at its stage. See [Plugins](/configuration/plugins)                                                                                                                                                                         | **Plugins**: an instance is live while it is enabled                                                                                        | No instances                                         |
+
+Several rows point at services you host inside the enclave, such as a guardrail
+service, a Presidio sanitizer or an OpenTelemetry Collector. Rolter opens those
+connections too, so they are listed.
+
+These do not make an outbound call:
+
+- **SCIM provisioning** is inbound only. Your identity provider calls `/scim/v2/*`
+  on `ROLTER_PUBLIC_URL`, and Rolter never calls it back.
+- **Invitations** send no email. Rolter returns the link and you pass it on.
+- **Payload capture** writes to ClickHouse and nowhere else, and only when
+  `[logging.payload_capture]` is enabled.
+- **Prometheus metrics** are scraped from `/metrics` by your Prometheus. Rolter
+  pushes nothing to it.
+- **Built-in guardrails** and the `fake-llm` model run inside the gateway process.
+
+`rolter check --connect` opens a TCP connection to the hosts in `ROLTER_DATABASE_URL`
+and `ROLTER_REDIS_URL`. It is a command you run, not a background task.
+
+### The dashboard and the API reference
+
+The interactive API reference at `/docs` embeds the Scalar JS bundle in the binary
+and sets `withDefaultFonts: false`, so it never reaches a CDN or `fonts.scalar.com`.
+The `docs_page_is_self_contained` and `scalar_bundle_is_embedded` tests in
+`crates/rolter-gateway/src/openapi.rs` enforce it.
+
+The dashboard SPA is served as static assets by the control plane. Its fonts and
+icons are vendored in the build, and it loads no third-party scripts, fonts or
+styles. Its documentation links are off unless you configure a documentation host,
+so an enclave with no mirror of this site simply sees no links. See
+[Documentation links](/deployment/documentation-links). The footer's repository and
+bug-report buttons point at `github.com`. They are ordinary links that open only
+when someone clicks one, and the page loads nothing from them.
 
 ## Install paths through a mirroring proxy
 
@@ -121,18 +210,24 @@ you ship Rolter.
 
 ## Operator checklist
 
+**Set before you deploy:**
+
+- `ROLTER_UPDATE_CHECK=false` on the control plane and wherever the `rolter` command runs. In Helm, `control.updateCheck: false` plus `ROLTER_UPDATE_CHECK` in `gateway.extraEnv` (see [#2382](https://github.com/rolter-ai/rolter/issues/2382)).
+
 **Must be reachable inside the enclave:**
 
-- Every configured provider `base_url` (your internal model servers or a proxied provider endpoint).
-- Postgres, Redis, and ClickHouse hosts — only for the features you enable.
+- Every configured provider `api_base` (your internal model servers or a proxied provider endpoint).
+- Postgres, Redis, and ClickHouse hosts, only for the features you enable.
 - The control plane, if the gateway runs with `--snapshot-url`.
+- Every endpoint you chose to configure from the table above, such as an alert webhook, an identity provider, an MCP server or a collector.
 
 **Must NOT be required:**
 
 - Public package registries at run time (only at install/build time, through the mirror).
-- CDNs (`cdn.jsdelivr.net`, `fonts.scalar.com`, npm/unpkg) — Rolter references none.
-- Telemetry endpoints — unless you deliberately set `OTEL_*` to an internal collector.
-- Provider status pages — leave `status_page_url` unset.
+- CDNs (`cdn.jsdelivr.net`, `fonts.scalar.com`, npm/unpkg). Rolter references none.
+- `api.github.com`. With `ROLTER_UPDATE_CHECK=false` the release check is not attempted.
+- Telemetry endpoints, unless you deliberately set `OTEL_*` to an internal collector.
+- Provider status pages. Leave `status_page_url` unset.
 
 ## Offline smoke test
 
@@ -140,7 +235,7 @@ Verify a running gateway with zero external providers using the built-in
 `fake-llm` model (deterministic, no upstream or secrets needed):
 
 ```bash
-rolter gateway --port 4000 &
+ROLTER_UPDATE_CHECK=false rolter gateway --port 4000 &
 curl -s http://localhost:4000/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"fake-llm","messages":[{"role":"user","content":"hello"}]}'

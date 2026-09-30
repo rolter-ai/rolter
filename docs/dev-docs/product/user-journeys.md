@@ -239,7 +239,6 @@ priorities live on the issues.
 | #1819 | compose ClickHouse fails where `nofile` cannot reach 262144                            | A0-b on constrained hosts                      |
 | #1890 | the compose stack takes no secrets and its gateway ignores the control plane           | A0-b, A0.6                                     |
 | #1939 | a default Helm install fails its own strict preflight                                  | A0-c, A0.6                                     |
-| #1889 | `rolter init` and `rolter check` leave out `ROLTER_SESSION_PEPPER`                     | A0.5, A0.7                                     |
 | #1897 | `rolter-seed` ships in no image or package                                             | A0.8                                           |
 | #1891 | the published image binds loopback, so `docker run -p` reaches nothing                 | the quickstart's `docker run`                  |
 | #1832 | raw MCP traffic inspection for local servers (mcp-snoop)                               | E7                                             |
