@@ -42,19 +42,20 @@ Every 60 seconds the control plane loads the enabled rules and evaluates each
 one. The first pass runs a minute after the control plane starts.
 
 An evaluation is one ClickHouse query over the trailing window, `window_secs`
-seconds back from now. The result is the rule's `last_value`. If it is greater
-than or equal to `threshold` the rule is `firing`, otherwise `ok`. Windows
+seconds back from now. The result is the rule's `last_value`. With the default
+`comparison` of `above`, a value greater than or equal to `threshold` makes the
+rule `firing`, otherwise `ok`; with `below`, a value less than or equal to it
+does. A window with nothing to measure is handled by the rule's
+[`no_data` policy](#no-data-and-below-rules). Windows
 longer than a minute overlap from one pass to the next, so a 5-minute rule
 looks at a sliding 5 minutes each time.
 
-Two limits follow from that:
+One limit follows from that:
 
 - Every signal is deployment-wide. A rule cannot be narrowed to one provider,
   model, route, virtual key or organization.
-- A rule only fires on a high value. There is no "below" comparison, so a rule
-  cannot catch traffic dropping to zero.
 
-For alerts that need either, use the gateway's Prometheus
+For alerts that need that, use the gateway's Prometheus
 [metrics](/observability/metrics), which carry per-model and per-provider
 labels.
 
@@ -77,7 +78,53 @@ Spend is in the deployment's settlement currency, the `base` of the
 (USD unless configured). The `cost_usd` column name is historic and does not
 mean dollars.
 
-An empty window reads `0` for every signal.
+An empty window reads `0` for every signal, except that `error_rate` and
+`p95_latency_ms` have no value at all over zero requests (a rate or a
+percentile of nothing is not `0`): the evaluation reports **no data**, stored as
+a `last_value` of `null`, and the rule's [`no_data`](#no-data-and-below-rules)
+policy decides what that means. The other three signals have a true zero to
+compare.
+
+### No data and below rules
+
+Two rule fields cover what a high-only threshold cannot:
+
+| Field        | Values                 | Default  | Meaning                                                                                                                                             |
+| ------------ | ---------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `comparison` | `above`, `below`       | `above`  | `above` fires at `value >= threshold`, `below` at `value <= threshold`. Both are inclusive, so a value exactly at the threshold fires either way.   |
+| `no_data`    | `ignore`, `fire`, `ok` | `ignore` | What a window with no data does. `ignore` keeps the rule's state. `fire` treats it as a breach. `ok` treats it as healthy, resolving a firing rule. |
+
+Rules saved before these fields existed read as `above` and `ignore`, which is
+how they always behaved. `no_data` other than `ignore` is accepted only on
+`error_rate` and `p95_latency_ms`, the signals that can lack data; the API
+rejects it elsewhere rather than store a policy that could never apply.
+
+A rule that fires on no data records why: its history row's `detail` ends in
+`no data in window`, and the delivery carries `"no_data": true`, a `null`
+`value` and a `text` saying so (see [Delivery](#delivery)). A rule that
+was already `firing` when a window has no data is not reported again.
+
+**Traffic stopped.** To be paged when the gateway, or everything in front of
+it, goes quiet, use `request_volume` with `comparison: below`. A count of zero
+requests is a real reading for that signal, so `threshold: 0` fires when the
+window holds no requests at all:
+
+```json
+{
+  "name": "traffic stopped",
+  "signal": "request_volume",
+  "comparison": "below",
+  "threshold": 0,
+  "window_secs": 300,
+  "channel_id": "3f6c2a4e-8d1b-4c1e-9a57-2b0d6e9f1c23",
+  "enabled": true
+}
+```
+
+For an error-rate rule that should not stay silent when there are no
+requests to count is `signal: error_rate`, `no_data: fire`. A rule on the
+request log also stops when the gateway stops _logging_, so a dead log pipeline
+pages too; it cannot tell the two apart.
 
 ### States and transitions
 
@@ -92,6 +139,10 @@ records a row when the two differ:
 | at or over | `firing`                   | nothing, or a [retry](#retries) of `firing`   |
 | under      | `resolved`                 | nothing, or a [retry](#retries) of `resolved` |
 | under      | nothing yet                | nothing                                       |
+
+"At or over" and "under" are for an `above` rule; a `below` rule reads them
+the other way round, and a window with no data is one more reading, resolved
+by `no_data` into `firing`, `resolved` or no change.
 
 So a rule created or enabled while its condition already holds reports
 `firing` on its first evaluation, and a rule whose first reading is under the
@@ -202,6 +253,8 @@ one `POST` to the endpoint with a JSON body:
   "rule": { "id": "5b1f0c2e-7a44-4f0e-8d1c-9e3a6b2d4c10", "name": "high error rate" },
   "signal": "error_rate",
   "value": 0.07,
+  "no_data": false,
+  "comparison": "above",
   "threshold": 0.05,
   "window_secs": 300,
   "evaluated_at": "2026-09-27T10:15:02.113Z",
@@ -215,8 +268,10 @@ one `POST` to the endpoint with a JSON body:
 | `state`        | `firing` or `resolved`.                                                                          |
 | `rule`         | The rule's `id` and `name`.                                                                      |
 | `signal`       | The [signal](#signals) the rule reads.                                                           |
-| `value`        | The reading that caused the change, in the signal's unit.                                        |
-| `threshold`    | The rule's threshold. `firing` means `value >= threshold`.                                       |
+| `value`        | The reading that caused the change, in the signal's unit. `null` when `no_data` is `true`.       |
+| `no_data`      | `true` when the change came from a window with no data, under the rule's `no_data` policy.       |
+| `comparison`   | The rule's `comparison`, `above` or `below`.                                                     |
+| `threshold`    | The rule's threshold. `firing` means `value >= threshold`, or `<=` for a `below` rule.           |
 | `window_secs`  | The trailing window the value was read over.                                                     |
 | `evaluated_at` | When the evaluation that took the reading ran, RFC 3339 in UTC.                                  |
 | `text`         | The same facts as one line, for a relay or a chat tool to display as-is.                         |
@@ -317,12 +372,16 @@ waits for that delivery to finish, at most 10 seconds.
 | ------------- | ------------------------------------------------------------------------------------------------ |
 | `name`        | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                  |
 | `signal`      | One of the [signals](#signals) above.                                                            |
-| `threshold`   | A finite number, `0` or above, in the signal's own unit. The rule fires at `value >= threshold`. |
+| `threshold`   | A finite number, `0` or above, in the signal's own unit. See `comparison`.                       |
+| `comparison`  | `above` (default) fires at `value >= threshold`, `below` at `value <= threshold`.                |
+| `no_data`     | `ignore` (default), `fire` or `ok`: what a [window with no data](#no-data-and-below-rules) does. |
 | `window_secs` | Trailing window in seconds, from `60` to `86400` (one minute to one day).                        |
 | `channel_id`  | The channel to deliver to, or `null` to record transitions without delivering them.              |
 | `enabled`     | Only enabled rules are evaluated on schedule. Defaults to `false` in the API.                    |
 
-The server also returns `state`, `last_value`, `last_evaluated_at` and
+`comparison` and `no_data` may be left out of a request, and read as their
+defaults. The server also returns `state`, `last_value` (`null` after a window
+with no data), `last_evaluated_at` and
 `last_error`.
 
 The **Add rule** sheet lists each signal by its dashboard name, with a line
@@ -364,8 +423,9 @@ dashboard shows it:
 | `request_volume`        | `1000`          | `1,000 requests in 5m`          | `300`  | a thousand or more requests in five minutes, about three a second |
 | `provider_health_flaps` | `10`            | `10 failed health events in 5m` | `300`  | ten or more failed health observations in 5 minutes               |
 
-Tune `request_volume` to your own traffic: a rule only fires on a high value, so
-it catches a surge, never a drop.
+Tune `request_volume` to your own traffic. With the default `above` it catches a
+surge; for a drop, use `comparison: below` (see
+[No data and below rules](#no-data-and-below-rules)).
 
 ### Changing a rule or channel
 
