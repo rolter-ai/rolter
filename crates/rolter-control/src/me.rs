@@ -56,6 +56,7 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/me/preferences",
             get(get_my_preferences).put(put_my_preferences),
         )
+        .merge(crate::me_saved_views::router())
 }
 
 /// longest display name, in characters; matches `users_display_name_shape`
@@ -531,7 +532,7 @@ pub(crate) const MAX_KEY_NAME_LEN: usize = 64;
 pub(crate) const MAX_KEY_TTL_DAYS: u32 = 1826;
 
 /// `Error::Config` is what the control plane's error mapping renders as a 400
-fn bad_request(message: &str) -> ApiError {
+pub(crate) fn bad_request(message: &str) -> ApiError {
     ApiError::Core(rolter_core::Error::Config(message.to_string()))
 }
 

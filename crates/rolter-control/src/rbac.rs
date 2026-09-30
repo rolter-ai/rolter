@@ -422,15 +422,22 @@ impl ScopeFilter {
 
     /// The verdict [`authorize`] would give at `chain`.
     pub(crate) fn allows(&self, chain: ScopeChain) -> bool {
+        self.allows_as(chain, self.requirement)
+    }
+
+    /// [`Self::allows`] against another capability, reusing the memberships
+    /// and grants already loaded, for a caller that asks about several kinds
+    /// of resource in one request
+    pub(crate) fn allows_as(&self, chain: ScopeChain, requirement: Requirement) -> bool {
         if self.superadmin {
             return true;
         }
-        match self.requirement.authority {
+        match requirement.authority {
             Authority::Authenticated => true,
             Authority::Superadmin => false,
             Authority::Role(required) => {
                 user_authorized(&self.memberships, chain, required)
-                    || custom_grants_allow(&self.grants, chain, self.requirement)
+                    || custom_grants_allow(&self.grants, chain, requirement)
             }
         }
     }

@@ -341,6 +341,31 @@ curl -X PUT "$ROLTER_URL/api/v1/me/preferences" \
 - Preferences never widen access. A default scope you cannot read is stored as written, because access can change later, but `GET` also returns `effective_default_scope` (`org_id`, `team_id`, `project_id`): your stored default if you can still read it, otherwise the first scope you can read, otherwise `null`. The dashboard opens on that and never on the raw `default_*_id` fields.
 - Each change is written to the audit log as `user.preferences.update`, listing the key names that changed but not their values.
 
+## Saved views
+
+Any signed-in account, a viewer included, can save the filters it has built on **LLM Logs** or the **Dashboard** as a named preset and apply it again on any browser. A preset is private: every route reads and writes only the caller's own presets, there is no sharing, and another account's preset id answers `404` exactly as an id that does not exist does.
+
+| Method and path                      | Does                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `GET /api/v1/me/saved-views`         | list your presets, oldest first; `?surface=llm_logs` or `dashboard` narrows |
+| `POST /api/v1/me/saved-views`        | save one: `{"surface", "name", "filters"}`                                  |
+| `GET /api/v1/me/saved-views/{id}`    | read one                                                                    |
+| `PATCH /api/v1/me/saved-views/{id}`  | rename (`name`) and/or replace the whole filter set (`filters`)             |
+| `DELETE /api/v1/me/saved-views/{id}` | delete one                                                                  |
+
+```bash
+curl -X POST "$ROLTER_URL/api/v1/me/saved-views" \
+  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"surface": "llm_logs", "name": "Errors on gpt-4o", "filters": {"window": "7d", "status": "error", "model": "gpt-4o"}}'
+```
+
+- `surface` is `llm_logs` or `dashboard` and cannot be changed afterwards. A name is 1 to 80 characters, is trimmed, and is unique per surface ignoring case (`409` otherwise). You may keep 50 presets per surface (`409` beyond that).
+- `filters` is an object whose keys are allow-listed per surface and mirror the query parameters the screen sends; an unknown key or a value of the wrong type is refused with `400`. **LLM Logs**: `window`, `status` (`all`, `error` or `success`), `model`, `key` (a virtual key id), `business_unit` and `customer` (lists of ids). **Dashboard**: `window` and `bucket` (`hour`, `day`, `week` or `month`). `window` is one of `24h`, `7d`, `30d`, `mtd` or `last-month`: a rolling window's name, not timestamps, so a saved "last 7 days" always means the seven days before you open it.
+- A preset never widens access: it only remembers parameters, and the analytics routes still scope every row to what you can read.
+- A preset can name a virtual key, business unit or customer you can no longer read, because your membership was removed or the row was deleted. Reads return the preset as stored in `filters`, the same set without those entries in `effective_filters`, and `unavailable`, a list of `{"filter": "key" | "business_unit" | "customer", "id": ...}` naming what was dropped, so a screen applies the rest and says what it left out. Models and windows are never unavailable. Whether you can still read a key, unit or customer is decided by the same rule as the listings of those resources.
+- Each create, update and delete is written to the audit log as `user.saved_view.create`, `user.saved_view.update` or `user.saved_view.delete` with the preset's id, surface and name, never the filter values.
+
 ### Self-service endpoints do not work in open mode
 
 The `/api/v1/me/*` routes — the dashboard's **API Keys** screen — are per-user:

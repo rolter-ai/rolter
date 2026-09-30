@@ -1067,3 +1067,17 @@ pub struct Label {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// a named filter preset a user saved on one screen (#1825)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SavedView {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    /// `llm_logs` or `dashboard`
+    pub surface: String,
+    pub name: String,
+    /// a json object; the control plane allow-lists its keys per surface
+    pub filters: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
