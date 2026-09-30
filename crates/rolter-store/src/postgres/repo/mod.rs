@@ -1400,6 +1400,64 @@ impl ProviderRepo<'_> {
     }
 }
 
+/// Outcome of a write that is refused when it would leave an org with no way
+/// to sign in (#2233).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LockoutGuard<T> {
+    Done(T),
+    /// password sign-in is off and no enabled sso provider would remain
+    WouldLockOut,
+}
+
+/// Serialise every write that decides whether an org keeps a sign-in method.
+///
+/// The two guards read different rows (the provider list, the policy row), so
+/// a row lock on either cannot stop a provider write racing a policy write;
+/// one advisory lock per org, held to the end of the transaction, orders them
+/// all. Two concurrent disables of different providers queue behind it, and
+/// the second sees the first's commit.
+async fn lock_org_sign_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('org_sign_in:' || $1::text, 0))")
+        .bind(org_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Whether the org's policy refuses passwords. No row is the permissive
+/// default, matching [`OrgAuthPolicyRepo::get`].
+async fn passwords_off(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+) -> Result<bool> {
+    let allow: Option<bool> =
+        sqlx::query_scalar("select allow_password_login from org_auth_policies where org_id = $1")
+            .bind(org_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_err)?;
+    Ok(allow == Some(false))
+}
+
+async fn other_enabled_provider(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+    except: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar(
+        "select exists (select 1 from sso_providers where org_id = $1 and enabled and id <> $2)",
+    )
+    .bind(org_id)
+    .bind(except)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
+}
+
 /// OIDC identity providers, their group→role mappings, and the short-lived
 /// state rows that make the authorization-code flow replay-safe.
 pub struct SsoRepo<'a>(pub &'a PgPool);
@@ -1487,13 +1545,30 @@ impl SsoRepo<'_> {
         &self,
         id: Uuid,
         update: SsoProviderUpdate<'_>,
-    ) -> Result<SsoProvider> {
+    ) -> Result<LockoutGuard<SsoProvider>> {
         let (replace, ciphertext, nonce) = match update.secret {
             SecretUpdate::Keep => (false, None, None),
             SecretUpdate::Clear => (true, None, None),
             SecretUpdate::Set(c, n) => (true, Some(c), Some(n)),
         };
-        sqlx::query_as(&format!(
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let existing: Option<(Uuid, bool)> =
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        let (org_id, was_enabled) =
+            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        if was_enabled && !update.enabled {
+            lock_org_sign_in(&mut tx, org_id).await?;
+            if passwords_off(&mut tx, org_id).await?
+                && !other_enabled_provider(&mut tx, org_id, id).await?
+            {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
+        let row = sqlx::query_as(&format!(
             "update sso_providers set \
                     name = $2, issuer = $3, client_id = $4, \
                     secret_ciphertext = case when $5 then $6 else secret_ciphertext end, \
@@ -1513,10 +1588,12 @@ impl SsoRepo<'_> {
         .bind(update.group_claim)
         .bind(update.default_role)
         .bind(update.enabled)
-        .fetch_optional(self.0)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))
+        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(row))
     }
 
     pub async fn list_providers(&self, org_id: Uuid) -> Result<Vec<SsoProvider>> {
@@ -1571,16 +1648,36 @@ impl SsoRepo<'_> {
         .map_err(store_err)
     }
 
-    pub async fn delete_provider(&self, id: Uuid) -> Result<()> {
+    /// Delete a provider, refusing when it is the org's last enabled one and
+    /// password sign-in is off (#2233).
+    pub async fn delete_provider(&self, id: Uuid) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let existing: Option<(Uuid, bool)> =
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        let (org_id, was_enabled) =
+            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        if was_enabled {
+            lock_org_sign_in(&mut tx, org_id).await?;
+            if passwords_off(&mut tx, org_id).await?
+                && !other_enabled_provider(&mut tx, org_id, id).await?
+            {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
         let res = sqlx::query("delete from sso_providers where id = $1")
             .bind(id)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("sso provider {id}")));
         }
-        Ok(())
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
     }
 
     /// Open the sealed client secret. Returns `None` for a public client.
@@ -3527,6 +3624,10 @@ impl OrgAuthPolicyRepo<'_> {
         }))
     }
 
+    /// Write the policy, refusing to turn passwords off while the org has no
+    /// enabled sso provider. The check runs under the same per-org lock as the
+    /// provider writes, so the two guards cannot both pass against each other
+    /// (#2233).
     pub async fn set(
         &self,
         org_id: Uuid,
@@ -3534,8 +3635,13 @@ impl OrgAuthPolicyRepo<'_> {
         allow_sso: bool,
         mfa_policy: &str,
         mfa_enforce_after: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<OrgAuthPolicy> {
-        sqlx::query_as(
+    ) -> Result<LockoutGuard<OrgAuthPolicy>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        lock_org_sign_in(&mut tx, org_id).await?;
+        if !allow_password_login && !other_enabled_provider(&mut tx, org_id, Uuid::nil()).await? {
+            return Ok(LockoutGuard::WouldLockOut);
+        }
+        let row = sqlx::query_as(
             "insert into org_auth_policies
                  (org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after)
              values ($1, $2, $3, $4, $5)
@@ -3553,9 +3659,11 @@ impl OrgAuthPolicyRepo<'_> {
         .bind(allow_sso)
         .bind(mfa_policy)
         .bind(mfa_enforce_after)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(row))
     }
 
     /// The strictest second-factor policy across every org this user belongs

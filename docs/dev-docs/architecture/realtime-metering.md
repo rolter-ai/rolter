@@ -140,6 +140,29 @@ The overshoot is bounded: at most the spend of one flush window, plus whatever
 turn was in flight when the budget ran out. An operator who needs a tighter
 bound lowers `usage_flush_secs`.
 
+## A key revoked mid-session
+
+Authentication happens once, at the upgrade, so a session opened a moment
+before its key was disabled, expired or deleted would otherwise run until
+`max_session_secs` (#1881). The session keeps the peppered digest of the key it
+was opened with, and every tick of the meter, in the snapshot it loads for that
+tick, calls `handlers::recheck_session_access`. That is the upgrade's own
+sequence: the `snap.keys` lookup and `is_active` test `authenticate` does,
+`authorize_model`, `named_route_for` and `authorize_route`, so narrowing `models`
+or removing route access reaches a live session as well. The refusal wording
+comes from `AccessDenial::message_and_code`, shared with the HTTP responses.
+
+A failure closes the session like a spent budget does: an `error` event, then a
+`1008` close and the upstream leg closed. The event code is `invalid_api_key`
+for a disabled, expired or deleted key (the HTTP 401 carries no code, so this is
+the OpenAI one), otherwise the denial's `model_not_allowed` /
+`route_not_allowed`, or `model_not_found` when the route was removed. The check
+runs before the budget read and shares its channel, so a revoked key is reported
+instead of a spent budget. The bound is one flush interval, or the one-second
+tick when `usage_flush_secs = 0`, plus snapshot propagation. A session opened
+without a key (auth disabled) has nothing to re-check. The key's scope is fixed
+at the upgrade: moving a key to another org does not re-scope a live session.
+
 ## Responses cut short
 
 A response still in flight when the session ends never reports usage, but the
@@ -147,14 +170,15 @@ upstream generated part of it and will bill it. The last flush writes a row
 for it with `usage_unknown = 1`, zero tokens, and the reason the session ended
 as its status:
 
-| Session ended because           | `status` | `error`                                |
-| ------------------------------- | -------- | -------------------------------------- |
-| the client closed or went away  | `499`    | `client disconnected`                  |
-| the upstream closed the session | `502`    | `upstream closed the realtime session` |
-| the upstream connection failed  | `502`    | `upstream realtime connection failed`  |
-| `max_session_secs` or idle time | `408`    | `realtime session closed by <limit>`   |
-| a budget ran out                | `402`    | the budget refusal message             |
-| the gateway shut down           | `503`    | `gateway shutting down`                |
+| Session ended because           | `status`          | `error`                                |
+| ------------------------------- | ----------------- | -------------------------------------- |
+| the client closed or went away  | `499`             | `client disconnected`                  |
+| the upstream closed the session | `502`             | `upstream closed the realtime session` |
+| the upstream connection failed  | `502`             | `upstream realtime connection failed`  |
+| `max_session_secs` or idle time | `408`             | `realtime session closed by <limit>`   |
+| a budget ran out                | `402`             | the budget refusal message             |
+| its key or access was revoked   | `401`/`403`/`404` | the refusal the upgrade would give     |
+| the gateway shut down           | `503`             | `gateway shutting down`                |
 
 This follows [Client disconnects](client-disconnects.md) and
 [Billed but withheld](billed-but-withheld.md): spend that cannot be counted is
@@ -205,7 +229,7 @@ flushed by the sink drain that runs after the realtime drain (below).
 
 ### Sink drain
 
-The request-log writer, the health-event writer and the usage-recording workers
+The request-log writer, the health-event writer, the MCP tool-call writer and the usage-recording workers
 (`SinkTasks` in `sink_drain.rs`, `AppState::drain_sinks`) each hold work that
 only leaves the process once they flush: up to `[logging] flush_ms` of rows in a
 batch, whatever is queued on their channel, and any budget or `tpm` record not
@@ -265,7 +289,7 @@ ends, an unpriced model is refused under `block`, a spent budget refuses a new
 session, a session is closed when its budget runs out, a budget spent by other
 traffic closes an idle session on the flush timer and, with
 `usage_flush_secs = 0`, on the one-second budget tick, usage is charged while
-the session continues, `rpm` applies per key rather than per process, and turn
+the session continues, a session is closed when its key is disabled or its `models` are narrowed (and left alone when nothing changed), `rpm` applies per key rather than per process, and turn
 tokens fill the key's `tpm` window. The Redis-backed ones read
 `ROLTER_TEST_REDIS_URL` and skip, or skip their Redis assertions, without it.
 

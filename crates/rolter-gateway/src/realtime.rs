@@ -40,7 +40,7 @@ use crate::handlers::{
     authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
     rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
-use crate::realtime_metering::{SessionEnd, SessionMeter, TurnTracker};
+use crate::realtime_metering::{Closure, SessionEnd, SessionMeter, TurnTracker};
 use crate::state::{AppState, Snapshot};
 
 /// How long a shutting-down relay may spend writing its close frames. A
@@ -229,6 +229,9 @@ pub async fn realtime(
         variant: selected.variant.clone(),
         request_id,
         trace_id: crate::trace::request_trace_id(&headers),
+        key_digest: virtual_key
+            .as_ref()
+            .and_then(|_| crate::handlers::presented_key_digest(&snap, &headers)),
         flush_every: match snap.realtime.usage_flush_secs {
             0 => None,
             secs => Some(Duration::from_secs(secs)),
@@ -537,14 +540,26 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
                 end = SessionEnd::limit_reached("idle_timeout_secs");
                 break;
             },
-            spent = budget_wait => match spent {
-                Some(message) => {
+            closure = budget_wait => match closure {
+                Some(closure) => {
+                    let (event, reason, ended) = match closure {
+                        Closure::BudgetSpent(message) => (
+                            budget_error_event(&message),
+                            "budget exceeded",
+                            SessionEnd::budget_spent(message),
+                        ),
+                        Closure::AccessRevoked(revoked) => (
+                            error_event(revoked.status, revoked.code, &revoked.message),
+                            "access revoked",
+                            SessionEnd::access_revoked(&revoked),
+                        ),
+                    };
                     // the error event first, so the client learns why before
                     // the close frame arrives
-                    let _ = client_sender.send(Message::Text(budget_error_event(&message).into())).await;
-                    let _ = client_sender.send(budget_close_frame()).await;
+                    let _ = client_sender.send(Message::Text(event.into())).await;
+                    let _ = client_sender.send(policy_close_frame(reason)).await;
                     let _ = upstream_sender.send(UpstreamMessage::Close(None)).await;
-                    end = SessionEnd::budget_spent(message);
+                    end = ended;
                     break;
                 }
                 // the meter stopped without a verdict: keep relaying under the
@@ -607,8 +622,13 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
 /// surfaces it the way it surfaces the provider's errors, and its `error`
 /// object is the HTTP refusal's, `insufficient_quota` code included.
 fn budget_error_event(message: &str) -> String {
-    let mut event = crate::error::ApiError::new(StatusCode::PAYMENT_REQUIRED, message)
-        .with_code("insufficient_quota")
+    error_event(StatusCode::PAYMENT_REQUIRED, "insufficient_quota", message)
+}
+
+/// A Realtime `error` event wrapping the HTTP refusal's own error object.
+fn error_event(status: StatusCode, code: &'static str, message: &str) -> String {
+    let mut event = crate::error::ApiError::new(status, message)
+        .with_code(code)
         .body();
     event["type"] = "error".into();
     event["event_id"] = format!("event_rolter_{}", uuid::Uuid::new_v4().simple()).into();
@@ -617,10 +637,10 @@ fn budget_error_event(message: &str) -> String {
 
 /// A policy-violation close, which a client can branch on without parsing the
 /// event before it.
-fn budget_close_frame() -> Message {
+fn policy_close_frame(reason: &'static str) -> Message {
     Message::Close(Some(CloseFrame {
         code: close_code::POLICY,
-        reason: Utf8Bytes::from_static("budget exceeded"),
+        reason: Utf8Bytes::from_static(reason),
     }))
 }
 

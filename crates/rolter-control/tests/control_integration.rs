@@ -330,6 +330,155 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
+/// Pausing a dashboard guardrail rule that a route still names in an override
+/// must not turn every later snapshot into a 500: the override is pruned and
+/// reported instead (#2306).
+#[tokio::test]
+async fn pausing_a_guardrail_rule_named_by_a_route_override_keeps_the_snapshot_served() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(req: reqwest::RequestBuilder, what: &str) -> Value {
+        let resp = req.send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        assert!(status.is_success(), "{what} failed ({status}): {json}");
+        json
+    }
+    let rule_body = |enabled: bool| {
+        json!({
+            "name": "no-secrets", "enabled": enabled, "source_type": "pattern",
+            "pattern": "secret", "stage": "pre_call", "action": "block",
+            "include_system": false, "position": 0
+        })
+    };
+
+    let org = send(
+        client
+            .post(format!("{base}/api/v1/orgs"))
+            .json(&json!({"name": "Acme", "slug": "acme"})),
+        "org",
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = send(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/teams"))
+            .json(&json!({"name": "Platform"})),
+        "team",
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = send(
+        client
+            .post(format!("{base}/api/v1/teams/{team_id}/projects"))
+            .json(&json!({"name": "Gateway"})),
+        "project",
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = send(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(
+                &json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+            ),
+        "provider",
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = send(
+        client
+            .post(format!("{base}/api/v1/projects/{project_id}/routes"))
+            .json(&json!({"model": "gpt-4o", "strategy": "round_robin"})),
+        "route",
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    send(
+        client
+            .post(format!("{base}/api/v1/routes/{route_id}/targets"))
+            .json(&json!({"provider_id": provider_id, "weight": 1})),
+        "target",
+    )
+    .await;
+    let rule = send(
+        client
+            .post(format!("{base}/api/v1/guardrails/rules"))
+            .json(&rule_body(true)),
+        "rule",
+    )
+    .await;
+    let rule_id = rule["id"].as_str().expect("rule id");
+    send(
+        client
+            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+            .json(&json!({"advanced": {"guardrails": {"disable": ["no-secrets"]}}})),
+        "advanced",
+    )
+    .await;
+
+    let snapshot = |client: reqwest::Client, base: String| async move {
+        client
+            .get(format!("{base}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap()
+    };
+    let live = snapshot(client.clone(), base.clone()).await;
+    assert_eq!(live.status(), 200);
+    let live: Value = live.json().await.unwrap();
+    let overrides = live["config"]["routes"]
+        .as_array()
+        .and_then(|r| r.iter().find(|r| r["model"] == "gpt-4o"))
+        .map(|r| r["advanced"]["guardrails"]["disable"].clone())
+        .expect("route in snapshot");
+    assert_eq!(
+        overrides,
+        json!(["no-secrets"]),
+        "precondition: override served"
+    );
+
+    // pause the rule: it leaves the effective set while the override stays
+    send(
+        client
+            .put(format!("{base}/api/v1/guardrails/rules/{rule_id}"))
+            .json(&rule_body(false)),
+        "pause",
+    )
+    .await;
+
+    let paused = snapshot(client.clone(), base.clone()).await;
+    assert_eq!(paused.status(), 200, "snapshot must survive the pause");
+    let paused: Value = paused.json().await.unwrap();
+    let route = paused["config"]["routes"]
+        .as_array()
+        .and_then(|r| r.iter().find(|r| r["model"] == "gpt-4o"))
+        .expect("route still served");
+    assert!(
+        route["advanced"]["guardrails"]["disable"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "override pruned: {route}"
+    );
+
+    let problems: Value = send(
+        client.get(format!("{base}/api/v1/config/problems")),
+        "problems",
+    )
+    .await;
+    let listed = problems["problems"].as_array().expect("problems array");
+    assert!(
+        listed.iter().any(|p| p
+            .as_str()
+            .is_some_and(|p| p.contains("gpt-4o") && p.contains("no-secrets"))),
+        "pruned override must be reported: {problems}"
+    );
+}
+
 /// One org can neither point its routes and groups at another org's providers
 /// nor take a name the gateway holds in a deployment-wide namespace, and the
 /// snapshot stays servable through every refused attempt (#1844, #1845).
@@ -8497,6 +8646,157 @@ async fn playground_key_is_scoped_by_the_server() {
 /// never reconciled away by a later SSO login, an IdP group that disappears
 /// does revoke the role it granted, and an org can require SSO without locking
 /// out the break-glass superadmin.
+#[tokio::test]
+async fn the_last_enabled_sso_provider_cannot_go_while_passwords_are_off() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "LastIdp", "slug": "last-idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let mut ids = Vec::new();
+    for slug in ["idp-a", "idp-b"] {
+        let p: Value = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": slug,
+                "slug": slug,
+                "issuer": "https://idp.example.com",
+                "client_id": "client"
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(p["id"].as_str().unwrap().to_string());
+    }
+    let disable = |id: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .put(format!("{base}/api/v1/sso-providers/{id}"))
+                .bearer_auth("admintok")
+                .json(&json!({
+                    "name": "idp",
+                    "issuer": "https://idp.example.com",
+                    "client_id": "client",
+                    "enabled": false
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let set_passwords = |allow: bool| {
+        let client = client.clone();
+        let base = base.clone();
+        let org_id = org_id.clone();
+        async move {
+            client
+                .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+                .bearer_auth("admintok")
+                .json(&json!({"allow_password_login": allow, "allow_sso": true}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let enabled_count = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from sso_providers where enabled")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // passwords on: the last provider is free to go, nobody is locked out
+    assert_eq!(disable(ids[0].clone()).await.status(), 200);
+    assert_eq!(disable(ids[1].clone()).await.status(), 200);
+    assert_eq!(enabled_count().await, 0);
+    // re-enable both, then turn passwords off (the reverse guard)
+    for id in &ids {
+        let r = client
+            .put(format!("{base}/api/v1/sso-providers/{id}"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": "idp",
+                "issuer": "https://idp.example.com",
+                "client_id": "client",
+                "enabled": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+    }
+    assert_eq!(set_passwords(false).await.status(), 200);
+
+    // two enabled: one may go, the second is refused and stays enabled
+    assert_eq!(disable(ids[0].clone()).await.status(), 200);
+    let refused = disable(ids[1].clone()).await;
+    assert_eq!(refused.status(), 409);
+    let body: Value = refused.json().await.unwrap();
+    assert!(
+        body.to_string().contains("another sso provider first"),
+        "the refusal names the fix: {body}"
+    );
+    assert_eq!(enabled_count().await, 1);
+
+    // deleting the last enabled one is refused too
+    let del = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[1]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 409);
+    let exists: i64 = sqlx::query_scalar("select count(*) from sso_providers where id = $1::uuid")
+        .bind(&ids[1])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(exists, 1);
+
+    // the disabled provider is not a way to sign in, so it can still be deleted
+    let del_disabled = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[0]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_disabled.status(), 204);
+
+    // the reverse guard still holds: no enabled provider, no passwords-off
+    assert_eq!(set_passwords(true).await.status(), 200);
+    let del_last = client
+        .delete(format!("{base}/api/v1/sso-providers/{}", ids[1]))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_last.status(), 204, "passwords on: the last one may go");
+    assert_eq!(set_passwords(false).await.status(), 409);
+}
+
 #[tokio::test]
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
