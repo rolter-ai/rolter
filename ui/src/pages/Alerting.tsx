@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Loader2, Megaphone, Pencil, Play } from "lucide-react";
+import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -10,11 +11,13 @@ import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
+import { CardGridSkeleton, ListSkeleton } from "@/components/LoadingState";
 import {
   ListCell,
+  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
+  ListLoadingRow,
   ListRow,
   ListSummary,
   ListTable,
@@ -24,6 +27,7 @@ import {
   StatusDot,
   Toolbar,
 } from "@/components/screen";
+import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -58,22 +62,60 @@ import {
   toFormValue,
   type AlertSignal,
 } from "@/lib/alert-signals";
+import {
+  channelKindLabel,
+  deliveryLabel,
+  DELIVERY_STATUSES,
+  HISTORY_STATES,
+  stateLabel,
+} from "@/lib/alert-states";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
+import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-// `[label, tint]`: the label colour is the -text half of the hue, because a
-// state pill is a glyph on a tint rather than a shape (#1181). a rule is
-// `unknown`, `ok`, `firing` or `error` (its evaluation failed); a history row
-// is `firing` or `resolved`
-const STATE_TONE: Record<string, [string, string]> = {
-  ok: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
-  resolved: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
-  firing: ["var(--status-danger-text)", "var(--red-tint)"],
-  error: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
-  unknown: ["var(--text-secondary)", "var(--surface-subtle)"],
+// a state's three colours. the pill label is the -text half of the hue, because
+// a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
+// so it takes the fill. a rule is `unknown`, `ok`, `firing` or `error` (its
+// evaluation failed); a history row is `firing` or `resolved`
+interface StateTone {
+  fill: string;
+  text: string;
+  tint: string;
+}
+
+// `error` is amber and `firing` is red on purpose: a rule that could not be
+// evaluated has no reading to compare, and the two must not look alike. the
+// same amber colours the `last_error` line under the card, so one fault has one
+// tone
+const STATE_TONE: Record<string, StateTone> = {
+  ok: {
+    fill: "var(--status-success)",
+    text: "var(--status-success-text)",
+    tint: "rgba(22,163,74,.14)",
+  },
+  resolved: {
+    fill: "var(--status-success)",
+    text: "var(--status-success-text)",
+    tint: "rgba(22,163,74,.14)",
+  },
+  firing: {
+    fill: "var(--status-danger)",
+    text: "var(--status-danger-text)",
+    tint: "var(--red-tint)",
+  },
+  error: {
+    fill: "var(--status-warning)",
+    text: "var(--status-warning-text)",
+    tint: "rgba(245,158,11,.14)",
+  },
+  unknown: {
+    fill: "var(--zinc-500)",
+    text: "var(--text-secondary)",
+    tint: "var(--surface-subtle)",
+  },
 };
 
 const stateTone = (state: string) => STATE_TONE[state] ?? STATE_TONE.unknown;
@@ -160,7 +202,8 @@ function AlertChannelsScreen() {
           className="ml-auto"
           onClick={() => openSheet(null)}
         >
-          + {t("pages.alerting.channels.add")}
+          <Plus className="h-4 w-4" />
+          {t("pages.alerting.channels.add")}
         </GatedButton>
       </Toolbar>
 
@@ -214,7 +257,7 @@ function AlertChannelsScreen() {
             </div>
             <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
               <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
-                {c.kind}
+                {channelKindLabel(c.kind, t)}
               </Pill>
               {c.secret_configured && (
                 <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
@@ -423,6 +466,8 @@ function ChannelSheet({
 function AlertRulesScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
+  // the "Evaluated" figures are relative, so they read the same clock
+  const now = useNow();
   // `spend_velocity` is spend in the settlement currency, not in dollars
   const currency = useCurrencyCode();
   const queryClient = useQueryClient();
@@ -475,7 +520,11 @@ function AlertRulesScreen() {
       // a transition says what became of it: a delivery that failed is an
       // alert nobody received, which a green "evaluated" toast would hide
       const n = result.notification;
-      const vars = { state: n?.state, detail: n?.detail ?? "—" };
+      // the state reads mid-sentence, so it is lowercased in the locale's own rules
+      const vars = {
+        state: n ? stateLabel(n.state, t).toLocaleLowerCase(fmt.locale) : undefined,
+        detail: n?.detail ?? "—",
+      };
       toast.push({
         tone: n?.delivery_status === "failed" ? "error" : "success",
         title: t("pages.alerting.rules.evaluated", { name: ruleName(id) }),
@@ -528,7 +577,8 @@ function AlertRulesScreen() {
           className="ml-auto"
           onClick={() => openSheet(null)}
         >
-          + {t("pages.alerting.rules.add")}
+          <Plus className="h-4 w-4" />
+          {t("pages.alerting.rules.add")}
         </GatedButton>
       </Toolbar>
 
@@ -572,12 +622,12 @@ function AlertRulesScreen() {
               className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
-                <StatusDot color={tone[0]} />
+                <StatusDot color={tone.fill} />
                 <span id={nameId} className="min-w-0 truncate font-mono text-sm font-semibold">
                   {r.name}
                 </span>
-                <Pill color={tone[0]} tint={tone[1]}>
-                  {r.state}
+                <Pill color={tone.text} tint={tone.tint}>
+                  {stateLabel(r.state, t)}
                 </Pill>
                 <GatedSwitch
                   gate="alert_rule:update"
@@ -612,10 +662,20 @@ function AlertRulesScreen() {
                 <RuleStat
                   label={t("pages.alerting.rules.statEvaluated")}
                   value={
-                    r.last_evaluated_at
-                      ? fmt.time(r.last_evaluated_at)
-                      : t("pages.alerting.rules.statNever")
+                    r.last_evaluated_at ? (
+                      // a clock time alone read the same a minute or three days
+                      // on; the full stamp is on hover
+                      <time
+                        dateTime={r.last_evaluated_at}
+                        title={fmt.dateTime(r.last_evaluated_at)}
+                      >
+                        {fmt.relative(r.last_evaluated_at, now)}
+                      </time>
+                    ) : (
+                      t("pages.alerting.rules.statNever")
+                    )
                   }
+                  mono={false}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statChannel")}
@@ -623,7 +683,9 @@ function AlertRulesScreen() {
                 />
               </dl>
               {r.last_error && (
-                <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
+                <p className="text-xs" style={{ color: STATE_TONE.error.text }}>
+                  {r.last_error}
+                </p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* running a rule writes an alert-history row, which is the
@@ -710,7 +772,15 @@ function AlertRulesScreen() {
 
 // a figure with its unit wraps rather than truncates: `10 failed health events
 // in 5m` cut to `10 failed hea…` is a number with its meaning cut off
-function RuleStat({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function RuleStat({
+  label,
+  value,
+  mono = true,
+}: {
+  label: string;
+  value: React.ReactNode;
+  mono?: boolean;
+}) {
   return (
     <div className="min-w-0">
       <dt className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
@@ -971,14 +1041,29 @@ function RuleSheet({
 // ---------------------------------------------------------------------------
 // history: every state change a rule recorded, with what became of its delivery
 
-const HISTORY_GRID = "150px 1.4fr 110px 130px 2fr";
+// how many of the newest rows the screen asks for. the endpoint clamps to 500
+// and has no cursor, so this is also the most the screen can ever show: when a
+// read comes back this full, older rows exist that nothing here reaches
+const HISTORY_LIMIT = 200;
+
+// state and delivery lead because they are what the table is for, and because
+// the list scrolls sideways on a phone: a later column sits off the right edge
+// at 375px, so these two are the ones that have to fit in the first screenful
+const HISTORY_GRID = "100px 130px 150px 1.4fr 2fr";
 
 function AlertHistoryScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
+  // the rule filter is sent to the API, so it reaches that rule's own newest
+  // rows instead of filtering what the newest 200 of every rule happen to hold.
+  // the endpoint has no state or delivery filter, so those two narrow the rows
+  // already read
+  const [ruleId, setRuleId] = React.useState("");
+  const [state, setState] = React.useState("");
+  const [delivery, setDelivery] = React.useState("");
   const history = useQuery({
-    queryKey: ["alert-history"],
-    queryFn: () => fetchAlertHistory(200),
+    queryKey: ["alert-history", ruleId],
+    queryFn: () => fetchAlertHistory(HISTORY_LIMIT, ruleId || undefined),
     retry: false,
   });
 
@@ -988,12 +1073,61 @@ function AlertHistoryScreen() {
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
+  const rows = (history.data ?? []).filter(
+    (n) =>
+      (state === "" || n.state === state) && (delivery === "" || n.delivery_status === delivery),
+  );
+  const filtering = ruleId !== "" || state !== "" || delivery !== "";
+  const capped = history.data !== undefined && history.data.length >= HISTORY_LIMIT;
+  const clearFilters = () => {
+    setRuleId("");
+    setState("");
+    setDelivery("");
+  };
+
   return (
     <PageBody>
-      <ListSummary data={history.data}>
-        {(rows) => t("pages.alerting.historySummary", { count: rows.length })}
-      </ListSummary>
-      {history.isLoading && <TableSkeleton rows={5} />}
+      <Toolbar>
+        <ListSummary data={history.data}>
+          {() => t("pages.alerting.historySummary", { count: rows.length })}
+        </ListSummary>
+        {/* half a row each on a phone, so the two short pickers share a line
+            under the rule picker instead of each taking its own */}
+        <div className="flex w-full flex-wrap items-center gap-3 sm:ml-auto sm:w-auto">
+          {rules.data && rules.data.length > 0 && (
+            <Combobox
+              className="w-full sm:w-56"
+              aria-label={t("pages.alerting.history.ruleFilterAria")}
+              value={ruleId}
+              onChange={setRuleId}
+              options={[
+                { value: "", label: t("pages.alerting.history.allRules") },
+                ...rules.data.map((r) => ({ value: r.id, label: r.name })),
+              ]}
+            />
+          )}
+          <Combobox
+            className="w-[calc(50%-0.375rem)] sm:w-44"
+            aria-label={t("pages.alerting.history.stateFilterAria")}
+            value={state}
+            onChange={setState}
+            options={[
+              { value: "", label: t("pages.alerting.history.allStates") },
+              ...HISTORY_STATES.map((s) => ({ value: s, label: stateLabel(s, t) })),
+            ]}
+          />
+          <Combobox
+            className="w-[calc(50%-0.375rem)] sm:w-44"
+            aria-label={t("pages.alerting.history.deliveryFilterAria")}
+            value={delivery}
+            onChange={setDelivery}
+            options={[
+              { value: "", label: t("pages.alerting.history.allDeliveries") },
+              ...DELIVERY_STATUSES.map((d) => ({ value: d, label: deliveryLabel(d, t) })),
+            ]}
+          />
+        </div>
+      </Toolbar>
       {history.isError && (
         <LoadError
           error={history.error}
@@ -1001,57 +1135,79 @@ function AlertHistoryScreen() {
           onRetry={() => void history.refetch()}
         />
       )}
-      {history.data && history.data.length === 0 && (
-        <EmptyState
-          uxTarget="alert-history"
-          icon={<History />}
-          title={t("pages.alerting.history.emptyTitle")}
-          description={t("pages.alerting.history.emptyBody")}
-          actions={
-            <a
-              href="/alerting-rules"
-              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {t("pages.alerting.history.emptyAction")}
-            </a>
-          }
-        />
+      {capped && (
+        <p className="text-xs text-muted-foreground">
+          {ruleId === ""
+            ? t("pages.alerting.history.cappedAll", { limit: fmt.number(HISTORY_LIMIT) })
+            : t("pages.alerting.history.cappedRule", { limit: fmt.number(HISTORY_LIMIT) })}
+        </p>
       )}
-      {history.data && history.data.length > 0 && (
-        <ListTable label={t("screens.alerting-history.title")}>
-          <ListHeader grid={HISTORY_GRID}>
-            <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
-            <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
-            <ListHeaderCell>{t("pages.alerting.history.colState")}</ListHeaderCell>
-            <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
-            <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
-          </ListHeader>
-          {history.data.map((n) => {
-            const tone = stateTone(n.state);
-            return (
-              <ListRow key={n.id} grid={HISTORY_GRID}>
-                <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
-                  {fmt.dateTime(n.sent_at)}
-                </ListCell>
-                <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
-                <ListCell className="grid">
-                  <Pill color={tone[0]} tint={tone[1]}>
-                    {n.state}
-                  </Pill>
-                </ListCell>
-                <ListCell className="grid">
-                  <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
-                    {n.delivery_status}
-                  </Pill>
-                </ListCell>
-                <ListCell className="truncate text-xs text-muted-foreground">
-                  {n.detail ?? "—"}
-                </ListCell>
-              </ListRow>
-            );
-          })}
-        </ListTable>
-      )}
+      <ListTable label={t("screens.alerting-history.title")}>
+        <ListHeader grid={HISTORY_GRID}>
+          <ListHeaderCell>{t("pages.alerting.history.colState")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
+        </ListHeader>
+        <ListLoadingRow read={history}>
+          <ListSkeleton rows={5} className="p-3" />
+        </ListLoadingRow>
+        {rows.map((n) => {
+          const tone = stateTone(n.state);
+          return (
+            <ListRow key={n.id} grid={HISTORY_GRID}>
+              <ListCell className="grid">
+                <Pill color={tone.text} tint={tone.tint}>
+                  {stateLabel(n.state, t)}
+                </Pill>
+              </ListCell>
+              <ListCell className="grid">
+                <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
+                  {deliveryLabel(n.delivery_status, t)}
+                </Pill>
+              </ListCell>
+              <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
+                {fmt.dateTime(n.sent_at)}
+              </ListCell>
+              <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+              <ListCell className="truncate text-xs text-muted-foreground">
+                {n.detail ?? "—"}
+              </ListCell>
+            </ListRow>
+          );
+        })}
+        <ListEmptyRow read={history} rows={rows.length}>
+          <EmptyState
+            uxTarget="alert-history"
+            icon={<History />}
+            title={
+              filtering
+                ? t("pages.alerting.history.noMatchTitle")
+                : t("pages.alerting.history.emptyTitle")
+            }
+            description={
+              filtering
+                ? t("pages.alerting.history.noMatchBody")
+                : t("pages.alerting.history.emptyBody")
+            }
+            actions={
+              filtering ? (
+                <Button variant="outline" onClick={clearFilters}>
+                  {t("pages.alerting.history.clearFilters")}
+                </Button>
+              ) : (
+                <Link
+                  to="/alerting-rules"
+                  className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {t("pages.alerting.history.emptyAction")}
+                </Link>
+              )
+            }
+          />
+        </ListEmptyRow>
+      </ListTable>
     </PageBody>
   );
 }
