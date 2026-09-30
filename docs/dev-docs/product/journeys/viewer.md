@@ -36,10 +36,10 @@ say clearly enough that it is read-only.
 
 ## V3 — preferences
 
-| #    | step                                    | where               | expect                                                           | status          |
-| ---- | --------------------------------------- | ------------------- | ---------------------------------------------------------------- | --------------- |
-| V3.1 | switch the dashboard language           | the language picker | the whole dashboard in Russian — remembered in this browser only | partial — #1824 |
-| V3.2 | land on the right scope on a new laptop | the scope switcher  | the last scope, from the server rather than `localStorage`       | partial — #1824 |
+| #    | step                                    | where               | expect                                                           | status                                                                   |
+| ---- | --------------------------------------- | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| V3.1 | switch the dashboard language           | the language picker | the whole dashboard in Russian — remembered in this browser only | partial — #1824 (backend done: `/api/v1/me/preferences`; screen pending) |
+| V3.2 | land on the right scope on a new laptop | the scope switcher  | the last scope, from the server rather than `localStorage`       | partial — #1824 (backend done: `/api/v1/me/preferences`; screen pending) |
 
 ## V4 — read the configuration without changing it
 

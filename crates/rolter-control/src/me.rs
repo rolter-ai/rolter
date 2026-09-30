@@ -20,7 +20,8 @@ use uuid::Uuid;
 use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, RouteRepo, ScimIdentityRepo, UserRepo, VirtualKeyRepo,
+    AuditLogRepo, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo, UserRepo,
+    VirtualKeyRepo,
 };
 
 use crate::analytics::{client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
@@ -28,7 +29,7 @@ use crate::auth::CurrentUser;
 use crate::crud::{
     generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult, SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
 use crate::time_bounds::Query;
 use crate::ControlState;
@@ -51,6 +52,10 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/me/usage", get(my_usage))
         .route("/api/v1/me/profile", patch(update_my_profile))
+        .route(
+            "/api/v1/me/preferences",
+            get(get_my_preferences).put(put_my_preferences),
+        )
 }
 
 /// longest display name, in characters; matches `users_display_name_shape`
@@ -224,6 +229,257 @@ async fn update_my_profile(
         bio: updated.bio,
         display_name_managed: managed,
     }))
+}
+
+/// dashboard locale codes a preference may name. one per catalog in
+/// `ui/src/lib/i18n/locales/*.json`; add a code here in the same change that
+/// adds its catalog
+pub(crate) const LANGUAGES: &[&str] = &["en", "ru"];
+/// longest default playground model name, in characters
+pub(crate) const MAX_MODEL_LEN: usize = 200;
+/// longest IANA zone name accepted; the longest real ones are under 40
+const MAX_TIME_ZONE_LEN: usize = 64;
+
+/// The preferences document. A key that is `null` or absent means "use the
+/// deployment default", so the stored object simply omits it.
+///
+/// `PUT` replaces the whole document, which is why this same shape is both the
+/// request body and (plus `effective_default_scope`) the response.
+#[derive(Deserialize, Serialize, Default, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+struct Preferences {
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    default_org_id: Option<Uuid>,
+    #[serde(default)]
+    default_team_id: Option<Uuid>,
+    #[serde(default)]
+    default_project_id: Option<Uuid>,
+    #[serde(default)]
+    default_playground_model: Option<String>,
+    #[serde(default)]
+    chart_time_zone: Option<String>,
+}
+
+/// a scope the caller can read right now, computed on every `GET`
+#[derive(Serialize, PartialEq, Debug)]
+struct EffectiveScope {
+    org_id: Option<Uuid>,
+    team_id: Option<Uuid>,
+    project_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct PreferencesResponse {
+    #[serde(flatten)]
+    preferences: Preferences,
+    /// the stored default scope if the caller can still read it, else the first
+    /// scope they can read, else `null`. The dashboard uses this and never the
+    /// raw `default_*_id` fields, which can name a scope access was lost to
+    effective_default_scope: Option<EffectiveScope>,
+}
+
+impl Preferences {
+    /// refuse what the dashboard could not render; trims the free-text fields
+    fn validated(mut self) -> Result<Self, ApiError> {
+        if let Some(lang) = &self.language {
+            if !LANGUAGES.contains(&lang.as_str()) {
+                return Err(bad_request(&format!(
+                    "language must be one of: {}",
+                    LANGUAGES.join(", ")
+                )));
+            }
+        }
+        if let Some(model) = self.default_playground_model.take() {
+            self.default_playground_model = normalise_field(
+                "default_playground_model",
+                Some(model),
+                MAX_MODEL_LEN,
+                false,
+            )?;
+        }
+        if let Some(zone) = &self.chart_time_zone {
+            if !is_iana_zone_shape(zone) {
+                return Err(bad_request(
+                    "chart_time_zone must be an IANA time zone name such as Europe/Berlin or UTC",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// keys set to a value, as the stored object; unset keys are omitted
+    fn to_document(&self) -> serde_json::Value {
+        let mut doc = serde_json::to_value(self).unwrap_or_default();
+        if let Some(map) = doc.as_object_mut() {
+            map.retain(|_, v| !v.is_null());
+        }
+        doc
+    }
+}
+
+/// Whether `zone` has the shape of an IANA name: `UTC`, `Europe/Berlin`,
+/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`. The workspace carries no
+/// tz database (`chrono-tz` is not a dependency and is heavy), so this checks
+/// shape only; the browser's `Intl` rejects a well-formed name it does not
+/// know, and the dashboard falls back to the local zone when it does.
+fn is_iana_zone_shape(zone: &str) -> bool {
+    if zone.is_empty() || zone.len() > MAX_TIME_ZONE_LEN {
+        return false;
+    }
+    let segments: Vec<&str> = zone.split('/').collect();
+    segments.len() <= 3
+        && segments.iter().all(|seg| {
+            !seg.is_empty()
+                && seg.starts_with(|c: char| c.is_ascii_alphabetic())
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
+        })
+}
+
+/// The scope the dashboard should open on, from what the caller can read now.
+///
+/// Preferences never widen access: the stored ids are only ever a hint, and a
+/// scope is returned only if the caller's memberships and custom roles still
+/// reach it, the same check the org/team/project listings use. The most
+/// specific stored id that is still readable wins; failing that the first
+/// scope the caller holds a role at (membership order); failing that `None`.
+/// A stored id whose row was deleted counts as unreadable.
+async fn effective_default_scope(
+    state: &ControlState,
+    user: &User,
+    prefs: &Preferences,
+) -> ApiResult<Option<EffectiveScope>> {
+    let principal = Principal::for_user(user.clone());
+    let filter = ScopeFilter::load(state, &principal, cap!("project", Read)).await?;
+    let pool = pool(state);
+
+    let stored_chain = async {
+        if let Some(project) = prefs.default_project_id {
+            if let Ok(chain) = ScopeChain::from_project(pool, project).await {
+                if filter.allows(chain) {
+                    return Some(chain);
+                }
+            }
+        }
+        if let Some(team) = prefs.default_team_id {
+            if let Ok(chain) = ScopeChain::from_team(pool, team).await {
+                if filter.allows(chain) {
+                    return Some(chain);
+                }
+            }
+        }
+        if let Some(org) = prefs.default_org_id {
+            let chain = ScopeChain::org(org);
+            // the listings let a caller who only holds a role below the org
+            // navigate to it, so reach counts here too; a superadmin reaches
+            // only orgs that exist
+            let reachable = if filter.is_superadmin() {
+                OrgRepo(pool).get(org).await.is_ok()
+            } else {
+                filter.allows(chain)
+                    || filter
+                        .reach(pool)
+                        .await
+                        .is_ok_and(|reach| crate::rbac::reaches_org(&reach, org))
+            };
+            if reachable {
+                return Some(chain);
+            }
+        }
+        None
+    }
+    .await;
+
+    let chain = match stored_chain {
+        Some(chain) => Some(chain),
+        None if filter.is_superadmin() => {
+            let first = OrgRepo(pool).list().await?.into_iter().next();
+            first.map(|org| ScopeChain::org(org.id))
+        }
+        None => filter.reach(pool).await?.into_iter().next(),
+    };
+    Ok(chain.map(|c| EffectiveScope {
+        org_id: c.org,
+        team_id: c.team,
+        project_id: c.project,
+    }))
+}
+
+async fn preferences_response(
+    state: &ControlState,
+    user: &User,
+    preferences: Preferences,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let effective_default_scope = effective_default_scope(state, user, &preferences).await?;
+    Ok(Json(PreferencesResponse {
+        preferences,
+        effective_default_scope,
+    }))
+}
+
+/// the caller's own preferences. there is no route to read anyone else's: the
+/// row is keyed by the session's user and nothing in the request names one
+async fn get_my_preferences(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let stored = UserPreferencesRepo(pool(&state))
+        .get(current.user.id)
+        .await?;
+    // a document this build cannot read (written by a newer one, say) reads as
+    // empty rather than failing the dashboard's first paint
+    let preferences = stored
+        .and_then(|doc| serde_json::from_value::<Preferences>(doc).ok())
+        .unwrap_or_default();
+    preferences_response(&state, &current.user, preferences).await
+}
+
+/// replace the caller's whole preferences document. keys left out are cleared.
+/// a default scope the caller cannot read is stored all the same, since access
+/// can change later; it is [`effective_default_scope`] that keeps it harmless
+async fn put_my_preferences(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<Preferences>,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let new = body.validated()?;
+    let repo = UserPreferencesRepo(pool(&state));
+    let old = repo.get(current.user.id).await?.unwrap_or_default();
+    let new_doc = new.to_document();
+
+    let empty = serde_json::Map::new();
+    let old_map = old.as_object().unwrap_or(&empty);
+    let new_map = new_doc.as_object().unwrap_or(&empty);
+    let mut changed: Vec<&str> = old_map
+        .keys()
+        .chain(new_map.keys())
+        .map(String::as_str)
+        .filter(|key| old_map.get(*key) != new_map.get(*key))
+        .collect();
+    changed.sort_unstable();
+    changed.dedup();
+
+    if !changed.is_empty() {
+        repo.put(current.user.id, &new_doc).await?;
+        // key names only: a model name or zone is the user's own business
+        if let Err(err) = AuditLogRepo(pool(&state))
+            .create(
+                None,
+                Some(current.user.id),
+                "user.preferences.update",
+                Some("user"),
+                Some(current.user.id),
+                Some(serde_json::json!({ "keys": changed })),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "failed to write preferences audit entry");
+        }
+    }
+    preferences_response(&state, &current.user, new).await
 }
 
 /// the plaintext key is returned once on mint/rotate and never again
@@ -525,6 +781,40 @@ async fn my_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_zone_shape_accepts_iana_names_and_nothing_else() {
+        for ok in [
+            "UTC",
+            "Europe/Berlin",
+            "America/Argentina/Buenos_Aires",
+            "Etc/GMT+5",
+        ] {
+            assert!(is_iana_zone_shape(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "/",
+            "Europe/",
+            "../etc",
+            "a/b/c/d",
+            "Europe Berlin",
+            "5/x",
+            "Europe/Berlin\n",
+        ] {
+            assert!(!is_iana_zone_shape(bad), "{bad}");
+        }
+        assert!(!is_iana_zone_shape(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn unset_keys_are_left_out_of_the_stored_document() {
+        let prefs = Preferences {
+            language: Some("en".into()),
+            ..Default::default()
+        };
+        assert_eq!(prefs.to_document(), serde_json::json!({"language": "en"}));
+    }
 
     #[test]
     fn a_key_cannot_be_minted_without_a_name() {

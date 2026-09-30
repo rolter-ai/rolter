@@ -325,6 +325,22 @@ curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
 - An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
 - Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
 
+## Your own preferences
+
+Any signed-in account keeps a small preferences document on the server, so the dashboard language, default scope, default Playground model and chart time zone follow the account to another browser. `GET /api/v1/me/preferences` reads it and `PUT /api/v1/me/preferences` saves it. Like the profile route it writes only the caller's own row and needs no role; there is no route that reads anyone else's.
+
+```bash
+curl -X PUT "$ROLTER_URL/api/v1/me/preferences" \
+  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"language": "ru", "default_playground_model": "gpt-4o", "chart_time_zone": "Europe/Berlin"}'
+```
+
+- Keys: `language` (`en` or `ru`, the dashboard's catalogs), `default_org_id`, `default_team_id`, `default_project_id` (UUIDs), `default_playground_model` (up to 200 characters) and `chart_time_zone` (an IANA name such as `Europe/Berlin` or `UTC`; the server checks its shape and the browser rejects a name it does not know). A key that is missing or `null` means "use the deployment default". An unknown key is refused with `400`.
+- `PUT` replaces the whole document: a key you leave out is cleared. Send every value you want to keep.
+- Preferences never widen access. A default scope you cannot read is stored as written, because access can change later, but `GET` also returns `effective_default_scope` (`org_id`, `team_id`, `project_id`): your stored default if you can still read it, otherwise the first scope you can read, otherwise `null`. The dashboard opens on that and never on the raw `default_*_id` fields.
+- Each change is written to the audit log as `user.preferences.update`, listing the key names that changed but not their values.
+
 ### Self-service endpoints do not work in open mode
 
 The `/api/v1/me/*` routes — the dashboard's **API Keys** screen — are per-user:

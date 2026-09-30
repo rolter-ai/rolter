@@ -3320,6 +3320,36 @@ impl UserRepo<'_> {
     }
 }
 
+/// per-user preference documents (#1824). one row per user, created on first
+/// save; the document is an object whose keys the API validates
+pub struct UserPreferencesRepo<'a>(pub &'a PgPool);
+
+impl UserPreferencesRepo<'_> {
+    /// the stored document, or `None` when the user never saved one
+    pub async fn get(&self, user_id: Uuid) -> Result<Option<serde_json::Value>> {
+        sqlx::query_scalar("select prefs from user_preferences where user_id = $1")
+            .bind(user_id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)
+    }
+
+    /// replace the whole document. `prefs` must be a json object; the table's
+    /// check constraint refuses anything else
+    pub async fn put(&self, user_id: Uuid, prefs: &serde_json::Value) -> Result<()> {
+        sqlx::query(
+            "insert into user_preferences (user_id, prefs) values ($1, $2)
+             on conflict (user_id) do update set prefs = excluded.prefs, updated_at = now()",
+        )
+        .bind(user_id)
+        .bind(prefs)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+}
+
 /// role grants at an org/team/project scope. see [`super::models::Membership`].
 pub struct MembershipRepo<'a>(pub &'a PgPool);
 

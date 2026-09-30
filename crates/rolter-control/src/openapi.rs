@@ -1147,6 +1147,16 @@ fn operations() -> Vec<Op> {
                 "Change the calling account's own display name and bio (any role)",
             ),
             Op::get(
+                "/api/v1/me/preferences",
+                "getMyPreferences",
+                "The calling account's preferences, with the default scope it can still read",
+            ),
+            Op::put(
+                "/api/v1/me/preferences",
+                "putMyPreferences",
+                "Replace the calling account's whole preferences document (any role)",
+            ),
+            Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
                 "Second-factor state and policy for the calling account",

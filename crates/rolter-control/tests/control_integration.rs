@@ -14663,6 +14663,287 @@ async fn a_viewer_edits_their_own_profile() {
     );
 }
 
+/// `GET`/`PUT /api/v1/me/preferences` (#1824): a viewer saves and reads back
+/// their own document; bad input is a 400; unset keys read as null; the
+/// document is whole-replace; the audit row names keys only.
+#[tokio::test]
+async fn a_viewer_saves_and_reads_their_own_preferences() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let viewer = seed_user(&pool, "prefs-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "prefsviewer").await;
+    let other = seed_user(&pool, "prefs-other@example.com", false).await;
+    let other_token = seed_session(&pool, other, "prefsother").await;
+
+    let get = |token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let res = client
+                .get(format!("{base}/api/v1/me/preferences"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            (res.status().as_u16(), res.json::<Value>().await.unwrap())
+        }
+    };
+    let put = |token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let res = client
+                .put(format!("{base}/api/v1/me/preferences"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            (res.status().as_u16(), res.json::<Value>().await.unwrap())
+        }
+    };
+
+    // nothing saved: every key reads as absent and there is no scope to open on
+    let (status, empty) = get(token.clone()).await;
+    assert_eq!(status, 200, "{empty}");
+    for key in [
+        "language",
+        "default_org_id",
+        "default_team_id",
+        "default_project_id",
+        "default_playground_model",
+        "chart_time_zone",
+        "effective_default_scope",
+    ] {
+        assert_eq!(empty[key], Value::Null, "{key}: {empty}");
+    }
+
+    // save, read back
+    let (status, saved) = put(
+        token.clone(),
+        json!({
+            "language": "ru",
+            "default_playground_model": "  gpt-4o ",
+            "chart_time_zone": "Europe/Berlin",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{saved}");
+    let (_, read) = get(token.clone()).await;
+    assert_eq!(read["language"], "ru");
+    assert_eq!(read["default_playground_model"], "gpt-4o");
+    assert_eq!(read["chart_time_zone"], "Europe/Berlin");
+    assert_eq!(read["default_project_id"], Value::Null);
+
+    // PUT replaces the whole document: a key left out is cleared
+    let (status, _) = put(token.clone(), json!({"language": "en"})).await;
+    assert_eq!(status, 200);
+    let (_, read) = get(token.clone()).await;
+    assert_eq!(read["language"], "en");
+    assert_eq!(read["chart_time_zone"], Value::Null);
+    assert_eq!(read["default_playground_model"], Value::Null);
+
+    // validation
+    for bad in [
+        json!({"unknown_key": 1}),
+        json!({"language": "xx"}),
+        json!({"language": 7}),
+        json!({"chart_time_zone": "Not A Zone"}),
+        json!({"chart_time_zone": "../../etc/passwd"}),
+        json!({"default_project_id": "not-a-uuid"}),
+        json!({"default_org_id": 5}),
+        json!({"default_playground_model": "x".repeat(201)}),
+        json!({"default_playground_model": "   "}),
+    ] {
+        let (status, body) = put(token.clone(), bad.clone()).await;
+        assert_eq!(status, 400, "{bad} was accepted: {body}");
+    }
+    // a refused write changed nothing
+    let (_, read) = get(token.clone()).await;
+    assert_eq!(read["language"], "en");
+
+    // each user sees only their own document: there is no route naming another
+    let (_, theirs) = get(other_token.clone()).await;
+    assert_eq!(theirs["language"], Value::Null);
+    let (status, _) = put(other_token.clone(), json!({"language": "ru"})).await;
+    assert_eq!(status, 200);
+    let (_, mine) = get(token.clone()).await;
+    assert_eq!(mine["language"], "en");
+
+    // no session, no preferences
+    let anon = client
+        .get(format!("{base}/api/v1/me/preferences"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+
+    // audit names keys, never values
+    let rows: Vec<(Value,)> = sqlx::query_as(
+        "select detail from audit_log
+         where action = 'user.preferences.update' and target_id = $1 order by at",
+    )
+    .bind(viewer)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(
+        rows[0].0,
+        json!({"keys": ["chart_time_zone", "default_playground_model", "language"]})
+    );
+    assert_eq!(
+        rows[1].0,
+        json!({"keys": ["chart_time_zone", "default_playground_model", "language"]})
+    );
+    assert!(!rows.iter().any(|(d,)| d.to_string().contains("gpt-4o")));
+}
+
+/// A stored default scope never widens access (#1824): it is kept as written,
+/// but `effective_default_scope` is computed from the caller's current
+/// memberships, so a scope they lost, or never had, is never handed back.
+#[tokio::test]
+async fn a_default_scope_the_user_lost_is_never_the_effective_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn make(client: &reqwest::Client, url: String, body: Value) -> uuid::Uuid {
+        let v: Value = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        v["id"].as_str().unwrap().parse().unwrap()
+    }
+    let org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "PrefsOrg", "slug": "prefs-org"}),
+    )
+    .await;
+    let team = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/teams"),
+        json!({"name": "T"}),
+    )
+    .await;
+    let proj_a = make(
+        &client,
+        format!("{base}/api/v1/teams/{team}/projects"),
+        json!({"name": "A"}),
+    )
+    .await;
+    let proj_b = make(
+        &client,
+        format!("{base}/api/v1/teams/{team}/projects"),
+        json!({"name": "B"}),
+    )
+    .await;
+    let foreign_org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Foreign", "slug": "prefs-foreign"}),
+    )
+    .await;
+
+    let user = seed_user(&pool, "prefs-scope@example.com", false).await;
+    let token = seed_session(&pool, user, "prefsscope").await;
+    seed_membership(&pool, user, None, None, Some(proj_a), "viewer").await;
+    seed_membership(&pool, user, None, None, Some(proj_b), "viewer").await;
+
+    let read = || async {
+        client
+            .get(format!("{base}/api/v1/me/preferences"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let put = |body: Value| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/me/preferences");
+        let token = token.clone();
+        async move {
+            client
+                .put(url)
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // a readable default project is honoured, with its chain filled in
+    let res = put(json!({"default_project_id": proj_b})).await;
+    assert_eq!(res.status(), 200);
+    let got = read().await;
+    assert_eq!(
+        got["effective_default_scope"],
+        json!({"org_id": org, "team_id": team, "project_id": proj_b})
+    );
+
+    // the membership goes away: the id is still stored, but no longer effective
+    sqlx::query("delete from memberships where user_id = $1 and project_id = $2")
+        .bind(user)
+        .bind(proj_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let got = read().await;
+    assert_eq!(got["default_project_id"], json!(proj_b));
+    assert_eq!(
+        got["effective_default_scope"],
+        json!({"org_id": org, "team_id": team, "project_id": proj_a}),
+        "fell back to the scope still readable"
+    );
+
+    // a scope the user never had is accepted at write time and never effective
+    let res = put(json!({"default_org_id": foreign_org})).await;
+    assert_eq!(res.status(), 200);
+    let got = read().await;
+    assert_eq!(got["default_org_id"], json!(foreign_org));
+    assert_eq!(got["effective_default_scope"]["project_id"], json!(proj_a));
+    assert_ne!(got["effective_default_scope"]["org_id"], json!(foreign_org));
+
+    // and with nothing readable left there is no scope at all
+    sqlx::query("delete from memberships where user_id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let got = read().await;
+    assert_eq!(got["effective_default_scope"], Value::Null);
+
+    // a default naming a row that no longer exists is not an error
+    let res = put(json!({"default_project_id": uuid::Uuid::new_v4()})).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(read().await["effective_default_scope"], Value::Null);
+}
+
 /// A SCIM-provisioned account's `displayName` is authoritative (#1823): it is
 /// copied onto the account, `/auth/me` flags it managed, and the self-service
 /// route refuses to change it while still letting the account edit its bio.
