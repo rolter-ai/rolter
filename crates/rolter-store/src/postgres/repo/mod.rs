@@ -35,8 +35,8 @@ use super::models::{
     ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
     Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
     ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
-    SsoLoginState, SsoProvider, Team, User, VirtualKey,
+    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode,
+    SsoGroupMapping, SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -1690,6 +1690,50 @@ impl SsoRepo<'_> {
         .await
         .map_err(store_err)
     }
+
+    /// Record a one-time exchange code for a completed browser sign-in. Only
+    /// the digest of the code is stored; `ttl_secs` counts from the database
+    /// clock, like every other expiry here.
+    pub async fn issue_exchange(
+        &self,
+        code_hash: &str,
+        user_id: Uuid,
+        provider_id: Uuid,
+        granted_roles: &[String],
+        ttl_secs: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "insert into sso_exchange_codes (code_hash, user_id, provider_id, granted_roles, expires_at) \
+             values ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)",
+        )
+        .bind(code_hash)
+        .bind(user_id)
+        .bind(provider_id)
+        .bind(granted_roles)
+        .bind(ttl_secs.to_string())
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Redeem an exchange code exactly once. An unknown, already-redeemed or
+    /// expired code yields `None`; the delete is the single-use guarantee, so
+    /// two concurrent redemptions cannot both succeed.
+    pub async fn redeem_exchange(&self, code_hash: &str) -> Result<Option<SsoExchangeCode>> {
+        // opportunistic sweep, as for login states
+        let _ = sqlx::query("delete from sso_exchange_codes where expires_at < now()")
+            .execute(self.0)
+            .await;
+        sqlx::query_as(
+            "delete from sso_exchange_codes where code_hash = $1 and expires_at > now() \
+             returning user_id, provider_id, granted_roles",
+        )
+        .bind(code_hash)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
 }
 
 /// SCIM provisioning tokens. Lookup is by peppered digest only; the plaintext
@@ -1823,6 +1867,15 @@ impl ScimIdentityRepo<'_> {
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// whether any org's IdP provisioned this account
+    pub async fn exists_for_user(&self, user_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar("select exists (select 1 from scim_identities where user_id = $1)")
+            .bind(user_id)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
     }
 
     pub async fn find_by_user_name(
@@ -2811,6 +2864,13 @@ impl RateLimitRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
+    /// Store a new rate limit.
+    ///
+    /// Refused with [`Error::Config`] unless at least one cap is positive: the
+    /// snapshot loader reads a cap of zero or below as none, so a limit
+    /// without a positive one admits every request while looking like a hard
+    /// stop (#1903). The same rule [`update`](Self::update) applies to what an
+    /// edit leaves behind.
     pub async fn create(
         &self,
         scope_type: &str,
@@ -2818,6 +2878,11 @@ impl RateLimitRepo<'_> {
         rpm: Option<i32>,
         tpm: Option<i32>,
     ) -> Result<RateLimit> {
+        if !keeps_a_cap(rpm, tpm) {
+            return Err(Error::Config(
+                "a rate limit needs an rpm cap, a tpm cap or both, each at least 1".into(),
+            ));
+        }
         sqlx::query_as(
             "insert into rate_limits (scope_type, scope_id, rpm, tpm)
              values ($1, $2, $3, $4)
@@ -3001,7 +3066,8 @@ pub struct UserRepo<'a>(pub &'a PgPool);
 impl UserRepo<'_> {
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where email = $1",
         )
         .bind(email)
@@ -3012,7 +3078,8 @@ impl UserRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where id = $1",
         )
         .bind(id)
@@ -3028,7 +3095,7 @@ impl UserRepo<'_> {
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
         sqlx::query_as(
             "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
-                    u.deactivated_at, u.created_at
+                    u.deactivated_at, u.created_at, u.display_name, u.bio
              from users u
              join memberships m on m.user_id = u.id
              left join teams t on t.id = m.team_id
@@ -3054,7 +3121,8 @@ impl UserRepo<'_> {
         sqlx::query_as(
             "insert into users (email, password_hash, is_superadmin)
              values ($1, $2, $3)
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(email)
         .bind(password_hash)
@@ -3080,7 +3148,8 @@ impl UserRepo<'_> {
                  password_hash = coalesce($3, password_hash),
                  is_superadmin = coalesce($4, is_superadmin)
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(email)
@@ -3099,10 +3168,42 @@ impl UserRepo<'_> {
         sqlx::query_as(
             "update users set deactivated_at = case when $2 then now() else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(deactivated)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// set the self-service profile. each `Some(x)` replaces the column with `x`
+    /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
+    /// from [`Self::update`]: that one names `is_superadmin` in its `set` list
+    /// and so fires the `config_version` trigger, which a name edit must not.
+    /// callers validate and normalise; the table's check constraints are the
+    /// backstop
+    pub async fn set_profile(
+        &self,
+        id: Uuid,
+        display_name: Option<Option<&str>>,
+        bio: Option<Option<&str>>,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "update users set
+                 display_name = case when $2 then $3 else display_name end,
+                 bio = case when $4 then $5 else bio end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                       display_name, bio",
+        )
+        .bind(id)
+        .bind(display_name.is_some())
+        .bind(display_name.flatten())
+        .bind(bio.is_some())
+        .bind(bio.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -4074,7 +4175,7 @@ impl AuditLogRepo<'_> {
                  order by at asc, id asc limit $9")
             }
         };
-        let mut entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
             .bind(org_id)
             .bind(filter.actor_user_id)
             .bind(filter.action.as_deref())
@@ -4087,6 +4188,16 @@ impl AuditLogRepo<'_> {
             .fetch_all(self.0)
             .await
             .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Trim the probe row and restore newest-first order after a `Previous`
+    /// scan, shared by the per-org and the deployment-wide read.
+    fn finish_page(
+        mut entries: Vec<AuditLogEntry>,
+        filter: &AuditLogFilter,
+        limit: i64,
+    ) -> AuditLogPage {
         let has_more = entries.len() as i64 > limit;
         if has_more {
             entries.pop();
@@ -4094,7 +4205,70 @@ impl AuditLogRepo<'_> {
         if matches!(filter.direction, AuditLogDirection::Previous) {
             entries.reverse();
         }
-        Ok(AuditLogPage { entries, has_more })
+        AuditLogPage { entries, has_more }
+    }
+
+    /// Query one cursor page across the whole deployment: every row, org-less
+    /// account events included. Same ordering, filters and cursor as
+    /// [`Self::list_page`], minus the org scoping.
+    pub async fn list_page_all(&self, filter: &AuditLogFilter, limit: i64) -> Result<AuditLogPage> {
+        let query = match filter.direction {
+            AuditLogDirection::Next => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) < ($6, $7))
+                 order by at desc, id desc limit $8"
+            }
+            AuditLogDirection::Previous => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) > ($6, $7))
+                 order by at asc, id asc limit $8"
+            }
+        };
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+            .bind(filter.actor_user_id)
+            .bind(filter.action.as_deref())
+            .bind(filter.target_type.as_deref())
+            .bind(filter.start_at)
+            .bind(filter.end_at)
+            .bind(filter.cursor.map(|cursor| cursor.at))
+            .bind(filter.cursor.map(|cursor| cursor.id))
+            .bind(limit + 1)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Count matching records across the deployment, ignoring the cursor.
+    pub async fn count_all(&self, filter: &AuditLogFilter) -> Result<i64> {
+        sqlx::query_scalar(
+            "select count(*) from audit_log
+             where ($1::uuid is null or actor_user_id = $1)
+               and ($2::text is null or action = $2)
+               and ($3::text is null or target_type = $3)
+               and ($4::timestamptz is null or at >= $4)
+               and ($5::timestamptz is null or at <= $5)",
+        )
+        .bind(filter.actor_user_id)
+        .bind(filter.action.as_deref())
+        .bind(filter.target_type.as_deref())
+        .bind(filter.start_at)
+        .bind(filter.end_at)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Count matching records without applying a cursor. Callers opt in to
@@ -4852,6 +5026,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limit.rpm, Some(60));
+        // a limit with no positive cap admits everything, so it is never
+        // stored, whichever way the caps are missing (#1903)
+        for (rpm, tpm) in [
+            (None, None),
+            (Some(0), None),
+            (None, Some(-5)),
+            (Some(0), Some(0)),
+        ] {
+            assert!(
+                matches!(
+                    limits.create("project", project.id, rpm, tpm).await,
+                    Err(Error::Config(_))
+                ),
+                "{rpm:?} / {tpm:?} should be refused"
+            );
+        }
+        assert_eq!(
+            limits
+                .list_for_scope("project", project.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         let prices = ModelPriceRepo(&pool);
         let price = prices

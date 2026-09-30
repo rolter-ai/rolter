@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
+import { SecretValue, useSecretCloseGuard } from "@/components/ui/secret-reveal";
 import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, type TableColumn } from "@/components/ui/table";
@@ -449,7 +450,9 @@ export default function UserProvisioning() {
 
 // mint a token, then hand over the plaintext. the secret lives in this
 // component's state only and is dropped on close — the server stores a peppered
-// digest, so nothing can show it a second time
+// digest, so nothing can show it a second time. the reveal is the shared
+// `SecretValue` and the sheet asks before closing over a token nobody copied,
+// but it stays a sheet: the base URL the connector needs sits beside the token
 function IssueTokenSheet({
   open,
   onOpenChange,
@@ -464,12 +467,18 @@ function IssueTokenSheet({
   const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const [issued, setIssued] = React.useState<CreatedScimToken | null>(null);
-  const tokenLabelId = React.useId();
+  const [copied, setCopied] = React.useState(false);
+  const { guard, close, prompt } = useSecretCloseGuard({
+    name: "scim-token",
+    uncopied: open && issued !== null && !copied,
+    onOpenChange,
+  });
 
   React.useEffect(() => {
     if (open) {
       setName("");
       setIssued(null);
+      setCopied(false);
     }
   }, [open]);
 
@@ -477,12 +486,13 @@ function IssueTokenSheet({
     mutationFn: () => createScimToken(orgId, { name: name.trim() }),
     onSuccess: (token) => {
       setIssued(token);
+      setCopied(false);
       onIssued();
     },
   });
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
       <SheetHeader
         title={
           issued
@@ -490,23 +500,18 @@ function IssueTokenSheet({
             : t("pages.userProvisioning.sheet.issueTitle")
         }
         subtitle={issued ? issued.name : t("pages.userProvisioning.sheet.subtitle")}
-        onClose={() => onOpenChange(false)}
+        onClose={close}
       />
       <SheetBody>
         {issued ? (
           <>
-            <div
-              role="group"
-              aria-labelledby={tokenLabelId}
-              className="flex min-w-0 flex-col gap-1.5"
-            >
-              <FieldLabel id={tokenLabelId} label={t("pages.userProvisioning.sheet.tokenLabel")} />
-              <CopyBox
-                value={issued.secret}
-                copyLabel={t("pages.userProvisioning.copyToken")}
-                testId="scim-token-secret"
-              />
-            </div>
+            <SecretValue
+              value={issued.secret}
+              label={t("pages.userProvisioning.sheet.tokenLabel")}
+              copyLabel={t("pages.userProvisioning.copyToken")}
+              onCopied={() => setCopied(true)}
+              testId="scim-token-secret"
+            />
             <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
               {t("pages.userProvisioning.onceWarning")}
             </p>
@@ -539,7 +544,7 @@ function IssueTokenSheet({
       <SheetFooter>
         <SheetActions>
           {issued ? (
-            <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
+            <Button onClick={close}>{t("common.done")}</Button>
           ) : (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -553,6 +558,7 @@ function IssueTokenSheet({
           )}
         </SheetActions>
       </SheetFooter>
+      {prompt}
     </Sheet>
   );
 }

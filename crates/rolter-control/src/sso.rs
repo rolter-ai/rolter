@@ -26,7 +26,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -158,6 +158,7 @@ pub(crate) fn router() -> Router<ControlState> {
     Router::new()
         .route("/auth/sso/{slug}/start", get(start_login))
         .route("/auth/sso/{slug}/callback", get(callback))
+        .route("/auth/sso/exchange", post(exchange))
         .route(
             "/api/v1/orgs/{org_id}/sso-providers",
             post(create_provider).get(list_providers),
@@ -186,7 +187,7 @@ fn invalid(message: impl Into<String>) -> ApiError {
 fn api_error_message(err: ApiError) -> String {
     match err {
         ApiError::Core(e) => e.to_string(),
-        ApiError::Conflict(msg) => msg,
+        ApiError::Curated(msg) | ApiError::Conflict(msg) => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
         ApiError::TooManyAttempts(remaining) => {
@@ -440,49 +441,362 @@ struct SsoLoginResponse {
     granted_roles: Vec<String>,
 }
 
+/// The dashboard route a browser's sign-in ends on (#2297): the login screen,
+/// which reads the outcome from its query string. The route and the parameters
+/// below are the contract with the dashboard.
+///
+/// * success: `/login?sso_code=<one-time code>`, redeemed by
+///   `POST /auth/sso/exchange`
+/// * refusal: `/login?sso_error=<code>` and, once the state has named the
+///   provider, `&sso=<slug>`
+const LOGIN_PATH: &str = "/login";
+
+/// How long an exchange code may sit between the redirect and the dashboard
+/// redeeming it. The dashboard posts it the moment it loads, so a minute is
+/// generous; a code lifted from history or a log is dead by the time anyone
+/// reads it.
+const EXCHANGE_TTL_SECS: i64 = 60;
+
+/// Why a browser sign-in did not complete, as the stable `sso_error` the
+/// dashboard is redirected with (#2297).
+///
+/// The dashboard translates each code into its own words, so a code is part of
+/// the contract with it: never rename one, and add a translation for every new
+/// one. Nothing the identity provider said reaches the URL, only the family
+/// the failure falls in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SsoFailure {
+    /// the provider answered with an `error`: the user declined, or its policy
+    /// refused
+    IdpError,
+    /// no `state` or `code`, or a state that is unknown, expired, already
+    /// redeemed or belongs to another provider; a replay lands here
+    StateExpired,
+    /// the org turned sso off
+    SsoDisabled,
+    /// the user is in no mapped group and the provider has no default role
+    NoMappedGroup,
+    /// the account is deactivated
+    AccountDeactivated,
+    /// the provider could not be reached, or its token or id token did not
+    /// verify
+    IdpVerificationFailed,
+    /// the deployment cannot finish a sign-in, e.g. no KEK
+    NotConfigured,
+    /// anything else, a database error most likely
+    InternalError,
+}
+
+impl SsoFailure {
+    /// The code the dashboard is sent.
+    const fn code(self) -> &'static str {
+        match self {
+            Self::IdpError => "idp_error",
+            Self::StateExpired => "state_expired",
+            Self::SsoDisabled => "sso_disabled",
+            Self::NoMappedGroup => "no_mapped_group",
+            Self::AccountDeactivated => "account_deactivated",
+            Self::IdpVerificationFailed => "idp_verification_failed",
+            Self::NotConfigured => "not_configured",
+            Self::InternalError => "internal_error",
+        }
+    }
+}
+
+/// A callback that did not complete: the family for a browser, the error a
+/// JSON caller has always been given, and the provider's slug once the login
+/// state has vouched for it.
+#[derive(Debug)]
+struct CallbackFailure {
+    reason: SsoFailure,
+    slug: Option<String>,
+    error: ApiError,
+}
+
+/// `map_err` for one step of [`complete_login`].
+fn failed<E: Into<ApiError>>(
+    reason: SsoFailure,
+    slug: Option<&str>,
+) -> impl FnOnce(E) -> CallbackFailure + '_ {
+    move |error| CallbackFailure {
+        reason,
+        slug: slug.map(str::to_string),
+        error: error.into(),
+    }
+}
+
+/// An identity that cleared every check and is owed a session.
+struct SignedIn {
+    provider: SsoProvider,
+    user: User,
+    subject: String,
+    granted: Vec<String>,
+}
+
+/// Where a browser is sent when the sign-in did not complete. The query string
+/// carries a code from a closed set and the provider's slug, never anything the
+/// identity provider said.
+fn refusal_url(base: &str, failure: &CallbackFailure) -> String {
+    let mut url = format!("{base}{LOGIN_PATH}?sso_error={}", failure.reason.code());
+    if let Some(slug) = &failure.slug {
+        url.push_str(&format!("&sso={}", urlencode(slug)));
+    }
+    url
+}
+
+/// Where a browser is sent once it is signed in: the login screen, holding a
+/// one-time code. The code is not a credential until it is redeemed, and only
+/// once.
+fn success_url(base: &str, code: &str) -> String {
+    format!("{base}{LOGIN_PATH}?sso_code={}", urlencode(code))
+}
+
+fn exchange_code_hash(code: &str) -> String {
+    hex_digest(code)
+}
+
+fn hex_digest(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The provider's redirect target.
+///
+/// A browser is answered with a `303` to the login screen (#2297): holding a
+/// one-time code on success, a stable `sso_error` on a refusal. It used to be
+/// left on a raw JSON body, with the session token printed in the tab and
+/// nothing to move it into the dashboard. Any other caller gets the JSON it
+/// always did. The response varies on `Accept` either way.
 async fn callback(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Path(slug): Path<String>,
     Query(query): Query<CallbackQuery>,
-) -> ApiResult<Json<SsoLoginResponse>> {
+) -> Response {
+    let browser = crate::mcp_oauth_flow::prefers_html(&headers);
+    let response = match complete_login(&state, &slug, query).await {
+        Ok(signed) if browser => {
+            let base = public_base_url(&state);
+            match issue_exchange(&state, &signed).await {
+                Ok(code) => Redirect::to(&success_url(base, &code)).into_response(),
+                Err(error) => {
+                    let failure = CallbackFailure {
+                        reason: SsoFailure::InternalError,
+                        slug: Some(signed.provider.slug.clone()),
+                        error,
+                    };
+                    tracing::warn!(reason = failure.reason.code(), error = ?failure.error, "sso sign-in did not complete");
+                    Redirect::to(&refusal_url(base, &failure)).into_response()
+                }
+            }
+        }
+        Ok(signed) => match sign_in_json(&state, signed).await {
+            Ok(body) => Json(body).into_response(),
+            Err(error) => error.into_response(),
+        },
+        Err(failure) => {
+            // a browser only learns the family, so the detail an operator
+            // needs to act on is kept here
+            tracing::info!(
+                reason = failure.reason.code(),
+                slug = ?failure.slug,
+                error = ?failure.error,
+                "sso sign-in did not complete"
+            );
+            if browser {
+                Redirect::to(&refusal_url(public_base_url(&state), &failure)).into_response()
+            } else {
+                failure.error.into_response()
+            }
+        }
+    };
+    ([(header::VARY, "accept")], response).into_response()
+}
+
+/// Mint the session and audit the sign-in: what a JSON caller is answered with.
+async fn sign_in_json(state: &ControlState, signed: SignedIn) -> ApiResult<SsoLoginResponse> {
+    let pool_ref = pool(state);
+    let (token, token_hash) = generate_session_token(&session_pepper());
+    let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
+    SessionRepo(pool_ref)
+        .create(signed.user.id, &token_hash, expires_at)
+        .await?;
+    audit_sign_in(state, &signed).await;
+    Ok(SsoLoginResponse {
+        token,
+        expires_at,
+        user: signed.user,
+        granted_roles: signed.granted,
+    })
+}
+
+/// Store the one-time code a browser is handed in place of a session. The
+/// session itself is minted when the code is redeemed, so no bearer token
+/// rests in the database between the two.
+async fn issue_exchange(state: &ControlState, signed: &SignedIn) -> ApiResult<String> {
+    let code = random_token();
+    SsoRepo(pool(state))
+        .issue_exchange(
+            &exchange_code_hash(&code),
+            signed.user.id,
+            signed.provider.id,
+            &signed.granted,
+            EXCHANGE_TTL_SECS,
+        )
+        .await?;
+    // the sign-in is audited here, where the identity was accepted; the
+    // redemption mints a session for it and does not audit a second time
+    audit_sign_in(state, signed).await;
+    Ok(code)
+}
+
+async fn audit_sign_in(state: &ControlState, signed: &SignedIn) {
+    let _ = AuditLogRepo(pool(state))
+        .create(
+            Some(signed.provider.org_id),
+            Some(signed.user.id),
+            "auth.sso_login",
+            Some("user"),
+            Some(signed.user.id),
+            Some(json!({
+                "provider": signed.provider.slug,
+                "subject": signed.subject,
+                "granted_roles": signed.granted,
+            })),
+        )
+        .await;
+}
+
+#[derive(Debug, Deserialize)]
+struct ExchangeRequest {
+    code: String,
+}
+
+/// `POST /auth/sso/exchange`: redeem the one-time code a browser sign-in ended
+/// with for the session it stands for. Public, like the callback it follows:
+/// the code is the credential. It is 256 random bits, single-use and gone in a
+/// minute, so guessing one is not a thing a throttle would help with; the login
+/// throttle is keyed on an email and an address and has nothing to key on here.
+///
+/// An unknown, spent and expired code are all the same `400`, so the endpoint
+/// is no oracle for which codes once existed.
+async fn exchange(
+    State(state): State<ControlState>,
+    Json(body): Json<ExchangeRequest>,
+) -> Response {
+    match redeem_exchange(&state, &body.code).await {
+        Ok(Some(login)) => Json(login).into_response(),
+        Ok(None) => {
+            tracing::info!("sso exchange refused: unknown, spent or expired code");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {
+                    "code": "invalid_exchange_code",
+                    "message": "the sign-in code is unknown, already used or expired; sign in again",
+                }})),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            tracing::warn!(?error, "sso exchange failed");
+            error.into_response()
+        }
+    }
+}
+
+async fn redeem_exchange(state: &ControlState, code: &str) -> ApiResult<Option<SsoLoginResponse>> {
+    let pool_ref = pool(state);
+    let Some(redeemed) = SsoRepo(pool_ref)
+        .redeem_exchange(&exchange_code_hash(code))
+        .await?
+    else {
+        return Ok(None);
+    };
+    let user = UserRepo(pool_ref).get(redeemed.user_id).await?;
+    if user.deactivated_at.is_some() {
+        // deactivated between the callback and the redemption
+        return Ok(None);
+    }
+    let (token, token_hash) = generate_session_token(&session_pepper());
+    let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
+    SessionRepo(pool_ref)
+        .create(user.id, &token_hash, expires_at)
+        .await?;
+    Ok(Some(SsoLoginResponse {
+        token,
+        expires_at,
+        user,
+        granted_roles: redeemed.granted_roles,
+    }))
+}
+
+/// Verify the provider's response and resolve the account it is for, up to but
+/// not including the session.
+async fn complete_login(
+    state: &ControlState,
+    slug: &str,
+    query: CallbackQuery,
+) -> Result<SignedIn, CallbackFailure> {
+    use SsoFailure::*;
     if let Some(error) = query.error {
         let detail = query.error_description.unwrap_or_default();
-        return Err(invalid(format!(
+        return Err(failed(IdpError, None)(invalid(format!(
             "identity provider refused the login: {error} {detail}"
-        )));
+        ))));
     }
     let code = query
         .code
-        .ok_or_else(|| invalid("callback is missing code"))?;
+        .ok_or_else(|| failed(StateExpired, None)(invalid("callback is missing code")))?;
     let csrf_state = query
         .state
-        .ok_or_else(|| invalid("callback is missing state"))?;
+        .ok_or_else(|| failed(StateExpired, None)(invalid("callback is missing state")))?;
 
     // one-shot: a replayed callback finds nothing to consume
-    let login = SsoRepo(pool(&state))
+    let login = SsoRepo(pool(state))
         .consume_login(&csrf_state, LOGIN_STATE_TTL_SECS)
-        .await?
-        .ok_or_else(|| invalid("login state is unknown or expired; start the login again"))?;
-    let provider = SsoRepo(pool(&state))
+        .await
+        .map_err(failed(InternalError, None))?
+        .ok_or_else(|| {
+            failed(StateExpired, None)(invalid(
+                "login state is unknown or expired; start the login again",
+            ))
+        })?;
+    let provider = SsoRepo(pool(state))
         .get_provider(login.provider_id)
-        .await?;
+        .await
+        .map_err(failed(InternalError, None))?;
     if provider.slug != slug {
-        return Err(invalid("login state does not belong to this provider"));
+        return Err(failed(StateExpired, None)(invalid(
+            "login state does not belong to this provider",
+        )));
     }
-    if !OrgAuthPolicyRepo(pool(&state))
+    // the state has vouched for the provider, so its slug is safe to name
+    let named = Some(provider.slug.as_str());
+    if !OrgAuthPolicyRepo(pool(state))
         .get(provider.org_id)
-        .await?
+        .await
+        .map_err(failed(InternalError, named))?
         .allow_sso
     {
         // the org turned sso off; refuse without deleting the provider so it
         // can be switched back on
-        return Err(ApiError::Forbidden);
+        return Err(failed(SsoDisabled, named)(ApiError::Forbidden));
     }
-    let discovery = discover(&provider.issuer).await?;
+    let discovery = discover(&provider.issuer)
+        .await
+        .map_err(failed(IdpVerificationFailed, named))?;
 
-    let kek = Kek::from_env()
-        .ok_or_else(|| invalid("ROLTER_KEK must be configured to use the sso client secret"))?;
-    let secret = SsoRepo(pool(&state)).client_secret(&kek, &provider).await?;
+    let kek = Kek::from_env().ok_or_else(|| {
+        failed(NotConfigured, named)(invalid(
+            "ROLTER_KEK must be configured to use the sso client secret",
+        ))
+    })?;
+    let secret = SsoRepo(pool(state))
+        .client_secret(&kek, &provider)
+        .await
+        .map_err(failed(InternalError, named))?;
 
     let identity_provider = OidcIdentityProvider::new(
         discovery,
@@ -497,73 +811,69 @@ async fn callback(
             nonce: login.nonce.clone(),
         })
         .await
-        .map_err(|e| match e {
-            IdentityError::NotVerified => {
-                invalid("the id token carries no email claim to key an account on")
-            }
-            IdentityError::UnsupportedCredential { .. } => {
-                invalid("oidc provider was given an unsupported credential")
-            }
-            IdentityError::PolicyDenied(msg) | IdentityError::Provider(msg) => invalid(msg),
+        .map_err(|e| {
+            let message = match e {
+                IdentityError::NotVerified => {
+                    "the id token carries no email claim to key an account on".to_string()
+                }
+                IdentityError::UnsupportedCredential { .. } => {
+                    "oidc provider was given an unsupported credential".to_string()
+                }
+                IdentityError::PolicyDenied(msg) | IdentityError::Provider(msg) => msg,
+            };
+            failed(IdpVerificationFailed, named)(invalid(message))
         })?;
     let email = identity.email.clone();
 
     let groups: HashSet<String> = identity.groups.iter().cloned().collect();
-    let mappings = SsoRepo(pool(&state)).list_mappings(provider.id).await?;
+    let mappings = SsoRepo(pool(state))
+        .list_mappings(provider.id)
+        .await
+        .map_err(failed(InternalError, named))?;
     let matched: Vec<&SsoGroupMapping> = mappings
         .iter()
         .filter(|m| groups.contains(&m.group_name))
         .collect();
     // adopt an existing account by email, or create an sso-only one (no local
     // password: an sso account must not gain a second, weaker credential)
-    let pool_ref = pool(&state);
-    let known = UserRepo(pool_ref).find_by_email(&email).await?;
+    let pool_ref = pool(state);
+    let known = UserRepo(pool_ref)
+        .find_by_email(&email)
+        .await
+        .map_err(failed(InternalError, named))?;
     if matched.is_empty() && provider.default_role.is_none() {
         // the IdP authenticated them but no group grants anything. if they held
         // sso-granted roles from an earlier login, this is exactly the moment
         // to take those away: being dropped from every mapped group is how an
         // operator deprovisions through the IdP
         if let Some(user) = &known {
-            reconcile_grants(&state, provider.org_id, &[], user.id).await?;
+            reconcile_grants(state, provider.org_id, &[], user.id)
+                .await
+                .map_err(failed(InternalError, named))?;
         }
-        return Err(ApiError::Forbidden);
+        return Err(failed(NoMappedGroup, named)(ApiError::Forbidden));
     }
     let user = match known {
         Some(existing) => existing,
-        None => UserRepo(pool_ref).create(&email, None, false).await?,
+        None => UserRepo(pool_ref)
+            .create(&email, None, false)
+            .await
+            .map_err(failed(InternalError, named))?,
     };
     if user.deactivated_at.is_some() {
         // a deactivated account stays out regardless of what the IdP says
-        return Err(ApiError::Forbidden);
+        return Err(failed(AccountDeactivated, named)(ApiError::Forbidden));
     }
 
-    let granted = apply_mappings(&state, &provider, &matched, user.id).await?;
-
-    let (token, token_hash) = generate_session_token(&session_pepper());
-    let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
-    SessionRepo(pool_ref)
-        .create(user.id, &token_hash, expires_at)
-        .await?;
-    let _ = AuditLogRepo(pool_ref)
-        .create(
-            Some(provider.org_id),
-            Some(user.id),
-            "auth.sso_login",
-            Some("user"),
-            Some(user.id),
-            Some(json!({
-                "provider": provider.slug,
-                "subject": identity.subject,
-                "granted_roles": granted,
-            })),
-        )
-        .await;
-    Ok(Json(SsoLoginResponse {
-        token,
-        expires_at,
+    let granted = apply_mappings(state, &provider, &matched, user.id)
+        .await
+        .map_err(failed(InternalError, named))?;
+    Ok(SignedIn {
+        provider,
         user,
-        granted_roles: granted,
-    }))
+        subject: identity.subject,
+        granted,
+    })
 }
 
 /// Exchange the authorization code for tokens.
@@ -767,6 +1077,45 @@ struct CreateSsoProvider {
     default_role: Option<String>,
 }
 
+/// Longest slug the store accepts, in characters.
+const SLUG_MAX_LEN: usize = 63;
+
+/// Whether `slug` satisfies the store's `sso_providers_slug_charset`
+/// constraint, `^[a-z0-9][a-z0-9-]{0,62}$` (migration `0047`).
+///
+/// Written out byte by byte rather than as a regex: the rule is ASCII-only, so
+/// a byte is a character wherever it can pass, and any non-ASCII byte fails the
+/// charset test anyway.
+fn slug_is_valid(slug: &str) -> bool {
+    let bytes = slug.as_bytes();
+    let starts_alphanumeric = bytes
+        .first()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    starts_alphanumeric
+        && bytes.len() <= SLUG_MAX_LEN
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// Refuse a slug the store's check constraint would, with a message that states
+/// the rule (#2304).
+///
+/// Without this the insert fails and the caller reads a store error carrying
+/// the constraint's name, which says nothing about what to type instead. The
+/// slug is registered at the identity provider as part of the redirect URI, so
+/// it is checked exactly as sent and never trimmed or lowercased on the way in.
+fn validate_slug(slug: &str) -> ApiResult<()> {
+    if slug_is_valid(slug) {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "slug must be lowercase letters, digits and hyphens, start with a letter or digit, \
+             and be at most {SLUG_MAX_LEN} characters"
+        )))
+    }
+}
+
 async fn create_provider(
     principal: Principal,
     State(state): State<ControlState>,
@@ -782,6 +1131,7 @@ async fn create_provider(
     .await?;
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
+    validate_slug(&body.slug)?;
     require_non_empty(&body.issuer, "issuer")?;
     require_non_empty(&body.client_id, "client_id")?;
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
@@ -1289,11 +1639,139 @@ mod tests {
     }
 
     #[test]
+    fn a_slug_inside_the_charset_is_accepted() {
+        let longest = "a".repeat(SLUG_MAX_LEN);
+        for slug in [
+            "okta",
+            "a",
+            "0",
+            "9lives",
+            "entra-staging",
+            "a--b",
+            // a trailing hyphen is inside the store's rule, so it is inside this one
+            "okta-",
+            longest.as_str(),
+        ] {
+            assert!(validate_slug(slug).is_ok(), "{slug:?} should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_slug_outside_the_charset_is_refused() {
+        let too_long = "a".repeat(SLUG_MAX_LEN + 1);
+        for slug in [
+            "",
+            "Okta",
+            "OKTA",
+            "acme okta",
+            "-okta",
+            "okta_prod",
+            "okta.prod",
+            "okta/callback",
+            "okta%2Fcallback",
+            // whitespace is not trimmed away: the slug is checked as sent
+            " okta",
+            "okta ",
+            "okta\n",
+            // a Cyrillic "о" looks like the Latin one and is not
+            "\u{43e}kta",
+            "r\u{e9}sum\u{e9}",
+            too_long.as_str(),
+        ] {
+            assert!(validate_slug(slug).is_err(), "{slug:?} should be refused");
+        }
+    }
+
+    /// The message is what the caller reads in place of the store's constraint
+    /// name, so it has to carry the whole rule.
+    #[test]
+    fn the_refusal_states_the_rule_and_is_a_bad_request() {
+        let err = validate_slug("Okta").expect_err("an uppercase slug is refused");
+        assert!(
+            matches!(err, ApiError::Core(rolter_core::Error::Config(_))),
+            "a refused slug is a 400, not a store error: {err:?}"
+        );
+        let message = api_error_message(err);
+        for part in [
+            "lowercase letters",
+            "digits",
+            "hyphens",
+            "start with a letter or digit",
+            "at most 63 characters",
+        ] {
+            assert!(message.contains(part), "{part:?} missing from {message:?}");
+        }
+        assert!(
+            !message.contains("sso_providers_slug_charset"),
+            "the constraint name is an implementation detail: {message:?}"
+        );
+    }
+
+    #[test]
     fn only_the_three_built_in_roles_are_mappable() {
         assert!(parse_role("admin").is_ok());
         assert!(parse_role("member").is_ok());
         assert!(parse_role("viewer").is_ok());
         assert!(parse_role("superadmin").is_err());
         assert!(parse_role("").is_err());
+    }
+
+    #[test]
+    fn a_refusal_url_carries_only_a_stable_code_and_a_vouched_slug() {
+        let unnamed = CallbackFailure {
+            reason: SsoFailure::IdpError,
+            slug: None,
+            error: invalid("idp said something <script>"),
+        };
+        assert_eq!(
+            refusal_url("https://r.example", &unnamed),
+            "https://r.example/login?sso_error=idp_error"
+        );
+        let named = CallbackFailure {
+            reason: SsoFailure::NoMappedGroup,
+            slug: Some("a b".to_string()),
+            error: ApiError::Forbidden,
+        };
+        assert_eq!(
+            refusal_url("https://r.example", &named),
+            "https://r.example/login?sso_error=no_mapped_group&sso=a%20b"
+        );
+    }
+
+    #[test]
+    fn failure_codes_are_the_published_set() {
+        use SsoFailure::*;
+        let codes = [
+            IdpError,
+            StateExpired,
+            SsoDisabled,
+            NoMappedGroup,
+            AccountDeactivated,
+            IdpVerificationFailed,
+            NotConfigured,
+            InternalError,
+        ]
+        .map(SsoFailure::code);
+        assert_eq!(
+            codes,
+            [
+                "idp_error",
+                "state_expired",
+                "sso_disabled",
+                "no_mapped_group",
+                "account_deactivated",
+                "idp_verification_failed",
+                "not_configured",
+                "internal_error",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_exchange_code_is_stored_as_its_digest() {
+        let hash = exchange_code_hash("abc");
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, "abc");
+        assert_eq!(hash, exchange_code_hash("abc"));
     }
 }

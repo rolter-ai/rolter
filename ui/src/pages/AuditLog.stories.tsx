@@ -9,6 +9,7 @@ import {
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
+  expectTableStateInFrame,
   json,
   pending,
   routes,
@@ -16,6 +17,8 @@ import {
   type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile } from "@/lib/story-viewport";
 
 const entry = (over: Partial<AuditLogEntry> = {}): AuditLogEntry => ({
   id: "a-1",
@@ -95,6 +98,32 @@ export const Empty: Story = {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No audit entries yet/);
     await expect(canvas.queryByRole("button", { name: /Clear search/i })).not.toBeInTheDocument();
+  },
+};
+
+// the placeholder is centred on the part of the table the reader sees, not on
+// the whole of a table that scrolls sideways inside its card (#2420)
+export const EmptyFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
+  play: async ({ canvasElement }) => {
+    await expectTableStateInFrame(canvasElement, {
+      says: /No audit entries yet/,
+      body: /Every change made through the control plane is recorded here/,
+    });
+  },
+};
+
+export const EmptyFitsThePhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
+  play: async ({ canvasElement }) => {
+    const { emptyTitle, emptyBody } = ru.pages.auditLog;
+    await expectTableStateInFrame(canvasElement, {
+      says: new RegExp(emptyTitle),
+      body: new RegExp(emptyBody.slice(0, 24)),
+    });
   },
 };
 

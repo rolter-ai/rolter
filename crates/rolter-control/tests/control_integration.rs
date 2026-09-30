@@ -1354,6 +1354,175 @@ async fn an_orgs_audit_log_shows_its_own_peoples_account_events() {
     );
 }
 
+/// The deployment-wide read returns the rows no org read can: a superadmin's
+/// own events and an attempt against an unregistered address. It is
+/// superadmin-only, and pages and filters like the per-org read (#1858).
+#[tokio::test]
+async fn the_deployment_audit_log_is_a_superadmins_and_returns_org_less_rows() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let operator = seed_user(&pool, "operator@deploy.test", true).await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(org), None, None, "admin").await;
+    // oldest first; none of them carries an org
+    for (minutes_ago, actor, action, target) in [
+        (4, Some(operator), "auth.login", Some(operator)),
+        (3, None, "auth.login_failed", None),
+        (2, Some(operator), "auth.mfa_enrolled", Some(operator)),
+        (1, Some(operator), "auth.login", Some(operator)),
+    ] {
+        sqlx::query(
+            "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail, at)
+             values (null, $1, $2, case when $3::uuid is null then null else 'user' end, $3, '{}',
+                     now() - make_interval(mins => $4))",
+        )
+        .bind(actor)
+        .bind(action)
+        .bind(target)
+        .bind(minutes_ago)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let operator_session = seed_session(&pool, operator, "deploy_operator").await;
+    let admin_session = seed_session(&pool, org_admin, "deploy_org_admin").await;
+    let url = format!("http://{addr}/api/v1/audit-log");
+
+    // an org admin does not read the deployment's log
+    let denied = client
+        .get(&url)
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+
+    let page: Value = client
+        .get(&url)
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actions: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions.iter().filter(|a| **a == "auth.login").count(), 2);
+    let unknown = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["action"] == "auth.login_failed")
+        .expect("the unknown-address attempt is returned");
+    assert!(unknown["actor_user_id"].is_null(), "{unknown}");
+    assert!(unknown["org_id"].is_null(), "{unknown}");
+    // the per-org read still cannot see the operator's events
+    let per_org: Value = client
+        .get(format!("http://{addr}/api/v1/orgs/{org}/audit-log"))
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(per_org["items"].as_array().unwrap().is_empty(), "{per_org}");
+
+    // filters
+    let filtered: Value = client
+        .get(format!("{url}?action=auth.mfa_enrolled&include_total=true"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 1, "{filtered}");
+    assert_eq!(filtered["total"], 1);
+    let by_actor: Value = client
+        .get(format!("{url}?actor={operator}"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(by_actor["items"].as_array().unwrap().len(), 3, "{by_actor}");
+
+    // cursor: pages of two, newest first, then back
+    let first: Value = client
+        .get(format!("{url}?limit=2&include_total=true"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["total"], 4);
+    assert_eq!(first["has_next"], true);
+    assert_eq!(first["has_previous"], false);
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    let second: Value = client
+        .get(&url)
+        .query(&[("limit", "2"), ("cursor", cursor.as_str())])
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(second["items"].as_array().unwrap().len(), 2);
+    assert_eq!(second["has_next"], false);
+    assert_eq!(second["has_previous"], true);
+    let mut seen: Vec<String> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 4, "the pages overlap or skip a row");
+    assert_eq!(second["items"][0]["action"], "auth.login_failed");
+    let back: Value = client
+        .get(&url)
+        .query(&[
+            ("limit", "2"),
+            ("direction", "previous"),
+            ("cursor", second["previous_cursor"].as_str().unwrap()),
+        ])
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(back["items"], first["items"]);
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();
@@ -2095,6 +2264,263 @@ async fn a_rate_limit_is_edited_in_place() {
     );
 }
 
+/// #1903: creating a budget or rate limit refuses the caps the gateway would
+/// ignore or misread, with the same 400s an edit already got. Each refused body
+/// writes nothing, so neither the version nor the scope's rows move.
+#[tokio::test]
+async fn creating_a_cap_refuses_what_the_gateway_would_ignore() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Guarded", "slug": "guarded"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id").to_string();
+
+    async fn refused(client: &reqwest::Client, url: String, body: Value) -> String {
+        let response = client.post(&url).json(&body).send().await.unwrap();
+        let status = response.status();
+        let error: Value = response.json().await.unwrap_or(Value::Null);
+        assert_eq!(status, 400, "{body} should be refused, got {error}");
+        error["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    let before = config_version(&pool).await;
+    let budgets = format!("{base}/api/v1/budgets");
+    // NaN parses as a float and is a legal numeric but reaches the gateway as
+    // no cap; inf and 1e9 overflow numeric(12,4); a negative cap refuses
+    // everything as already spent
+    for limit in ["NaN", "inf", "-1", "100000000", "1e9", "lots"] {
+        let message = refused(
+            &client,
+            budgets.clone(),
+            json!({"scope_type": "org", "scope_id": org_id, "limit_usd": limit}),
+        )
+        .await;
+        assert!(message.contains("limit_usd"), "{limit}: {message}");
+    }
+    let rate_limits = format!("{base}/api/v1/rate-limits");
+    for (caps, field) in [
+        (json!({"rpm": 0}), "rpm"),
+        (json!({"tpm": -5}), "tpm"),
+        (json!({"rpm": 60, "tpm": 0}), "tpm"),
+        // neither cap, however it is spelt, is a limit that admits everything
+        (json!({}), "rpm cap, a tpm cap"),
+        (json!({"rpm": null, "tpm": null}), "rpm cap, a tpm cap"),
+    ] {
+        let mut body = json!({"scope_type": "org", "scope_id": org_id});
+        body.as_object_mut()
+            .unwrap()
+            .extend(caps.as_object().unwrap().clone());
+        let message = refused(&client, rate_limits.clone(), body).await;
+        assert!(message.contains(field), "{caps}: {message}");
+    }
+    assert_eq!(
+        config_version(&pool).await,
+        before,
+        "a refused create must not wake the fleet"
+    );
+    let (budget_rows, limit_rows): (i64, i64) =
+        sqlx::query_as("select (select count(*) from budgets), (select count(*) from rate_limits)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((budget_rows, limit_rows), (0, 0));
+
+    // the values an edit accepts are accepted here too, zero freezing a scope
+    for body in [
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "0"}),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": " 99999999.9999 "}),
+    ] {
+        let response = client.post(&budgets).json(&body).send().await.unwrap();
+        assert!(response.status().is_success(), "{body}");
+    }
+    let response = client
+        .post(&rate_limits)
+        .json(&json!({"scope_type": "org", "scope_id": org_id, "tpm": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+}
+
+/// #1902: the gateway has no rolling windows, and used to read every period it
+/// did not know as monthly, so a `7d` budget was a calendar-month cap. A period
+/// outside what it recognises is now a 400 on create and on edit, naming the
+/// accepted spellings. A row stored before the check keeps being enforced as
+/// it was, and `GET /api/v1/config/problems` says so.
+#[tokio::test]
+async fn a_budget_period_is_one_the_gateway_recognises() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn send(
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: String,
+        body: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        let resp = client
+            .request(method, &url)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    let (_, org) = send(
+        &client,
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Windows", "slug": "windows"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+    let budgets = format!("{base}/api/v1/budgets");
+
+    for period in ["7d", "weekly", "dialy", "  "] {
+        let (status, error) = send(
+            &client,
+            reqwest::Method::POST,
+            budgets.clone(),
+            json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10", "period": period}),
+        )
+        .await;
+        assert_eq!(status, 400, "{period:?} should be refused, got {error}");
+        let message = error["error"]["message"].as_str().unwrap_or_default();
+        for accepted in ["daily", "monthly", "total", "30d"] {
+            assert!(
+                message.contains(accepted),
+                "{message} should name {accepted}"
+            );
+        }
+    }
+
+    // every spelling the gateway reads is accepted, stored as sent
+    let (status, created) = send(
+        &client,
+        reqwest::Method::POST,
+        budgets.clone(),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10", "period": " Daily "}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {created}");
+    assert_eq!(created["period"], "Daily");
+    let (status, defaulted) = send(
+        &client,
+        reqwest::Method::POST,
+        budgets.clone(),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "10"}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {defaulted}");
+    assert_eq!(defaulted["period"], "30d", "the default is unchanged");
+
+    let url = format!("{base}/api/v1/budgets/{}", created["id"].as_str().unwrap());
+    let before = config_version(&pool).await;
+    let (status, error) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url.clone(),
+        json!({"period": "7d"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{error}");
+    assert_eq!(config_version(&pool).await, before);
+    let (status, edited) = send(
+        &client,
+        reqwest::Method::PATCH,
+        url,
+        json!({"period": "total"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(edited["period"], "total");
+
+    // nothing the API accepts is reported
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(problems["problems"], json!([]), "{problems}");
+
+    // a row written before the check, which no migration rewrites
+    let legacy: uuid::Uuid = sqlx::query_scalar(
+        "insert into budgets (scope_type, scope_id, limit_usd, period)
+         values ('org', $1, 25, '7d') returning id",
+    )
+    .bind(org_id.parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines = problems["problems"].as_array().expect("problems");
+    assert_eq!(lines.len(), 1, "{problems}");
+    let line = lines[0].as_str().unwrap();
+    assert!(line.contains(&legacy.to_string()), "{line}");
+    assert!(line.contains("'7d'"), "{line}");
+    assert!(line.contains("monthly"), "{line}");
+
+    // still served, as the monthly cap it always was
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let periods: Vec<&str> = snap["config"]["budgets"]
+        .as_array()
+        .expect("budgets")
+        .iter()
+        .filter_map(|b| b["period"].as_str())
+        .collect();
+    assert_eq!(periods, ["total", "monthly", "monthly"], "{snap}");
+}
+
 /// Editing a budget or rate limit takes `update` on it, which the matrix
 /// grants to an admin of the scope and not to a viewer (#1285). Both reach the
 /// row's own scope chain, so the check is against where the cap already lives.
@@ -2594,6 +3020,189 @@ async fn virtual_key_cost_attribution_round_trip() {
     assert!(orphaned[0]["business_unit_id"].is_null());
 }
 
+/// #2279: a prompt template version `PromptTemplatesConfig::validate` rejects
+/// used to be stored and published, after which the snapshot refused to be
+/// served at all and config propagation froze for every tenant. The endpoint
+/// now refuses such a version, and a row that got in some other way is pruned
+/// from the snapshot and listed under `/api/v1/config/problems`.
+#[tokio::test]
+async fn an_invalid_prompt_template_version_cannot_freeze_the_snapshot() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> (u16, Value) {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status().as_u16();
+        (status, resp.json().await.unwrap_or(Value::Null))
+    }
+
+    let (_, org) = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id: uuid::Uuid = org["id"].as_str().expect("org id").parse().unwrap();
+    let (_, template) = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/prompt-templates"),
+        json!({"name": "support"}),
+    )
+    .await;
+    let template_id = template["id"].as_str().expect("template id").to_string();
+    let versions = format!("{base}/api/v1/prompt-templates/{template_id}/versions");
+
+    // each way validate() rejects content is a 400 that names the problem
+    let bad = [
+        (
+            json!({"variables": [], "decorators": [{"content": "hi {{ who }}"}]}),
+            "undeclared variable 'who'",
+        ),
+        (
+            json!({
+                "variables": [{"name": "v", "required": true, "default": "d"}],
+                "decorators": [{"content": "{{ v }}"}]
+            }),
+            "both required and defaulted",
+        ),
+        (
+            json!({
+                "variables": [{"name": "v"}, {"name": "v"}],
+                "decorators": [{"content": "{{ v }}"}]
+            }),
+            "duplicate variable 'v'",
+        ),
+        (
+            json!({"variables": [], "decorators": []}),
+            "has no decorators",
+        ),
+    ];
+    for (body, expected) in bad {
+        let (status, error) = post(&client, versions.clone(), body).await;
+        assert_eq!(status, 400, "{error}");
+        let message = error["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(expected),
+            "{message} should say {expected}"
+        );
+    }
+    let stored: i64 = sqlx::query_scalar("select count(*) from prompt_template_versions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 0, "a refused version is not stored");
+
+    // a valid version, published and scoped to the org, is served
+    let (status, created) = post(
+        &client,
+        versions,
+        json!({
+            "variables": [{"name": "tone", "required": true}],
+            "decorators": [{"content": "tone={{ tone }}"}]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    let scoped = client
+        .put(format!(
+            "{base}/api/v1/prompt-templates/{template_id}/versions/1/scopes"
+        ))
+        .json(&json!({"scopes": [{"scope_type": "org", "scope_id": org_id}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(scoped.status(), 204);
+    let published = client
+        .put(format!(
+            "{base}/api/v1/prompt-templates/{template_id}/publish"
+        ))
+        .json(&json!({"version": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(published.status().is_success());
+
+    // a row the endpoint would have refused, written straight to the store as
+    // legacy data would be
+    let legacy: uuid::Uuid = sqlx::query_scalar(
+        "insert into prompt_templates (org_id, name, slug) values ($1, 'legacy', 'legacy')
+         returning id",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into prompt_template_versions (template_id, version, variables, decorators)
+         values ($1, 1, '[]', '[{\"content\": \"hi {{ ghost }}\"}]')",
+    )
+    .bind(legacy)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into prompt_template_scopes (template_id, version, scope_type, scope_id, org_id)
+         values ($1, 1, 'org', $2, $2)",
+    )
+    .bind(legacy)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update prompt_templates set published_version = 1 where id = $1")
+        .bind(legacy)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the snapshot must still be served");
+    let snap: Value = resp.json().await.unwrap();
+    let ids: Vec<&str> = snap["config"]["prompt_templates"]["templates"]
+        .as_array()
+        .expect("templates")
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, [format!("{org_id}:support")], "{snap}");
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines = problems["problems"].as_array().expect("problems");
+    assert_eq!(lines.len(), 1, "{problems}");
+    let line = lines[0].as_str().unwrap();
+    assert!(line.contains(&format!("{org_id}:legacy")), "{line}");
+    assert!(line.contains("undeclared variable 'ghost'"), "{line}");
+
+    // publishing the malformed legacy version is refused as well
+    let republish = client
+        .put(format!("{base}/api/v1/prompt-templates/{legacy}/publish"))
+        .json(&json!({"version": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(republish.status(), 400);
+}
+
 #[tokio::test]
 async fn prompt_template_crud_publish_and_scope_round_trip() {
     skip_without_db!();
@@ -2691,7 +3300,7 @@ async fn prompt_template_crud_publish_and_scope_round_trip() {
     let version2 = post(
         &client,
         format!("{base}/api/v1/prompt-templates/{template_id}/versions"),
-        json!({"variables": [], "decorators": []}),
+        json!({"variables": [], "decorators": [{"content": "be brief"}]}),
     )
     .await;
     assert_eq!(version2["version"], 2);
@@ -5277,6 +5886,139 @@ mod stub_idp {
             "exp": now + 300,
         })
     }
+}
+
+/// #2304: the slug's charset is a check constraint in the database
+/// (`sso_providers_slug_charset`), and the handler used to let a bad one reach
+/// the insert, so the caller read a store error carrying the constraint's name
+/// rather than a 400 that says what to type. The endpoint and the constraint
+/// are compared on a table of slugs instead of trusted to agree: for each one
+/// the store is asked directly, then the endpoint, and the answers must match.
+#[tokio::test]
+async fn sso_slug_outside_the_charset_is_a_400_that_states_the_rule() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "SlugOrg", "slug": "slug-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let longest = "a".repeat(63);
+    let too_long = "a".repeat(64);
+    let accepted = [
+        "okta",
+        "a",
+        "0",
+        "9lives",
+        "entra-staging",
+        "a--b",
+        "okta-",
+        longest.as_str(),
+    ];
+    let refused = [
+        "",
+        "Okta",
+        "acme okta",
+        "-okta",
+        "okta_prod",
+        "okta.prod",
+        " okta",
+        "okta ",
+        "okta\n",
+        // a Cyrillic "о", which looks like the Latin one
+        "\u{43e}kta",
+        "r\u{e9}sum\u{e9}",
+        too_long.as_str(),
+    ];
+
+    for slug in accepted.iter().chain(refused.iter()).copied() {
+        // the store's own answer, with the probe row taken out again so the
+        // handler's insert of the same slug below cannot collide with it
+        let stored = sqlx::query(
+            "insert into sso_providers (org_id, name, slug, issuer, client_id) \
+             values ($1::uuid, 'probe', $2, 'https://idp.example.com', 'probe')",
+        )
+        .bind(&org_id)
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .is_ok();
+        if stored {
+            sqlx::query("delete from sso_providers where org_id = $1::uuid and slug = $2")
+                .bind(&org_id)
+                .bind(slug)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let response = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": "Probe",
+                "slug": slug,
+                "issuer": "https://idp.example.com",
+                "client_id": "probe"
+            }))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value = response.json().await.unwrap();
+
+        assert_eq!(
+            status == 200,
+            stored,
+            "slug {slug:?}: the endpoint answered {status} but the store {} it: {body}",
+            if stored { "accepts" } else { "refuses" }
+        );
+        if stored {
+            assert_eq!(body["slug"], slug);
+        } else {
+            assert_eq!(status, 400, "slug {slug:?} must be a 400: {body}");
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                !message.contains("sso_providers_slug_charset"),
+                "slug {slug:?}: the constraint name reached the caller: {message}"
+            );
+            if !slug.trim().is_empty() {
+                assert!(
+                    message.contains("lowercase letters, digits and hyphens")
+                        && message.contains("start with a letter or digit")
+                        && message.contains("at most 63 characters"),
+                    "slug {slug:?}: the 400 does not state the rule: {message}"
+                );
+            }
+        }
+    }
+
+    // only the accepted ones were registered; a refused slug left nothing behind
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), accepted.len());
 }
 
 /// #1233: a provider is editable in place. Before this, rotating a client
@@ -8045,6 +8787,267 @@ async fn sso_login(
     Some(body["token"].as_str().unwrap().to_string())
 }
 
+/// #2297: the provider sends the browser to the callback, so the callback must
+/// end on the dashboard. A success hands over a one-time code (never the
+/// token), redeemed once; a refusal names a stable code and none of the IdP's
+/// own words.
+#[tokio::test]
+async fn browser_sso_sign_in_ends_on_the_dashboard_with_a_one_time_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "BrowserOrg", "slug": "browser-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let client_secret = format!("idp-{}", uuid::Uuid::new_v4());
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Stub IdP", "slug": "browser", "issuer": issuer,
+            "client_id": "rolter", "client_secret": client_secret
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    let mapping = client
+        .post(format!(
+            "{base}/api/v1/sso-providers/{provider_id}/group-mappings"
+        ))
+        .bearer_auth("admintok")
+        .json(&json!({"group_name": "admins", "role": "admin", "org_id": org_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mapping.status(), 200);
+
+    // one browser navigation through the provider, answered with `groups`
+    let navigate = |groups: Value| {
+        let (client, base, stub, issuer) = (&client, &base, &stub, &issuer);
+        async move {
+            let start = client
+                .get(format!("{base}/auth/sso/browser/start"))
+                .send()
+                .await
+                .unwrap();
+            let location = start
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let state = url_param(&location, "state");
+            let nonce = url_param(&location, "nonce");
+            *stub.next_claims.lock().unwrap() = stub_idp::claims(issuer, "rolter", &nonce, groups);
+            client
+                .get(format!(
+                    "{base}/auth/sso/browser/callback?code=abc&state={state}"
+                ))
+                .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let location_of = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+    let exchange = |code: String| {
+        let (client, base) = (&client, &base);
+        async move {
+            client
+                .post(format!("{base}/auth/sso/exchange"))
+                .json(&json!({"code": code}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // success: a 303 to the login screen carrying a code that is not the token
+    let response = navigate(json!(["admins"])).await;
+    assert_eq!(response.status(), 303);
+    let location = location_of(&response);
+    assert!(
+        location.starts_with(&format!("{base}/login?sso_code=")),
+        "{location}"
+    );
+    assert!(!location.contains("rolter_sess_"), "{location}");
+    let body = response.text().await.unwrap();
+    assert!(
+        !body.contains("rolter_sess_") && !body.contains("token"),
+        "{body}"
+    );
+    let code = url_param(&location, "sso_code");
+    assert!(!code.is_empty());
+
+    // only a digest is stored
+    let stored: Vec<String> = sqlx::query_scalar("select code_hash from sso_exchange_codes")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_ne!(stored[0], code, "the plain code must not rest in the table");
+
+    // redeeming it yields a working session, once
+    let redeemed = exchange(code.clone()).await;
+    assert_eq!(redeemed.status(), 200);
+    let session: Value = redeemed.json().await.unwrap();
+    assert_eq!(session["user"]["email"], "ada@example.com");
+    assert_eq!(session["granted_roles"][0], "admin");
+    let token = session["token"].as_str().unwrap().to_string();
+    assert_ne!(token, code);
+    let me = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me.status(), 200);
+
+    let replay = exchange(code).await;
+    assert_eq!(replay.status(), 400, "a code is single-use");
+    let refusal: Value = replay.json().await.unwrap();
+    assert_eq!(refusal["error"]["code"], "invalid_exchange_code");
+    assert!(!refusal.to_string().contains(&token));
+    let unknown = exchange("never-issued".to_string()).await;
+    assert_eq!(unknown.status(), 400);
+
+    // one sign-in, one audit line: the redemption does not add a second
+    let audited: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'auth.sso_login'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(audited, 1);
+
+    // an expired code is refused (backdated rather than slept on)
+    let response = navigate(json!(["admins"])).await;
+    let code = url_param(&location_of(&response), "sso_code");
+    sqlx::query("update sso_exchange_codes set expires_at = now() - interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(exchange(code).await.status(), 400);
+
+    // refusals: a stable code, the provider once known, and no IdP words
+    let idp_words = "idp-free-text-should-never-leak";
+    let start = client
+        .get(format!("{base}/auth/sso/browser/start"))
+        .send()
+        .await
+        .unwrap();
+    let state = url_param(&location_of(&start), "state");
+    let declined = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?error=access_denied&error_description={idp_words}&state={state}"
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(declined.status(), 303);
+    assert_eq!(
+        location_of(&declined),
+        format!("{base}/login?sso_error=idp_error")
+    );
+
+    let stale = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?code=abc&state=made-up"
+        ))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        location_of(&stale),
+        format!("{base}/login?sso_error=state_expired")
+    );
+
+    let ungrouped = navigate(json!(["nobody"])).await;
+    assert_eq!(ungrouped.status(), 303);
+    assert_eq!(
+        location_of(&ungrouped),
+        format!("{base}/login?sso_error=no_mapped_group&sso=browser")
+    );
+
+    let deactivate = sqlx::query("update users set deactivated_at = now() where email = $1")
+        .bind("ada@example.com")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(deactivate.rows_affected(), 1);
+    let deactivated = navigate(json!(["admins"])).await;
+    assert_eq!(
+        location_of(&deactivated),
+        format!("{base}/login?sso_error=account_deactivated&sso=browser")
+    );
+    sqlx::query("update users set deactivated_at = null")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let disabled = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .bearer_auth("admintok")
+        .json(&json!({"allow_password_login": true, "allow_sso": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    let off = navigate(json!(["admins"])).await;
+    assert_eq!(
+        location_of(&off),
+        format!("{base}/login?sso_error=sso_disabled&sso=browser")
+    );
+
+    // a caller that is not a browser still gets the JSON refusal
+    let start = client
+        .get(format!("{base}/auth/sso/browser/start"))
+        .send()
+        .await
+        .unwrap();
+    let state = url_param(&location_of(&start), "state");
+    let json_refusal = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?error=access_denied&state={state}"
+        ))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_refusal.status(), 400);
+}
+
 /// Invitation onboarding (#712): an admin mints a one-time link, the invitee
 /// sets their own password, and every way the link can be misused fails.
 #[tokio::test]
@@ -8281,6 +9284,58 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.create"));
     assert!(actions.iter().any(|a| a == "invitation.accept"));
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
+}
+
+/// A failure the database reports reaches the caller as a plain 500, never as
+/// the driver's own text, which names relations and the schema a tenant's data
+/// lives in (#2268). Both ways a handler meets one are covered: its own `sqlx`
+/// call, and a store repository. The table is dropped inside this test's
+/// isolated schema, so the error is a real one from Postgres.
+#[tokio::test]
+async fn a_database_error_reaches_the_caller_as_a_plain_500() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Broken", "slug": "broken"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    sqlx::query("drop table observability_connectors")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("drop table teams cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for (path, relation) in [
+        ("/api/v1/connectors".to_string(), "observability_connectors"),
+        (format!("/api/v1/orgs/{org_id}/teams"), "teams"),
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await.unwrap();
+        assert_eq!(response.status(), 500, "{path}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body["error"]["message"], "internal server error",
+            "{path}: {body}"
+        );
+        assert!(
+            !body.to_string().contains(relation),
+            "{path}: the driver's text reached the body"
+        );
+    }
 }
 
 #[tokio::test]
@@ -12495,6 +13550,37 @@ async fn mcp_static_credential_seals_at_rest_and_never_reads_back() {
         "the credential must not be recoverable from the stored bytes"
     );
 
+    // the store unseals it for the gateway's snapshot, and the same load feeds
+    // the anonymous config view, which must not pass it on (#1938)
+    let snapshot = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        snapshot.contains(TOKEN),
+        "the gateway needs the unsealed credential to reach the server"
+    );
+    let config_view = client
+        .get(format!("{base}/api/v1/config"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config_view.contains(TOKEN),
+        "the config view handed out a static mcp credential"
+    );
+    assert!(
+        !config_view.contains("mcp.example.com"),
+        "the config view lists a tenant's mcp servers"
+    );
+
     // renaming nothing but the kind keeps the stored credential: an operator
     // cannot read it back, so requiring a re-type would make it unchangeable
     let to_header: Value = client
@@ -13122,4 +14208,273 @@ async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
         .await
         .unwrap();
     assert_eq!(after["tiers"].as_array().map(Vec::len), Some(2));
+}
+
+/// `PATCH /api/v1/me/profile` (#1823): any signed-in account, a viewer
+/// included, edits its own display name and bio; omitted fields stay, `null`
+/// and `""` clear, bad input is a 400, and the audit row names fields only.
+#[tokio::test]
+async fn a_viewer_edits_their_own_profile() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let viewer = seed_user(&pool, "profile-viewer@example.com", false).await;
+    let token = seed_session(&pool, viewer, "profileviewer").await;
+    let bystander = seed_user(&pool, "profile-bystander@example.com", false).await;
+    let bystander_token = seed_session(&pool, bystander, "profilebystander").await;
+
+    let me = |token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .get(format!("{base}/api/v1/auth/me"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let patch = |token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let res = client
+                .patch(format!("{base}/api/v1/me/profile"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+
+    let before = me(token.clone()).await;
+    assert_eq!(before["user"]["display_name"], Value::Null);
+    assert_eq!(before["user"]["bio"], Value::Null);
+    assert_eq!(before["display_name_managed"], false);
+
+    // set both, with surrounding whitespace normalised away
+    let (status, body) = patch(
+        token.clone(),
+        json!({"display_name": "  Grace Hopper ", "bio": "Compilers.\nCOBOL."}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["display_name"], "Grace Hopper");
+    assert_eq!(body["bio"], "Compilers.\nCOBOL.");
+    let after = me(token.clone()).await;
+    assert_eq!(after["user"]["display_name"], "Grace Hopper");
+    assert_eq!(after["user"]["bio"], "Compilers.\nCOBOL.");
+
+    // omitted leaves the other field alone
+    let (status, body) = patch(token.clone(), json!({"display_name": "Grace"})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["bio"], "Compilers.\nCOBOL.");
+
+    // null clears one field, an empty string the other
+    let (status, body) = patch(token.clone(), json!({"display_name": null, "bio": ""})).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["display_name"], Value::Null);
+    assert_eq!(body["bio"], Value::Null);
+    let cleared = me(token.clone()).await;
+    assert_eq!(cleared["user"]["display_name"], Value::Null);
+    assert_eq!(cleared["user"]["bio"], Value::Null);
+
+    // validation
+    for bad in [
+        json!({"display_name": "x".repeat(81)}),
+        json!({"bio": "x".repeat(501)}),
+        json!({"display_name": "line\u{0007}bell"}),
+        json!({"display_name": "two\nlines"}),
+        json!({"display_name": "   "}),
+        json!({"bio": " \n\t "}),
+        json!({"display_name": 7}),
+    ] {
+        let (status, body) = patch(token.clone(), bad.clone()).await;
+        assert_eq!(status, 400, "{bad} was accepted: {body}");
+    }
+    // exactly at the limits is fine
+    let (status, _) = patch(
+        token.clone(),
+        json!({"display_name": "n".repeat(80), "bio": "b".repeat(500)}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // the route writes only the caller's row
+    let other = me(bystander_token.clone()).await;
+    assert_eq!(other["user"]["display_name"], Value::Null);
+    assert_eq!(other["user"]["bio"], Value::Null);
+
+    // no session, no profile
+    let anon = client
+        .patch(format!("{base}/api/v1/me/profile"))
+        .json(&json!({"bio": "hi"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), 401);
+
+    // `user:update` is still superadmin-only: a viewer cannot edit an account
+    let denied = client
+        .put(format!("{base}/api/v1/users/{bystander}"))
+        .bearer_auth(&token)
+        .json(&json!({"email": "renamed@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        matches!(denied.status().as_u16(), 403 | 404),
+        "viewer edited an account: {}",
+        denied.status()
+    );
+
+    // audit rows name the fields, never the bio text
+    let rows: Vec<(Value,)> = sqlx::query_as(
+        "select detail from audit_log
+         where action = 'user.profile.update' and target_id = $1 order by at",
+    )
+    .bind(viewer)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        rows.len() >= 4,
+        "expected an audit row per change: {rows:?}"
+    );
+    assert_eq!(rows[0].0, json!({"fields": ["display_name", "bio"]}));
+    assert_eq!(rows[1].0, json!({"fields": ["display_name"]}));
+    assert!(
+        !rows.iter().any(|(d,)| d.to_string().contains("COBOL")),
+        "a bio leaked into the audit log"
+    );
+}
+
+/// A SCIM-provisioned account's `displayName` is authoritative (#1823): it is
+/// copied onto the account, `/auth/me` flags it managed, and the self-service
+/// route refuses to change it while still letting the account edit its bio.
+#[tokio::test]
+async fn a_scim_managed_display_name_is_read_only_but_the_bio_is_not() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "ProfileScimOrg", "slug": "profile-scim-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "hopper@example.com",
+            "displayName": "Grace Hopper",
+            "emails": [{"value": "hopper@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let user_id: uuid::Uuid = scim_id.parse().unwrap();
+    let token = seed_session(&pool, user_id, "profilescimuser").await;
+
+    let me = || async {
+        client
+            .get(format!("{base}/api/v1/auth/me"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    let patch = |body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        async move {
+            client
+                .patch(format!("{base}/api/v1/me/profile"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let seen = me().await;
+    assert_eq!(seen["user"]["display_name"], "Grace Hopper");
+    assert_eq!(seen["display_name_managed"], true);
+
+    let refused = patch(json!({"display_name": "Someone Else"})).await;
+    assert_eq!(refused.status(), 409);
+    let cleared = patch(json!({"display_name": null})).await;
+    assert_eq!(cleared.status(), 409);
+    assert_eq!(me().await["user"]["display_name"], "Grace Hopper");
+
+    // the bio is the user's, and resending the managed name unchanged is fine
+    let ok = patch(json!({"display_name": "Grace Hopper", "bio": "Nanoseconds."})).await;
+    assert_eq!(ok.status(), 200);
+    let body: Value = ok.json().await.unwrap();
+    assert_eq!(body["bio"], "Nanoseconds.");
+    assert_eq!(body["display_name_managed"], true);
+
+    // a later SCIM replace moves the name
+    let replaced = client
+        .put(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "hopper@example.com",
+            "displayName": "Rear Admiral Hopper",
+            "emails": [{"value": "hopper@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), 200);
+    assert_eq!(me().await["user"]["display_name"], "Rear Admiral Hopper");
+    assert_eq!(me().await["user"]["bio"], "Nanoseconds.");
 }

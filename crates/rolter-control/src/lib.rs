@@ -36,6 +36,8 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+#[cfg(feature = "postgres")]
+mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
 // secret-stripping are covered by the default-feature test run too; only the
 // route it backs needs postgres
@@ -792,7 +794,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
 
     let Some(internal_addr) = args.internal_addr else {
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
         return Ok(());
     };
 
@@ -802,10 +806,51 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // both listeners share the process: if either dies the control plane is
     // degraded (no config propagation, or no dashboard), so exit rather than
     // limp on with half a control plane
-    tokio::try_join!(async { axum::serve(listener, app).await }, async {
-        axum::serve(internal_listener, internal).await
-    },)?;
+    tokio::try_join!(
+        async {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+        async {
+            axum::serve(internal_listener, internal)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+    )?;
     Ok(())
+}
+
+/// Resolve once the process receives a shutdown signal (Ctrl-C on all
+/// platforms, or `SIGTERM` on Unix, which is what orchestrators send).
+///
+/// Every caller installs its own listener; tokio broadcasts a signal to all of
+/// them, so this coexists with the gateway's own handler when both planes share
+/// a process under `rolter easy-up`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
+        _ = terminate => tracing::info!("received SIGTERM, draining"),
+    }
 }
 
 /// Everything the API did not match falls through to the built SPA.
@@ -1862,6 +1907,11 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     // with its digest blanked the list maps every tenant and its people
     config.db_virtual_keys.clear();
     config.mcp_oauth_sessions.clear();
+    // a postgres store holding the KEK unseals every static mcp credential into
+    // this list for the snapshot, and a file config carries them in the clear
+    // (#1938). The whole list goes rather than just `credential`: each row also
+    // names its tenant's org and upstream url, and the dashboard reads none of it
+    config.mcp_servers.clear();
     // which org owns a row is the gateway's business (#1844). the rows
     // themselves, every org's providers, routes and groups, are still listed:
     // whether this anonymous document may describe that topology at all is #1840
@@ -1990,6 +2040,13 @@ async fn get_config_problems(State(state): State<ControlState>) -> Json<Value> {
     // outright — so an operator needs to see those here too, not just in a log
     if let Err(fatal) = config.validate() {
         problems.extend(fatal);
+    }
+    // rows the loader could only serve by guessing, such as a budget period it
+    // does not recognise and enforces as monthly (#1902). the snapshot carries
+    // the guess, not the row, so only the store can say where one was made
+    match state.store.load_problems().await {
+        Ok(guessed) => problems.extend(guessed),
+        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
     Json(json!({ "problems": problems }))
 }
@@ -2422,7 +2479,8 @@ mod tests {
     #[test]
     fn dashboard_config_carries_no_secrets() {
         use rolter_core::config::{
-            McpOAuthSessionConfig, ProviderConfig, VirtualKeyConfig, VirtualKeyRecord,
+            McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ProviderConfig, VirtualKeyConfig,
+            VirtualKeyRecord,
         };
         let mut config = GatewayConfig::default();
         config.providers.push(ProviderConfig {
@@ -2453,6 +2511,17 @@ mod tests {
             .unwrap(),
         );
         config.logging.clickhouse_url = Some("http://ch:pass@clickhouse:8123".into());
+        // as `PostgresConfigStore::load` hands it over once the KEK has unsealed
+        // it for the snapshot (#1938)
+        config.mcp_servers.push(McpServerConfig {
+            id: "srv".into(),
+            org_id: "org-of-an-mcp-tenant".into(),
+            slug: "tools".into(),
+            url: "https://mcp.tenant.internal/sse".into(),
+            auth_kind: McpAuthKind::Bearer,
+            credential: Some("mcp-bearer-secret".into()),
+            ..Default::default()
+        });
 
         redact_config_for_dashboard(&mut config);
 
@@ -2469,6 +2538,9 @@ mod tests {
             "user:pw",
             "u:p@",
             "ch:pass",
+            "mcp-bearer-secret",
+            "org-of-an-mcp-tenant",
+            "mcp.tenant.internal",
         ] {
             // the message names the seed, not the serialised document: a
             // failing run must not print the very thing it is guarding
@@ -2484,6 +2556,7 @@ mod tests {
         );
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
+        assert!(config.mcp_servers.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
             Some("http://clickhouse:8123/")
@@ -3066,6 +3139,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body["problems"].as_array().unwrap().len(), 0, "{body}");
+    }
+
+    /// A store whose rows the loader could only map by guessing, or which
+    /// cannot say whether it had to (#1902).
+    struct GuessingConfigStore {
+        problems: Option<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for GuessingConfigStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            Ok(GatewayConfig::default())
+        }
+        async fn save(&self, _config: GatewayConfig) -> rolter_core::Result<()> {
+            Ok(())
+        }
+        async fn load_problems(&self) -> rolter_core::Result<Vec<String>> {
+            self.problems
+                .clone()
+                .ok_or_else(|| rolter_core::Error::Store("budgets query failed".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_the_loader_misread_are_config_problems() {
+        async fn problems(store: GuessingConfigStore) -> Value {
+            let mut state = state_with_token(None);
+            state.store = Arc::new(store);
+            let addr = serve(build_app_with_internal(state)).await;
+            let response = reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/config/problems"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json().await.unwrap()
+        }
+
+        let line = "budget 'b' on org 'o' has period '7d', which the gateway does not recognise";
+        let body = problems(GuessingConfigStore {
+            problems: Some(vec![line.to_string()]),
+        })
+        .await;
+        assert_eq!(body["problems"], json!([line]), "{body}");
+
+        // a store that cannot list them does not take the rest of the answer
+        // with it: the endpoint still answers, with what it could compute
+        let body = problems(GuessingConfigStore { problems: None }).await;
+        assert_eq!(body["problems"], json!([]), "{body}");
     }
 
     struct FailingConfigStore;

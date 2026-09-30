@@ -69,6 +69,12 @@ Five properties are load-bearing:
   the panel, and keeps everything outside the topmost modal `inert` while it is
   up, so a Tab has nothing behind the scrim to land on (#1998).
 
+The control that opened the dialog carries `pending` too, scoped to its row. A
+list has one mutation for every row, so `pending={remove.isPending}` alone puts a
+spinner on every row's control while one delete is out (#2095). Compare the row
+with the target, `remove.isPending && target?.id === row.id`, the way `Pricing`
+and `Limits` do.
+
 `tone` picks the confirm button's paint: `danger` (the default) for deletions
 and revocations, `default` for something irreversible that is not a removal —
 key rotation is the case that motivated it.
@@ -228,6 +234,31 @@ whose body each screen supplies because what removal does differs: SCIM
 withdraws the role at once, single sign-on stops granting it at the next
 sign-in.
 
+A save on the Security screen that loosens the gateway or the dashboard raises the same dialog
+(#2103), as `security-loosen` with `tone="default"`, since one more save undoes it. Three edits
+loosen and nothing else does: virtual-key enforcement turned off, dashboard protection turned off,
+and each route added to the auth bypass list. `loosenings` in `ui/src/lib/security-loosening.ts`
+decides, comparing the draft with what the store held at the last load or save rather than with the
+previous keystroke, so a switch flipped off and back on asks nothing. The body lists exactly the
+changes that opened something, each with what it means, as `children`, and the title and intro
+count them. A tightening, such as a route removed or a header required, saves at once, and one
+request goes out either way. The dialog is mounted beside the form, and the items it lists are kept
+after it closes so its body does not empty while it fades. The words state the documented meaning of
+each setting and no more: see
+[the Security screen](../architecture/security.md#the-security-screen-2103-2114).
+
+Deleting a provider names what still points at it (#2143). The Providers screen reads the
+effective config and the org's provider groups when the confirm opens, not on every visit, and
+hands the answer to `ProviderUsageNotice` as `children`. `providerUsage` in
+`ui/src/lib/provider-usage.ts` matches routes by provider name, which is unique across the
+deployment, and groups by member id, and marks a route or group the provider is the whole of. The
+notice never guesses: while either read is out it holds the space with a `LoadingRegion`, and a
+failed one is a `LoadError` with a retry, so neither reads as "nothing uses it". The confirm stays
+pressable in every state, since the control plane has the last word: `route_targets` and
+`provider_group_members` reference `providers` with `on delete restrict`, so it refuses a provider
+that is still referenced. The body says what a delete does to a client addressing the provider
+directly as `provider-slug/model`, which holds whether or not a route exists.
+
 ## What this is not
 
 **`window.confirm` is not an option.** It cannot be styled, cannot be
@@ -254,6 +285,13 @@ deleted through a destructive button that flipped a local flag and swapped in
 its own body, error line and second button (#1893). No `DialogFooter` held it,
 so `check:primitives` never saw it, and it reported none of the rows below.
 #2345 tracks teaching the check that shape.
+
+**No confirmation at all is the case no check catches.** `DeleteIconButton`
+looks the same whether its `onClick` opens a dialog or sends the request, so
+`check:primitives` has nothing to match, and the budget and rate-limit deletes on
+`Limits` fired on the first click long after #1179 swept the other screens
+(#1904). What pins it is the story: its cancel step looks for a dialog to
+dismiss, and a delete that never asked has none.
 
 **A confirmation is not a substitute for a reversible action.** Where retiring
 and deleting both exist — `CostAttribution` — the copy points at the reversible
@@ -348,6 +386,15 @@ Stories answer the prompt through `answerDiscardPrompt(true | false)` in
 `story-harness.tsx`, which finds it by its accessible name — the sheet is still
 mounted behind it, so `sheet()` cannot tell the two `role="dialog"` nodes apart.
 `expectClosesWithoutPrompting()` covers the pristine case.
+
+## Closing over a one-time secret
+
+A virtual key, a SCIM token and an invitation link are shown once and stored as
+a digest or not at all, so closing the dialog that shows one is the point where
+it is lost. The shared reveal asks before it closes over a value nobody copied,
+through `ConfirmDialog` with `tone="default"`, and asks nothing once the value
+has reached the clipboard. The guard, the failed-copy message and the next step
+are described in [Dashboard one-time secrets](secret-reveal.md).
 
 ## The control names its row too
 

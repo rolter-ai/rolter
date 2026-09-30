@@ -1016,15 +1016,22 @@ The helper first waits for every animation that ends, because a sheet slides in
 from the right edge for 240 ms and a box read the moment the panel appears is
 wherever the slide has got to. Looping animations such as spinners are skipped.
 
+A box inside a scroll container is measured against that container, not the
+window: a table in a card scrolls sideways inside a frame narrower than the
+window by the page gutters, so a title the card's edge clips is still inside the
+window (#2420). `expectInFrame(el, frame)` compares the box, or a `Range` for the
+width of a line of text, with the frame's padding box less its scrollbar.
+
 On the screen is not always the same as on the sheet. A footer that overflows
 toward the right can still end a few pixels inside a 375 px window while it
 sits in the sheet's gutter. `ModelSheet`'s phone stories therefore also compare
 the primary action's right edge with the header's close button.
 
 The widths and heights these stories run at come from the same module, spread
-at story level: `atMobile` (375×812), `atTablet` (768×1024) and `atShort`
-(640×360, a 1280×720 screen at 200 % zoom, the size WCAG 1.4.10 asks content to
-reflow at). A story that also needs the Russian catalog merges the two globals:
+at story level: `atMobile` (375×812), `atTablet` (768×1024), `atWide`
+(1440×900, for a story that needs more room than the runner's 1280×800 default)
+and `atShort` (640×360, a 1280×720 screen at 200 % zoom, the size WCAG 1.4.10
+asks content to reflow at). A story that also needs the Russian catalog merges the two globals:
 `globals: { ...atMobile.globals, locale: "ru" }`.
 
 #### Stories are drawn in the fonts the app ships (#2051)
@@ -1298,7 +1305,7 @@ disable their primary action until the three-request scope chain resolves, so
 Each screen should carry `Loaded`, `Loading`, `Empty` and an error/forbidden
 story, one interaction story that opens the primary editor and saves, and at
 least one story exercising the discard guard. Where a sheet opens pre-filled
-(budgets seed `100` / `30d`), assert the seed too: its dirty flag means "differs
+(budgets seed `100` / monthly), assert the seed too: its dirty flag means "differs
 from the seed", not "is non-empty", and getting that backwards makes an
 untouched form prompt on every close.
 
@@ -1450,10 +1457,16 @@ bash docker/smoke/smoke.sh
 It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
 [`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
-keyless open gateway config) so the built-in `fake-llm` model answers without any
-provider secret. The script waits for both `/healthz` endpoints, checks
-`/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
-postgres-backed `/internal/snapshot` on the control plane, then always dumps
+keyless open config, `require_auth = false`) into the gateway and the control
+plane, so the built-in `fake-llm` model answers without any provider secret. The
+control plane gets it too because the gateway follows the control plane's
+snapshot, which carries the control plane's own bootstrap config: the example
+baked into the image would bring its virtual key back. The script waits for both
+`/healthz` endpoints, checks `/v1/models` and `fake-llm` chat (non-streaming +
+SSE) on the gateway and the postgres-backed `/internal/snapshot` on the control
+plane, then creates an org, team, project, provider and route through the
+control plane's open API and waits for the gateway to list the new model, which
+is the check that the two planes are wired together. It then always dumps
 compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).

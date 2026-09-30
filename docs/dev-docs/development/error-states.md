@@ -144,9 +144,27 @@ failed holding nothing, and its content once it holds data. The content is a
 render prop handed the data, so a card cannot say "No traffic yet." or "Nothing
 logged yet." about a read that has not answered or that failed. One failing
 endpoint takes down the cards that read it and leaves the rest of the screen up.
-The donut and the bars read the same endpoint and each owns its error, with its
-own resource noun under `errors.resources.dashboard*`; either retry asks for that
-read once and both cards come back with it.
+The donut and the bars read the same endpoint, so one failure of it is one alert:
+the traffic share card holds the `LoadError` and its retry, and the by-model card
+holds a plain sentence (`pages.dashboard.sharedRead`, not a live region, no
+button) saying it reads the same data and where to retry. Either card comes back
+with that read.
+
+When every read fails at once the screen says so once (#2342). All four queries in
+error holding nothing, and none of them the no-analytics answer, replace the cards
+with one screen-level `LoadError` that names the analytics
+(`errors.resources.analytics`), quotes the error of the figures read, and offers one
+Try again that refetches all four reads. The setup checklist stays above it, as it
+does above the no-analytics panel. Before, a total outage put five `role="alert"`
+blocks on screen, so a screen reader announced five alerts on mount, two of them (the
+traffic share and the by-model bars) stating one failure twice.
+
+A partial failure is unchanged: a card whose read failed holds its own alert while the
+ones that answered stay up, and those keep polling. So does a failure next to a read
+that is still out, since a read that has not answered is not a failure: the screen
+becomes one alert only when the last read fails. The per-card error signals of
+`useErrorState` are withheld while the screen-level alert is the placeholder on
+screen, so one outage is one signal, `dashboard-analytics`.
 
 A poll that fails over data a card already shows keeps that data, and every card
 says so. `RefreshFailed` writes `Refresh failed at {time}, retrying` in the
@@ -158,11 +176,22 @@ rewrites it, and five cards announcing once a minute would be noise. Each card
 keeps the `pollEvery` rule for its own read, so a query that never held data
 stops polling and holds its alert.
 
+The Recent requests label follows the same rule as every feed that claims to be
+live: it says `Live` only once a read has succeeded. While the first read is out it
+says `Loading`, and on a failure it gives the time. It used to say `Live` from the
+first paint because it tested `!isError`, which is also true of a read nobody has
+answered yet (#2341).
+
 The `AFailedPollKeepsWhatLoaded` and `AFirstLoadThatFailsStopsPolling` stories in
-`Dashboard.stories.tsx` pin the two rules. `OneFailedCardLeavesTheRestUp`,
-`AFailedRecentReadIsNotAnEmptyOne` and `TheTwoCardsOnOneReadEachOwnItsError`
-pin the per-card error and its retry, and the `…IsStillLoading` stories pin each
-card's skeleton.
+`Dashboard.stories.tsx` pin the two rules; the second one is the total outage, and
+asserts exactly one alert, held across three intervals with nothing asked, whose
+retry asks for each of the four reads once. `OneFailedCardLeavesTheRestUp`,
+`AFailedRecentReadIsNotAnEmptyOne`, `TheTwoCardsOnOneReadShareOneAlert`,
+`SeveralFailedCardsEachHoldTheirOwnAlert`, `AReadStillOutIsNotYetAnOutage` and
+`AFailedCardHoldsItsAlertWhileTheOthersKeepPolling` pin the partial failure: the
+per-card alert, its retry, where the outage starts, and the polling that goes on around
+it. The `…IsStillLoading` stories pin each card's skeleton, and
+`TheRecentLabelSaysLiveOnlyAfterTheFirstRead` the label.
 
 A polled screen that reads a time window keeps the window's name in the query key
 and works the bounds out inside the query function, with `windowBounds()` from
@@ -264,6 +293,16 @@ A _mutation_ that fails is a different surface: it is reported where the action
 was taken, not where the data would have been. For a destructive action that
 means inside the confirmation, which stays open so the message has somewhere to
 live — see [destructive actions](destructive-actions.md).
+
+A sheet reports its failure in two parts. `EditorSheet`'s `errorMessage` is the
+screen's own translated lead ("Could not create the key") and `errorDetail` is
+what the control plane said, read with `errorDetail()` from `ui/src/lib/toast.ts`.
+The server answers in English whatever the locale and the dashboard has no table
+to translate it with, so the lead keeps the sheet readable in every language and
+the server's words sit under it in mono, the way a failed toast and `LoadError`
+carry them. A sheet that passes only `errorMessage` renders one line as before;
+Account's mint sheet is the first to use both, and the other sheets follow as
+#2216 reaches them.
 
 ## One-shot feedback: toasts
 

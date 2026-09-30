@@ -9,7 +9,7 @@ import { PanelSkeleton, StatGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { StatCard } from "@/components/ui/stat-card";
+import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import {
   fetchAdaptiveRoutingPolicy,
   fetchAdaptiveRoutingTelemetry,
@@ -223,7 +223,7 @@ function AdaptiveDashboardScreen() {
         )
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={STAT_GRID}>
             <StatCard
               label={t("pages.adaptiveDashboard.stats.adaptiveRoutes")}
               value={fmt.number(routes.length)}

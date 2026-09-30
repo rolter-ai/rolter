@@ -15,8 +15,9 @@ use serde_json::{json, Value};
 
 use crate::analytics::{
     clamp_limit, client_or_503, keyset_predicate, next_keyset_cursor, parse_keyset_cursor,
-    query_failed, window_params, WindowQuery, WHERE_WINDOW,
+    query_failed, window_params, with_access, WindowQuery, WHERE_WINDOW,
 };
+use crate::analytics_access::{McpLogAccess, MCP_ROW_VISIBLE, PAYLOAD_VISIBLE};
 use crate::crud::{ApiError, ApiResult};
 use crate::ingest_failure::{self, Stream};
 use crate::rbac::{authorize_superadmin, Principal};
@@ -181,6 +182,10 @@ fn validate_filter(value: Option<&str>, label: &str) -> Result<(), String> {
 
 /// Build the keyset-paginated event list query.
 ///
+/// Rows are filtered to the caller's tenancy in the database, and a caller's
+/// own rows always pass (#1831). The list carries no tool arguments or results,
+/// so it needs no body mask.
+///
 /// The cursor bound comes from the shared [`keyset_predicate`], which the
 /// invocations list pages on too — one place owns the `OrZero` parse that an
 /// absent cursor depends on (#1177).
@@ -190,6 +195,7 @@ fn list_events_sql() -> String {
         "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
                 virtual_key_id, user_id, request_id, trace_id, error \
          from mcp_tool_call_logs where {WHERE_WINDOW} \
+           and {MCP_ROW_VISIBLE} \
            and ({{server:String}} = '' or server = {{server:String}}) \
            and ({{tool:String}} = '' or tool = {{tool:String}}) \
            and ({{transport:String}} = '' or transport = {{transport:String}}) \
@@ -202,13 +208,10 @@ fn list_events_sql() -> String {
 }
 
 async fn list_events(
-    principal: Principal,
+    McpLogAccess(access): McpLogAccess,
     State(state): State<ControlState>,
     Query(q): Query<McpLogsQuery>,
 ) -> Response {
-    if let Err(error) = authorize_superadmin(&principal, superadmin_cap!("mcp_log", Read)) {
-        return error.into_response();
-    }
     for (value, label) in [
         (q.server.as_deref(), "server"),
         (q.tool.as_deref(), "tool"),
@@ -253,7 +256,7 @@ async fn list_events(
     ] {
         params.push((format!("param_{name}"), value));
     }
-    match ch.query(&sql, &params).await {
+    match ch.query(&sql, &with_access(params, &access)).await {
         Ok(data) => {
             let next_cursor = next_keyset_cursor(&data, "event_id");
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
@@ -262,14 +265,35 @@ async fn list_events(
     }
 }
 
+/// The detail query. The two bodies are masked in the database for a caller
+/// below the `request_payload` floor at the row's scope, and `payload_withheld`
+/// says so, exactly as the invocation list does (#1820). The flag reads the
+/// table-qualified columns because an unqualified `arguments` in the same
+/// select would resolve to the masked alias and always report "nothing
+/// withheld".
+fn event_detail_sql() -> String {
+    format!(
+        "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
+                virtual_key_id, user_id, request_id, trace_id, \
+                if({PAYLOAD_VISIBLE}, arguments, '') as arguments, \
+                if({PAYLOAD_VISIBLE}, result, '') as result, \
+                toUInt8(not {PAYLOAD_VISIBLE} \
+                        and (notEmpty(mcp_tool_call_logs.arguments) \
+                             or notEmpty(mcp_tool_call_logs.result))) as payload_withheld, \
+                error \
+         from mcp_tool_call_logs \
+         where event_id = {{event_id:String}} and {MCP_ROW_VISIBLE} \
+         order by ts desc limit 1 format JSON"
+    )
+}
+
+/// One event. A row the caller may not see answers `404`, the same as one that
+/// does not exist, so an id cannot be probed across tenants.
 async fn event_detail(
-    principal: Principal,
+    McpLogAccess(access): McpLogAccess,
     State(state): State<ControlState>,
     Path(event_id): Path<String>,
 ) -> Response {
-    if let Err(error) = authorize_superadmin(&principal, superadmin_cap!("mcp_log", Read)) {
-        return error.into_response();
-    }
     if let Err(message) = validate_filter(Some(&event_id), "event_id") {
         return (
             StatusCode::BAD_REQUEST,
@@ -281,14 +305,8 @@ async fn event_detail(
         Ok(ch) => ch,
         Err(response) => return response,
     };
-    let sql = "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
-                      virtual_key_id, user_id, request_id, trace_id, arguments, result, error \
-               from mcp_tool_call_logs where event_id = {param_event_id:String} \
-               order by ts desc limit 1 format JSON";
-    match ch
-        .query(sql, &[("param_event_id".to_string(), event_id)])
-        .await
-    {
+    let params = with_access(vec![("param_event_id".to_string(), event_id)], &access);
+    match ch.query(&event_detail_sql(), &params).await {
         Ok(data) => match data.into_iter().next() {
             Some(row) => Json(row).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
@@ -298,13 +316,10 @@ async fn event_detail(
 }
 
 async fn summary(
-    principal: Principal,
+    McpLogAccess(access): McpLogAccess,
     State(state): State<ControlState>,
     Query(q): Query<WindowQuery>,
 ) -> Response {
-    if let Err(error) = authorize_superadmin(&principal, superadmin_cap!("mcp_log", Read)) {
-        return error.into_response();
-    }
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
         Err(response) => return response,
@@ -313,9 +328,12 @@ async fn summary(
         "select count() as calls, countIf(status != 'success') as failures, \
                 round(avg(latency_ms), 1) as avg_latency_ms, \
                 quantile(0.95)(latency_ms) as p95_latency_ms \
-         from mcp_tool_call_logs where {WHERE_WINDOW} format JSON"
+         from mcp_tool_call_logs where {WHERE_WINDOW} and {MCP_ROW_VISIBLE} format JSON"
     );
-    match ch.query(&sql, &window_params(&q)).await {
+    match ch
+        .query(&sql, &with_access(window_params(&q), &access))
+        .await
+    {
         Ok(data) => Json(json!({"data": data})).into_response(),
         Err(error) => query_failed("mcp log query failed", &error),
     }
@@ -398,6 +416,22 @@ mod tests {
         ] {
             assert!(sql.contains(param), "missing bound param {param}");
         }
+    }
+
+    #[test]
+    fn every_read_is_filtered_to_the_callers_reach() {
+        // list and summary share the row filter; the detail query adds the mask
+        let list = list_events_sql();
+        assert!(list.contains(&format!("and {MCP_ROW_VISIBLE}")));
+        let detail = event_detail_sql();
+        assert!(detail.contains(&format!("and {MCP_ROW_VISIBLE}")));
+        assert!(detail.contains(&format!(
+            "if({PAYLOAD_VISIBLE}, arguments, '') as arguments"
+        )));
+        assert!(detail.contains(&format!("if({PAYLOAD_VISIBLE}, result, '') as result")));
+        // the flag must read the column, not the masked alias of the same name
+        assert!(detail.contains("notEmpty(mcp_tool_call_logs.arguments)"));
+        assert!(detail.contains("{event_id:String}"));
     }
 
     #[test]

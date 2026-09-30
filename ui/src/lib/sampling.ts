@@ -74,3 +74,16 @@ export function parseSamplingPercent(text: string): SamplingInput {
   // is a surprise waiting in whatever reads it next
   return { ok: true, rate: percent === 0 ? 0 : percent / 100 };
 }
+
+/**
+ * A stored rate (0 to 1) as the percentage an edit form opens on.
+ *
+ * `0.07 * 100` is `7.000000000000001`, which no operator typed, so the product
+ * is cut to twelve significant digits first. That is a reading, not a
+ * round trip: a rate with more digits than that comes back from
+ * `parseSamplingPercent` slightly different, so a form that leaves the field
+ * as it opened sends the stored rate itself, not the parsed text.
+ */
+export function samplingPercentText(rate: number): string {
+  return String(Number((rate * 100).toPrecision(12)));
+}

@@ -26,6 +26,26 @@ honest — which is why both uncertain cases fall _open_.
 `crates/rolter-control/src/rbac_matrix.rs`, spelled exactly as the wire format
 spells it, so there is no second vocabulary to keep in step.
 
+## What `effective` answers per scope
+
+`allowed` is not one role applied to every row. Each capability is decided at
+the part of the queried chain its `scope` in `CAPABILITIES` names, which is
+exactly the chain its route's guard passes to `authorize`:
+
+| row `scope` | evaluated against    | so a membership held at… reaches it |
+| ----------- | -------------------- | ----------------------------------- |
+| `org`       | the org alone        | the org only                        |
+| `team`      | org + team           | the org, or that team               |
+| `project`   | org + team + project | the org, that team, or that project |
+
+A team admin asked at `(org, team, project)` therefore gets `route:create` (a
+team-scoped row) but not `provider:create` or `team:create` (org-scoped rows),
+which the guard would refuse with a 403. Custom-role grants are trimmed the
+same way, and `deployment` rows keep the whole chain because they name no
+tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
+`rbac_matrix.rs` walks every row against the guard's own decision, so the
+advisory answer cannot promise more than the guard grants (#1877).
+
 ## Three answers, not two
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:
@@ -129,9 +149,11 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   `MemoryRouter`.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
-  the cluster, connectors, alerting and the MCP logs are wrapped in
+  the cluster, connectors and alerting are wrapped in
   `superadminOnly()` (`ui/src/components/ForbiddenScreen.tsx`). A non-superadmin
-  never mounts them, so they send no request to be refused.
+  never mounts them, so they send no request to be refused. The MCP logs are
+  scoped on the server since #1831 (`mcp_log:read` is a viewer-level project
+  capability); the screen stays wrapped until its dashboard half lands.
 
 ## Disabled has to say why
 

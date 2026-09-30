@@ -39,12 +39,6 @@ export const NOT_COPY: AllowList = {
     datadog:
       "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",
   },
-  "src/pages/Limits.tsx": {
-    "{…} rpm":
-      "a rate unit named after the `rpm` field the limit is set through; the badge is notation",
-    "{…} tpm":
-      "a rate unit named after the `tpm` field the limit is set through; the badge is notation",
-  },
   "src/pages/Login.tsx": {
     rolter: "the product's name in the wordmark, spelled the same in every locale",
   },

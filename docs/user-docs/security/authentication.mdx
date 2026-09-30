@@ -166,6 +166,31 @@ picks up on its next config poll — no restart, no redeploy.
   </Accordion>
 </AccordionGroup>
 
+### Editing the lists
+
+Allowed origins, allowed headers, required headers and auth bypass routes are edited one entry per line. A comma is not a separator, so a required header value can contain commas (`x-ids: 1,2,3`).
+
+The dashboard checks every line against the rules the control plane applies when you save. An entry that fails stays in the field with its line number named under it, Save stays off until every entry passes, and nothing is sent in the meantime. An entry is never dropped to make a save go through.
+
+| List               | Each line must be                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| Allowed origins    | an exact `http://` or `https://` origin, with no wildcard, path, query, fragment or user info   |
+| Allowed headers    | a header name: letters, digits and the punctuation RFC 9110 allows in a token, no spaces        |
+| Required headers   | `name: value`, split at the first colon, with a valid header name and a value that is not empty |
+| Auth bypass routes | an exact path under `/v1/`, with no wildcard, placeholder, query, fragment or spaces            |
+
+One rule is the dashboard's own. The control plane stores required headers as a map, so a header named on two lines would keep only one of the two values. The dashboard refuses the second line instead of choosing for you, and compares names without regard to case, as the gateway does.
+
+### Saving a change that loosens security
+
+A save that turns off **Enforce virtual keys on inference**, turns off **Password protect the dashboard** or adds an **Auth bypass route** asks first. The dialog lists exactly those changes, says what each one means, and nothing is sent until you confirm. Cancelling keeps your edits in the form. A save that only tightens, such as a route removed or a header required, goes out at once.
+
+Save is enabled only while something differs from what was loaded. The cards you edited are marked **Edited**, and **Discard changes** puts every field back.
+
+### After you save
+
+The footer states when the save landed and which gateways run it. The control plane compares the config version each gateway last reported with the current one, the same `converged` flag the Cluster screen shows, and the footer counts the live gateways that match. A gateway applies a save on its next config poll, every 5 seconds by default and at once when Redis is configured. A gateway that has never identified itself to the control plane cannot be counted, and the footer says that instead of claiming it picked the change up.
+
 ## Error responses
 
 Rolter returns standard HTTP error codes for authentication and authorisation failures.
