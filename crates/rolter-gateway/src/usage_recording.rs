@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use crate::budgets::SpendRecorder;
 use crate::metrics::Metrics;
 use crate::rate_limits::TokenRecorder;
+use crate::sink_drain::SinkTasks;
 
 /// One unit of post-response accounting.
 pub enum UsageRecord {
@@ -53,6 +54,8 @@ impl UsageRecord {
 pub struct UsageRecorderSink {
     tx: Option<mpsc::Sender<UsageRecord>>,
     metrics: Option<Arc<Metrics>>,
+    /// stop handle for the workers; `None` on an inert sink
+    tasks: Option<Arc<SinkTasks>>,
 }
 
 impl UsageRecorderSink {
@@ -64,20 +67,42 @@ impl UsageRecorderSink {
         // queues use: each worker takes the next record and releases the lock
         // before awaiting its Redis round trip, so the workers overlap
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let tasks = Arc::new(SinkTasks::default());
         for _ in 0..workers.max(1) {
             let rx = rx.clone();
-            tokio::spawn(async move {
+            let stop = tasks.token();
+            tasks.track(tokio::spawn(async move {
                 loop {
-                    let Some(record) = ({ rx.lock().await.recv().await }) else {
-                        break; // every sender dropped
+                    let next = async { rx.lock().await.recv().await };
+                    let record = tokio::select! {
+                        record = next => record,
+                        // shutdown: close the shared receiver so the workers
+                        // apply what is queued and then see `None`. a worker
+                        // stopped mid-wait loses nothing, `recv` is cancel-safe
+                        _ = stop.cancelled() => {
+                            rx.lock().await.close();
+                            rx.lock().await.recv().await
+                        }
+                    };
+                    let Some(record) = record else {
+                        break; // every sender dropped, or drained at shutdown
                     };
                     record.apply().await;
                 }
-            });
+            }));
         }
         Self {
             tx: Some(tx),
             metrics: Some(metrics),
+            tasks: Some(tasks),
+        }
+    }
+
+    /// Apply every record still queued and stop the workers. Returns once they
+    /// have exited; the caller bounds the wait. A no-op on an inert sink.
+    pub async fn shutdown(&self) {
+        if let Some(tasks) = &self.tasks {
+            tasks.stop().await;
         }
     }
 

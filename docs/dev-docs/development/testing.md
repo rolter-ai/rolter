@@ -377,8 +377,11 @@ black-box harness can only approximate with sleeps:
 - **graceful SIGTERM drain** — a real `rolter-gateway` child process is sent
   `SIGTERM` while a request is pinned upstream. The in-flight request must still
   return `200`, new connections must be refused, and the process must exit `0`.
+- **sink flush on SIGTERM** — with `flush_ms` set to an hour, a finished request's
+  request-log and health-event rows must still reach a ClickHouse stand-in
+  before the child exits, proving the shutdown sink drain (#1924).
 
-Both use a mock upstream that blocks on a semaphore the test owns, so every step
+All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:
 

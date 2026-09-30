@@ -23,6 +23,7 @@ use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::metrics::Metrics;
 
@@ -985,6 +986,8 @@ pub struct LogSink {
     /// bounded sink for post-response budget/rate-limit recording; inert until
     /// [`LogSink::with_usage_recorders`] attaches one
     usage_recorders: crate::usage_recording::UsageRecorderSink,
+    /// stop handle for the request-log writer; `None` when logging is disabled
+    tasks: Option<Arc<crate::sink_drain::SinkTasks>>,
 }
 
 impl LogSink {
@@ -996,6 +999,16 @@ impl LogSink {
             metrics,
             usage_buffers: UsageBufferPool::default(),
             usage_recorders: crate::usage_recording::UsageRecorderSink::default(),
+            tasks: None,
+        }
+    }
+
+    /// Flush the batch and queue the request-log writer holds and stop it.
+    /// Returns once it has exited; the caller bounds the wait. A no-op on a
+    /// disabled sink.
+    pub async fn shutdown(&self) {
+        if let Some(tasks) = &self.tasks {
+            tasks.stop().await;
         }
     }
 
@@ -1051,13 +1064,15 @@ impl LogSink {
             flush,
             metrics: metrics.clone(),
         };
-        tokio::spawn(writer.run(rx));
+        let tasks = Arc::new(crate::sink_drain::SinkTasks::default());
+        tasks.track(tokio::spawn(writer.run(rx, tasks.token())));
         Self {
             tx: Some(tx),
             health_events: crate::health_events::HealthEventSink::disabled(metrics.clone()),
             metrics,
             usage_buffers: UsageBufferPool::default(),
             usage_recorders: crate::usage_recording::UsageRecorderSink::default(),
+            tasks: Some(tasks),
         }
     }
 
@@ -1151,12 +1166,19 @@ struct BatchWriter {
 }
 
 impl BatchWriter {
-    async fn run(self, mut rx: mpsc::Receiver<RequestLog>) {
+    async fn run(self, mut rx: mpsc::Receiver<RequestLog>, stop: CancellationToken) {
         let mut batch: Vec<RequestLog> = Vec::with_capacity(self.batch_max);
         let mut ticker = tokio::time::interval(self.flush);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut stopping = false;
         loop {
             tokio::select! {
+                // shutdown: closing the receiver keeps what is queued readable
+                // and then yields `None`, so the arm below flushes it all
+                _ = stop.cancelled(), if !stopping => {
+                    stopping = true;
+                    rx.close();
+                }
                 maybe = rx.recv() => match maybe {
                     Some(record) => {
                         batch.push(record);
