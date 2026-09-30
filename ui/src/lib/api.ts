@@ -432,6 +432,15 @@ export interface InvocationsQuery extends AnalyticsWindow {
   /** customer ids to narrow to; omitted means every customer */
   customer?: string[];
   status?: "all" | "error" | "success";
+  /**
+   * The `x-request-id` the gateway returned to the client, matched exactly
+   * (#1861). Sent without a `since`, it searches every retained row rather than
+   * the default window, and it combines with every other filter, so a lookup
+   * leaves the rest out.
+   */
+  request_id?: string;
+  /** a W3C trace id, matched exactly; searches every retained row the same way */
+  trace_id?: string;
   limit?: number;
   /**
    * The previous page's `next_cursor`, handed back unchanged; omitted for the
@@ -463,6 +472,8 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.business_unit?.length) params.set("business_unit", query.business_unit.join(","));
   if (query.customer?.length) params.set("customer", query.customer.join(","));
   if (query.status) params.set("status", query.status);
+  if (query.request_id) params.set("request_id", query.request_id);
+  if (query.trace_id) params.set("trace_id", query.trace_id);
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();

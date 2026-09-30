@@ -102,11 +102,15 @@ Logs. Then records — virtual keys, providers and routes in the current scope,
 by name — each labelled with what it is, opening the screen that lists it. With
 nothing typed, the palette offers the screens you opened last.
 
+Paste a request ID or a trace ID and, when nothing else matches it, the palette
+offers **Open request … in LLM Logs**, which opens the log on that id. See
+[Finding one request by its id](/observability/logs-and-cost#finding-one-request-by-its-id).
+
 Arrow keys move the selection, Enter opens it, Escape closes the palette and
 puts focus back where it was. The magnifier at the bottom of the rail opens the
 same palette with the mouse. The palette only searches what your account may
 read, and only the record lists the dashboard already loads — it is not a
-full-text search over logs or requests.
+full-text search over logs or requests. An id is looked up exactly, not searched.
 
 ## The scope switcher
 

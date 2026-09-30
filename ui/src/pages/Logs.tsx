@@ -6,6 +6,8 @@ import {
   Filter,
   FilterX,
   ScrollText,
+  Search,
+  SearchX,
   X,
 } from "lucide-react";
 import * as React from "react";
@@ -22,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
@@ -39,6 +42,7 @@ import type { CodeLanguage } from "@/lib/code";
 import { useCurrencyCode } from "@/lib/currency";
 import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
+import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
@@ -89,7 +93,7 @@ function readStatus(raw: string | null): StatusFilter {
   return raw === "error" || raw === "success" ? raw : "all";
 }
 
-type FilterParam = "status" | "model" | "business_unit" | "customer";
+type FilterParam = "status" | "model" | "business_unit" | "customer" | "request_id" | "trace_id";
 
 /**
  * The rail's filters, kept in the address rather than in component state
@@ -100,6 +104,10 @@ type FilterParam = "status" | "model" | "business_unit" | "customer";
  * plane's own names, so the address reads like the query the screen sends.
  * Every write replaces the history entry, so the back button leaves the screen
  * instead of stepping back through each click in the rail.
+ *
+ * The id a reader pasted lives there too (#1861), as `request_id` or
+ * `trace_id`, so `/logs?request_id=…` opens that request. An address that
+ * names both reads as the request id, the narrower of the two.
  */
 function useLogFilters() {
   const [params, setParams] = useSearchParams();
@@ -107,10 +115,21 @@ function useLogFilters() {
   const model = params.get("model") ?? "";
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
+  const requestId = (params.get("request_id") ?? "").trim();
+  const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
   // changed filter to anything that depends on it
   const units = React.useMemo(() => unitParam.split(",").filter(Boolean), [unitParam]);
   const customers = React.useMemo(() => customerParam.split(",").filter(Boolean), [customerParam]);
+  const lookup = React.useMemo<LogLookup | null>(
+    () =>
+      requestId
+        ? { kind: "request_id", value: requestId }
+        : traceId
+          ? { kind: "trace_id", value: traceId }
+          : null,
+    [requestId, traceId],
+  );
   const update = React.useCallback(
     (patch: Partial<Record<FilterParam, string>>) =>
       setParams(
@@ -132,13 +151,23 @@ function useLogFilters() {
     model,
     units,
     customers,
+    /** the id being looked up, if any */
+    lookup,
     /** changes whenever any filter does */
-    key: [status, model, unitParam, customerParam].join("|"),
+    key: [status, model, unitParam, customerParam, lookup?.kind, lookup?.value].join("|"),
     setStatus: (next: StatusFilter) => update({ status: next === "all" ? "" : next }),
     setModel: (next: string) => update({ model: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
     clear: () => update({ status: "", model: "", business_unit: "", customer: "" }),
+    setLookup: (next: LogLookup | null) =>
+      update({
+        request_id: next?.kind === "request_id" ? next.value : "",
+        trace_id: next?.kind === "trace_id" ? next.value : "",
+        // a new lookup starts from the whole log: the rail's picks would
+        // narrow it without the field saying so
+        ...(next ? { status: "", model: "", business_unit: "", customer: "" } : {}),
+      }),
   };
 }
 
@@ -157,7 +186,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const filters = useLogFilters();
-  const { status, model, units: unitSel, customers: customerSel } = filters;
+  const { status, model, units: unitSel, customers: customerSel, lookup } = filters;
+  const lookupKey = lookup ? `${lookup.kind}:${lookup.value}` : "";
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
   // "previous" has to return to a cursor it was handed rather than compute a
@@ -206,20 +236,29 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   useErrorState(!!models.error, "logs");
 
   React.useEffect(() => setCursors([]), [filters.key]);
+  // the drawer belongs to the lookup it was opened by
+  React.useEffect(() => setSelected(null), [lookupKey]);
 
   const query = useQuery({
     queryKey: [
       "invocations",
-      LOG_WINDOW,
+      lookup ? "lookup" : LOG_WINDOW,
       status,
       model,
       unitSel.join(","),
       customerSel.join(","),
       cursors[page - 1] ?? "",
+      lookupKey,
     ],
     queryFn: () =>
       fetchInvocationsPage({
-        ...windowBounds(LOG_WINDOW),
+        // an id names one request wherever it sits in the retained log, so a
+        // lookup carries no window: the control plane reads an id with no
+        // `since` as every retained row, and a 24 hour bound would answer an
+        // older request with an empty page that reads as "no such request"
+        ...(lookup ? {} : windowBounds(LOG_WINDOW)),
+        request_id: lookup?.kind === "request_id" ? lookup.value : undefined,
+        trace_id: lookup?.kind === "trace_id" ? lookup.value : undefined,
         model: model || undefined,
         // the rail allows several of each, so the whole selection travels
         business_unit: unitSel.length ? unitSel : undefined,
@@ -229,7 +268,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         cursor: cursors[page - 1],
       }),
     retry: (n, error) => !isUnavailable(error) && n < 2,
-    placeholderData: (prev) => prev,
+    // the page on screen stays up while the next one loads, but only when it
+    // answers the same question: rows from the feed are not a lookup's rows,
+    // and a lookup holds nothing back while it is out
+    placeholderData: (prev, prevQuery) =>
+      !lookup && prevQuery?.queryKey[1] === LOG_WINDOW ? prev : undefined,
+    // a lookup reads every retained row, so it is asked again on request
+    // (Find) rather than on a timer or on every return to the tab
+    refetchOnWindowFocus: !lookup,
     // a query that has never held data goes back to pending on every refetch,
     // which unmounts its error: polling one that failed swapped the alert for
     // a skeleton and back every cycle, and a screen reader heard the alert
@@ -237,8 +283,49 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     // retry button. a failure with rows already on screen keeps its error
     // through a refetch, so that one goes on polling and says it is retrying
     refetchInterval: (q) =>
-      streaming && !(q.state.status === "error" && q.state.data === undefined) ? pollMs : false,
+      streaming && !lookup && !(q.state.status === "error" && q.state.data === undefined)
+        ? pollMs
+        : false,
   });
+
+  // the one row a lookup finds is what was asked for, so its drawer opens. it
+  // opens once per lookup: a refetch, or closing the drawer, must not bring it
+  // back. Find on the lookup already showing clears the mark to ask again
+  const opened = React.useRef("");
+  const found = query.data?.data;
+  React.useEffect(() => {
+    if (!lookupKey) {
+      opened.current = "";
+      return;
+    }
+    if (!query.isSuccess || opened.current === lookupKey) return;
+    opened.current = lookupKey;
+    if (found?.length === 1) setSelected(found[0]);
+  }, [lookupKey, query.isSuccess, query.dataUpdatedAt, found]);
+
+  // what the field shows follows the address, which a link or the command
+  // palette can change from outside
+  const [draft, setDraft] = React.useState(lookup?.value ?? "");
+  React.useEffect(() => setDraft(lookup?.value ?? ""), [lookup?.value]);
+  const lookupField = React.useRef<HTMLInputElement>(null);
+  const submitLookup = (event: React.FormEvent) => {
+    event.preventDefault();
+    const next = parseLogLookup(draft);
+    if (!next) return;
+    // a traceparent pasted whole is shown as the trace id read out of it
+    setDraft(next.value);
+    if (next.kind === lookup?.kind && next.value === lookup.value) {
+      opened.current = "";
+      void query.refetch();
+      return;
+    }
+    filters.setLookup(next);
+  };
+  const clearLookup = () => {
+    setDraft("");
+    filters.setLookup(null);
+    lookupField.current?.focus();
+  };
 
   // every filter is applied by the server now (#1247). filtering the page
   // here instead made `limit` mean something else: a unit that served 3 of
@@ -302,15 +389,25 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       }
     : query.isPending
       ? { dot: "bg-[color:var(--text-subtle)]", label: t("pages.logs.feed.loading") }
-      : {
-          dot: streaming
-            ? "rl-pulse bg-[color:var(--status-success)]"
-            : "bg-[color:var(--text-subtle)]",
-          label: `${streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} · ${t(
-            "pages.logs.requests",
-            { count: rows.length },
-          )}`,
-        };
+      : lookup
+        ? {
+            // a lookup is an answer, not a feed, so nothing pulses
+            dot: "bg-[color:var(--text-subtle)]",
+            label: `${t(
+              lookup.kind === "trace_id"
+                ? "pages.logs.lookup.feedTrace"
+                : "pages.logs.lookup.feedRequest",
+            )} · ${t("pages.logs.requests", { count: rows.length })}`,
+          }
+        : {
+            dot: streaming
+              ? "rl-pulse bg-[color:var(--status-success)]"
+              : "bg-[color:var(--text-subtle)]",
+            label: `${streaming ? t("pages.logs.streaming") : t("pages.logs.paused")} · ${t(
+              "pages.logs.requests",
+              { count: rows.length },
+            )}`,
+          };
 
   const ms = (value: number | string) =>
     t("analytics.ms", { value: fmt.number(Math.round(num(value))) });
@@ -514,7 +611,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-none items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3">
+        {/* wraps: at 375px in russian the feed's own words, the pause button and the
+            pager do not fit one row, and the label was squeezed under the button */}
+        <div className="flex flex-none flex-wrap items-center gap-x-2.5 gap-y-2 px-[18px] py-3">
           <button
             type="button"
             onClick={() => setFiltersOpen((v) => !v)}
@@ -532,9 +631,12 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {feed.label}
           </span>
           <div className="ml-auto flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
-              {streaming ? t("pages.logs.pause") : t("pages.logs.resume")}
-            </Button>
+            {/* a lookup does not stream, so there is nothing to pause */}
+            {!lookup && (
+              <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
+                {streaming ? t("pages.logs.pause") : t("pages.logs.resume")}
+              </Button>
+            )}
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -562,6 +664,49 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             </div>
           </div>
         </div>
+
+        {/* the id a client was handed, pasted here: a request id or a trace
+            id, told apart by its shape. it lives in the address like the
+            rail's filters, and Clear (or the empty result's button) returns
+            to the feed (#1861) */}
+        <form
+          role="search"
+          aria-label={t("pages.logs.lookup.label")}
+          onSubmit={submitLookup}
+          className="flex flex-none items-center gap-2 border-b border-[color:var(--border-subtle)] px-[18px] pb-3"
+        >
+          <div className="relative min-w-0 flex-1 sm:max-w-md">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[color:var(--text-subtle)]"
+            />
+            <Input
+              ref={lookupField}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label={t("pages.logs.lookup.label")}
+              placeholder={t("pages.logs.lookup.placeholder")}
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              enterKeyHint="search"
+              className="h-8 pl-8 pr-8 font-mono text-xs placeholder:font-sans"
+            />
+            {draft && (
+              <button
+                type="button"
+                aria-label={t("pages.logs.lookup.clearField")}
+                onClick={clearLookup}
+                className="absolute right-0.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-[color:var(--text-subtle)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <X aria-hidden className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <Button type="submit" size="sm" variant="outline" disabled={!draft.trim()}>
+            {t("pages.logs.lookup.find")}
+          </Button>
+        </form>
 
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full min-w-[880px] table-fixed border-collapse text-sm">
@@ -715,7 +860,34 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               }
             />
           )}
-          {query.isSuccess && rows.length === 0 && page === 0 && (
+          {/* an id that matches nothing and an id the caller may not read are the
+              same answer: the control plane filters by visibility in the query,
+              so it cannot say which, and neither does this (#1861) */}
+          {query.isSuccess && rows.length === 0 && page === 0 && lookup && (
+            <EmptyState
+              uxTarget="request-logs"
+              icon={<SearchX />}
+              title={t("pages.logs.lookup.missTitle")}
+              description={
+                filterCount
+                  ? t("pages.logs.lookup.missFilteredBody")
+                  : t("pages.logs.lookup.missBody")
+              }
+              actions={
+                <>
+                  <Button variant="outline" onClick={clearLookup}>
+                    {t("pages.logs.lookup.clear")}
+                  </Button>
+                  {filterCount > 0 && (
+                    <Button variant="outline" onClick={filters.clear}>
+                      {t("pages.logs.clearFilters")}
+                    </Button>
+                  )}
+                </>
+              }
+            />
+          )}
+          {query.isSuccess && rows.length === 0 && page === 0 && !lookup && (
             <EmptyState
               uxTarget="request-logs"
               icon={<ScrollText />}

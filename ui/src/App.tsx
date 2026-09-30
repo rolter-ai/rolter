@@ -452,7 +452,7 @@ function Shell() {
         onOpenChange={setPaletteOpen}
         nav={visible}
         recent={recent}
-        onNavigate={(k) => navigate(`/${k}`)}
+        onNavigate={(k, search) => navigate(`/${k}${search ?? ""}`)}
       />
       <ShortcutHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <div className="flex min-h-0 flex-1">

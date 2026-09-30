@@ -256,7 +256,7 @@ The filters are part of the page's address, so a reload keeps them and a copied 
 /logs?status=error&model=gpt-4o&business_unit=<unit-id>
 ```
 
-A link can outlive what it names. A status value the API does not know is ignored, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address.
+A link can outlive what it names. A status value the API does not know is ignored, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
 
 ## Paging the invocation log
 
@@ -296,6 +296,29 @@ curl -H "Authorization: Bearer $ROLTER_TOKEN" \
 ```
 
 The answer is that one row, with its status, error, tokens, cost, latency and — if your role may read them — the captured bodies. `trace_id` looks a request up by its W3C trace id the same way, for when you start from a span in your tracing backend instead. Without a `since`, a lookup by either id searches every row still retained rather than the default last 7 days, so an older request is found rather than answered with an empty page. The lookup obeys the same visibility as the rest of the log: an id from a project you cannot read returns nothing.
+
+### Looking a request up in the dashboard
+
+**LLM Logs** has a field under its toolbar for the same lookup. Paste the id and press **Find**. A 32-character lowercase hex string is a trace id, and so is a whole `traceparent` header value (Rolter reads the trace id out of it); anything else is taken as a request id. A request id is matched exactly.
+
+- **One row** comes back: its detail drawer opens on it. This is the usual result for a request id.
+- **Several rows** share the trace id: they are the list, and the toolbar says it is showing a request ID or trace ID lookup. Click a row to open it.
+- **Nothing** comes back: the table says **No request found**. The dashboard cannot tell an id that does not exist from one in a project your role cannot read, and neither can the API, so the message names both.
+
+A lookup searches every retained row, not the last 24 hours, and leaves out whatever the filter rail held: starting one clears those filters, so they cannot hide the request. It does not stream. **Clear lookup** (or the cross in the field) goes back to the live feed.
+
+The lookup is part of the page's address, so a link opens on the request:
+
+```text
+/logs?request_id=3f2c9a1e-...
+/logs?trace_id=0af7651916cd43dd8448eb211c80319c
+```
+
+The command palette does the same from anywhere in the dashboard. Open it with `⌘K` (`Ctrl-K` on Windows and Linux), paste the id, and pick **Open request … in LLM Logs** (or **Open trace …**). The offer appears only when no screen or record matches what you typed, and only for an account that can open LLM Logs. A word has to look like an id to be offered: at least 8 characters, no spaces, with a digit in it.
+
+<Note>
+  A request id that is exactly 32 lowercase hex characters, such as a UUID with its dashes removed, reads as a trace id. Use `/logs?request_id=…` to look it up as a request id.
+</Note>
 
 ### Reading a request in LLM Logs
 
