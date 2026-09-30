@@ -8,6 +8,8 @@ import {
   clickWhenEnabled,
   confirmation,
   confirmDestructive,
+  expectAllowed,
+  expectClosesWithoutPrompting,
   expectForbidden,
   expectLoadError,
   expectNoFalseEmpty,
@@ -617,12 +619,23 @@ export const CollectorConfigError: Story = {
 // `Forbidden` story cannot do, since it stubs the 403 itself.
 export const RefusedToAnAdmin: Story = {
   render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} role="admin" />,
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+    // no card, so no edit on it either
+    await expect(
+      within(canvasElement).queryByRole("button", { name: /Edit connector/ }),
+    ).toBeNull();
+  },
 };
 
 export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} role="viewer" />,
-  play: async ({ canvasElement }) => expectForbidden(canvasElement),
+  play: async ({ canvasElement }) => {
+    await expectForbidden(canvasElement);
+    await expect(
+      within(canvasElement).queryByRole("button", { name: /Edit connector/ }),
+    ).toBeNull();
+  },
 };
 
 // the add sheet: sampling is typed as a percentage and read as typed (#2104).
@@ -837,6 +850,384 @@ export const SaysANewConnectorIsOffAndWhatToDoNext: Story = {
     await expect(next).toBeVisible();
     await expect(next).toHaveTextContent(/Test delivery/);
     await expect(next).toHaveTextContent(/switch/);
+  },
+};
+
+// the edit sheet (#2101): a connector could only be deleted and added again,
+// which took its delivery history with it and left a window with no export
+// while a rotated token was being typed in. an edit is one PUT to the same id.
+// the control plane replaces the whole row from the body, so the fields the
+// sheet has no control for go back as found, and it reads an absent
+// `managed_auth_secret` as "keep the stored one"
+interface SentUpdate {
+  name: string;
+  kind: string;
+  endpoint: string;
+  enabled: boolean;
+  sampling_rate: number;
+  auth_secret_ref: string | null;
+  managed_auth_secret?: string;
+}
+
+const editing = (list: ConnectorRow[] = CONNECTORS) =>
+  recording(async (_input, init) => (init?.method === "PUT" ? json(list[0]) : json(list)));
+
+/** Open the edit sheet for `name` and wait for it to be filled in. */
+async function openEditSheet(
+  canvasElement: HTMLElement,
+  name = "signoz",
+  label = `Edit connector ${name}`,
+  copy = en.pages.connectors,
+) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getByText(name)).toBeVisible());
+  await clickWhenEnabled(canvasElement, label);
+  const form = within(await within(document.body).findByRole("dialog", { name: label }));
+  // the sheet seeds its rows from an effect, a step after it opens
+  await waitFor(() => expect(form.getByLabelText(copy.form.name)).toHaveValue(name));
+  return form;
+}
+
+const keepsSecret = editing();
+
+export const EditsAConnectorInPlaceKeepingItsSecret: Story = {
+  render: () => <Harness fetchStub={keepsSecret.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement);
+
+    // the row as stored, with the rate read as a percentage
+    await expect(form.getByLabelText(copy.form.endpoint)).toHaveValue(
+      "https://collector.example.com/v1/logs",
+    );
+    await expect(form.getByLabelText(copy.form.sampling)).toHaveValue(100);
+    // the stored secret is never read back, and the field says what a blank does
+    const secret = form.getByLabelText(copy.form.secretEdit);
+    await expect(secret).toHaveValue("");
+    await expect(form.getByText(copy.form.secretKeepHint)).toBeVisible();
+    // `enabled` belongs to the card's switch: the sheet has no start switch
+    await expect(form.queryByRole("switch")).toBeNull();
+
+    const endpoint = form.getByLabelText(copy.form.endpoint);
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://collector.example.com/v2/logs");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+
+    const body = await keepsSecret.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    // exactly these keys: no `managed_auth_secret`, so the stored one stays, and
+    // the switch goes back as it was found rather than as a create would send it
+    await expect(body).toEqual({
+      name: "signoz",
+      kind: "otlp_http",
+      endpoint: "https://collector.example.com/v2/logs",
+      enabled: true,
+      sampling_rate: 1,
+      auth_secret_ref: null,
+    });
+    await expect(body).not.toHaveProperty("managed_auth_secret");
+    // the same row, not a new one and not the old one gone
+    keepsSecret.expectNotSent("POST", "/api/v1/connectors");
+    keepsSecret.expectNotSent("DELETE", "/connectors");
+    await expectSheetClosed();
+    // the card keeps the health the last test recorded, which now describes
+    // the old endpoint, so the confirmation says to test again
+    await expectToast(canvasElement, /health still describes the old endpoint or secret/);
+  },
+};
+
+const renames = editing();
+
+// nothing about where the records go changed, so there is nothing to test again
+export const EditingOnlyTheNameDoesNotAskForANewTest: Story = {
+  render: () => <Harness fetchStub={renames.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const canvas = within(canvasElement);
+    const form = await openEditSheet(canvasElement);
+    const name = form.getByLabelText(copy.form.name);
+    await userEvent.clear(name);
+    await userEvent.type(name, "signoz-eu");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+
+    const body = await renames.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body).toMatchObject({ name: "signoz-eu", sampling_rate: 1, enabled: true });
+    await expectToast(canvasElement, /signoz-eu updated\./);
+    await expect(canvas.queryByText(/health still describes/)).toBeNull();
+  },
+};
+
+const replaces = editing();
+
+export const ReplacesTheSecretWhenOneIsTyped: Story = {
+  render: () => <Harness fetchStub={replaces.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement);
+    const secret = form.getByLabelText(copy.form.secretEdit);
+    await userEvent.type(secret, "rotated-token");
+    // said before the save, not found out after it
+    await expect(await form.findByText(copy.form.secretReplaceHint)).toBeVisible();
+    await expect(form.queryByText(copy.form.secretKeepHint)).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await replaces.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body).toEqual({
+      name: "signoz",
+      kind: "otlp_http",
+      endpoint: "https://collector.example.com/v1/logs",
+      enabled: true,
+      sampling_rate: 1,
+      auth_secret_ref: null,
+      managed_auth_secret: "rotated-token",
+    });
+    replaces.expectNotSent("DELETE", "/connectors");
+    await expectSheetClosed();
+    // the new credential has not been tried, whatever the card said before
+    await expectToast(canvasElement, /health still describes the old endpoint or secret/);
+  },
+};
+
+const blankSecret = editing();
+
+// the control plane refuses an empty `managed_auth_secret`, and a field of
+// spaces is empty to a person, so it is left out rather than sent to be refused
+export const ASecretOfSpacesIsNotSent: Story = {
+  render: () => <Harness fetchStub={blankSecret.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement);
+    await userEvent.type(form.getByLabelText(copy.form.secretEdit), "   ");
+    await expect(form.getByText(copy.form.secretKeepHint)).toBeVisible();
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await blankSecret.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body).not.toHaveProperty("managed_auth_secret");
+  },
+};
+
+const moves = editing();
+
+// unlike an alert channel, a connector keeps its stored secret when the
+// endpoint moves to another origin, so the sheet says the secret would go to the
+// new endpoint rather than promising it is dropped. the body is the proof: a
+// save with the field blank carries no secret, and the control plane keeps the
+// one it has
+export const SaysWhatBecomesOfTheSecretWhenTheEndpointMoves: Story = {
+  render: () => <Harness fetchStub={moves.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.form;
+    const form = await openEditSheet(canvasElement);
+    const endpoint = form.getByLabelText(en.pages.connectors.form.endpoint);
+
+    // another path on the same origin changes nothing about the secret
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://collector.example.com/other");
+    await expect(form.getByText(copy.secretKeepHint)).toBeVisible();
+    await expect(form.queryByText(copy.secretMovesHint)).toBeNull();
+
+    // another host does
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://collector.example.net/v1/logs");
+    await expect(form.getByText(copy.secretMovesHint)).toBeVisible();
+    await expect(form.queryByText(copy.secretKeepHint)).toBeNull();
+
+    // typing the new endpoint's own secret settles it
+    const secret = form.getByLabelText(copy.secretEdit);
+    await userEvent.type(secret, "other-token");
+    await expect(form.getByText(copy.secretReplaceHint)).toBeVisible();
+    await expect(form.queryByText(copy.secretMovesHint)).toBeNull();
+    await userEvent.clear(secret);
+    await expect(form.getByText(copy.secretMovesHint)).toBeVisible();
+
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await moves.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body.endpoint).toBe("https://collector.example.net/v1/logs");
+    await expect(body).not.toHaveProperty("managed_auth_secret");
+  },
+};
+
+// a connector with no stored secret has nothing to keep, drop or send
+const PRECISE = connector({
+  id: "c-5",
+  name: "precise",
+  enabled: false,
+  // more digits than the percentage field shows
+  sampling_rate: 0.123456789012345,
+  auth_secret_ref: "vault:kv/otlp/token",
+  auth_secret_configured: false,
+  health_status: "unknown",
+  health_checked_at: null,
+});
+const untouched = editing([PRECISE, ...CONNECTORS]);
+
+export const AnEditSendsBackWhatItDidNotChange: Story = {
+  render: () => <Harness fetchStub={untouched.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement, "precise");
+    await expect(form.getByText(copy.form.secretNoneHint)).toBeVisible();
+
+    const name = form.getByLabelText(copy.form.name);
+    await userEvent.clear(name);
+    await userEvent.type(name, "precise-2");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+
+    const body = await untouched.expectSentBody<SentUpdate>("PUT", "/connectors/c-5");
+    // the rate the field rounded for display goes back exactly as stored
+    await expect(body.sampling_rate).toBe(0.123456789012345);
+    // a switched-off connector stays off, and the external reference is not
+    // dropped by a PUT that would otherwise replace it with nothing
+    await expect(body.enabled).toBe(false);
+    await expect(body.auth_secret_ref).toBe("vault:kv/otlp/token");
+    await expect(body).not.toHaveProperty("managed_auth_secret");
+    // never tested, so its `unknown` health does not describe anything old
+    await expectToast(canvasElement, /precise-2 updated\./);
+  },
+};
+
+const resamples = editing();
+
+export const EditsTheSamplingRate: Story = {
+  render: () => <Harness fetchStub={resamples.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.form;
+    const form = await openEditSheet(canvasElement);
+    const sampling = form.getByLabelText(copy.sampling);
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "25");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await resamples.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body.sampling_rate).toBe(0.25);
+  },
+};
+
+const parks = editing();
+
+// 0 is a rate, on an edit as on a create: it parks the connector without
+// deleting it
+export const EditingTheSamplingRateToZeroIsKept: Story = {
+  render: () => <Harness fetchStub={parks.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.form;
+    const form = await openEditSheet(canvasElement);
+    const sampling = form.getByLabelText(copy.sampling);
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "0");
+    await expect(sampling).not.toHaveAttribute("aria-invalid", "true");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await parks.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body.sampling_rate).toBe(0);
+  },
+};
+
+const refusedSampling = editing();
+
+export const EditRefusesASamplingRateOutsideZeroToOneHundred: Story = {
+  render: () => <Harness fetchStub={refusedSampling.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.form;
+    const form = await openEditSheet(canvasElement);
+    const sampling = form.getByLabelText(copy.sampling);
+    const save = form.getByRole("button", { name: en.common.save });
+
+    await userEvent.clear(sampling);
+    await userEvent.type(sampling, "150");
+    await expect(await form.findByText(copy.samplingRange)).toBeVisible();
+    await expect(sampling).toHaveAttribute("aria-invalid", "true");
+    await expect(sampling).toHaveAccessibleDescription(copy.samplingRange);
+    await expect(save).toBeDisabled();
+
+    await userEvent.clear(sampling);
+    await expect(await form.findByText(copy.samplingInvalid)).toBeVisible();
+    await expect(save).toBeDisabled();
+    refusedSampling.expectNotSent("PUT", "/connectors/c-1");
+
+    await userEvent.type(sampling, "25");
+    await waitFor(() => expect(save).toBeEnabled());
+  },
+};
+
+const rejected = recording(async (_input, init) =>
+  init?.method === "PUT"
+    ? json({ error: { message: "endpoint must be an http(s) URL" } }, 400)
+    : json(CONNECTORS),
+);
+
+// the control plane can still refuse what the form let through. the sheet stays
+// open on the draft with the reason in it, and the toast names the connector
+export const ARefusedEditKeepsTheSheetOpen: Story = {
+  render: () => <Harness fetchStub={rejected.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement);
+    const endpoint = form.getByLabelText(copy.form.endpoint);
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "collector.example.com");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+
+    await rejected.expectSent("PUT", "/connectors/c-1");
+    await expect(await form.findByText(/endpoint must be an http\(s\) URL/)).toBeVisible();
+    await expectToast(canvasElement, /Could not save signoz/, "error");
+    // still the draft the operator typed, in the sheet they typed it in
+    await expect(form.getByLabelText(copy.form.endpoint)).toHaveValue("collector.example.com");
+    await expect(form.getByRole("button", { name: en.common.save })).toBeEnabled();
+  },
+};
+
+// the save is on the wire: the button locks, so a second press cannot send a
+// second PUT
+export const SavingAnEditLocksTheSheet: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (_input, init) =>
+        init?.method === "PUT" ? new Promise<Response>(() => {}) : json(CONNECTORS)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const form = await openEditSheet(canvasElement);
+    await userEvent.type(form.getByLabelText(en.pages.connectors.form.name), "-2");
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    await waitFor(() => expect(form.getByRole("button", { name: en.common.save })).toBeDisabled());
+  },
+};
+
+// an edit sheet nobody touched closes without asking, one with a draft asks,
+// and the next connector opened starts from its own row rather than from the
+// draft that was thrown away
+export const AnEditedSheetPromptsBeforeDiscarding: Story = {
+  render: () => <Harness fetchStub={async () => json(CONNECTORS)} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    let form = await openEditSheet(canvasElement);
+    await expectClosesWithoutPrompting();
+
+    form = await openEditSheet(canvasElement);
+    await userEvent.type(form.getByLabelText(copy.form.name), "-draft");
+    await userEvent.click(form.getByRole("button", { name: en.common.cancel }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
+
+    form = await openEditSheet(canvasElement, "honeycomb");
+    await expect(form.getByLabelText(copy.form.endpoint)).toHaveValue(
+      "https://collector.example.com/v1/logs",
+    );
+    await expect(form.getByLabelText(copy.form.sampling)).toHaveValue(10);
+    // honeycomb has no secret, so its hint is the one for that
+    await expect(form.getByText(copy.form.secretNoneHint)).toBeVisible();
+    await expect(form.queryByText(copy.form.secretKeepHint)).toBeNull();
+  },
+};
+
+// the edit takes the authority the switch beside it does. connectors are
+// superadmin-only at every action, so a lesser caller is refused the whole
+// screen before a card renders, and the superadmin is the one role that
+// reaches the control
+export const EditIsOfferedToASuperadmin: Story = {
+  render: () => <Harness fetchStub={async () => json(CONNECTORS)} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit connector signoz");
+    await expectAllowed(canvasElement, "Edit connector honeycomb");
+    await expectAllowed(canvasElement, "Edit connector datadog-staging");
   },
 };
 
@@ -1159,5 +1550,41 @@ export const CollectorConfigAllSwitchedOffInRussianAtMobile: Story = {
     await expect(body).toBeVisible();
     await expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
     await expectNoHorizontalOverflow();
+  },
+};
+
+const editsInRussian = editing();
+
+// the edit sheet in Russian at 375 px: the hint that says where a stored secret
+// would go is the longest line the sheet carries, and the title names the
+// connector
+export const EditSheetInRussianAtMobile: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={editsInRussian.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.connectors;
+    await waitFor(() =>
+      expect(within(canvasElement).getAllByText(copy.testDelivery)[0]).toBeVisible(),
+    );
+    const form = await openEditSheet(
+      canvasElement,
+      "signoz",
+      copy.editAria.replace("{{name}}", "signoz"),
+      copy,
+    );
+    await expect(form.getByText(copy.form.secretKeepHint)).toBeVisible();
+
+    const endpoint = form.getByLabelText(copy.form.endpoint);
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://collector.example.net/v1/logs");
+    const hint = await form.findByText(copy.form.secretMovesHint);
+    await expect(hint).toBeVisible();
+    await expect(hint.scrollWidth).toBeLessThanOrEqual(hint.clientWidth);
+    await expect(form.getByRole("button", { name: ru.common.save })).toBeEnabled();
+    await expectNoHorizontalOverflow();
+    // nothing in the sheet is a start switch, and nothing left for Create
+    await expect(form.queryByRole("switch")).toBeNull();
+    editsInRussian.expectNotSent("PUT", "/connectors/c-1");
   },
 };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { parseSamplingPercent, sampleShare } from "@/lib/sampling";
+import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
 
 const share = (rate: number) => {
   const s = sampleShare(rate);
@@ -85,5 +85,33 @@ describe("parseSamplingPercent", () => {
     for (const typed of ["150", "100.01", "-1", "-0.5", "1e3"]) {
       expect(parseSamplingPercent(typed)).toEqual({ ok: false, problem: "range" });
     }
+  });
+});
+
+describe("samplingPercentText", () => {
+  it("reads a stored rate as the percentage an operator would type", () => {
+    expect(samplingPercentText(1)).toBe("100");
+    expect(samplingPercentText(0)).toBe("0");
+    expect(samplingPercentText(0.25)).toBe("25");
+    expect(samplingPercentText(0.004)).toBe("0.4");
+  });
+
+  it("drops the floating-point tail a product leaves behind", () => {
+    // 0.07 * 100 is 7.000000000000001
+    expect(samplingPercentText(0.07)).toBe("7");
+    expect(samplingPercentText(0.29)).toBe("29");
+    expect(samplingPercentText(0.57)).toBe("57");
+  });
+
+  it("opens on text the percentage field accepts", () => {
+    for (const rate of [0, 1e-7, 0.004, 0.07, 0.5, 0.123456789012345, 1]) {
+      expect(parseSamplingPercent(samplingPercentText(rate)).ok).toBe(true);
+    }
+  });
+
+  it("does not promise to round-trip a rate with more digits than it shows", () => {
+    // which is why an untouched edit sends the stored rate rather than this text
+    const text = samplingPercentText(0.123456789012345);
+    expect(parseSamplingPercent(text)).not.toEqual({ ok: true, rate: 0.123456789012345 });
   });
 });

@@ -71,6 +71,7 @@ import {
 } from "@/lib/alert-states";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
+import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
@@ -327,18 +328,6 @@ function AlertChannelsScreen() {
       />
     </PageBody>
   );
-}
-
-// whether an edit moves the endpoint to another scheme, host or port: the API
-// drops a stored secret on such a move unless the same request brings a new
-// one, since it was given for the receiver at the old endpoint. an endpoint
-// that does not parse moves nothing here, because the API refuses it anyway
-function movesOrigin(stored: string, next: string): boolean {
-  try {
-    return new URL(stored).origin !== new URL(next.trim()).origin;
-  } catch {
-    return false;
-  }
 }
 
 function ChannelSheet({

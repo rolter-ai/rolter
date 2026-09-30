@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Cable, FileCode2, FlaskConical, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -12,7 +12,14 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion, PanelSkeleton } from "@/components/LoadingState";
-import { ListSummary, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import {
+  ListSummary,
+  PageBody,
+  Pill,
+  RowIconButton,
+  StatusDot,
+  Toolbar,
+} from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -40,7 +47,8 @@ import {
   type ConnectorRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
-import { parseSamplingPercent } from "@/lib/sampling";
+import { movesOrigin } from "@/lib/origin";
+import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -303,7 +311,15 @@ function ConnectorsScreen() {
   });
   const remove = useMutation({ mutationFn: deleteConnector, onSuccess: invalidate });
 
-  const [addOpen, setAddOpen] = React.useState(false);
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // the connector the sheet edits, or `null` when it adds one. it outlives the
+  // sheet closing, so the title does not flip to "Add connector" while the
+  // sheet is still sliding away
+  const [editTarget, setEditTarget] = React.useState<ConnectorRow | null>(null);
+  const openSheet = (connector: ConnectorRow | null) => {
+    setEditTarget(connector);
+    setSheetOpen(true);
+  };
   const [configOpen, setConfigOpen] = React.useState(false);
   // log shipping stops the moment the connector goes, and the delivery history
   // goes with it — worth saying before the click (#1179)
@@ -358,7 +374,7 @@ function ConnectorsScreen() {
         <GatedButton
           gate="connector:create"
           control="connector-new"
-          onClick={() => setAddOpen(true)}
+          onClick={() => openSheet(null)}
         >
           <Plus className="h-4 w-4" aria-hidden />
           {t("pages.connectors.add")}
@@ -388,7 +404,7 @@ function ConnectorsScreen() {
             <GatedButton
               gate="connector:create"
               control="connector-new-empty"
-              onClick={() => setAddOpen(true)}
+              onClick={() => openSheet(null)}
             >
               {t("pages.connectors.emptyAction")}
             </GatedButton>
@@ -504,14 +520,27 @@ function ConnectorsScreen() {
                     {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
                   </time>
                 )}
-                <DeleteIconButton
-                  gate="connector:delete"
-                  control="connector-delete"
-                  className="ml-auto"
-                  label={t("pages.connectors.deleteAria", { name: c.name })}
-                  pending={remove.isPending && remove.variables === c.id}
-                  onClick={() => startDelete(c)}
-                />
+                {/* both name the connector: a grid of cards each offering "Edit"
+                    is N buttons a screen reader cannot tell apart */}
+                <div className="ml-auto flex items-center gap-1.5">
+                  <RowIconButton
+                    gate="connector:update"
+                    control="connector-edit"
+                    className="p-1.5"
+                    title={t("pages.connectors.editAria", { name: c.name })}
+                    aria-label={t("pages.connectors.editAria", { name: c.name })}
+                    onClick={() => openSheet(c)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                  <DeleteIconButton
+                    gate="connector:delete"
+                    control="connector-delete"
+                    label={t("pages.connectors.deleteAria", { name: c.name })}
+                    pending={remove.isPending && remove.variables === c.id}
+                    onClick={() => startDelete(c)}
+                  />
+                </div>
               </div>
             </div>
           );
@@ -553,43 +582,58 @@ function ConnectorsScreen() {
         enabledCount={connectors.data?.filter((c) => c.enabled).length ?? 0}
       />
 
-      <AddConnectorDialog open={addOpen} onOpenChange={setAddOpen} onDone={invalidate} />
+      <ConnectorSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        existing={editTarget}
+        onDone={invalidate}
+      />
     </PageBody>
   );
 }
 
-function AddConnectorDialog({
+/**
+ * One sheet for adding a connector and editing one (#2101).
+ *
+ * An edit is a single `PUT` to the same id, so the connector keeps its health
+ * history. The control plane replaces the whole row from the body, which is why
+ * the fields the sheet has no control for go back as found: `enabled` (the
+ * card's switch owns it) and `auth_secret_ref`. The bearer secret is write-only
+ * and a blank field leaves it out of the body, which the control plane reads as
+ * "keep the stored one". It cannot be cleared through the API, so the sheet
+ * offers no clear, and it is not dropped when the endpoint moves to another
+ * origin, which the hint under the field says.
+ */
+function ConnectorSheet({
   open,
   onOpenChange,
+  existing,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** the connector to edit, or `null` to add one */
+  existing: ConnectorRow | null;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  // what the sampling field opens on: every request for a new connector, the
+  // stored rate read as a percentage for an edit
+  const openingSampling = existing ? samplingPercentText(existing.sampling_rate) : "100";
   const [name, setName] = React.useState("");
   const [endpoint, setEndpoint] = React.useState("");
-  const [sampling, setSampling] = React.useState("100");
+  const [sampling, setSampling] = React.useState(openingSampling);
+  // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
   // a connector is an egress path, so it is created switched off unless the
   // operator says otherwise: the order the docs teach is test it, then turn it
-  // on, and the first request log must not leave before the first test (#2349)
+  // on, and the first request log must not leave before the first test (#2349).
+  // an edit has no such choice, because the card's switch owns `enabled`
   const [startNow, setStartNow] = React.useState(false);
 
-  React.useEffect(() => {
-    if (open) {
-      setName("");
-      setEndpoint("");
-      setSampling("100");
-      setSecret("");
-      setStartNow(false);
-    }
-  }, [open]);
-
   // the field is read as typed: 0 is a rate (nothing is sent), and a blank,
-  // non-numeric or out-of-range value blocks Create instead of becoming one
+  // non-numeric or out-of-range value blocks Save instead of becoming one
   // (#2104). the control plane accepts 0 to 1 inclusive, so 0 is not refused
   const parsed = parseSamplingPercent(sampling);
   const samplingError = parsed.ok
@@ -603,30 +647,57 @@ function AddConnectorDialog({
   // the switch is read into the variables, not from state when the request
   // lands: a flip while it is in flight would otherwise announce a state the
   // request did not carry
-  const create = useMutation({
-    mutationFn: ({ rate, enabled }: { rate: number; enabled: boolean }) =>
-      createConnector({
-        name,
-        kind: "otlp_http",
-        endpoint,
-        enabled,
-        sampling_rate: rate,
-        ...(secret.trim() ? { managed_auth_secret: secret } : {}),
-      }),
+  const save = useMutation({
+    mutationFn: ({ rate, enabled }: { rate: number; enabled: boolean }) => {
+      // a blank secret is left out, which an update reads as "keep the stored one"
+      const replacement = secret.trim() ? { managed_auth_secret: secret } : {};
+      return existing
+        ? updateConnector(existing.id, {
+            ...asInput(existing),
+            name,
+            endpoint,
+            sampling_rate: rate,
+            ...replacement,
+          })
+        : createConnector({
+            name,
+            kind: "otlp_http",
+            endpoint,
+            enabled,
+            sampling_rate: rate,
+            ...replacement,
+          });
+    },
     onSuccess: (_row, { enabled }) => {
       // the sheet closes on success, so the outcome is announced somewhere
-      // that outlives it (#1197). one that was left off says so and what to do
-      // next, or nothing ever arrives and nothing says why
-      toast.push(
-        enabled
-          ? { tone: "success", title: t("toast.created", { what: name }) }
-          : {
-              tone: "success",
-              title: t("pages.connectors.createdOff", { name }),
-              detail: t("pages.connectors.createdOffNext"),
-              duration: NEXT_STEP_TOAST_MS,
-            },
-      );
+      // that outlives it (#1197)
+      if (existing) {
+        // a save keeps the health the last test recorded, and after a new
+        // endpoint or secret that describes the old one
+        const retest =
+          !!existing.health_checked_at &&
+          (endpoint.trim() !== existing.endpoint || !!secret.trim());
+        toast.push({
+          tone: "success",
+          title: t("toast.saved"),
+          detail: retest
+            ? t("pages.connectors.savedRetest", { name })
+            : t("toast.savedDetail", { what: name }),
+        });
+      } else {
+        // one that was left off says so and what to do next, or nothing ever
+        // arrives and nothing says why
+        toast.push(
+          enabled
+            ? { tone: "success", title: t("toast.created", { what: name }) }
+            : {
+                tone: "success",
+                title: t("pages.connectors.createdOff", { name }),
+                detail: t("pages.connectors.createdOffNext"),
+                duration: NEXT_STEP_TOAST_MS,
+              },
+        );
+      }
       onDone();
       onOpenChange(false);
     },
@@ -639,28 +710,63 @@ function AddConnectorDialog({
     },
   });
 
-  const dirty = !!(
-    name.trim() ||
-    endpoint.trim() ||
-    secret.trim() ||
-    sampling !== "100" ||
-    startNow
-  );
+  React.useEffect(() => {
+    if (open) {
+      setName(existing?.name ?? "");
+      setEndpoint(existing?.endpoint ?? "");
+      setSampling(openingSampling);
+      setSecret("");
+      setStartNow(false);
+      // a refusal for one connector must not greet the next one opened
+      save.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, existing]);
+
+  const dirty = existing
+    ? name !== existing.name ||
+      endpoint !== existing.endpoint ||
+      sampling !== openingSampling ||
+      secret !== ""
+    : !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100" || startNow);
+
+  // what happens to the stored secret on save, said beside the field that
+  // decides it. the control plane keeps it when the endpoint moves, so the
+  // hint says where it would go rather than promising it is dropped
+  const secretHint = !existing
+    ? undefined
+    : !existing.auth_secret_configured
+      ? t("pages.connectors.form.secretNoneHint")
+      : secret.trim()
+        ? t("pages.connectors.form.secretReplaceHint")
+        : movesOrigin(existing.endpoint, endpoint)
+          ? t("pages.connectors.form.secretMovesHint")
+          : t("pages.connectors.form.secretKeepHint");
 
   return (
     <EditorSheet
-      name="connector-create"
+      name={existing ? "connector-edit" : "connector-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.connectors.add")}
-      subtitle={t("pages.connectors.addSubtitle")}
+      title={
+        existing
+          ? t("pages.connectors.editTitle", { name: existing.name })
+          : t("pages.connectors.add")
+      }
+      subtitle={t("pages.connectors.sheetSubtitle")}
       dirty={dirty}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
-      saving={create.isPending}
+      saving={save.isPending}
       onSave={() => {
-        if (parsed.ok) create.mutate({ rate: parsed.rate, enabled: startNow });
+        if (!parsed.ok) return;
+        // a field left as it opened sends the stored rate itself: its text is
+        // a reading of the rate, and a rate with more digits than it shows
+        // would come back changed
+        const rate =
+          existing && sampling === openingSampling ? existing.sampling_rate : parsed.rate;
+        save.mutate({ rate, enabled: startNow });
       }}
     >
       <div className="space-y-3">
@@ -675,41 +781,44 @@ function AddConnectorDialog({
             placeholder="https://otlp.example.com/v1/logs"
           />
         </Field>
-        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
-          <Field
-            label={t("pages.connectors.form.sampling")}
-            hint={t("pages.connectors.form.samplingHint")}
-            error={samplingError}
-          >
-            <Input
-              type="number"
-              inputMode="decimal"
-              min={0}
-              max={100}
-              step="any"
-              value={sampling}
-              onChange={(e) => setSampling(e.target.value)}
-            />
-          </Field>
-          <Field label={t("pages.connectors.form.secret")}>
-            <Input
-              type="password"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              placeholder={t("pages.connectors.form.secretPlaceholder")}
-            />
-          </Field>
-        </div>
+        <Field
+          label={t("pages.connectors.form.sampling")}
+          hint={t("pages.connectors.form.samplingHint")}
+          error={samplingError}
+        >
+          <Input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            max={100}
+            step="any"
+            value={sampling}
+            onChange={(e) => setSampling(e.target.value)}
+          />
+        </Field>
+        <Field
+          label={t(existing ? "pages.connectors.form.secretEdit" : "pages.connectors.form.secret")}
+          hint={secretHint}
+        >
+          <Input
+            type="password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            placeholder={t("pages.connectors.form.secretPlaceholder")}
+          />
+        </Field>
         {/* said again when it is on, because that is the choice with a
             consequence: request logs leave for the endpoint as Create lands */}
-        <SwitchRow
-          title={t("pages.connectors.form.start")}
-          hint={t(
-            startNow ? "pages.connectors.form.startOnHint" : "pages.connectors.form.startHint",
-          )}
-          checked={startNow}
-          onChange={setStartNow}
-        />
+        {!existing && (
+          <SwitchRow
+            title={t("pages.connectors.form.start")}
+            hint={t(
+              startNow ? "pages.connectors.form.startOnHint" : "pages.connectors.form.startHint",
+            )}
+            checked={startNow}
+            onChange={setStartNow}
+          />
+        )}
       </div>
     </EditorSheet>
   );
