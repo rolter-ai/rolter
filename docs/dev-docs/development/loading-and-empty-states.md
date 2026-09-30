@@ -114,6 +114,16 @@ The pieces that carry the rule:
 A card-grid screen with no `ListTable` gates its `EmptyState` the same way:
 `query.isSuccess && query.data.length === 0`.
 
+A screen made of cards that each read their own query gives every card all three
+states (#1976). The Dashboard's `CardRead` decides from `isAwaiting` and the
+read's data before it lets a card draw anything: a skeleton in the card's own
+shape, then either its own `LoadError` or the content. The empty copy sits
+inside the content, where the read is known to hold data, so an empty answer
+still says so after a failed refresh. An average or a rate over an empty window
+is undefined rather than zero: the Dashboard's latency and error-rate tiles read
+"—" with "No requests in this window" under them, where "0 ms" and "0.00 %"
+claimed a measurement of a quiet deployment.
+
 ### Empty: what it is, and what to do about it
 
 An `EmptyState` carries an icon, a title, one sentence of description, and —
@@ -141,9 +151,10 @@ Two rules the wording depends on:
   ClickHouse has not "served nothing yet" — it was never asked to record
   anything, and no amount of traffic will fill the screen. That is a
   `noAnalytics` state, not an `EmptyState`; the Dashboard rendered it as the
-  latter until #1236. Nor is it an outage: LLM Logs shows it as an
-  informational panel rather than a red alert (#1984), and the other screens
-  follow in #1976 and #2016 (see [error states](error-states.md)).
+  latter until #1236. Nor is it an outage: LLM Logs and the Dashboard show it
+  as the informational `AnalyticsUnavailable` panel rather than a red alert
+  (#1984, #1976), and the other screens follow in #2016 (see
+  [error states](error-states.md)).
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.

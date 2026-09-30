@@ -72,14 +72,22 @@ CostAttribution's spend strip and Account's usage figures followed in #1270:
 the strip had the Dashboard's old empty state, and Account now states any usage
 failure once above the key cards instead of letting each card read "no usage".
 
-LLM Logs has since taken `noAnalytics` out of `LoadError` altogether (#1984).
-A red `role="alert"` put a deployment shape rolter supports in the voice of a
-500, and a screen reader announced it as urgent on every visit. The screen now
-states the same cause in an informational `role="status"` panel: the
-`CLICKHOUSE_URL` guidance in monospace, the control plane's own message under
-it, and still no retry. The Dashboard follows in #1976, and MCP Logs,
-CostAttribution and Account in #2016, which also extracts the panel into a
-shared component.
+LLM Logs has since taken `noAnalytics` out of `LoadError` altogether (#1984),
+and the Dashboard followed (#1976). A red `role="alert"` put a deployment shape
+rolter supports in the voice of a 500, and a screen reader announced it as
+urgent on every visit. Both screens now state the same cause in an
+informational `role="status"` panel, the shared `AnalyticsUnavailable` in
+`ui/src/components/`: the `CLICKHOUSE_URL` guidance in monospace, the control
+plane's own message under it, and still no retry. A screen passes its own copy
+as `i18nKey`, with a `title` and a `body` under it, and the body says what the
+screen will show once the store is there. MCP Logs, CostAttribution and Account
+follow in #2016.
+
+On the Dashboard the panel is one answer for the screen rather than one per
+card. It replaces every card as soon as any of the four reads answers
+`AnalyticsUnavailableError` while holding no data, since each card would
+otherwise be a skeleton or an error about a store that was never there. The
+setup checklist above it stays, because it reads rows rather than traffic.
 
 ## A polled query that fails
 
@@ -111,14 +119,34 @@ three polling intervals and asserts it is still connected: an alert that
 flickered would have been unmounted and replaced, so the held node would be
 detached even if a new alert had since appeared.
 
-The Dashboard polls four queries under the same rule (#1975). A read blocks the
-page only while it holds no data, so a poll that fails over figures already on
-screen leaves them up rather than swapping the whole screen for an alert on every
-blip. The Recent requests card is the one that says "Live", so it reads its own
-query: the word gives way to `Refresh failed at {time}, retrying` when a poll
-fails over rows, and to `Load failed at {time}` when the first read failed and
-polling stopped. The `AFailedPollKeepsWhatLoaded` and
-`AFirstLoadThatFailsStopsPolling` stories in `Dashboard.stories.tsx` pin the two.
+The Dashboard polls four queries under the same rule (#1975), and each card
+owns the state of the read behind it (#1976). The four figures, the spend chart,
+the traffic donut, the by-model bars and the recent rows each read one query
+through `CardRead`, which shows the card's own skeleton while the read is
+awaited, the card's own `LoadError` with a retry for that read alone when it
+failed holding nothing, and its content once it holds data. The content is a
+render prop handed the data, so a card cannot say "No traffic yet." or "Nothing
+logged yet." about a read that has not answered or that failed. One failing
+endpoint takes down the cards that read it and leaves the rest of the screen up.
+The donut and the bars read the same endpoint and each owns its error, with its
+own resource noun under `errors.resources.dashboard*`; either retry asks for that
+read once and both cards come back with it.
+
+A poll that fails over data a card already shows keeps that data, and every card
+says so. `RefreshFailed` writes `Refresh failed at {time}, retrying` in the
+danger text colour under the figures and under each chart, and the Recent
+requests card, the one that says "Live", swaps the word for the same sentence in
+its label, or for `Load failed at {time}` when its first read failed and polling
+stopped. The line is plain text rather than a live region: every failed poll
+rewrites it, and five cards announcing once a minute would be noise. Each card
+keeps the `pollEvery` rule for its own read, so a query that never held data
+stops polling and holds its alert.
+
+The `AFailedPollKeepsWhatLoaded` and `AFirstLoadThatFailsStopsPolling` stories in
+`Dashboard.stories.tsx` pin the two rules. `OneFailedCardLeavesTheRestUp`,
+`AFailedRecentReadIsNotAnEmptyOne` and `TheTwoCardsOnOneReadEachOwnItsError`
+pin the per-card error and its retry, and the `…IsStillLoading` stories pin each
+card's skeleton.
 
 A polled screen that reads a time window keeps the window's name in the query key
 and works the bounds out inside the query function, with `windowBounds()` from
