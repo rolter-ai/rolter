@@ -160,16 +160,22 @@ function CollectorConfigDialog({
   open,
   onOpenChange,
   connectorCount,
+  enabledCount,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   connectorCount: number;
+  /** how many of them are switched on: the only ones the document carries */
+  enabledCount: number;
 }) {
   const { t } = useTranslation();
+  // the document is rendered from the enabled rows alone, so a list that is all
+  // switched off has nothing in it to fetch or to show
+  const deliverable = enabledCount > 0;
   const config = useQuery({
     queryKey: ["collector-config"],
     queryFn: fetchCollectorConfig,
-    enabled: open,
+    enabled: open && deliverable,
     gcTime: 0,
     retry: false,
   });
@@ -185,15 +191,25 @@ function CollectorConfigDialog({
           on screen: the address, its note and the document together are taller
           than a 640 px window (#2003) */}
       <DialogBody className="space-y-3">
-        {/* no connectors means no exporters and no pipelines: the document is
-            valid and delivers nothing, which is worth saying rather than
-            rendering as an almost-empty file */}
-        {connectorCount === 0 ? (
+        {/* no enabled connector means no exporters and no pipelines: the
+            document is valid and delivers nothing, which is worth saying rather
+            than rendering as an almost-empty file. a connector that is switched
+            off is left out of it, so "there are connectors" is not enough, and
+            the two causes have different remedies (#2364) */}
+        {!deliverable ? (
           <EmptyState
-            uxTarget="collector-config"
+            uxTarget={connectorCount === 0 ? "collector-config" : "collector-config-all-off"}
             icon={<FileCode2 />}
-            title={t("pages.connectors.collectorConfig.emptyTitle")}
-            description={t("pages.connectors.collectorConfig.emptyBody")}
+            title={t(
+              connectorCount === 0
+                ? "pages.connectors.collectorConfig.emptyTitle"
+                : "pages.connectors.collectorConfig.allOffTitle",
+            )}
+            description={t(
+              connectorCount === 0
+                ? "pages.connectors.collectorConfig.emptyBody"
+                : "pages.connectors.collectorConfig.allOffBody",
+            )}
           />
         ) : (
           <>
@@ -534,6 +550,7 @@ function ConnectorsScreen() {
         open={configOpen}
         onOpenChange={setConfigOpen}
         connectorCount={connectors.data?.length ?? 0}
+        enabledCount={connectors.data?.filter((c) => c.enabled).length ?? 0}
       />
 
       <AddConnectorDialog open={addOpen} onOpenChange={setAddOpen} onDone={invalidate} />

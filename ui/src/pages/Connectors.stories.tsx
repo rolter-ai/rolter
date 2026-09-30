@@ -531,11 +531,66 @@ export const CollectorConfigLoading: Story = {
 export const CollectorConfigEmpty: Story = {
   render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG), [])} />,
   play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No connectors yet/)).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
     const dialog = within(await within(document.body).findByRole("dialog"));
     await expect(dialog.getByText(/Nothing to deliver yet/)).toBeVisible();
+    // the other empty state is for connectors that exist
+    await expect(dialog.queryByText(copy.allOffTitle)).toBeNull();
+  },
+};
+
+// connectors exist but none is switched on, which is where an operator lands
+// right after the first create, since the add sheet creates one switched off
+// (#2349). the document is rendered from the enabled rows alone, so showing it
+// would be a valid file with no exporters in it, presented as deployable
+// (#2364). the dialog says which case it is and what to do, and never asks the
+// control plane for a document it is not going to show
+const ALL_OFF = CONNECTORS.map((row) => ({ ...row, enabled: false }));
+const allOff = recording(withConfig(() => yaml(COLLECTOR_CONFIG), ALL_OFF));
+
+export const CollectorConfigAllSwitchedOff: Story = {
+  render: () => <Harness fetchStub={allOff.stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    await expect(await dialog.findByText(copy.allOffTitle)).toBeVisible();
+    // what a switched-off connector does to the document, and the way out
+    await expect(dialog.getByText(copy.allOffBody)).toBeVisible();
+    await expect(dialog.getByText(copy.allOffBody)).toHaveTextContent(/switched on/);
+    await expect(dialog.getByText(copy.allOffBody)).toHaveTextContent(/from its card/);
+
+    // not the "no connectors" state: there are three, and the copy is for them
+    await expect(dialog.queryByText(copy.emptyTitle)).toBeNull();
+    // no document to paste, and no address to fetch one from
+    await expect(
+      dialog.queryByRole("region", { name: /OpenTelemetry Collector config/i }),
+    ).toBeNull();
+    await expect(dialog.queryByRole("group", { name: copy.endpoint })).toBeNull();
+    allOff.expectNotSent("GET", "collector-config");
+  },
+};
+
+// one connector on is enough for a document worth saving, however many are off
+export const CollectorConfigWithOneSwitchedOn: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withConfig(
+        () => yaml(COLLECTOR_CONFIG),
+        ALL_OFF.map((row) => (row.id === "c-2" ? { ...row, enabled: true } : row)),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    await expect(
+      await dialog.findByRole("region", { name: /OpenTelemetry Collector config/i }),
+    ).toHaveTextContent("otlphttp/signoz");
+    await expect(dialog.queryByText(copy.allOffTitle)).toBeNull();
+    await expect(dialog.queryByText(copy.emptyTitle)).toBeNull();
   },
 };
 
@@ -1082,6 +1137,27 @@ export const CollectorConfigInRussianAtMobile: Story = {
       within(group).getByRole("button", { name: new RegExp(`^${copy.copyEndpoint}`) }),
     ).toBeVisible();
     await waitFor(() => expect(dialog.getByText(copy.deploy)).toBeVisible());
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the all-off notice in Russian at 375 px: a title and a body that say what a
+// switched-off connector does to the document have to wrap inside the dialog
+export const CollectorConfigAllSwitchedOffInRussianAtMobile: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG), ALL_OFF)} />,
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.connectors.collectorConfig;
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole("button", { name: copy.open })).toBeEnabled());
+    await userEvent.click(canvas.getByRole("button", { name: copy.open }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+
+    await expect(await dialog.findByText(copy.allOffTitle)).toBeVisible();
+    const body = dialog.getByText(copy.allOffBody);
+    await expect(body).toBeVisible();
+    await expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
     await expectNoHorizontalOverflow();
   },
 };

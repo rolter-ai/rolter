@@ -1309,6 +1309,8 @@
         "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
+        "allOffTitle": "Every connector is switched off",
+        "allOffBody": "The config only carries connectors that are switched on, so a collector running it now would deliver nothing. Close this, turn one on from its card, then open it again.",
         "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — and save it again after a connector is added, switched on or deleted."
       },
       "confirm": {
