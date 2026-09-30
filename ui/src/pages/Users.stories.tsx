@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Users from "./Users";
@@ -38,7 +39,8 @@ import {
   type FetchStub,
   type Recorder,
 } from "./story-harness";
-import type { Invitation, MembershipRow, UserRow } from "@/lib/api";
+import type { Invitation, MembershipRow, UpdateUserInput, UserRow } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -476,6 +478,7 @@ export const RefusedToAViewer: Story = {
     await expectRefused(canvasElement, CHANGE_GRACE);
     await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
     await expectRefused(canvasElement, "Deactivate ada@example.com", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Reactivate former@example.com", NEEDS_SUPERADMIN);
   },
 };
 
@@ -487,6 +490,8 @@ export const EditRefusedToAnAdmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Edit ada@example.com", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Deactivate grace@example.com", NEEDS_SUPERADMIN);
+    await expectRefused(canvasElement, "Reactivate former@example.com", NEEDS_SUPERADMIN);
     // the invitation half of the screen is still theirs, asserted through
     // `expectAllowed` so it is the gate's answer being read and not the
     // enabled state the button was in before it (#1707)
@@ -1475,5 +1480,744 @@ export const RevokingAnInvitationAcceptedMeanwhile: Story = {
       revokeAccepted.calls.filter((c) => c.method === "GET" && c.url.includes("/invitations"))
         .length,
     ).toBeGreaterThan(1);
+  },
+};
+
+// -------------------------- deactivating, deleting and granting superadmin (#2055)
+
+/** the account the caller is signed in as in the stories that need one: ada, a superadmin */
+const ME = USERS[0];
+
+/**
+ * Signed in the way a login leaves the browser, minus the token, so the
+ * provider knows the account without asking /auth/me for it. The screen reads
+ * it to say when a change is to the caller's own account.
+ */
+function SignedInAs({ user, children }: { user: UserRow; children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", user.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(user));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+/**
+ * The accounts as the control plane holds them, for the stories that change
+ * one: a PUT applies the fields it names, a DELETE removes the row, and the
+ * list answers whatever is left. `onPut` and `onDelete` answer a write before
+ * the fixture changes, so a story can hold one in flight, refuse it, or change
+ * the fixture behind the screen's back through `state`.
+ */
+function accountsApi(
+  answers: {
+    onPut?: (id: string, body: UpdateUserInput) => Promise<Response | null> | Response | null;
+    onDelete?: (
+      id: string,
+      state: { accounts: UserRow[] },
+    ) => Promise<Response | null> | Response | null;
+  } = {},
+): FetchStub {
+  const state = { accounts: USERS.map((user) => ({ ...user })) };
+  return scoped(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    const account = url.match(/\/api\/v1\/users\/([^/?]+)$/);
+    if (account && method === "PUT") {
+      const body = JSON.parse(String(init?.body)) as UpdateUserInput;
+      const refused = await answers.onPut?.(account[1], body);
+      if (refused) return refused;
+      const current = state.accounts.find((user) => user.id === account[1]);
+      if (!current) return json({ error: { message: "user not found" } }, 404);
+      const next: UserRow = {
+        ...current,
+        email: body.email ?? current.email,
+        is_superadmin: body.is_superadmin ?? current.is_superadmin,
+        deactivated_at:
+          body.deactivated === undefined
+            ? current.deactivated_at
+            : body.deactivated
+              ? "2026-09-30T00:00:00Z"
+              : null,
+      };
+      state.accounts = state.accounts.map((user) => (user.id === next.id ? next : user));
+      return json(next);
+    }
+    if (account && method === "DELETE") {
+      const refused = await answers.onDelete?.(account[1], state);
+      if (refused) return refused;
+      state.accounts = state.accounts.filter((user) => user.id !== account[1]);
+      return json(null, 204);
+    }
+    if (url.includes("/invitations")) return json([]);
+    if (url.includes("/memberships")) return json(MEMBERSHIPS);
+    if (url.includes("/users")) return json(state.accounts);
+    return json([]);
+  });
+}
+
+/** a write that stays on the wire until the returned function is called */
+function held(): { answer: () => Promise<null>; release: () => void } {
+  let release: () => void = () => {};
+  return {
+    answer: () =>
+      new Promise<null>((resolve) => {
+        release = () => resolve(null);
+      }),
+    release: () => release(),
+  };
+}
+
+/** the users table, found by its name, so an address in a toast is not a second match */
+async function usersTable(canvasElement: HTMLElement): Promise<HTMLElement> {
+  return within(canvasElement).findByRole("table", { name: "Users" });
+}
+
+const rowOf = (table: HTMLElement, email: string) =>
+  within(within(table).getByText(email).closest('[role="row"]') as HTMLElement);
+
+/**
+ * A dialog by its title. While a confirmation is raised over the edit sheet
+ * there are two `role="dialog"` nodes, so `confirmation()` cannot tell them
+ * apart.
+ */
+const dialogNamed = (name: string) => within(document.body).findByRole("dialog", { name });
+
+async function press(dialog: HTMLElement, name: string): Promise<void> {
+  await userEvent.click(within(dialog).getByRole("button", { name }));
+}
+
+/** cancel the confirmation and wait for it to go, leaving whatever sits under it */
+async function dismiss(dialog: HTMLElement): Promise<void> {
+  await press(dialog, "Cancel");
+  await waitFor(() => expect(dialog).not.toBeInTheDocument());
+}
+
+/** open the edit sheet of one account, and hand back the sheet and its queries */
+async function openEditor(canvasElement: HTMLElement, email: string) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", { name: `Edit ${email}` }),
+  );
+  const panel = await dialogNamed("Edit user");
+  return { panel, form: within(panel) };
+}
+
+const SUPERADMIN_SWITCH = "Superadmin (full cross-org access)";
+
+/**
+ * Assert a confirmation paints above the sheet it was raised over. The sheet is
+ * inert while the dialog is up, so nothing else in a play can tell the two
+ * layers apart: a dialog stacked under the sheet's own scrim answers every
+ * query and passes every other assertion.
+ */
+function expectPaintsOver(dialog: HTMLElement, panel: HTMLElement) {
+  const layer = (node: HTMLElement) => node.closest(".fixed") as HTMLElement;
+  expect(Number(getComputedStyle(layer(dialog)).zIndex)).toBeGreaterThan(
+    Number(getComputedStyle(layer(panel)).zIndex),
+  );
+}
+
+/** every `form_submit` outcome the UX stream holds for one confirmation */
+const submits = (target: string) =>
+  uxEvents()
+    .filter((event) => event.action === "form_submit" && event.target === target)
+    .map((event) => event.outcome);
+
+/**
+ * Deactivating goes through `ConfirmDialog`: the title names the account and
+ * the body says what it costs, read off the control plane (sign-in blocked,
+ * sessions ended, the keys the account minted for itself stop at the
+ * gateway). A cancel sends nothing and is an abandon; a confirm is on the wire
+ * with both buttons out of reach until it lands, then the dialog closes, the
+ * toast says what happened and the row turns blocked.
+ */
+let deactivations: Recorder;
+const deactivationHold = held();
+export const DeactivatingAnAccountIsConfirmedThenLands: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    deactivations = recording(accountsApi({ onPut: deactivationHold.answer }));
+    return (
+      <Harness fetchStub={deactivations.stub}>
+        <UxScreenProvider screen="gov-users">
+          <Toasted>
+            <Users />
+          </Toasted>
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const deactivate = "Deactivate grace@example.com";
+    await userEvent.click(await canvas.findByRole("button", { name: deactivate }));
+    await expect(
+      await within(document.body).findByRole("heading", { name: `${deactivate}?` }),
+    ).toBeInTheDocument();
+    const body =
+      /They can no longer sign in, every session they have open ends at once, and the virtual keys they minted for themselves stop working at the gateway\. Reactivating the account lets them sign in again and brings those keys back\./;
+    await expect(within(await confirmation()).getByText(body)).toBeInTheDocument();
+    // someone else's account: no line about the caller's own
+    await expect(within(await confirmation()).queryByText(/signed in with/)).toBeNull();
+
+    await cancelConfirmation();
+    deactivations.expectNotSent("PUT", "/users/");
+    const abandon = await expectUxEvent("form_abandon", "user-deactivate");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "user-deactivate");
+
+    await userEvent.click(canvas.getByRole("button", { name: deactivate }));
+    await confirmDestructive(body, "Deactivate");
+    await expect(await deactivations.expectSentBody("PUT", "/users/user-2")).toEqual({
+      deactivated: true,
+    });
+
+    // in flight: the request is on the wire, so neither button can be pressed
+    const dialog = within(await confirmation());
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Deactivate" })).toBeDisabled());
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    deactivationHold.release();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Deactivated grace@example\.com/);
+    const table = await usersTable(canvasElement);
+    await waitFor(() =>
+      expect(rowOf(table, "grace@example.com").getByText("blocked")).toBeVisible(),
+    );
+    // the control now goes the other way, and says so
+    await expect(
+      canvas.getByRole("button", { name: "Reactivate grace@example.com" }),
+    ).toBeInTheDocument();
+    const submit = await expectUxEvent("form_submit", "user-deactivate");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "user-deactivate");
+  },
+};
+
+/**
+ * The control plane refuses the deactivation. The dialog stays open with its
+ * message verbatim and a line on who may do it, and the account is untouched.
+ */
+export const DeactivatingAnAccountRefusedByTheServer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={accountsApi({
+        onPut: () => json({ error: { message: "superadmin required" } }, 403),
+      })}
+    >
+      <UxScreenProvider screen="gov-users">
+        <Users />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Deactivate grace@example.com" }),
+    );
+    const dialog = within(await confirmation());
+    await userEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent("superadmin required"));
+    await waitFor(() =>
+      expect(
+        dialog.getByText("Editing, deactivating or deleting an account takes a superadmin."),
+      ).toBeVisible(),
+    );
+    await waitFor(() => expect(submits("user-deactivate")).toEqual(["ok", "error"]));
+    expectNoUxEvent("save_confirmed", "user-deactivate");
+    // the dialog is still there to retry or cancel, and the account is unchanged
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: "Deactivate grace@example.com" }),
+    ).toBeInTheDocument();
+  },
+};
+
+/**
+ * Nothing in the control plane refuses a superadmin deactivating the account
+ * they are signed in with, so the dialog says what it costs: they are signed
+ * out now, and another superadmin has to reactivate it.
+ */
+export const DeactivatingYourOwnAccountSaysSo: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi()}>
+      <SignedInAs user={ME}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Deactivate ada@example.com" }),
+    );
+    await expect(
+      within(await confirmation()).getByText(
+        /This is the account you are signed in with: you are signed out now, and only another superadmin can reactivate it\./,
+      ),
+    ).toBeInTheDocument();
+    await cancelConfirmation();
+  },
+};
+
+/**
+ * Reactivating only gives access back, so it is one click with no question, but
+ * it does not look like the other direction: the icon and the label are their
+ * own, and the toast says what came back.
+ */
+let reactivations: Recorder;
+export const ReactivatingIsOneClickWithItsOwnIconAndLabel: Story = {
+  render: () => {
+    reactivations = recording(accountsApi());
+    return (
+      <Harness fetchStub={reactivations.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const reactivate = await canvas.findByRole("button", {
+      name: "Reactivate former@example.com",
+    });
+    const deactivate = canvas.getByRole("button", { name: "Deactivate grace@example.com" });
+    await expect(reactivate.querySelector("svg")).toHaveClass("lucide-user-check");
+    await expect(deactivate.querySelector("svg")).toHaveClass("lucide-user-x");
+    await expect(
+      canvas.queryByRole("button", { name: "Deactivate former@example.com" }),
+    ).toBeNull();
+
+    await userEvent.click(reactivate);
+    await expect(await reactivations.expectSentBody("PUT", "/users/user-3")).toEqual({
+      deactivated: false,
+    });
+    await expectToast(canvasElement, /Reactivated former@example\.com/);
+    const table = await usersTable(canvasElement);
+    await waitFor(() =>
+      expect(rowOf(table, "former@example.com").getByText("active")).toBeVisible(),
+    );
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+/**
+ * Turning superadmin on is confirmed when the sheet is saved, since that is
+ * the moment it is granted. The title names the account and the body says what
+ * the flag hands over. A cancel returns to the sheet with the draft as it was
+ * and sends nothing; a confirm is on the wire with both buttons out of reach
+ * until it lands, then both dialogs close.
+ */
+let grants: Recorder;
+const grantHold = held();
+export const GrantingSuperadminIsConfirmedThenLands: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    grants = recording(accountsApi({ onPut: grantHold.answer }));
+    return (
+      <Harness fetchStub={grants.stub}>
+        <UxScreenProvider screen="gov-users">
+          <Toasted>
+            <Users />
+          </Toasted>
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { panel, form } = await openEditor(canvasElement, "grace@example.com");
+    await userEvent.click(form.getByRole("switch", { name: SUPERADMIN_SWITCH }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    // nothing has been sent: the save is waiting on an answer
+    const ask = await dialogNamed("Make grace@example.com a superadmin?");
+    expectPaintsOver(ask, panel);
+    grants.expectNotSent("PUT", "/users/");
+    await waitFor(() =>
+      expect(
+        within(ask).getByText(
+          /A superadmin reaches every organization, team and project and can change every deployment-wide setting and every account, whatever roles they hold\./,
+        ),
+      ).toBeVisible(),
+    );
+    await dismiss(ask);
+    grants.expectNotSent("PUT", "/users/");
+    const abandon = await expectUxEvent("form_abandon", "user-superadmin-grant");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "user-superadmin-grant");
+    // back in the sheet with the flag still on
+    await expect(form.getByRole("switch", { name: SUPERADMIN_SWITCH })).toBeChecked();
+
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const again = await dialogNamed("Make grace@example.com a superadmin?");
+    await press(again, "Make superadmin");
+    await expect(await grants.expectSentBody("PUT", "/users/user-2")).toEqual({
+      is_superadmin: true,
+    });
+
+    // in flight: the request is on the wire, so neither button can be pressed
+    await waitFor(() =>
+      expect(within(again).getByRole("button", { name: "Make superadmin" })).toBeDisabled(),
+    );
+    await expect(within(again).getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    grantHold.release();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /grace@example\.com updated/);
+    const table = await usersTable(canvasElement);
+    await waitFor(() => expect(rowOf(table, "grace@example.com").getByText("super")).toBeVisible());
+    const submit = await expectUxEvent("form_submit", "user-superadmin-grant");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "user-superadmin-grant");
+  },
+};
+
+/**
+ * The control plane refuses the grant. The confirmation stays open with the
+ * message verbatim and a line on who may do it, and the sheet behind it keeps
+ * the draft.
+ */
+export const GrantingSuperadminRefusedByTheServer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={accountsApi({
+        onPut: () => json({ error: { message: "superadmin required" } }, 403),
+      })}
+    >
+      <UxScreenProvider screen="gov-users">
+        <Users />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "grace@example.com");
+    await userEvent.click(form.getByRole("switch", { name: SUPERADMIN_SWITCH }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const ask = await dialogNamed("Make grace@example.com a superadmin?");
+    await press(ask, "Make superadmin");
+    await waitFor(() =>
+      expect(within(ask).getByRole("alert")).toHaveTextContent("superadmin required"),
+    );
+    await waitFor(() =>
+      expect(
+        within(ask).getByText("Editing, deactivating or deleting an account takes a superadmin."),
+      ).toBeVisible(),
+    );
+    await waitFor(() => expect(submits("user-superadmin-grant")).toEqual(["ok", "error"]));
+    expectNoUxEvent("save_confirmed", "user-superadmin-grant");
+
+    // cancelling leaves the sheet as it was, without the refusal on it
+    await dismiss(ask);
+    await expect(form.getByRole("switch", { name: SUPERADMIN_SWITCH })).toBeChecked();
+    await waitFor(() => expect(form.queryByRole("alert")).toBeNull());
+  },
+};
+
+/**
+ * Taking superadmin off someone else's account saves without a question: it
+ * removes access, and the caller is not the one losing it.
+ */
+let demotions: Recorder;
+export const TakingSuperadminOffAnotherAccountSavesWithoutAsking: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    demotions = recording(accountsApi());
+    return (
+      <Harness fetchStub={demotions.stub}>
+        <SignedInAs user={{ ...ME, id: "user-9", email: "root@example.com" }}>
+          <UxScreenProvider screen="gov-users">
+            <Toasted>
+              <Users />
+            </Toasted>
+          </UxScreenProvider>
+        </SignedInAs>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "ada@example.com");
+    await userEvent.click(form.getByRole("switch", { name: SUPERADMIN_SWITCH }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(await demotions.expectSentBody("PUT", "/users/user-1")).toEqual({
+      is_superadmin: false,
+    });
+    await expectSheetClosed();
+    await expectToast(canvasElement, /ada@example\.com updated/);
+    const table = await usersTable(canvasElement);
+    await waitFor(() => expect(rowOf(table, "ada@example.com").queryByText("super")).toBeNull());
+    expectNoUxEvent("form_submit", "user-superadmin-remove");
+    expectNoUxEvent("form_submit", "user-superadmin-grant");
+  },
+};
+
+/** A save that does not touch the flag goes straight out: there is nothing to confirm. */
+let renames: Recorder;
+export const SavingAnEmailAsksNothing: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    renames = recording(accountsApi());
+    return (
+      <Harness fetchStub={renames.stub}>
+        <UxScreenProvider screen="gov-users">
+          <Users />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "grace@example.com");
+    const email = form.getByLabelText("Email");
+    await userEvent.clear(email);
+    await userEvent.type(email, "grace.hopper@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(await renames.expectSentBody("PUT", "/users/user-2")).toEqual({
+      email: "grace.hopper@example.com",
+    });
+    await expectSheetClosed();
+    expectNoUxEvent("form_submit", "user-superadmin-grant");
+    expectNoUxEvent("form_submit", "user-superadmin-remove");
+  },
+};
+
+/**
+ * Nothing in the control plane refuses a superadmin dropping their own flag,
+ * and the next request is then made without it, so this one save asks first
+ * and says what it costs. A cancel sends nothing; a confirm lands and the
+ * badge leaves the row.
+ */
+let selfDemotion: Recorder;
+export const RemovingYourOwnSuperadminIsConfirmed: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    selfDemotion = recording(accountsApi());
+    return (
+      <Harness fetchStub={selfDemotion.stub}>
+        <SignedInAs user={ME}>
+          <UxScreenProvider screen="gov-users">
+            <Toasted>
+              <Users />
+            </Toasted>
+          </UxScreenProvider>
+        </SignedInAs>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "ada@example.com");
+    await userEvent.click(form.getByRole("switch", { name: SUPERADMIN_SWITCH }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const ask = await dialogNamed("Remove superadmin from ada@example.com?");
+    await waitFor(() =>
+      expect(
+        within(ask).getByText(
+          /This is your own account\. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back\./,
+        ),
+      ).toBeVisible(),
+    );
+    await dismiss(ask);
+    selfDemotion.expectNotSent("PUT", "/users/");
+    const abandon = await expectUxEvent("form_abandon", "user-superadmin-remove");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "user-superadmin-remove");
+
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await press(await dialogNamed("Remove superadmin from ada@example.com?"), "Remove superadmin");
+    await expect(await selfDemotion.expectSentBody("PUT", "/users/user-1")).toEqual({
+      is_superadmin: false,
+    });
+    await expectSheetClosed();
+    const table = await usersTable(canvasElement);
+    await waitFor(() => expect(rowOf(table, "ada@example.com").queryByText("super")).toBeNull());
+    const submit = await expectUxEvent("form_submit", "user-superadmin-remove");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "user-superadmin-remove");
+  },
+};
+
+/**
+ * Delete is raised from the edit sheet through `ConfirmDialog`, which stays
+ * open behind it. The body says the account leaves every organization, what
+ * goes with it, and points at deactivating instead. A cancel sends nothing
+ * and returns to the sheet; a confirm is on the wire with both buttons out of
+ * reach until it lands, then the dialog and the sheet close and the row goes.
+ */
+let deletions: Recorder;
+const deletionHold = held();
+export const DeletingAnAccountIsConfirmedThenLands: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    deletions = recording(accountsApi({ onDelete: deletionHold.answer }));
+    return (
+      <Harness fetchStub={deletions.stub}>
+        <UxScreenProvider screen="gov-users">
+          <Toasted>
+            <Users />
+          </Toasted>
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { panel, form } = await openEditor(canvasElement, "grace@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+
+    const ask = await dialogNamed("Delete grace@example.com?");
+    expectPaintsOver(ask, panel);
+    const body =
+      /The account leaves every organization, not only this one, with all its roles and sessions, and the virtual keys it minted for itself are disabled\. This cannot be undone\. To block sign-in and keep the account, deactivate it instead\./;
+    await expect(within(ask).getByText(body)).toBeInTheDocument();
+    await expect(within(ask).queryByText(/signed in with/)).toBeNull();
+
+    await dismiss(ask);
+    deletions.expectNotSent("DELETE", "/users/");
+    const abandon = await expectUxEvent("form_abandon", "user-delete");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "user-delete");
+    // the sheet is still there, and Delete no longer expands a panel of its own
+    await expect(panel).toBeInTheDocument();
+
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+    const again = await dialogNamed("Delete grace@example.com?");
+    await press(again, "Delete account");
+    await deletions.expectSent("DELETE", "/users/user-2");
+
+    // in flight: the request is on the wire, so neither button can be pressed
+    await waitFor(() =>
+      expect(within(again).getByRole("button", { name: "Delete account" })).toBeDisabled(),
+    );
+    await expect(within(again).getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    deletionHold.release();
+    await expectSheetClosed();
+    await expectToast(canvasElement, /grace@example\.com deleted/);
+    const table = await usersTable(canvasElement);
+    await waitFor(() => expect(within(table).queryByText("grace@example.com")).toBeNull());
+    await expect(within(table).getByText("ada@example.com")).toBeVisible();
+    const submit = await expectUxEvent("form_submit", "user-delete");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "user-delete");
+  },
+};
+
+/**
+ * The control plane refuses the delete. The dialog stays open with its message
+ * verbatim and a line on who may do it; the sheet and the account are still
+ * there.
+ */
+export const DeletingAnAccountRefusedByTheServer: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness
+      fetchStub={accountsApi({
+        onDelete: () => json({ error: { message: "superadmin required" } }, 403),
+      })}
+    >
+      <UxScreenProvider screen="gov-users">
+        <Users />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { panel, form } = await openEditor(canvasElement, "grace@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+    const ask = await dialogNamed("Delete grace@example.com?");
+    await press(ask, "Delete account");
+    await waitFor(() =>
+      expect(within(ask).getByRole("alert")).toHaveTextContent("superadmin required"),
+    );
+    await waitFor(() =>
+      expect(
+        within(ask).getByText("Editing, deactivating or deleting an account takes a superadmin."),
+      ).toBeVisible(),
+    );
+    await waitFor(() => expect(submits("user-delete")).toEqual(["ok", "error"]));
+    expectNoUxEvent("save_confirmed", "user-delete");
+    await expect(panel).toBeInTheDocument();
+  },
+};
+
+/**
+ * The account was deleted elsewhere while the dialog was open. The control
+ * plane answers 404, so the dialog says so and the list is read again and
+ * drops the row.
+ */
+export const DeletingAnAccountAlreadyGoneSaysSo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={accountsApi({
+        onDelete: (id, state) => {
+          state.accounts = state.accounts.filter((user) => user.id !== id);
+          return json({ error: { message: `user ${id} not found` } }, 404);
+        },
+      })}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "grace@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+    const ask = await dialogNamed("Delete grace@example.com?");
+    await press(ask, "Delete account");
+    await waitFor(() =>
+      expect(
+        within(ask).getByText(
+          "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
+        ),
+      ).toBeVisible(),
+    );
+    await expect(within(ask).getByRole("alert")).toHaveTextContent("user user-2 not found");
+    const table = await usersTable(canvasElement);
+    await waitFor(() => expect(within(table).queryByText("grace@example.com")).toBeNull());
+  },
+};
+
+/**
+ * Nothing in the control plane refuses a superadmin deleting the account they
+ * are signed in with, so the dialog says what it costs.
+ */
+export const DeletingYourOwnAccountSaysSo: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi()}>
+      <SignedInAs user={ME}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "ada@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+    const ask = await dialogNamed("Delete ada@example.com?");
+    await expect(
+      within(ask).getByText(
+        /This is the account you are signed in with: you are signed out now and cannot sign in again\./,
+      ),
+    ).toBeInTheDocument();
+    await dismiss(ask);
+  },
+};
+
+/** A superadmin may use every account control, asserted through the gate's own answer. */
+export const AccountControlsOpenToASuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi()} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit grace@example.com");
+    await expectAllowed(canvasElement, "Deactivate grace@example.com");
+    await expectAllowed(canvasElement, "Reactivate former@example.com");
   },
 };
