@@ -265,6 +265,7 @@ enum Reads {
     McpLog,
 }
 
+#[allow(clippy::result_large_err)]
 async fn resolve(
     parts: &mut Parts,
     state: &ControlState,
