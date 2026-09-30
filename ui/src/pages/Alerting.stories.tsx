@@ -6,6 +6,7 @@ import {
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
+  expectAllowed,
   expectClosesWithoutPrompting,
   expectForbidden,
   expectSheetClosed,
@@ -344,6 +345,147 @@ export const ChannelDeleteFails: Story = {
   },
 };
 
+// a channel could only be deleted and added again, which cleared it off every
+// rule delivering through it (#1873). an edit is one PUT that replaces the
+// whole row, so it carries the switch through, and it leaves `managed_secret`
+// out unless a new one was typed, which the API reads as "keep the stored one"
+type ChannelBody = { name: string; endpoint: string; enabled: boolean; managed_secret?: string };
+
+const editsChannel = () =>
+  recording(
+    scoped(async (input, init) => {
+      if (init?.method === "PUT") return json(CHANNELS[0]);
+      return loaded(input, init);
+    }),
+  );
+
+const channelKeepsSecret = editsChannel();
+
+export const EditsAChannelKeepingItsSecret: Story = {
+  render: () => (
+    <Harness fetchStub={channelKeepsSecret.stub}>
+      <Toasted>
+        <AlertChannels />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit channel ops-slack");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit channel ops-slack" }),
+    );
+    const name = form.getByLabelText("Name");
+    await waitFor(() => expect(name).toHaveValue("ops-slack"));
+    await expect(form.getByLabelText("Endpoint URL")).toHaveValue(
+      "https://alerts.example.com/rolter/slack",
+    );
+    // the stored secret is never read back, and the field says what a blank does
+    await expect(form.getByLabelText(/Bearer secret/)).toHaveValue("");
+    await expect(
+      form.getByText(
+        "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+      ),
+    ).toBeVisible();
+
+    await userEvent.clear(name);
+    await userEvent.type(name, "ops-chat");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await channelKeepsSecret.expectSentBody<ChannelBody>(
+      "PUT",
+      "/alert-channels/chan-1",
+    );
+    // exactly these keys: no `managed_secret`, so the stored one stays
+    await expect(body).toEqual({
+      name: "ops-chat",
+      endpoint: "https://alerts.example.com/rolter/slack",
+      enabled: true,
+    });
+    channelKeepsSecret.expectNotSent("POST", "/alert-channels");
+    await expectSheetClosed();
+    await expectToast(canvasElement, /ops-chat updated/);
+  },
+};
+
+const channelSwitchedOff = editsChannel();
+
+// the add form creates a channel switched on, and an edit must not do the same
+// to one somebody switched off
+export const EditsASwitchedOffChannel: Story = {
+  render: () => (
+    <Harness fetchStub={channelSwitchedOff.stub}>
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit channel pager");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit channel pager" }),
+    );
+    await waitFor(() => expect(form.getByLabelText("Name")).toHaveValue("pager"));
+    await expect(form.getByText("No secret is stored. Type one to add it.")).toBeVisible();
+
+    await userEvent.type(form.getByLabelText(/Bearer secret/), "pager-bearer");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await channelSwitchedOff.expectSentBody<ChannelBody>(
+      "PUT",
+      "/alert-channels/chan-2",
+    );
+    await expect(body).toEqual({
+      name: "pager",
+      endpoint: "https://alerts.example.com/rolter/pagerduty",
+      enabled: false,
+      managed_secret: "pager-bearer",
+    });
+    await expectSheetClosed();
+  },
+};
+
+const channelMoves = editsChannel();
+
+// the API drops a stored secret when an edit moves the endpoint to another
+// scheme, host or port and brings no new one, so the field says so before the
+// save rather than the badge vanishing after it
+export const AChannelEditSaysWhenTheSecretIsDropped: Story = {
+  render: () => (
+    <Harness fetchStub={channelMoves.stub}>
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit channel ops-slack");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit channel ops-slack" }),
+    );
+    const endpoint = form.getByLabelText("Endpoint URL");
+    await waitFor(() => expect(endpoint).toHaveValue("https://alerts.example.com/rolter/slack"));
+    const keeps = /^A secret is stored\. Leave this blank to keep it/;
+    const drops = /^The endpoint now points at another scheme, host or port/;
+
+    // another path on the same origin keeps it
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://alerts.example.com/rolter/chat");
+    await expect(form.getByText(keeps)).toBeVisible();
+    await expect(form.queryByText(drops)).toBeNull();
+
+    // another host does not
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://hooks.example.net/rolter");
+    await expect(form.getByText(drops)).toBeVisible();
+    await expect(form.queryByText(keeps)).toBeNull();
+
+    // unless the new receiver's own secret comes with it
+    await userEvent.type(form.getByLabelText(/Bearer secret/), "receiver-bearer");
+    await expect(form.getByText(keeps)).toBeVisible();
+    await expect(form.queryByText(drops)).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await channelMoves.expectSentBody<ChannelBody>("PUT", "/alert-channels/chan-1");
+    await expect(body.endpoint).toBe("https://hooks.example.net/rolter");
+    await expect(body.managed_secret).toBe("receiver-bearer");
+    await expectSheetClosed();
+  },
+};
+
 export const RulesLoaded: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
@@ -610,6 +752,144 @@ export const TheRuleWindowHoldsToTheApiBounds: Story = {
     const body = await ruleCreates.expectSentBody<{ window_secs: number }>("POST", "/alert-rules");
     await expect(body.window_secs).toBe(60);
     await expectSheetClosed();
+  },
+};
+
+// a rule could only be deleted and added again, which took its history with
+// it (#1873). the edit opens on the row in the form's units and sends one PUT
+// with every field, the switch carried through as it was
+type RuleBody = {
+  name: string;
+  signal: string;
+  threshold: number;
+  window_secs: number;
+  channel_id: string | null;
+  enabled: boolean;
+};
+
+const editsRules = (rules: AlertRuleRow[]) =>
+  recording(
+    scoped(async (input, init) => {
+      if (init?.method === "PUT") return json(rules[0]);
+      if (String(input).includes("/alert-rules")) return json(rules);
+      return loaded(input, init);
+    }),
+  );
+
+// switched off, so an edit that quietly switched it back on is caught
+const ruleEdits = editsRules([{ ...RULES[0], enabled: false }, ...RULES.slice(1)]);
+
+export const EditsARule: Story = {
+  render: () => (
+    <Harness fetchStub={ruleEdits.stub}>
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit rule high error rate");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit rule high error rate" }),
+    );
+    await waitFor(() => expect(form.getByLabelText("Name")).toHaveValue("high error rate"));
+    // the stored fraction opens as the percentage it is typed in, not as the
+    // signal's default
+    const threshold = form.getByLabelText("Threshold (%)");
+    await expect(threshold).toHaveValue(5);
+    await expect(form.getByLabelText("Signal")).toHaveValue("Error rate");
+    await expect(form.getByLabelText("Window (seconds)")).toHaveValue(300);
+    await expect(form.getByLabelText("Channel")).toHaveValue("ops-slack");
+    await expect(form.getByText("The rule keeps its state and history.")).toBeVisible();
+
+    await userEvent.clear(threshold);
+    await userEvent.type(threshold, "2");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await ruleEdits.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-1");
+    await expect(body).toEqual({
+      name: "high error rate",
+      signal: "error_rate",
+      threshold: 0.02,
+      window_secs: 300,
+      channel_id: "chan-1",
+      enabled: false,
+    });
+    ruleEdits.expectNotSent("POST", "/alert-rules");
+    await expectSheetClosed();
+    await expectToast(canvasElement, /high error rate updated/);
+  },
+};
+
+// the add form resets the threshold whenever a signal is picked; an edit that
+// did the same on opening, or on picking the signal it already had, would
+// overwrite the rule's own threshold with a default
+export const AnEditKeepsTheThresholdUntilTheSignalChanges: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit rule slow p95");
+    let form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit rule slow p95" }),
+    );
+    await waitFor(() => expect(form.getByLabelText("Threshold (ms)")).toHaveValue(2000));
+    await expect(form.getByLabelText("Channel")).toHaveValue("none (record only)");
+    await pickOption(form.getByLabelText("Signal"), /^p95 latency/);
+    await expect(form.getByLabelText("Threshold (ms)")).toHaveValue(2000);
+    // nothing changed, so nothing asks to be discarded
+    await expectClosesWithoutPrompting();
+
+    await clickWhenEnabled(canvasElement, "Edit rule slow p95");
+    form = within(await within(document.body).findByRole("dialog", { name: "Edit rule slow p95" }));
+    await waitFor(() => expect(form.getByLabelText("Threshold (ms)")).toHaveValue(2000));
+    await pickOption(form.getByLabelText("Signal"), /^Request volume/);
+    await expect(await form.findByLabelText("Threshold (requests per window)")).toHaveValue(1000);
+  },
+};
+
+// the form holds twelve significant digits, and a rename must not round a
+// threshold stored with more
+const PRECISE: AlertRuleRow = { ...RULES[0], threshold: 0.123456789012345 };
+const preciseEdits = editsRules([PRECISE, ...RULES.slice(1)]);
+
+export const AnUntouchedThresholdGoesBackAsStored: Story = {
+  render: () => (
+    <Harness fetchStub={preciseEdits.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit rule high error rate");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit rule high error rate" }),
+    );
+    const name = form.getByLabelText("Name");
+    await waitFor(() => expect(name).toHaveValue("high error rate"));
+    await expect(form.getByLabelText("Threshold (%)")).toHaveValue(12.3456789012);
+    await userEvent.type(name, " (5xx)");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await preciseEdits.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-1");
+    await expect(body.name).toBe("high error rate (5xx)");
+    await expect(body.threshold).toBe(0.123456789012345);
+    await expectSheetClosed();
+  },
+};
+
+// the edit takes the authority the switch beside it does. alerting is
+// superadmin-only, so any lesser caller is refused the whole screen before a
+// row renders, and the superadmin is the one role that reaches the control
+export const EditIsOfferedToASuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="superadmin">
+      <AlertChannels />
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit channel ops-slack");
+    await expectAllowed(canvasElement, "Edit rule high error rate");
   },
 };
 

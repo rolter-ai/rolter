@@ -187,8 +187,8 @@ The endpoint is stored as the HTTP client parses it, so
 
 The **Add channel** sheet asks for a name, the endpoint URL and the optional
 secret, and creates the channel enabled. Each channel card shows its kind, a
-**secret set** badge when a secret is stored, an enable switch and a delete
-button.
+**secret set** badge when a secret is stored, an enable switch, an edit button
+and a delete button.
 
 ### Delivery
 
@@ -343,8 +343,8 @@ channel is selected; pick **none (record only)** for a rule without one. The
 rule is created enabled.
 
 Each rule card shows its state, signal, threshold, window, last value, when it
-was last evaluated and its channel, with an enable switch, **Evaluate now** and
-a delete button. The threshold and last value are in the signal's unit
+was last evaluated and its channel, with an enable switch, **Evaluate now**, an
+edit button and a delete button. The threshold and last value are in the signal's unit
 (`5%`, `840 ms`, `€12.50/h`, `340 requests in 5m`) and the window is a
 duration (`5m`). A rule in `error` shows its `last_error` under the figures.
 
@@ -364,13 +364,29 @@ it catches a surge, never a drop.
 
 ### Changing a rule or channel
 
-The dashboard can enable, disable and delete, but not yet edit (tracked in
-[#1873](https://github.com/rolter-ai/rolter/issues/1873)). Change a threshold,
-window, signal, channel or endpoint through the API instead of deleting and
-recreating, because deleting a rule also deletes its history.
+The edit button on a rule or channel card opens the sheet that adds one, filled
+in from the row. Change the threshold, window, signal, channel or endpoint and
+choose **Save**. Do not delete and recreate instead: deleting a rule also deletes
+its history, and deleting a channel clears it from every rule that delivers
+through it. An edited rule keeps its state and history, and the change applies
+from its next evaluation.
 
-`PUT` replaces the whole row, so send every field. A body without `enabled`
-turns the rule or channel off.
+Saving sends the enable switch back as it was, so editing a rule or channel that
+is switched off leaves it off. The edit button follows the same permission as
+the switch, `alert_rule` or `alert_channel` update.
+
+An existing rule opens on its own threshold, in the signal's unit: a stored
+`0.05` for `error_rate` opens as `5`. Only choosing another signal resets it to
+that signal's default.
+
+A channel's secret field opens empty, because a stored secret is never read
+back. Leave it blank to keep the stored secret, or type one to replace it. A
+secret belongs to the endpoint's origin, so pointing the channel at another
+scheme, host or port without typing a new secret drops the stored one. The
+sheet says so beside the field before you save.
+
+The same change through the API is a `PUT`, which replaces the whole row, so
+send every field. A body without `enabled` turns the rule or channel off.
 
 ```bash
 curl -X PUT https://control.example.com/api/v1/alert-rules/$RULE_ID \
