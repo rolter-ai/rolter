@@ -2418,7 +2418,20 @@
       "budgetSheetSubtitle": "Spend cap for {{scope}}",
       "budgetLimitLabel": "Limit ({{currency}})",
       "budgetPeriodLabel": "Period",
-      "budgetPeriodHint": "e.g. 30d, 7d, 1d",
+      "budgetPeriodHint": "Counted over calendar windows in UTC. There are no rolling windows, such as the last 7 days.",
+      "periodPlaceholder": "Pick a period",
+      "periodOptions": {
+        "daily": "Daily",
+        "monthly": "Monthly",
+        "total": "Lifetime"
+      },
+      "periodDescriptions": {
+        "daily": "Resets every day at 00:00 UTC",
+        "monthly": "Resets on the 1st of each month at 00:00 UTC",
+        "total": "Never resets"
+      },
+      "periodUnrecognised": "The gateway does not recognise the period “{{period}}” and enforces this budget as monthly. Edit the budget to pick a period.",
+      "periodUnrecognisedHint": "The gateway does not recognise “{{period}}” and enforces this budget as monthly. There are no rolling windows: pick the window to count over.",
       "rateLimitSheetTitle": "Add rate limit",
       "rateLimitEditTitle": "Edit rate limit",
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",

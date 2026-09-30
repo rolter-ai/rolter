@@ -1359,14 +1359,40 @@ impl PostgresConfigStore {
 }
 
 /// Map the free-text `budgets.period` column to a [`BudgetPeriod`]. Accepts both
-/// the human names and the legacy duration shorthands (`1d`, `30d`), defaulting
-/// to monthly for anything unrecognized.
+/// the human names and the duration shorthands (`1d`, `30d`), defaulting to
+/// monthly for anything unrecognized.
+///
+/// The fallback stays for rows written before the control plane checked the
+/// value (#1902): failing the load would withhold every tenant's config over
+/// one row, and moving an existing budget onto another window is not a guess
+/// to make on the operator's behalf. [`unrecognised_budget_periods`] is what
+/// says it happened.
 fn parse_period(period: &str) -> BudgetPeriod {
-    match period.trim().to_ascii_lowercase().as_str() {
-        "daily" | "1d" | "24h" => BudgetPeriod::Daily,
-        "total" | "lifetime" | "all" => BudgetPeriod::Total,
-        _ => BudgetPeriod::Monthly,
-    }
+    BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
+}
+
+/// One config problem per budget whose stored `period` the gateway does not
+/// recognise, and so enforces as monthly (#1902).
+///
+/// Worded like the other lines `GET /api/v1/config/problems` reports, naming
+/// the row by id and scope, since two budgets on one scope differ by nothing
+/// else an operator can search for.
+fn unrecognised_budget_periods(rows: &[Budget]) -> Vec<String> {
+    let accepted = BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect::<Vec<_>>()
+        .join(", ");
+    rows.iter()
+        .filter(|row| BudgetPeriod::parse(&row.period).is_none())
+        .map(|row| {
+            format!(
+                "budget '{}' on {} '{}' has period '{}', which the gateway does not \
+                 recognise, so it is enforced as a monthly cap; set it to one of {accepted}",
+                row.id, row.scope_type, row.scope_id, row.period
+            )
+        })
+        .collect()
 }
 
 /// Map the `budgets.unpriced_policy` column to an [`UnpricedPolicy`] override.
@@ -1550,6 +1576,18 @@ impl ConfigStore for PostgresConfigStore {
             .fetch_one(&self.pool)
             .await
             .map_err(store_err)
+    }
+
+    async fn load_problems(&self) -> Result<Vec<String>> {
+        let budgets: Vec<Budget> = sqlx::query_as(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                    unpriced_policy, created_at
+             from budgets order by created_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(unrecognised_budget_periods(&budgets))
     }
 }
 
@@ -3078,6 +3116,70 @@ mod tests {
             .expect("customer rate limit in snapshot");
         assert_eq!(limit.id, customer_id.to_string());
         assert_eq!(limit.rpm, Some(60));
+    }
+
+    // a budget stored before the control plane checked its period keeps being
+    // enforced as it was, monthly, but is reported rather than passing as the
+    // 7d cap the row claims to be (#1902)
+    #[tokio::test]
+    async fn an_unrecognised_budget_period_is_enforced_monthly_and_reported() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut ids = Vec::new();
+        for period in ["30d", "Daily", "7d", "dialy"] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into budgets (scope_type, scope_id, limit_usd, period)
+                 values ('org', $1, 10, $2) returning id",
+            )
+            .bind(org_id)
+            .bind(period)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+
+        let store = PostgresConfigStore::new(pool);
+        let periods: Vec<BudgetPeriod> = store
+            .load()
+            .await
+            .unwrap()
+            .budgets
+            .iter()
+            .map(|b| b.period)
+            .collect();
+        assert_eq!(
+            periods,
+            [
+                BudgetPeriod::Monthly,
+                BudgetPeriod::Daily,
+                BudgetPeriod::Monthly,
+                BudgetPeriod::Monthly,
+            ]
+        );
+
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains(&ids[2].to_string()), "{}", problems[0]);
+        assert!(problems[0].contains("period '7d'"), "{}", problems[0]);
+        assert!(problems[0].contains("monthly"), "{}", problems[0]);
+        assert!(problems[1].contains("period 'dialy'"), "{}", problems[1]);
+        assert!(
+            problems[1].contains(&format!("org '{org_id}'")),
+            "{}",
+            problems[1]
+        );
     }
 
     // the adaptive-routing kill switch and blend weights are control-plane

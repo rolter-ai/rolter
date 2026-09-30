@@ -1295,7 +1295,7 @@ disable their primary action until the three-request scope chain resolves, so
 Each screen should carry `Loaded`, `Loading`, `Empty` and an error/forbidden
 story, one interaction story that opens the primary editor and saves, and at
 least one story exercising the discard guard. Where a sheet opens pre-filled
-(budgets seed `100` / `30d`), assert the seed too: its dirty flag means "differs
+(budgets seed `100` / monthly), assert the seed too: its dirty flag means "differs
 from the seed", not "is non-empty", and getting that backwards makes an
 untouched form prompt on every close.
 

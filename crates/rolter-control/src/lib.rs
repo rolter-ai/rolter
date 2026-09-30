@@ -1991,6 +1991,13 @@ async fn get_config_problems(State(state): State<ControlState>) -> Json<Value> {
     if let Err(fatal) = config.validate() {
         problems.extend(fatal);
     }
+    // rows the loader could only serve by guessing, such as a budget period it
+    // does not recognise and enforces as monthly (#1902). the snapshot carries
+    // the guess, not the row, so only the store can say where one was made
+    match state.store.load_problems().await {
+        Ok(guessed) => problems.extend(guessed),
+        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
+    }
     Json(json!({ "problems": problems }))
 }
 
@@ -3066,6 +3073,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body["problems"].as_array().unwrap().len(), 0, "{body}");
+    }
+
+    /// A store whose rows the loader could only map by guessing, or which
+    /// cannot say whether it had to (#1902).
+    struct GuessingConfigStore {
+        problems: Option<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for GuessingConfigStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            Ok(GatewayConfig::default())
+        }
+        async fn save(&self, _config: GatewayConfig) -> rolter_core::Result<()> {
+            Ok(())
+        }
+        async fn load_problems(&self) -> rolter_core::Result<Vec<String>> {
+            self.problems
+                .clone()
+                .ok_or_else(|| rolter_core::Error::Store("budgets query failed".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_the_loader_misread_are_config_problems() {
+        async fn problems(store: GuessingConfigStore) -> Value {
+            let mut state = state_with_token(None);
+            state.store = Arc::new(store);
+            let addr = serve(build_app_with_internal(state)).await;
+            let response = reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/config/problems"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json().await.unwrap()
+        }
+
+        let line = "budget 'b' on org 'o' has period '7d', which the gateway does not recognise";
+        let body = problems(GuessingConfigStore {
+            problems: Some(vec![line.to_string()]),
+        })
+        .await;
+        assert_eq!(body["problems"], json!([line]), "{body}");
+
+        // a store that cannot list them does not take the rest of the answer
+        // with it: the endpoint still answers, with what it could compute
+        let body = problems(GuessingConfigStore { problems: None }).await;
+        assert_eq!(body["problems"], json!([]), "{body}");
     }
 
     struct FailingConfigStore;

@@ -2734,6 +2734,17 @@ fn governance_schemas(p: &Prim) -> Value {
         "type": "string",
         "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
     });
+    // what `validate_period` in `crud.rs` accepts, read off the same table the
+    // snapshot loader uses, so the documented set cannot drift from it (#1902)
+    let periods: Vec<&str> = rolter_core::BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect();
+    let period = json!({
+        "type": "string",
+        "enum": periods,
+        "description": "daily, 1d and 24h reset at 00:00 UTC; monthly and 30d on the first of the calendar month, UTC; total, lifetime and all never reset. Case-insensitive. There are no rolling windows such as 7d"
+    });
     json!({
         "Budget": {
             "type": "object",
@@ -2743,7 +2754,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": {"type": "string", "description": "decimal(12,4) as text"},
-                "period": string,
+                "period": {
+                    "type": "string",
+                    "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
+                },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
                 "created_at": timestamp
             }
@@ -2754,8 +2768,13 @@ fn governance_schemas(p: &Prim) -> Value {
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "limit_usd": string,
-                "period": {"type": "string", "default": "30d"},
+                "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
+                "period": {
+                    "type": "string",
+                    "enum": period["enum"],
+                    "description": period["description"],
+                    "default": "30d"
+                },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
             },
             "additionalProperties": false
@@ -2765,7 +2784,7 @@ fn governance_schemas(p: &Prim) -> Value {
             "description": "every field is optional; omit one to leave it unchanged. The scope is not editable. An edit that changes nothing writes nothing",
             "properties": {
                 "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
-                "period": string,
+                "period": period,
                 "unpriced_policy": {
                     "type": ["string", "null"],
                     "enum": ["ignore", "warn", "block", null],
@@ -2789,12 +2808,13 @@ fn governance_schemas(p: &Prim) -> Value {
         },
         "CreateRateLimit": {
             "type": "object",
+            "description": "at least one of rpm and tpm must be set; omitted or null leaves that dimension uncapped",
             "required": ["scope_type", "scope_id"],
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "rpm": {"type": ["integer", "null"]},
-                "tpm": {"type": ["integer", "null"]}
+                "rpm": {"type": ["integer", "null"], "minimum": 1},
+                "tpm": {"type": ["integer", "null"], "minimum": 1}
             },
             "additionalProperties": false
         },

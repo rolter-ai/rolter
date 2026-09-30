@@ -2550,7 +2550,20 @@
       "budgetSheetSubtitle": "Лимит расходов для {{scope}}",
       "budgetLimitLabel": "Лимит ({{currency}})",
       "budgetPeriodLabel": "Период",
-      "budgetPeriodHint": "например 30d, 7d, 1d",
+      "budgetPeriodHint": "Считается по календарным окнам в UTC. Скользящих окон, например за последние 7 дней, нет.",
+      "periodPlaceholder": "Выберите период",
+      "periodOptions": {
+        "daily": "Ежедневно",
+        "monthly": "Ежемесячно",
+        "total": "За всё время"
+      },
+      "periodDescriptions": {
+        "daily": "Сбрасывается каждый день в 00:00 UTC",
+        "monthly": "Сбрасывается 1-го числа каждого месяца в 00:00 UTC",
+        "total": "Никогда не сбрасывается"
+      },
+      "periodUnrecognised": "Шлюз не распознаёт период «{{period}}» и применяет этот бюджет как месячный. Измените бюджет и выберите период.",
+      "periodUnrecognisedHint": "Шлюз не распознаёт «{{period}}» и применяет этот бюджет как месячный. Скользящих окон нет: выберите окно, по которому считать.",
       "rateLimitSheetTitle": "Новый лимит скорости",
       "rateLimitEditTitle": "Изменить лимит скорости",
       "rateLimitSheetSubtitle": "Ограничения пропускной способности для {{scope}} — пустое поле означает «без лимита»",
