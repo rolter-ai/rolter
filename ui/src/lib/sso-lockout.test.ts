@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { SsoProviderRow } from "@/lib/api";
-import { distinctPeople, locksOutMembers, secretGap } from "@/lib/sso-lockout";
+import { distinctPeople, locksOutMembers, locksOutSsoMembers, secretGap } from "@/lib/sso-lockout";
 
 function provider(id: string, over: Partial<SsoProviderRow> = {}): SsoProviderRow {
   return {
@@ -61,6 +61,42 @@ describe("locksOutMembers", () => {
   it("is false for a provider that is already out of service", () => {
     const parked = provider("entra", { enabled: false });
     expect(locksOutMembers([okta, parked], parked, PASSWORDS_OFF)).toBe(false);
+  });
+});
+
+describe("locksOutSsoMembers", () => {
+  const SSO_ON = { allow_sso: true };
+  const SSO_OFF = { allow_sso: false };
+  const okta = provider("okta");
+
+  it("is true turning it off while a provider is enabled", () => {
+    expect(locksOutSsoMembers([okta], SSO_ON, SSO_OFF)).toBe(true);
+  });
+
+  it("is true when only one of several providers is enabled", () => {
+    const parked = provider("entra", { enabled: false });
+    expect(locksOutSsoMembers([parked, okta], SSO_ON, SSO_OFF)).toBe(true);
+  });
+
+  it("is false with no provider at all", () => {
+    expect(locksOutSsoMembers([], SSO_ON, SSO_OFF)).toBe(false);
+  });
+
+  it("is false when every provider is already out of service", () => {
+    const parked = provider("entra", { enabled: false });
+    expect(locksOutSsoMembers([parked], SSO_ON, SSO_OFF)).toBe(false);
+  });
+
+  it("is false turning it on", () => {
+    expect(locksOutSsoMembers([okta], SSO_OFF, SSO_ON)).toBe(false);
+  });
+
+  it("is false while the draft leaves it on", () => {
+    expect(locksOutSsoMembers([okta], SSO_ON, SSO_ON)).toBe(false);
+  });
+
+  it("is false when it is already off on the server", () => {
+    expect(locksOutSsoMembers([okta], SSO_OFF, SSO_OFF)).toBe(false);
   });
 });
 

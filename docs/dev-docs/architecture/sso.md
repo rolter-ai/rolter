@@ -95,6 +95,9 @@ not silently gain a second, weaker credential.
   password form.
 - `allow_sso` — when false, callbacks for this org's providers are refused
   without deleting the provider rows, so an IdP can be cut off in one request.
+  An account a provider created has no password, so while this is off those
+  members cannot sign in at all, whatever `allow_password_login` says. The
+  dashboard confirms the change when the org has an enabled provider (#2326).
 
 Two guard rails, both returning `409`:
 
@@ -141,6 +144,8 @@ The endpoint also reports `configured: false` when `ROLTER_PUBLIC_URL` is unset,
 and the screen warns that the default only reaches rolter from a browser on the
 control plane's own host. It is deployment-wide rather than SSO-specific so the
 User Provisioning screen can build its SCIM base URL from the same value (#2079).
+Both screens read it through `usePublicUrl()` (`ui/src/lib/use-public-url.ts`),
+the one place its query key and options are written, so they share one request.
 
 ## Testing
 

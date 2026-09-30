@@ -2084,6 +2084,16 @@
             "all": "Every enabled provider is on this list, so no member could complete a sign-in until a secret is stored. Superadmins could still sign in with a password."
           }
         },
+        "ssoConfirm": {
+          "title": "Turn off single sign-on?",
+          "body": "While it is off, every sign-in through this organization's identity providers is refused. The providers, their secrets and group mappings stay, so turning it back on restores sign-in.",
+          "confirm": "Turn it off",
+          "notice": {
+            "title": "Members who only sign in through a provider would be locked out",
+            "noPassword": "Accounts created through a provider have no password, so they cannot sign in until single sign-on is back on or a superadmin sets one.",
+            "stillIn": "Accounts that have a password, such as those created from an invitation, keep signing in with it."
+          }
+        },
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
           "body": "Members who have not set up an authenticator app are asked to set one up at their next password sign-in, before they get a session.",

@@ -44,7 +44,6 @@ import {
   deleteSsoProvider,
   fetchAuthPolicy,
   fetchMemberships,
-  fetchPublicUrl,
   fetchSsoGroupMappings,
   fetchSsoProviders,
   ROLES,
@@ -59,15 +58,21 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { distinctPeople, locksOutMembers, secretGap, type SecretGap } from "@/lib/sso-lockout";
+import {
+  distinctPeople,
+  locksOutMembers,
+  locksOutSsoMembers,
+  secretGap,
+  type SecretGap,
+} from "@/lib/sso-lockout";
 import { errorDetail, useToast } from "@/lib/toast";
+import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
-const PUBLIC_URL_KEY = "public-url";
 
 // the roles a group mapping may grant, mirroring `parse_role` in
 // crates/rolter-control/src/sso.rs. deliberately not /api/v1/roles: that list
@@ -183,6 +188,25 @@ function LockoutNotice({ name }: { name: string }) {
     <WarningNote title={t("pages.sso.lockout.title")}>
       <p className="text-muted-foreground">{t("pages.sso.lockout.body", { name })}</p>
       <p className="text-muted-foreground">{t("pages.sso.lockout.noPassword")}</p>
+    </WarningNote>
+  );
+}
+
+/**
+ * Who turning single sign-on off shuts out, and who still gets in (#2326).
+ *
+ * While the switch is off the callback refuses every provider of the org, and
+ * an account a provider created has no password, so password sign-in being on
+ * does not bring those members back. An account that holds a password, such as
+ * one made from an invitation, signs in as before. The superadmin exemption
+ * is from the password switch, not this one, so it is not claimed here.
+ */
+function SsoOffNotice() {
+  const { t } = useTranslation();
+  return (
+    <WarningNote title={t("pages.sso.policy.ssoConfirm.notice.title")}>
+      <p className="text-muted-foreground">{t("pages.sso.policy.ssoConfirm.notice.noPassword")}</p>
+      <p className="text-muted-foreground">{t("pages.sso.policy.ssoConfirm.notice.stillIn")}</p>
     </WarningNote>
   );
 }
@@ -315,6 +339,12 @@ const MFA_DOCS_URL =
 const GRACE_DAYS = [7, 14, 30];
 
 /**
+ * The confirmations a policy save can raise, named for the change each one
+ * guards. They are asked in this order.
+ */
+type Confirmation = "password" | "sso" | "mfa";
+
+/**
  * The org's announced start, when it is still ahead. A window that has passed
  * reads as no window at all — the requirement already applies — so it is not
  * offered as something to keep.
@@ -355,6 +385,12 @@ function graceDeadline(grace: string, pending: string | null): string | null {
  * plane refuses it with no enabled provider, but accepts it when the only one
  * has no client secret, so the confirmation names any enabled provider that
  * would fail its token exchange.
+ *
+ * So does turning single sign-on off (#2326), when the org has an enabled
+ * provider: the callback refuses every provider while it is off, and an account
+ * a provider created has no password, so those members cannot sign in at all.
+ * A save that needs several confirmations asks them one after another and sends
+ * one request after the last.
  */
 function SignInPolicyCard({
   orgId,
@@ -374,9 +410,8 @@ function SignInPolicyCard({
   const pending = pendingWindow(policy);
   const initialGrace = pending ? "keep" : "now";
   const [grace, setGrace] = React.useState(initialGrace);
-  // which confirmation is up. turning passwords off and tightening the second
-  // factor in one save raises both, the password one first
-  const [confirming, setConfirming] = React.useState<"password" | "mfa" | null>(null);
+  // which confirmation is up
+  const [confirming, setConfirming] = React.useState<Confirmation | null>(null);
   const fmt = useFormat();
 
   // re-seed when the server's copy moves under us — another admin, or our own
@@ -405,6 +440,8 @@ function SignInPolicyCard({
   // only the switch going from on to off: a policy saved with passwords already
   // off, for some other field, takes nobody's route away
   const turnsPasswordOff = policy.allow_password_login && !password;
+  // likewise only the flip from on to off, and only with a provider to shut out
+  const turnsSsoOff = locksOutSsoMembers(providers, policy, { allow_sso: sso });
   const gap = secretGap(providers);
 
   // how many accounts the tightening would bind. Best-effort: a caller who may
@@ -445,6 +482,23 @@ function SignInPolicyCard({
       });
     },
   });
+
+  // the confirmations this save raises, in the order they are asked. the
+  // password and single sign-on ones never meet, since both off is refused
+  // before the save, but nothing here depends on it
+  const steps: Confirmation[] = [];
+  if (turnsPasswordOff) steps.push("password");
+  if (turnsSsoOff) steps.push("sso");
+  if (tightens) steps.push("mfa");
+  // an answer moves on to the next confirmation, and the last one sends the
+  // request. a confirmation that only moves on runs none, which it says to
+  // `ConfirmDialog` by passing no `pending`
+  const advance = (from: Confirmation) => {
+    const next = steps[steps.indexOf(from) + 1];
+    if (next) setConfirming(next);
+    else save.mutate();
+  };
+  const sendsRequest = (step: Confirmation) => steps.indexOf(step) === steps.length - 1;
 
   const dirty =
     password !== policy.allow_password_login ||
@@ -550,8 +604,7 @@ function SignInPolicyCard({
           disabled={!dirty || bothOff || save.isPending}
           onClick={() => {
             save.reset();
-            if (turnsPasswordOff) setConfirming("password");
-            else if (tightens) setConfirming("mfa");
+            if (steps.length > 0) setConfirming(steps[0]);
             else save.mutate();
           }}
         >
@@ -567,13 +620,25 @@ function SignInPolicyCard({
         title={t("pages.sso.policy.passwordConfirm.title")}
         description={t("pages.sso.policy.passwordConfirm.body")}
         confirmLabel={t("pages.sso.policy.passwordConfirm.confirm")}
-        // the press only moves on to the second-factor confirmation when that
-        // is also raised, and runs no request then
-        pending={tightens ? undefined : save.isPending}
+        pending={sendsRequest("password") ? save.isPending : undefined}
         error={save.error}
-        onConfirm={() => (tightens ? setConfirming("mfa") : save.mutate())}
+        onConfirm={() => advance("password")}
       >
         {gap.missing.length > 0 && <NoSecretNotice gap={gap} />}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        name="sso-single-sign-on-off"
+        open={confirming === "sso"}
+        onOpenChange={(open) => !open && setConfirming(null)}
+        title={t("pages.sso.policy.ssoConfirm.title")}
+        description={t("pages.sso.policy.ssoConfirm.body")}
+        confirmLabel={t("pages.sso.policy.ssoConfirm.confirm")}
+        pending={sendsRequest("sso") ? save.isPending : undefined}
+        error={save.error}
+        onConfirm={() => advance("sso")}
+      >
+        <SsoOffNotice />
       </ConfirmDialog>
 
       <ConfirmDialog
@@ -1269,12 +1334,7 @@ export default function SingleSignOn() {
   // the base every URL here is built from (#2083). the cards read theirs off
   // the provider rows, so this only feeds the add sheet's preview and the
   // notice for an unset ROLTER_PUBLIC_URL, and the screen does not wait on it
-  const publicUrl = useQuery({
-    queryKey: [PUBLIC_URL_KEY],
-    queryFn: fetchPublicUrl,
-    retry: false,
-    staleTime: Infinity,
-  });
+  const publicUrl = usePublicUrl();
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // the provider list is what the user is actually waiting on here

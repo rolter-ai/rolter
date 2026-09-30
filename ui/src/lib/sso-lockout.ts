@@ -35,6 +35,35 @@ export function locksOutMembers(
   return !providers.some((provider) => provider.id !== target.id && provider.enabled);
 }
 
+/**
+ * Whether saving `draft` turns single sign-on off on an org that has a provider
+ * members sign in through, which shuts out everyone who has no other way in.
+ *
+ * While `allow_sso` is off the callback refuses every provider of the org
+ * (`callback` in `sso.rs`), and an account a provider created has no password
+ * (`UserRepo::create(&email, None, false)` in the same function, and `auth.rs`
+ * rejects a password login for an account with no hash). So with password
+ * sign-in on, which the control plane insists on, those members still have no
+ * way in. Accounts that also hold a password keep signing in. The control plane
+ * accepts the change, so the dashboard is the only place that can say so first.
+ *
+ * It takes an enabled provider to mean anything: a disabled one has no `/start`
+ * (`find_provider_by_slug` resolves enabled providers only), so with none nobody
+ * is signing in through a provider and the switch takes nobody's route away.
+ *
+ * `saved` is the policy on the server, `draft` the switches on the policy card.
+ * Only the flip from on to off counts: a save that changes another field while
+ * single sign-on is already off asks nothing, and neither does turning it on.
+ */
+export function locksOutSsoMembers(
+  providers: SsoProviderRow[],
+  saved: Pick<OrgAuthPolicy, "allow_sso">,
+  draft: Pick<OrgAuthPolicy, "allow_sso">,
+): boolean {
+  if (!saved.allow_sso || draft.allow_sso) return false;
+  return providers.some((provider) => provider.enabled);
+}
+
 export interface SecretGap {
   /** the enabled providers with no sealed client secret, in list order */
   missing: SsoProviderRow[];
