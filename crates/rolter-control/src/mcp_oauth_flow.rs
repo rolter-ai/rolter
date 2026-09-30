@@ -758,7 +758,7 @@ fn failed<E: Into<ApiError>>(
 /// Every browser asks for `text/html` on a top-level navigation. `reqwest`,
 /// `curl` and `fetch` send `*/*` or nothing at all, so they keep the JSON
 /// answer this endpoint has always given. An explicit `q=0` refuses the type.
-fn prefers_html(headers: &HeaderMap) -> bool {
+pub(crate) fn prefers_html(headers: &HeaderMap) -> bool {
     headers
         .get_all(header::ACCEPT)
         .iter()
