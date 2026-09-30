@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Connectors from "./Connectors";
 import {
+  answerDiscardPrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmation,
@@ -20,11 +21,16 @@ import {
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
-import type { ConnectorRow } from "@/lib/api";
+import type { ConnectorRow, PublicUrl } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atShort,
+  expectInViewport,
+  expectNoHorizontalOverflow,
+} from "@/lib/story-viewport";
 
 const CHECKED_AT = "2026-08-06T10:00:00Z";
 
@@ -93,13 +99,31 @@ service:
 const yaml = (body: string, status = 200) =>
   new Response(body, { status, headers: { "Content-Type": "application/yaml" } });
 
-/** Answer the config endpoint with `config`, everything else with the list. */
+// what the control plane reports as its own address. deliberately not the
+// Storybook origin: an address built from `window.location` would pass a story
+// that only compared against it (#2106)
+const PUBLIC_BASE = "https://rolter.acme.example";
+const PUBLIC_URL: PublicUrl = { public_url: PUBLIC_BASE, configured: true };
+const CONFIG_URL = `${PUBLIC_BASE}/api/v1/connectors/collector-config`;
+// `ROLTER_PUBLIC_URL` unset: the control plane falls back to its default
+const DEFAULT_BASE = "http://localhost:4001";
+const UNSET: PublicUrl = { public_url: DEFAULT_BASE, configured: false };
+
+/**
+ * Answer the config endpoint with `config`, the public base with `publicUrl`,
+ * everything else with the list.
+ */
 function withConfig(
   config: () => Response | Promise<Response>,
   connectors: ConnectorRow[] = CONNECTORS,
+  publicUrl: () => Response | Promise<Response> = () => json(PUBLIC_URL),
 ): FetchStub {
-  return async (input) =>
-    String(input).includes("collector-config") ? config() : json(connectors);
+  return async (input) => {
+    const url = String(input);
+    if (url.includes("collector-config")) return config();
+    if (new URL(url, "http://localhost").pathname === "/api/v1/public-url") return publicUrl();
+    return json(connectors);
+  };
 }
 
 /**
@@ -175,6 +199,38 @@ export const Loaded: Story = {
       en.pages.connectors.checkedAt.replace("{{time}}", formattersFor("en").relative(CHECKED_AT)),
     );
     await expect(checked.textContent).not.toMatch(/\d:\d\d/);
+  },
+};
+
+// a connector that is switched off has to read as off, not as a broken one:
+// health is its own axis, so a never-tested connector says `unknown` and
+// nothing else on its card said that nothing is being sent (#2349)
+export const SwitchedOffConnectorReadsAsOff: Story = {
+  render: () => <Harness fetchStub={async () => json(CONNECTORS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+
+    const off = within(canvas.getByRole("group", { name: "honeycomb" }));
+    await expect(off.getByText(en.pages.connectors.off)).toBeVisible();
+    await expect(off.getByRole("switch", { name: "Enable honeycomb" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    // off is not unhealthy: nothing has been tested, and nothing is wrong
+    await expect(off.getByText("unknown")).toBeVisible();
+    await expect(off.queryByText("unhealthy")).toBeNull();
+    await expect(off.queryByRole("alert")).toBeNull();
+
+    // the ones that are sending say nothing of the kind
+    for (const name of ["signoz", "datadog-staging"]) {
+      const on = within(canvas.getByRole("group", { name }));
+      await expect(on.queryByText(en.pages.connectors.off)).toBeNull();
+      await expect(on.getByRole("switch", { name: `Enable ${name}` })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+    }
   },
 };
 
@@ -280,17 +336,21 @@ export const DeletingAConnector: Story = {
   },
 };
 
+/** Open the collector-config dialog from the toolbar and return it. */
+async function openCollectorConfig(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+  await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
+  return within(await within(document.body).findByRole("dialog"));
+}
+
 // defining a connector delivers nothing on its own — a collector has to be
 // running the config rendered from it (#1195, ADR-0026). the screen has to be
 // able to show that document, and say where it goes
 export const CollectorConfig: Story = {
   render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} />,
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
-
-    const dialog = within(await within(document.body).findByRole("dialog"));
+    const dialog = await openCollectorConfig(canvasElement);
     // the document itself, verbatim — one exporter and one pipeline per
     // enabled connector. asserted on the region rather than on a text node:
     // the yaml is highlighted now, so a name is split across token spans (#949)
@@ -304,6 +364,153 @@ export const CollectorConfig: Story = {
     await expect(
       dialog.getByRole("button", { name: /^Copy OpenTelemetry Collector config/ }),
     ).toBeVisible();
+  },
+};
+
+// the endpoint line is the control plane's own address, in full and copyable
+// (#2106). it was a bare path, which no script can call, and building it from
+// `window.location` would hand out the dashboard's address instead of the one
+// the control plane answers on
+export const CollectorConfigShowsTheFullEndpointUrl: Story = {
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    const group = await dialog.findByRole("group", { name: copy.endpoint });
+    const url = await within(group).findByTestId("collector-config-url");
+
+    await expect(url.textContent).toBe(CONFIG_URL);
+    // the base came from the control plane, not from the address this page is
+    // served from
+    await expect(window.location.origin).not.toBe(PUBLIC_BASE);
+    await expect(url.textContent).not.toContain(window.location.origin);
+    // a configured base raises no warning
+    await expect(within(group).queryByRole("note")).toBeNull();
+
+    // named for what it copies, and copies the address itself
+    const button = within(group).getByRole("button", {
+      name: en.common.copyValue
+        .replace("{{label}}", copy.copyEndpoint)
+        .replace("{{value}}", CONFIG_URL),
+    });
+    const written: string[] = [];
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: async (value: string) => void written.push(value) },
+      configurable: true,
+    });
+    try {
+      await userEvent.click(button);
+      await waitFor(() => expect(written).toEqual([CONFIG_URL]));
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
+  },
+};
+
+// the advice used to end "or point the collector straight at the URL above".
+// that URL answers a superadmin only and a collector has no session, so
+// following it meant the admin token in the collector's deployment (#2106). the
+// dialog now says what the endpoint takes, and sends the operator to the saved
+// file
+export const CollectorConfigSaysWhatTheEndpointTakes: Story = {
+  render: () => <Harness fetchStub={withConfig(() => yaml(COLLECTOR_CONFIG))} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    const group = await dialog.findByRole("group", { name: copy.endpoint });
+    await expect(within(group).getByText(copy.endpointHint)).toBeVisible();
+    await expect(within(group).getByText(/superadmin credential/)).toBeVisible();
+
+    // the recommendation is the saved file, re-saved when the connectors change
+    await waitFor(() => expect(dialog.getByText(copy.deploy)).toBeVisible());
+    // and nothing in the dialog tells a collector to read the endpoint itself
+    const text = document.body.textContent ?? "";
+    await expect(text).not.toMatch(/point the collector straight at the URL/);
+    await expect(text).not.toContain("--config");
+  },
+};
+
+// `ROLTER_PUBLIC_URL` unset: the control plane's base is its default, which only
+// a caller on its own host can reach. the address is still shown and copyable,
+// with that said under it instead of leaving a script's connection error to
+export const CollectorConfigWarnsWhenThePublicUrlIsUnset: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withConfig(
+        () => yaml(COLLECTOR_CONFIG),
+        CONNECTORS,
+        () => json(UNSET),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    const group = await dialog.findByRole("group", { name: copy.endpoint });
+    const url = await within(group).findByTestId("collector-config-url");
+    await expect(url.textContent).toBe(`${DEFAULT_BASE}/api/v1/connectors/collector-config`);
+    const notice = within(group).getByRole("note");
+    await expect(notice).toHaveTextContent("ROLTER_PUBLIC_URL is not set");
+    await expect(notice).toHaveTextContent(/restart the control plane/);
+  },
+};
+
+// the public base is still in flight: the document is on screen, and the
+// address holds its space as a labelled skeleton instead of claiming a value
+export const CollectorConfigWaitsForThePublicUrl: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withConfig(
+        () => yaml(COLLECTOR_CONFIG),
+        CONNECTORS,
+        () => new Promise<Response>(() => {}),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openCollectorConfig(canvasElement);
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("region", { name: /OpenTelemetry Collector config/i }),
+      ).toHaveTextContent("otlphttp/signoz"),
+    );
+    await expectSkeleton(document.body);
+    await expect(dialog.queryByTestId("collector-config-url")).toBeNull();
+    await expect(dialog.queryByRole("note")).toBeNull();
+  },
+};
+
+// the base could not be read. the address is not guessed from the browser: the
+// dialog says what failed and offers a retry, and the address appears once the
+// retry lands. the document below is unaffected
+export const CollectorConfigPublicUrlUnreadable: Story = {
+  render: () => {
+    let reads = 0;
+    return (
+      <Harness
+        fetchStub={withConfig(
+          () => yaml(COLLECTOR_CONFIG),
+          CONNECTORS,
+          () =>
+            ++reads === 1
+              ? json({ error: { message: "upstream unavailable" } }, 502)
+              : json(PUBLIC_URL),
+        )}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openCollectorConfig(canvasElement);
+    await expectLoadError(document.body, /failed to return the public URL/i);
+    await expect(dialog.queryByTestId("collector-config-url")).toBeNull();
+    await expect(
+      await dialog.findByRole("region", { name: /OpenTelemetry Collector config/i }),
+    ).toHaveTextContent("otlphttp/signoz");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Try again" }));
+    await expect((await dialog.findByTestId("collector-config-url")).textContent).toBe(CONFIG_URL);
   },
 };
 
@@ -472,6 +679,109 @@ export const BlankSamplingIsRefused: Story = {
     await userEvent.type(sampling, "25");
     await waitFor(() => expect(form.getByRole("button", { name: en.common.create })).toBeEnabled());
     await expect(form.queryByText(copy.form.samplingInvalid)).toBeNull();
+  },
+};
+
+// the add sheet starts a connector switched off unless the operator turns the
+// switch on (#2349). it used to send `enabled: true` with no control for it, so
+// request logs began leaving for an external endpoint the moment Create landed
+// and the first test delivery could only come after the first real record
+const startedOff = created({ enabled: false });
+
+export const CreatesSwitchedOffUntilTheOperatorTurnsItOn: Story = {
+  render: () => <Harness fetchStub={startedOff.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openAddSheet(canvasElement);
+
+    // the switch is on the sheet, named for what it does, and off
+    await expect(form.getByRole("switch", { name: copy.form.start })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+    await expect(form.getByText(copy.form.startHint)).toBeVisible();
+
+    await userEvent.click(form.getByRole("button", { name: en.common.create }));
+    const body = await startedOff.expectSentBody<SentConnector>("POST", "/api/v1/connectors");
+    await expect(body.enabled).toBe(false);
+  },
+};
+
+const startedOn = created({ enabled: true });
+
+export const StartsSendingWhenTheSwitchIsTurnedOn: Story = {
+  render: () => <Harness fetchStub={startedOn.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const canvas = within(canvasElement);
+    const form = await openAddSheet(canvasElement);
+
+    const start = form.getByRole("switch", { name: copy.form.start });
+    await userEvent.click(start);
+    await expect(start).toHaveAttribute("aria-checked", "true");
+    // the choice that sends request logs out says so, in place of the default's hint
+    await expect(form.getByText(copy.form.startOnHint)).toBeVisible();
+    await expect(form.queryByText(copy.form.startHint)).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: en.common.create }));
+    const body = await startedOn.expectSentBody<SentConnector>("POST", "/api/v1/connectors");
+    await expect(body.enabled).toBe(true);
+
+    // one that is on has nothing to add to the plain confirmation
+    await expectToast(canvasElement, /audit-sink created/);
+    await expect(canvas.queryByText(/switched off/)).toBeNull();
+  },
+};
+
+// the switch is part of the draft, and a reopened sheet starts from the default
+// again rather than from the last draft: a switch left on would make the next
+// connector live by accident
+export const SwitchStartsOffAgainWhenTheSheetReopens: Story = {
+  render: () => <Harness fetchStub={created().stub} />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await clickWhenEnabled(canvasElement, copy.add);
+    const form = within(await within(document.body).findByRole("dialog"));
+    const start = await form.findByRole("switch", { name: copy.form.start });
+    await userEvent.click(start);
+    await expect(start).toHaveAttribute("aria-checked", "true");
+
+    // nothing else was typed, and closing still asks before throwing it away
+    await userEvent.click(form.getByRole("button", { name: en.common.cancel }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
+
+    await clickWhenEnabled(canvasElement, copy.add);
+    const reopened = within(await within(document.body).findByRole("dialog"));
+    await expect(await reopened.findByRole("switch", { name: copy.form.start })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  },
+};
+
+// a connector left off has to say so once the sheet has closed, and what to do
+// next, or the operator is left wondering why nothing arrives (#2349)
+const feedback = created({ enabled: false });
+
+export const SaysANewConnectorIsOffAndWhatToDoNext: Story = {
+  render: () => <Harness fetchStub={feedback.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const canvas = within(canvasElement);
+    const form = await openAddSheet(canvasElement);
+    await userEvent.click(form.getByRole("button", { name: en.common.create }));
+    await feedback.expectSent("POST", "/api/v1/connectors");
+
+    await expectSheetClosed();
+    await expectToast(canvasElement, /audit-sink created, but switched off/);
+    // the next step names the two controls on the card that do it
+    const next = await canvas.findByText(copy.createdOffNext);
+    await expect(next).toBeVisible();
+    await expect(next).toHaveTextContent(/Test delivery/);
+    await expect(next).toHaveTextContent(/switch/);
   },
 };
 
@@ -687,6 +997,9 @@ export const SamplingErrorInRussianAtMobile: Story = {
     );
     const form = await openAddSheet(canvasElement, copy);
     await expect(await form.findByText(copy.form.samplingHint)).toBeVisible();
+    // the start switch is the longest row the sheet carries in Russian
+    await expect(form.getByRole("switch", { name: copy.form.start })).toBeVisible();
+    await expect(form.getByText(copy.form.startHint)).toBeVisible();
 
     const sampling = await form.findByLabelText(copy.form.sampling);
     await userEvent.clear(sampling);
@@ -695,5 +1008,80 @@ export const SamplingErrorInRussianAtMobile: Story = {
     await expect(form.getByRole("button", { name: ru.common.create })).toBeDisabled();
     await expectNoHorizontalOverflow();
     sentRussian.expectNotSent("POST", "/api/v1/connectors");
+  },
+};
+
+// the address, its note and the document together are taller than a 640x360
+// window (1280x720 at 200 % zoom), so the body scrolls between a title and a
+// Close that stay on screen (#2003)
+export const CollectorConfigInAShortWindow: Story = {
+  ...atShort,
+  render: () => (
+    <Harness
+      fetchStub={withConfig(
+        () => yaml(COLLECTOR_CONFIG),
+        CONNECTORS,
+        () => json(UNSET),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors.collectorConfig;
+    const dialog = await openCollectorConfig(canvasElement);
+    const panel = within(document.body).getByRole("dialog");
+    await expectInViewport(panel);
+    await expectInViewport(dialog.getByRole("heading", { name: copy.title }));
+    // the corner X and the footer's Close, both of them
+    for (const close of dialog.getAllByRole("button", { name: en.common.close })) {
+      await expectInViewport(close);
+    }
+
+    // the body is what gave way, and the document is a scroll away
+    const document_ = await dialog.findByRole("region", {
+      name: /OpenTelemetry Collector config/i,
+    });
+    const body = document_.closest<HTMLElement>("[data-slot=dialog-body]");
+    await expect(body).not.toBeNull();
+    await expect(body!.scrollHeight).toBeGreaterThan(body!.clientHeight);
+  },
+};
+
+// the dialog in Russian at 375 px: the address is one unbroken token that has to
+// wrap inside the dialog, and the hint under it is the longest line it carries
+export const CollectorConfigInRussianAtMobile: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={withConfig(
+        () => yaml(COLLECTOR_CONFIG),
+        CONNECTORS,
+        () =>
+          json({
+            public_url: "https://rolter-control.observability.internal.example.com",
+            configured: true,
+          }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.connectors.collectorConfig;
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole("button", { name: copy.open })).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: copy.open }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+
+    const group = await dialog.findByRole("group", { name: copy.endpoint });
+    const url = await within(group).findByTestId("collector-config-url");
+    await expect(url.textContent).toBe(
+      "https://rolter-control.observability.internal.example.com/api/v1/connectors/collector-config",
+    );
+    await expect(url.scrollWidth).toBeLessThanOrEqual(url.clientWidth);
+    await expect(within(group).getByText(copy.endpointHint)).toBeVisible();
+    await expect(
+      within(group).getByRole("button", { name: new RegExp(`^${copy.copyEndpoint}`) }),
+    ).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(copy.deploy)).toBeVisible());
+    await expectNoHorizontalOverflow();
   },
 };

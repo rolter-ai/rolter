@@ -11,9 +11,13 @@ Connectors live under **Observability → Connectors** in the dashboard, and on
 `/api/v1/connectors`.
 
 <Note>
-  Connectors are **strictly opt-in and off by default**. A deployment with no
-  connectors has no egress path at all, and creating one does not turn it on —
-  `enabled` is a separate switch. Air-gapped deployments are unaffected.
+  Connectors are **strictly opt-in**. A deployment with no connectors has no
+  egress path at all, and a connector sends nothing until it is enabled. The
+  dashboard creates every connector switched off unless you turn on **Start
+  sending as soon as it is created** in the sheet, and `enabled` is a separate
+  switch on the card afterwards. Through the API `enabled` is a required field,
+  so you choose it when you create the connector. Air-gapped deployments are
+  unaffected.
 </Note>
 
 ## Kinds
@@ -33,11 +37,16 @@ per-tenant routing belongs (see ADR-0026).
 A connector's `endpoint` is never called by Rolter directly. Rolter renders it,
 along with every other enabled connector, into an OpenTelemetry Collector
 config document at `GET /api/v1/connectors/collector-config` — one exporter and
-one set of pipelines per connector. Point a collector at that URL (the OTel
-Collector's confmap HTTP provider accepts `--config=http://...` sources,
-bearer-authenticated the same as any other Rolter API call) and Rolter's own
+one set of pipelines per connector. A connector that is switched off is left out.
+Run a collector with that document as its config file and Rolter's own
 `OTEL_EXPORTER_OTLP_*` export, which already targets that collector, fans out
 from there.
+
+The endpoint answers a superadmin principal only, and a collector has no session
+to sign in with, so do not point a collector at it: that would put the admin token
+in the collector's own deployment. Fetch the document with your own tooling, or
+from the dashboard (below), save it as the collector's config file, and save it
+again after a connector is added, switched on or deleted.
 
 This is why `sampling_rate` is a per-connector knob rather than a single global
 one: each connector gets its own `probabilistic_sampler` processor in the
@@ -58,11 +67,16 @@ You do not have to `curl` for it. **Observability → Connectors** has a
 **Collector config** button beside **Add connector**: it fetches the rendered
 document, shows it in a scrollable pane, and copies it to the clipboard in one
 click. Save it as your collector's config file — `infra/otel/collector.compose.yaml`
-is the one the `docker/docker-compose.observability.yml` overlay mounts — or
-point the collector straight at the URL with `--config` and reload it on a
-schedule. With no connectors defined the panel says so instead of showing a
-document with no exporters in it, because a collector running that would
-deliver nothing.
+is the one the `docker/docker-compose.observability.yml` overlay mounts — and
+save it again after a connector is added, switched on or deleted. Above the
+document the panel shows the endpoint it came from as a full URL you can copy,
+built from the control plane's public base URL (`ROLTER_PUBLIC_URL`). When that
+variable is unset the panel says so, because the default address,
+`http://localhost:4001`, can only be reached from the control plane's own host.
+The panel does not suggest pointing a collector at the URL, since reading it
+takes a superadmin credential. With no connectors defined the panel says so
+instead of showing a document with no exporters in it, because a collector
+running that would deliver nothing.
 
 ## Fields
 
@@ -71,7 +85,7 @@ deliver nothing.
 | `name`                | Unique label for the connector                           |
 | `kind`                | `otlp_http`                                              |
 | `endpoint`            | The `http(s)` URL telemetry is POSTed to                 |
-| `enabled`             | Off by default; nothing is sent until this is on         |
+| `enabled`             | Required. `false` sends nothing until it is turned on    |
 | `sampling_rate`       | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything |
 | `auth_secret_ref`     | A reference into your external secret manager            |
 | `managed_auth_secret` | Write-only bearer token, sealed before storage           |
@@ -82,6 +96,12 @@ sends nothing, which is a way to park one without deleting it. A blank field, te
 outside 0 to 100 is refused with a message under the field and **Create** stays disabled, rather
 than being read as 100. Fractions are fine, so `0.5` samples one request in two hundred. A
 connector's card reads the stored rate back the same way, for example "0.4% sampled".
+
+The sheet also has a **Start sending as soon as it is created** switch, off by default, which
+is what it sends as `enabled`. Left off, the connector is created switched off: the notification
+says so and points at **Test delivery** and the switch on its card, and the card carries an
+**off** tag beside its health until you turn the switch on. Turn the switch on in the sheet and
+request logs start leaving for the endpoint from the moment you press **Create**.
 
 ### Credentials are write-only
 
@@ -125,7 +145,8 @@ already healthy would otherwise show nothing new. A rejected test, a test that c
 a delete that failed print their reason on the card they belong to.
 
 Test delivery runs whether or not the connector is enabled. That is the point:
-check it before you turn it on.
+check it before you turn it on. It is also the order the dashboard sets up: a new
+connector starts off, so its first test runs before its first request log leaves.
 
 <Tip>
   A connector that has never been tested shows `unknown` health rather than
