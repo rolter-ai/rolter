@@ -530,8 +530,6 @@ struct ControlState {
     mfa_without_kek: bool,
 }
 
-/// Run the control plane to completion. The caller owns argument parsing and
-/// telemetry initialization.
 /// Log that a datastore endpoint is in use. Every startup line that names a
 /// redis or clickhouse url goes through here so the password in it cannot reach
 /// the log (#2406).
@@ -539,6 +537,8 @@ fn log_endpoint(what: &str, url: &str) {
     tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
 }
 
+/// Run the control plane to completion. The caller owns argument parsing and
+/// telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let bootstrap = match &args.config {
         // `load` warns about every key in the file rolter does not read
