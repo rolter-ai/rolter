@@ -1172,6 +1172,12 @@ export interface ProviderRow {
   egress_proxy?: string | null;
   /** extra egress proxies the upstream client rotates through; never null */
   egress_proxies: string[];
+  /**
+   * The project this provider is scoped to: only keys minted in it reach the
+   * provider, through a route or `slug/model`. `null` (or absent, from a control
+   * plane that predates scoping) is org-wide (#1919)
+   */
+  project_id?: string | null;
   created_at: string;
 }
 
@@ -1184,6 +1190,8 @@ export interface CreateProviderInput {
   api_key?: string;
   api_key_env?: string;
   egress_proxy?: string;
+  /** scope the provider to a project of the org; omit for org-wide */
+  project_id?: string;
 }
 
 export interface UpdateProviderInput {
@@ -1200,6 +1208,8 @@ export interface UpdateProviderInput {
   egress_proxy?: string;
   /** omit to leave unchanged; an empty array clears the list */
   egress_proxies?: string[];
+  /** omit to leave the scope unchanged; a project id scopes it; `null` makes it org-wide */
+  project_id?: string | null;
 }
 
 /**
@@ -1349,6 +1359,8 @@ export interface ProviderGroupRow {
   /** stable, URL-safe identity used for `group-slug/model` addressing */
   slug: string;
   strategy: string;
+  /** the project the group is scoped to; `null` or absent is org-wide (#1919) */
+  project_id?: string | null;
   created_at: string;
   members: ProviderGroupMember[];
 }
@@ -1366,6 +1378,8 @@ export interface CreateProviderGroupInput {
   slug?: string;
   strategy: string;
   members: GroupMemberInput[];
+  /** scope the group to a project of the org; omit for org-wide */
+  project_id?: string;
 }
 
 export interface UpdateProviderGroupInput {
@@ -1376,6 +1390,8 @@ export interface UpdateProviderGroupInput {
   strategy?: string;
   /** present = replace the whole membership; omit = leave unchanged */
   members?: GroupMemberInput[];
+  /** omit to leave the scope unchanged; a project id scopes it; `null` makes it org-wide */
+  project_id?: string | null;
 }
 
 export function fetchProviderGroups(orgId: string): Promise<ProviderGroupRow[]> {

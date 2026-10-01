@@ -10,6 +10,7 @@ import {
   expectSheetClosed,
   json,
   recording,
+  scoped,
   sheet,
   answerDiscardPrompt,
 } from "@/pages/story-harness";
@@ -61,7 +62,8 @@ function Stage({
   // fresh recorder — with the requests the last one saw thrown away
   const recorder = React.useRef<ReturnType<typeof recording> | null>(null);
   if (!recorder.current) {
-    recorder.current = recording(answer);
+    // the scope picker reads the org's teams and projects as the sheet opens
+    recorder.current = recording(scoped(answer));
     calls = recorder.current;
   }
   return (
