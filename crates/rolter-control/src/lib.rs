@@ -3391,8 +3391,9 @@ mod tests {
         let body = response.text().await.unwrap();
         assert!(body.contains("analytics_query_failed"), "{body}");
         assert!(
-            !body.contains("hunter2") && !body.contains("127.0.0.1"),
-            "{body}"
+            !body.contains(crate::analytics::testing::STALLED_USERINFO_SECRET)
+                && !body.contains("127.0.0.1"),
+            "the response body names the stalled server's userinfo or host"
         );
     }
 

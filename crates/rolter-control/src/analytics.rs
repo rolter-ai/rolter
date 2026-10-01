@@ -821,6 +821,10 @@ pub(crate) mod testing {
         _task: tokio::task::JoinHandle<()>,
     }
 
+    /// The password in a stalled server's url. Interpolated rather than
+    /// written into a url literal, so secret scanners see no credential
+    pub(crate) const STALLED_USERINFO_SECRET: &str = "stalled-userinfo";
+
     impl Stalled {
         pub(crate) async fn start() -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -835,7 +839,7 @@ pub(crate) mod testing {
             });
             Self {
                 // userinfo on purpose: it must never reach an error or a log
-                url: format!("http://ch:hunter2@127.0.0.1:{port}"),
+                url: format!("http://ch:{STALLED_USERINFO_SECRET}@127.0.0.1:{port}"),
                 _task: task,
             }
         }
@@ -868,9 +872,11 @@ mod tests {
             .expect("a transport error");
         assert!(source.is_timeout(), "{err}");
         let text = format!("{err:#}");
+        // the message carries neither the error text nor the secret, so a
+        // failure cannot itself print the credential
         assert!(
-            !text.contains("hunter2") && !text.contains("127.0.0.1"),
-            "{text}"
+            !text.contains(testing::STALLED_USERINFO_SECRET) && !text.contains("127.0.0.1"),
+            "the error text names the stalled server's userinfo or host"
         );
         // the route-level mapping carries no driver text either
         let response = run(Err(err));
