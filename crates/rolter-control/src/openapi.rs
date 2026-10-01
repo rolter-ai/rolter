@@ -2097,32 +2097,27 @@ fn operations() -> Vec<Op> {
                 "/gw/{path}",
                 "proxyGet",
                 "Reverse-proxy a GET to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::post(
                 "/gw/{path}",
                 "proxyPost",
                 "Reverse-proxy a POST to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::put(
                 "/gw/{path}",
                 "proxyPut",
                 "Reverse-proxy a PUT to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::patch(
                 "/gw/{path}",
                 "proxyPatch",
                 "Reverse-proxy a PATCH to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::delete(
                 "/gw/{path}",
                 "proxyDelete",
                 "Reverse-proxy a DELETE to the gateway data plane",
             )
-            .public()
             .ok(Payload::Open),
         ],
     ));
