@@ -90,25 +90,28 @@ export const Paginated: Story = {
     <Screen
       fetchStub={scoped(async (input) => {
         const url = new URL(String(input), "http://localhost");
-        const cursor = url.searchParams.get("cursor");
-        if (cursor === "c-next") {
+        if (url.pathname.includes("/audit-log")) {
+          const cursor = url.searchParams.get("cursor");
+          if (cursor === "c-next") {
+            return json({
+              items: [entry({ id: "a-3", action: "virtual_key.create" })],
+              next_cursor: null,
+              previous_cursor: "c-prev",
+              has_next: false,
+              has_previous: true,
+              total: 3,
+            });
+          }
           return json({
-            items: [entry({ id: "a-3", action: "virtual_key.create" })],
-            next_cursor: null,
-            previous_cursor: "c-prev",
-            has_next: false,
-            has_previous: true,
+            items: [entry({ id: "a-1" }), entry({ id: "a-2", action: "route.delete" })],
+            next_cursor: "c-next",
+            previous_cursor: null,
+            has_next: true,
+            has_previous: false,
             total: 3,
           });
         }
-        return json({
-          items: [entry({ id: "a-1" }), entry({ id: "a-2", action: "route.delete" })],
-          next_cursor: "c-next",
-          previous_cursor: null,
-          has_next: true,
-          has_previous: false,
-          total: 3,
-        });
+        return json([]);
       })}
     />
   ),

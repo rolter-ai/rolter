@@ -136,7 +136,8 @@ export default function AuditLog() {
     queryFn: () => fetchUsers(scope.orgId as string),
     enabled: !!scope.orgId,
   });
-  const emailOf = (id: string) => users.data?.find((u) => u.id === id)?.email;
+  const emailOf = (id: string) =>
+    Array.isArray(users.data) ? users.data.find((u) => u.id === id)?.email : undefined;
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
