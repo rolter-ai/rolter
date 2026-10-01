@@ -3254,6 +3254,13 @@ export const ALERT_SIGNALS = [
   "provider_health_flaps",
 ] as const;
 
+/** which side of the threshold fires: `above` is value >= threshold, `below` is value <= threshold */
+export const ALERT_COMPARISONS = ["above", "below"] as const;
+/** what a rule does when its window holds no data; only `error_rate` and `p95_latency_ms` take it */
+export const ALERT_NO_DATA_POLICIES = ["ignore", "fire", "ok"] as const;
+export type AlertComparison = (typeof ALERT_COMPARISONS)[number];
+export type AlertNoDataPolicy = (typeof ALERT_NO_DATA_POLICIES)[number];
+
 export interface AlertChannelRow {
   id: string;
   name: string;
@@ -3277,6 +3284,8 @@ export interface AlertRuleRow {
   name: string;
   signal: string;
   threshold: number;
+  comparison: AlertComparison;
+  no_data: AlertNoDataPolicy;
   window_secs: number;
   channel_id: string | null;
   enabled: boolean;
@@ -3292,6 +3301,10 @@ export interface AlertRuleInput {
   name: string;
   signal: string;
   threshold: number;
+  /** left out, a PUT keeps the stored value */
+  comparison?: AlertComparison;
+  /** left out, a PUT keeps the stored value; the API answers 400 for a signal that has no data policy */
+  no_data?: AlertNoDataPolicy;
   window_secs: number;
   channel_id?: string | null;
   enabled: boolean;

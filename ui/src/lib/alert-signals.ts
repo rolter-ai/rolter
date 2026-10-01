@@ -48,6 +48,11 @@ export const ALERT_SIGNAL_SPECS: Record<AlertSignal, AlertSignalSpec> = {
   provider_health_flaps: { unit: "healthFailures", scale: 1, defaultThreshold: 10, step: 1 },
 };
 
+/** signals whose window can hold no data: the API takes `no_data` for these two only */
+export function supportsNoData(signal: string): boolean {
+  return signal === "error_rate" || signal === "p95_latency_ms";
+}
+
 export function isAlertSignal(signal: string): signal is AlertSignal {
   return (ALERT_SIGNALS as readonly string[]).includes(signal);
 }
