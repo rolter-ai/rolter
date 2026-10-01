@@ -290,14 +290,15 @@ frames are never parsed on either leg.
 | client    | `response.create`                                                                                                                | `response.instructions` (system), `response.input[]` items | `pre_call` rules  |
 | server    | `response.output_text.delta`, `response.text.delta`, `response.audio_transcript.delta`, `response.output_audio_transcript.delta` | `delta`                                                    | `post_call` rules |
 | server    | the matching `.done` events, `response.content_part.done`, `response.output_item.done`, `response.done`                          | `text` and `transcript` of the completed content           | `post_call` rules |
+| server    | `response.function_call_arguments.done`, and `function_call` items in `response.output_item.done` / `response.done`              | `arguments` (a JSON document in a string)                  | `post_call` rules |
 
 Instructions are operator-authored in the same sense as a chat system message,
 so a rule scans them only when it sets `include_system`, exactly as on the HTTP
 path. The route's `advanced.guardrails` `enable`/`disable` selection applies.
 Audio is out of scope except where the provider supplies a transcript, which is
-text and is checked like any other. Tool-call arguments
-(`response.function_call_arguments.*`) and input-audio transcription events are
-not scanned (see the limits below).
+text and is checked like any other. The model's completed
+tool-call arguments are scanned too (see below); streamed argument deltas and
+input-audio transcription events are not (see the limits below).
 
 ### What `block` does mid-session
 
@@ -369,16 +370,43 @@ should be paired with a `block` rule for the same entity.
   its timeout; the other sessions are unaffected.
 - **`pre_upstream` plugins**: run on the same client events, after the
   guardrails and the webhook, with the same block/transform contract.
-- **`pre_route` plugins** do not apply: the route is chosen from the URL when
-  the socket is opened and there is no body to consult them on.
-- **`post_response` plugins** do not apply: they act on a buffered chat-shaped
-  response body, and a session has none. They are the one plugin stage that
-  remains a gap.
-- **The PII sanitizer** does not apply. It replaces entities with placeholders
-  and restores them in the reply, which needs the response to be buffered and
-  the mapping to live for one request; a session has neither. A `redact`
-  guardrail rule is the way to remove an entity from client text on a realtime
-  route.
+- **`pre_route` plugins** do not apply, permanently: the route is chosen from
+  the URL when the socket is opened and there is no body to consult them on. A
+  session is already bound to its route by then, so a plugin that rewrites the
+  model or the route has nothing to act on.
+- **`post_response` plugins** do not apply, decided in #2489. A plugin is
+  written against a whole chat-shaped response body and may transform it. On a
+  session the text has already been delivered delta by delta when
+  `response.done` arrives, so a transform could only rewrite the summary the
+  client already holds the parts of, and a block could only blank it. Calling
+  the plugin with an event shape it was not written for, to enforce nothing,
+  would be worse than not calling it. A `post_call` guardrail rule is what
+  applies to the output of a realtime route, and it acts on each delta.
+- **The PII sanitizer** does not apply, decided in #2489. Its contract is one
+  call per body that returns placeholders and an opaque token, and a second
+  call that exchanges that token for plaintext over the whole reply. rolter
+  does not hold the mapping and does not know the service's placeholder format,
+  so there is no placeholder-sized tail to buffer across deltas, and each
+  restore would be an HTTP call per delta. The mapping would also have to
+  outlive one event: a reply can mention a placeholder from an earlier turn, so
+  a session would hold a token per client event and ask the service to restore
+  against all of them. The chat pipelines make the same call for the same
+  reason: a streamed response cannot have the response leg, and `streaming`
+  chooses between refusing it and serving it unrestored. A realtime session is
+  always streamed, so sanitizing only the request leg would send the model
+  placeholders it will echo back, which the client would never see restored.
+  **A deployment that depends on the sanitizer to keep PII from the provider is
+  not protected on `/v1/realtime`**: use a `redact` guardrail rule, which
+  removes the entity in place and needs no mapping, or do not offer a realtime
+  route to that tenant.
+- **Guardrails are pinned when the session opens.** A snapshot reload does not
+  change the rules, webhook or plugins a live session is held to; a changed
+  rule applies to the next session. Ending live sessions on a rule change was
+  rejected for the same reason a block does not close the socket.
+- **The webhook and plugins are awaited inline**, so a slow one delays that
+  session's relay for its timeout. Moving them off the relay task would let a
+  later event overtake an earlier one that is still being judged, which is the
+  ordering a policy must not lose.
 
 While a policy applies, a binary client frame is refused with an `error` event:
 the protocol is JSON text, and an upstream that read JSON out of a binary frame
@@ -386,9 +414,19 @@ would skip every check above.
 
 ### Other limits
 
-- Function-call arguments the model emits and tool outputs it receives are
-  checked only on the client side (`item.output`); streamed
-  `response.function_call_arguments.*` events are not scanned.
+- The model's function-call arguments are checked once complete, at
+  `response.function_call_arguments.done` and in the `function_call` item of
+  `response.output_item.done` / `response.done`. A `block` withholds the `.done`
+  event, sends the client the `error` event, sends `response.cancel` upstream
+  and blanks `arguments` in the item events that follow, so the client's turn
+  ends and nothing is left for it to run (an empty string is not JSON, where
+  `{}` would run the tool with no arguments). A `redact` rewrites the string in
+  place; a rule that can change the JSON's shape should be a `block` rule.
+  Streamed `response.function_call_arguments.delta` events are not scanned: a
+  fragment of JSON is not worth matching and a client acts on the completed
+  call, not on the fragments. The arguments are still shown to a client that
+  renders deltas, so such a client should render only the completed call.
+  Tool outputs the client sends back are checked as `item.output`.
 - `conversation.item.input_audio_transcription.completed` (what the user said)
   is not scanned: the audio has already reached the model, so a block there
   could only notify.
@@ -400,11 +438,13 @@ would skip every check above.
 These are tracked rather than silently missing:
 
 - The PII sanitizer and `post_response`/`pre_route` plugins do not run on
-  realtime events; built-in guardrails, the guardrail webhook and
-  `pre_upstream` plugins do (see [Content policy](#content-policy-on-a-bidirectional-stream-1880)).
+  realtime events, by decision (see
+  [Webhook and plugins](#webhook-and-plugins)); built-in guardrails, the
+  guardrail webhook and `pre_upstream` plugins do (see
+  [Content policy](#content-policy-on-a-bidirectional-stream-1880)).
   `realtime` still carries its [stability marker](../development/stability-markers.md):
-  its note has not been rewritten to match, and the dashboard's translated
-  notes are the part that holds graduation back.
+  its note names the gaps that remain (the PII sanitizer and `pre_route` /
+  `post_response` plugins), and the dashboard's translated notes follow it.
 - A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).
@@ -442,7 +482,9 @@ against a mock upstream that records what it is sent: a blocked client event is
 refused with an `error` event and the session carries on, a blocked
 `session.update` instruction never reaches the upstream, a redacted client event
 is rewritten before it is forwarded, a blocked server delta is withheld and the
-response cancelled, a match split across deltas is caught, a clean response is
+response cancelled, a blocked function call's arguments are withheld, blanked
+in the item events and the response cancelled (and clean or redacted ones pass
+or are rewritten), a match split across deltas is caught, a clean response is
 unchanged, and the guardrail webhook refuses a client event.
 
 The tracker's frame handling, including which deltas count as a first token, is
