@@ -877,7 +877,7 @@ fn invalid_api_key_json(message: &str) -> Response {
 
 /// Tenant identity forwarded to a guardrail webhook or plugin as metadata.
 /// Shared by both call sites so the envelope always carries the same shape.
-fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
+pub(crate) fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
     rolter_core::WebhookTenant {
         org: (!scope.org.is_empty()).then(|| scope.org.clone()),
         team: (!scope.team.is_empty()).then(|| scope.team.clone()),
