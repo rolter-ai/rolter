@@ -2367,11 +2367,19 @@
         "actor": "Actor",
         "action": "Action",
         "target": "Target",
-        "detail": "Detail"
+        "detail": "Detail",
+        "org": "Org"
       },
       "unknownTarget": "unknown",
       "hideDetails": "hide",
-      "showDetails": "show"
+      "showDetails": "show",
+      "scopeAria": "Audit log scope",
+      "scopes": {
+        "org": "This organization",
+        "deployment": "Whole deployment"
+      },
+      "noOrg": "No org",
+      "unknownAddress": "Unknown address"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
