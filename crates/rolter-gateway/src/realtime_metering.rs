@@ -225,7 +225,7 @@ impl TurnTracker {
 /// a nested `type`, such as an item's, can never sit there. The Realtime API
 /// writes `type` in one of those two places, so this answers from a few dozen
 /// bytes of a frame that may carry tens of kilobytes of audio.
-fn leading_type(frame: &str) -> Option<&str> {
+pub(crate) fn leading_type(frame: &str) -> Option<&str> {
     let rest = frame.trim_start().strip_prefix('{')?.trim_start();
     let rest = match rest.strip_prefix("\"event_id\"") {
         Some(after) => skip_string_member(after)?,

@@ -44,18 +44,12 @@ command. With the Docker image that is every container, because its default comm
 is `rolter easy-up`. The `rolter-control` binary carries the control plane's check;
 `rolter-gateway` run directly has none.
 
-With the Helm chart, `control.updateCheck: false` reaches the control plane pods. The
-gateway pods' preflight init container also runs `rolter check`, so until
-[#2382](https://github.com/rolter-ai/rolter/issues/2382) is fixed, set the variable
-for the gateway as well:
+With the Helm chart, `control.updateCheck: false` reaches the control plane and the
+gateway pods, including their preflight init containers, which also run `rolter check`:
 
 ```yaml
 control:
   updateCheck: false
-gateway:
-  extraEnv:
-    - name: ROLTER_UPDATE_CHECK
-      value: "false"
 ```
 
 With the check off, the dashboard footer shows the running version alone and
@@ -212,7 +206,7 @@ you ship Rolter.
 
 **Set before you deploy:**
 
-- `ROLTER_UPDATE_CHECK=false` on the control plane and wherever the `rolter` command runs. In Helm, `control.updateCheck: false` plus `ROLTER_UPDATE_CHECK` in `gateway.extraEnv` (see [#2382](https://github.com/rolter-ai/rolter/issues/2382)).
+- `ROLTER_UPDATE_CHECK=false` on the control plane and wherever the `rolter` command runs. In Helm, `control.updateCheck: false` covers both Deployments.
 
 **Must be reachable inside the enclave:**
 

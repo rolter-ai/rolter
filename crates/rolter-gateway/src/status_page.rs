@@ -123,6 +123,7 @@ async fn poll_one(state: &crate::state::AppState, provider: &str, url: &str) {
         ts: chrono::Utc::now(),
         target_id: provider.to_string(),
         provider: provider.to_string(),
+        org_id: String::new(),
         source: HealthSource::StatusPage,
         outcome: if degraded.is_some() {
             HealthOutcome::Error

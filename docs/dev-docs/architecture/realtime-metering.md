@@ -264,14 +264,147 @@ races the close is counted as dropped, like any other full or stopped queue.
   a drain that outlives its 10 seconds (realtime) or 5 seconds (sinks), still
   loses whatever the meter or the writers had not written.
 
+## Content policy on a bidirectional stream (#1880)
+
+A realtime session used to relay frames without consulting the guardrails, the
+guardrail webhook or the plugins, so a key that a rule stopped on
+`/v1/chat/completions` could send the same text over a socket. The chat
+pipelines scan a whole body at one moment; a session has events in both
+directions and no such moment. This section records how the same rules apply to
+it. The code is `crates/rolter-gateway/src/realtime_guard.rs`.
+
+The policy is resolved once, when the session opens, from the snapshot and the
+route's rule selection, and pinned for the session like the target: a reload
+does not change what a live session is held to, and the tenant's rules cannot
+be swapped under a compiled rule index. When the route has no applicable
+guardrail rule, no webhook and no `pre_upstream` plugin, there is no policy and
+the relay forwards frames exactly as before, with no parsing and no copy. Audio
+frames are never parsed on either leg.
+
+### What is in scope
+
+| Direction | Event                                                                                                                            | Text checked                                               | Stage             |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------- |
+| client    | `conversation.item.create`                                                                                                       | `item.content[].text` and `.transcript`, `item.output`     | `pre_call` rules  |
+| client    | `session.update`                                                                                                                 | `session.instructions` (treated as system text)            | `pre_call` rules  |
+| client    | `response.create`                                                                                                                | `response.instructions` (system), `response.input[]` items | `pre_call` rules  |
+| server    | `response.output_text.delta`, `response.text.delta`, `response.audio_transcript.delta`, `response.output_audio_transcript.delta` | `delta`                                                    | `post_call` rules |
+| server    | the matching `.done` events, `response.content_part.done`, `response.output_item.done`, `response.done`                          | `text` and `transcript` of the completed content           | `post_call` rules |
+
+Instructions are operator-authored in the same sense as a chat system message,
+so a rule scans them only when it sets `include_system`, exactly as on the HTTP
+path. The route's `advanced.guardrails` `enable`/`disable` selection applies.
+Audio is out of scope except where the provider supplies a transcript, which is
+text and is checked like any other. Tool-call arguments
+(`response.function_call_arguments.*`) and input-audio transcription events are
+not scanned (see the limits below).
+
+### What `block` does mid-session
+
+A WebSocket has no status code to refuse with and ending the session for one
+matched phrase would punish the whole conversation, so a block is scoped to the
+event or response that matched and the session stays open:
+
+- **A blocked client event** is not forwarded. The client receives an
+  OpenAI-shaped `error` event (`code: guardrail_blocked`, or `plugin_blocked`
+  for a plugin) carrying the offending client `event_id` in `error.event_id`
+  when it sent one. The message names the rule, never the matched text.
+  Upstream never sees the event, so its conversation state is unchanged.
+- **A blocked server delta** is dropped and the client receives the `error`
+  event in its place. Rolter then sends `response.cancel` upstream so the model
+  stops generating text nobody will read, and drops the remaining text events
+  of that response. The `.done` events and `response.done` are still delivered,
+  with their text blanked, so the client's turn ends and the turn is metered
+  and billed as usual.
+- **A blocked completed text** (a `.done` event or `response.done` whose whole
+  text matches) is delivered with the matching text blanked and an `error`
+  event ahead of it.
+
+Closing the socket was rejected as the default: it throws away the session's
+audio state for a policy hit, and a client can reconnect and send the same
+text. A close would be safer only if a blocked event could be followed by
+others that depend on it, and the relay forwards nothing from the blocked
+event, so nothing does. The budget and revoked-key closures stay closures
+because they end the right to be on the socket, not one message.
+
+`redact` rules rewrite the text in place on both legs and count in the same
+`guardrail_redactions_total` / `guardrail_output_redactions_total` counters;
+`annotate` rules only count. Blocks count in `guardrail_blocks_total` and
+`guardrail_output_blocks_total`.
+
+### Output: deltas against the completed text
+
+A guardrail on one delta can miss a pattern the model splits across two. There
+are two ways to close that, and the trade-off decides it:
+
+- **Buffer until the item is complete**, then check once. Exact, but a text
+  response then arrives all at once at the end, which defeats the reason to use
+  realtime, and on a model that speaks, text deltas are the transcript of audio
+  the client is already playing.
+- **Check as it streams.** Latency is untouched, at the price that a match can
+  be partly out before it is recognised.
+
+Rolter streams. Each delta is checked alone, and also together with the last 512
+bytes of what was already delivered for the same item, so a pattern split across
+deltas is caught by the delta that completes it and that delta is withheld. The
+completed text is checked again at the `.done` events as a backstop. The leak
+this accepts is the first part of a pattern before the delta that completes it,
+and a pattern longer than the window split across more deltas than that. An
+operator who cannot accept that should not enable `post_call` rules on realtime
+routes, or should serve the route's output only through the chat pipelines,
+which buffer.
+
+`redact` on a delta rewrites that delta only: a match split across deltas is
+not redacted, since the first part has gone. A `redact` rule that must hold
+should be paired with a `block` rule for the same entity.
+
+### Webhook and plugins
+
+- **Guardrail webhook** (`pre_call` stage): consulted for each in-scope client
+  event with the event as its content. `block` refuses the event as above;
+  `transform` replaces it, and only with an event of the same `type`, since a
+  transform that changed the kind of event could carry text past the checks
+  that ran on the original. Failures follow the webhook's `failure_mode`. The
+  consult is awaited inline, so a slow webhook delays that session's relay for
+  its timeout; the other sessions are unaffected.
+- **`pre_upstream` plugins**: run on the same client events, after the
+  guardrails and the webhook, with the same block/transform contract.
+- **`pre_route` plugins** do not apply: the route is chosen from the URL when
+  the socket is opened and there is no body to consult them on.
+- **`post_response` plugins** do not apply: they act on a buffered chat-shaped
+  response body, and a session has none. They are the one plugin stage that
+  remains a gap.
+- **The PII sanitizer** does not apply. It replaces entities with placeholders
+  and restores them in the reply, which needs the response to be buffered and
+  the mapping to live for one request; a session has neither. A `redact`
+  guardrail rule is the way to remove an entity from client text on a realtime
+  route.
+
+While a policy applies, a binary client frame is refused with an `error` event:
+the protocol is JSON text, and an upstream that read JSON out of a binary frame
+would skip every check above.
+
+### Other limits
+
+- Function-call arguments the model emits and tool outputs it receives are
+  checked only on the client side (`item.output`); streamed
+  `response.function_call_arguments.*` events are not scanned.
+- `conversation.item.input_audio_transcription.completed` (what the user said)
+  is not scanned: the audio has already reached the model, so a block there
+  could only notify.
+- Each event has its own scan-byte budget (`max_scan_bytes`); an event larger
+  than it is passed unscanned, as a body is on the HTTP path.
+
 ## What is not metered
 
 These are tracked rather than silently missing:
 
-- Guardrails and plugins do not run on realtime events (#1880). This is why
+- The PII sanitizer and `post_response`/`pre_route` plugins do not run on
+  realtime events; built-in guardrails, the guardrail webhook and
+  `pre_upstream` plugins do (see [Content policy](#content-policy-on-a-bidirectional-stream-1880)).
   `realtime` still carries its [stability marker](../development/stability-markers.md):
-  the marker's note named guardrails alongside metering, and a subsystem
-  graduates in the pull request that closes the last gap its note names.
+  its note has not been rewritten to match, and the dashboard's translated
+  notes are the part that holds graduation back.
 - A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).
@@ -303,6 +436,14 @@ sends its `EXPIRE` only after that reply, so a budget key that carries its
 expiry proves the meter ran to the end of its flush instead of merely starting
 it. `Sessions` itself is unit-tested for holding the drain while a meter or an
 upgrade is still running.
+
+`crates/rolter-gateway/tests/realtime_guardrails.rs` drives real sessions
+against a mock upstream that records what it is sent: a blocked client event is
+refused with an `error` event and the session carries on, a blocked
+`session.update` instruction never reaches the upstream, a redacted client event
+is rewritten before it is forwarded, a blocked server delta is withheld and the
+response cancelled, a match split across deltas is caught, a clean response is
+unchanged, and the guardrail webhook refuses a client event.
 
 The tracker's frame handling, including which deltas count as a first token, is
 unit-tested in `realtime_metering.rs` itself.
