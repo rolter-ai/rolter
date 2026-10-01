@@ -942,3 +942,101 @@ async fn a_recreated_provider_name_does_not_inherit_another_orgs_health_history(
         },
     );
 }
+
+/// Bodies are keyed on the gateway's own `log_id`, which no caller chooses, so
+/// requests that share both the caller's `x-request-id` and the millisecond
+/// still read their own bodies and nobody else's (#1937).
+#[tokio::test]
+async fn requests_sharing_an_id_and_a_millisecond_keep_their_own_bodies() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "keyed").await;
+    let (victim, intruder) = (acme.project_a.to_string(), acme.project_b.to_string());
+
+    // one id and one ts for every row below, which is the worst case: the old
+    // (request_id, ts) join could not tell any of them apart
+    let shared = format!("keyed-shared-{}", Uuid::new_v4().simple());
+    let ts = (chrono::Utc::now() - chrono::Duration::seconds(3))
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let (victim_key, intruder_key) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let (twin_one, twin_two) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let log = |log_id: &str, project: &str| {
+        json!({
+            "ts": ts, "request_id": shared, "log_id": log_id,
+            "org_id": acme.org.to_string(), "team_id": acme.team.to_string(),
+            "project_id": project, "model": "fake-llm", "status": 200,
+        })
+    };
+    let payload = |log_id: &str, project: &str, body: &str| {
+        json!({
+            "ts": ts, "request_id": shared, "log_id": log_id,
+            "org_id": acme.org.to_string(), "project_id": project,
+            "request_payload": body, "response_payload": body,
+        })
+    };
+    // the intruder's request stored no body; the victim's did. an old payload
+    // row with no key carries the same id and ts, as one written before the
+    // key existed would, and must not attach to a keyed row either
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            log(&victim_key, &victim),
+            log(&intruder_key, &intruder),
+            log(&twin_one, &intruder),
+            log(&twin_two, &intruder),
+        ],
+    )
+    .await;
+    insert_rows(
+        &http,
+        &ch,
+        "request_payloads",
+        &[
+            payload(&victim_key, &victim, "victim-body"),
+            payload(&twin_one, &intruder, "twin-one"),
+            payload(&twin_two, &intruder, "twin-two"),
+            json!({
+                "ts": ts, "request_id": shared,
+                "request_payload": "legacy-body", "response_payload": "legacy-body",
+            }),
+        ],
+    )
+    .await;
+    let ids = [shared.as_str()];
+
+    // cross-project: the intruder reads nothing of the victim's, and no
+    // body from the unkeyed row. same-project: two requests of one project
+    // under one id and ts each read their own body
+    let intruder_member = seed_user(&pool, None, None, Some(acme.project_b), "member").await;
+    let mut expected = vec![
+        (shared.clone(), intruder.clone(), String::new(), false),
+        (shared.clone(), intruder.clone(), "twin-one".into(), false),
+        (shared.clone(), intruder.clone(), "twin-two".into(), false),
+    ];
+    expected.sort();
+    assert_eq!(
+        invocation_rows(&http, addr, &intruder_member, &ids).await,
+        expected
+    );
+
+    let victim_member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(
+        invocation_rows(&http, addr, &victim_member, &ids).await,
+        vec![(shared.clone(), victim.clone(), "victim-body".into(), false)]
+    );
+}
