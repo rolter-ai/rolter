@@ -2558,3 +2558,62 @@ export const SavingKeepsOnlyTheAppliedFilters: Story = {
     await expect(body.filters).toEqual({ window: "30d", status: "error", model: "gpt-4o" });
   },
 };
+
+const KEY_ROWS: InvocationRow[] = [
+  row({ request_id: "req-ci", model: "gpt-4o", virtual_key_id: "vk-ci" }),
+  row({ request_id: "req-other", model: "internal-llama", virtual_key_id: "vk-other" }),
+];
+
+// the control plane narrows on the one exact key id before the page is cut
+const keyFiltered = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") {
+      const key = url.searchParams.get("key");
+      return json({ data: KEY_ROWS.filter((r) => !key || r.virtual_key_id === key) });
+    }
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname.endsWith("/virtual-keys")) {
+      return json([
+        CI_KEY,
+        { ...CI_KEY, id: "vk-other", name: "batch-worker", key_prefix: "rk_live_cd34" },
+      ]);
+    }
+    return json([]);
+  }),
+);
+
+/**
+ * #2516: a key filter could only arrive from a saved view or a pasted link.
+ * The rail now picks one by name, writes `?key=`, counts toward "Filters · N",
+ * and Clear filters takes it out again.
+ */
+export const AKeyCanBePickedByName: Story = {
+  render: () => (
+    <Harness fetchStub={keyFiltered.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Virtual key" });
+    await expect(picker).toHaveAttribute("placeholder", "All keys");
+
+    await userEvent.click(picker);
+    await expect(await canvas.findByRole("option", { name: /batch-worker/ })).toBeVisible();
+    await userEvent.click(await canvas.findByRole("option", { name: /ci-runner/ }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(addressOf(canvasElement).get("key")).toBe("vk-ci");
+    await expect(lastLogQuery(keyFiltered).get("key")).toBe("vk-ci");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).has("key")).toBe(false);
+    await expect(picker).toHaveValue("");
+  },
+};

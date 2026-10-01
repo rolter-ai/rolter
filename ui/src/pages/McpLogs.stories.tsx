@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
@@ -11,10 +12,12 @@ import {
   Harness,
   json,
   pending,
+  recording,
   routes,
   scoped,
 } from "./story-harness";
 import type { McpLogRow } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -444,4 +447,89 @@ export const DetailNotFound: Story = {
     await expect(drawer.queryByRole("alert")).toBeNull();
     await expect(drawer.queryByRole("button", { name: /try again/i })).toBeNull();
   },
+};
+
+const ME = { id: "u-me", email: "ada@acme.dev", is_superadmin: false };
+
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedIn({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", ME.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(ME));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+// the control plane narrows on the `user` filter before the page is cut
+const mineOnly = () =>
+  recording(
+    scoped(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+      const user = url.searchParams.get("user");
+      const all = [call({ user_id: ME.id }), call({ ...TIMED_OUT, user_id: "u-other" })];
+      return json({ data: all.filter((r) => !user || r.user_id === user), next_cursor: null });
+    }),
+  );
+
+const lastLogsQuery = (recorder: ReturnType<typeof recording>) => {
+  const reads = recorder.calls.filter(
+    (c) => c.url.includes("/mcp/logs") && !c.url.includes("/summary"),
+  );
+  return new URL(reads[reads.length - 1]?.url ?? "", "http://localhost").searchParams;
+};
+
+/**
+ * #2515: "My calls" sets the `user` filter to the signed-in account's id, for
+ * every role that reaches the screen (#2396), and a second click lifts it.
+ */
+const asMember = mineOnly();
+const asViewer = mineOnly();
+
+async function expectMyCalls(canvasElement: HTMLElement, recorder: ReturnType<typeof mineOnly>) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getAllByText("create_issue").length).toBeGreaterThan(0));
+  const mine = await canvas.findByRole("button", { name: "My calls" });
+  await expect(mine).toHaveAttribute("aria-pressed", "false");
+
+  await userEvent.click(mine);
+  await waitFor(() => expect(canvas.queryByText("create_issue")).toBeNull());
+  await expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0);
+  await expect(lastLogsQuery(recorder).get("user")).toBe(ME.id);
+  await expect(mine).toHaveAttribute("aria-pressed", "true");
+
+  await userEvent.click(mine);
+  await waitFor(() => expect(canvas.getAllByText("create_issue").length).toBeGreaterThan(0));
+  await expect(lastLogsQuery(recorder).has("user")).toBe(false);
+}
+
+export const MyCallsForAMember: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness fetchStub={asMember.stub} role="member">
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: ({ canvasElement }) => expectMyCalls(canvasElement, asMember),
+};
+
+export const MyCallsForAViewer: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness fetchStub={asViewer.stub} role="viewer">
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: ({ canvasElement }) => expectMyCalls(canvasElement, asViewer),
 };
