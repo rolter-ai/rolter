@@ -61,7 +61,9 @@ management API are unauthenticated, so the container refuses to start until
 both ports on your own machine. To serve a network, pass an admin token you
 keep (`openssl rand -hex 32`) as `-e ROLTER_ADMIN_TOKEN` instead, and replace the
 bundled `sk-rolter-dev` virtual key in a mounted `rolter.toml`: the token closes
-the management API only, and that key is public and allows every model. See
+the management API only, and that key is public and allows every model (with a
+token set the control plane stops serving it to polling gateways, but a gateway
+that loads the file itself still accepts it, and `rolter check` fails on it). See
 [Run the single image](docs/user-docs/deployment/docker.mdx#run-the-single-image).
 
 Open the dashboard at http://localhost:4001. For Postgres, Redis, and

@@ -24,6 +24,8 @@ Work through these steps before sending production traffic to your gateway:
                 --redis-url redis://cache.internal:6379
     ```
 
+    The generated `rolter.toml` has no `[[virtual_keys]]` section: the example's public `sk-rolter-dev` key is left out on purpose. Create keys in the dashboard or API. `rolter check` fails if a config file still declares it.
+
     It is non-interactive, so it also runs inside a Dockerfile, a Helm hook or a CI job. Pipe it straight into a secret manager instead of leaving it on disk:
 
     ```bash
