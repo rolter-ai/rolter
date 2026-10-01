@@ -79,7 +79,7 @@ A failure on the _response_ leg never fails the request, in either mode: the ups
 
 ## Egress policy
 
-`url` and `restore_url` are checked against the [egress policy](/configuration/egress) when the configuration loads and again before every call, and Rolter does not follow a redirect from either. In a control-plane snapshot a denied URL switches the sanitizer off and is listed as a configuration problem.
+`url` and `restore_url` are checked against the [egress policy](/configuration/egress) when the configuration loads and again before every call, and Rolter does not follow a redirect from either. In a control-plane snapshot a denied URL does not switch the sanitizer off: it is listed as a configuration problem and every call is refused, so the sanitizer's failure mode decides whether the request is rejected or forwarded unchanged.
 
 ## The service contract
 

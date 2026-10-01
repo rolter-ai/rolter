@@ -381,6 +381,48 @@ impl ProjectRepo<'_> {
             .ok_or_else(|| Error::NotFound(format!("project {id}")))
     }
 
+    /// Whether `project_id` belongs to `org_id`, through its team.
+    pub async fn in_org(&self, project_id: Uuid, org_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from projects p join teams t on t.id = p.team_id
+                            where p.id = $1 and t.org_id = $2)",
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The providers and groups scoped to any of `project_ids` (#1919), named
+    /// for the refusal. Deleting a project that still holds one would either
+    /// widen it to the whole org or destroy it, so the delete is refused.
+    pub async fn scoped_resources(&self, project_ids: &[Uuid]) -> Result<Vec<String>> {
+        let providers: Vec<String> = sqlx::query_scalar(
+            "select name from providers where project_id = any($1) order by name",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select slug from provider_groups where project_id = any($1) order by slug",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(providers
+            .into_iter()
+            .map(|name| format!("provider '{name}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     /// The owning team of each of `ids`, in one query.
     ///
     /// Replaces a per-id [`Self::get`] on the authorization path, where the
@@ -1276,9 +1318,77 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Names of the providers in `provider_ids` that are scoped to a project
+    /// other than `owner`: the ones a route of project `owner`, or a group
+    /// scoped to it, may not use (#1919). `owner` is `None` for an org-wide
+    /// group, which may hold no scoped provider at all. An org-wide provider
+    /// is never listed, so every project can use it.
+    pub async fn scoped_outside(
+        &self,
+        provider_ids: &[Uuid],
+        owner: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        sqlx::query_scalar(
+            "select name from providers
+             where id = any($1) and project_id is not null
+               and project_id is distinct from $2
+             order by name",
+        )
+        .bind(provider_ids)
+        .bind(owner)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// What would stop using `provider_id` if it were scoped to `scope`: the
+    /// routes of other projects that target it and the groups not scoped to
+    /// `scope` that hold it, each named for the error that refuses the change.
+    /// Empty for `None`, since org-wide is reachable from everywhere.
+    pub async fn dependents_outside(
+        &self,
+        provider_id: Uuid,
+        scope: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        let Some(scope) = scope else {
+            return Ok(Vec::new());
+        };
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1 and r.project_id <> $2
+             order by r.model",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1 and g.project_id is distinct from $2
+             order by g.slug",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(routes
+            .into_iter()
+            .map(|model| format!("route '{model}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -1289,7 +1399,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -1325,11 +1435,12 @@ impl ProviderRepo<'_> {
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
         egress_proxies: &[String],
+        project_id: Option<Uuid>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -1339,6 +1450,7 @@ impl ProviderRepo<'_> {
         .bind(api_key_env)
         .bind(egress_proxy)
         .bind(serde_json::json!(egress_proxies))
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -1359,6 +1471,7 @@ impl ProviderRepo<'_> {
         api_key_env: Option<Option<&str>>,
         egress_proxy: Option<Option<&str>>,
         egress_proxies: Option<&[String]>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
@@ -1367,9 +1480,10 @@ impl ProviderRepo<'_> {
                  api_base = coalesce($4, api_base),
                  api_key_env = case when $5 then $6 else api_key_env end,
                  egress_proxy = case when $7 then $8 else egress_proxy end,
-                 egress_proxies = case when $9 then $10 else egress_proxies end
+                 egress_proxies = case when $9 then $10 else egress_proxies end,
+                 project_id = case when $11 then $12 else project_id end
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -1381,6 +1495,8 @@ impl ProviderRepo<'_> {
         .bind(egress_proxy.flatten())
         .bind(egress_proxies.is_some())
         .bind(egress_proxies.map(|v| serde_json::json!(v)))
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -1400,12 +1516,15 @@ impl ProviderRepo<'_> {
     }
 }
 
-/// Outcome of a write that is refused when it would leave an org with no way
-/// to sign in (#2233).
+/// Outcome of a write that is refused when it would lock someone out for good:
+/// an org with no way to sign in (#2233), or a deployment with no active
+/// superadmin (#2344).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LockoutGuard<T> {
     Done(T),
-    /// password sign-in is off and no enabled sso provider would remain
+    /// the write would leave nothing behind: no way to sign in to the org
+    /// (password sign-in is off and no enabled sso provider would remain), or
+    /// no active superadmin account
     WouldLockOut,
 }
 
@@ -3234,18 +3353,35 @@ impl UserRepo<'_> {
     /// update mutable account fields. each `Some` is applied via `coalesce`, so
     /// `None` leaves the stored value untouched. `password_hash` follows the same
     /// rule; there is no way to clear a password back to null through this path.
-    pub async fn update(
+    ///
+    /// `deactivated` stamps or clears `deactivated_at` in the same transaction.
+    /// the write is refused with [`LockoutGuard::WouldLockOut`] when it would
+    /// demote or deactivate the last active superadmin (#2344); the caller is
+    /// responsible for deleting live sessions when deactivating.
+    pub async fn update_account(
         &self,
         id: Uuid,
         email: Option<&str>,
         password_hash: Option<&str>,
         is_superadmin: Option<bool>,
-    ) -> Result<User> {
-        sqlx::query_as(
+        deactivated: Option<bool>,
+    ) -> Result<LockoutGuard<User>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if is_superadmin == Some(false) || deactivated == Some(true) {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
             "update users set
                  email = coalesce($2, email),
                  password_hash = coalesce($3, password_hash),
-                 is_superadmin = coalesce($4, is_superadmin)
+                 is_superadmin = coalesce($4, is_superadmin),
+                 deactivated_at = case
+                     when $5::boolean is null then deactivated_at
+                     when $5 then coalesce(deactivated_at, now())
+                     else null end
              where id = $1
              returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
                     display_name, bio",
@@ -3254,33 +3390,27 @@ impl UserRepo<'_> {
         .bind(email)
         .bind(password_hash)
         .bind(is_superadmin)
-        .fetch_optional(self.0)
+        .bind(deactivated)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(user))
     }
 
     /// flip the deactivation flag. `true` stamps `deactivated_at = now()` (login
     /// blocked); `false` clears it back to null (re-enabled). the caller is
-    /// responsible for deleting live sessions when deactivating.
-    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<User> {
-        sqlx::query_as(
-            "update users set deactivated_at = case when $2 then now() else null end
-             where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio",
-        )
-        .bind(id)
-        .bind(deactivated)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    /// responsible for deleting live sessions when deactivating. refused when it
+    /// would deactivate the last active superadmin (#2344).
+    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<LockoutGuard<User>> {
+        self.update_account(id, None, None, None, Some(deactivated))
+            .await
     }
 
     /// set the self-service profile. each `Some(x)` replaces the column with `x`
     /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
-    /// from [`Self::update`]: that one names `is_superadmin` in its `set` list
+    /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
     /// and so fires the `config_version` trigger, which a name edit must not.
     /// callers validate and normalise; the table's check constraints are the
     /// backstop
@@ -3309,17 +3439,60 @@ impl UserRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
+    /// delete the account, refused when it is the last active superadmin
+    /// (#2344)
+    pub async fn delete(&self, id: Uuid) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        lock_superadmins(&mut tx).await?;
+        if last_active_superadmin(&mut tx, id).await? {
+            return Ok(LockoutGuard::WouldLockOut);
+        }
         let res = sqlx::query("delete from users where id = $1")
             .bind(id)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("user {id}")));
         }
-        Ok(())
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
     }
+}
+
+/// Serialise every write that can shrink the set of active superadmins.
+///
+/// A row lock on the target is not enough: two concurrent demotions of two
+/// different superadmins each lock only their own row, each sees the other
+/// still active, and both commit. One advisory lock for the whole set, held to
+/// the end of the transaction, makes the second writer wait and then count the
+/// first one's commit. Writes that only grow the set never take it.
+async fn lock_superadmins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('superadmins', 0))")
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Whether `id` is an active superadmin and no other account is. Call it under
+/// [`lock_superadmins`]; an unknown id answers `false` and the write reports
+/// the not-found itself.
+async fn last_active_superadmin(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar(
+        "select exists (
+             select 1 from users where id = $1 and is_superadmin and deactivated_at is null
+         ) and not exists (
+             select 1 from users where id <> $1 and is_superadmin and deactivated_at is null
+         )",
+    )
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
 }
 
 /// per-user preference documents (#1824). one row per user, created on first
@@ -3483,6 +3656,18 @@ const INVITATION_COLUMNS: &str = "id, org_id, email, role, team_id, project_id, 
      invited_by, expires_at, accepted_at, revoked_at, created_at";
 
 impl InvitationRepo<'_> {
+    /// Create an invitation, replacing the address's live one in the same
+    /// transaction. Returns the new row and the id of the invitation it
+    /// revoked, if any.
+    ///
+    /// `invitations_live_email_idx` forbids two unaccepted, unrevoked rows for
+    /// one address but ignores `expires_at` (its predicate cannot use
+    /// `now()`), so an expired invitation still holds the address. Revoking
+    /// whatever holds it first, expired or not, makes the new link the only
+    /// live one and the old link stop working. A transaction-scoped advisory
+    /// lock on `(org, lower(email))` orders concurrent creates for one
+    /// address: the second waits, then revokes the first's row, so neither
+    /// trips the index.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
@@ -3494,8 +3679,26 @@ impl InvitationRepo<'_> {
         token_hash: &str,
         invited_by: Option<Uuid>,
         expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Invitation> {
-        sqlx::query_as(&format!(
+    ) -> Result<(Invitation, Option<Uuid>)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('invitation:' || $1::text || ':' || lower($2), 0))")
+            .bind(org_id)
+            .bind(email)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let replaced: Option<Uuid> = sqlx::query_scalar(
+            "update invitations set revoked_at = now() \
+             where org_id = $1 and lower(email) = lower($2) \
+               and accepted_at is null and revoked_at is null \
+             returning id",
+        )
+        .bind(org_id)
+        .bind(email)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let invitation = sqlx::query_as(&format!(
             "insert into invitations (org_id, email, role, team_id, project_id, token_hash, \
                     invited_by, expires_at) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -3509,9 +3712,11 @@ impl InvitationRepo<'_> {
         .bind(token_hash)
         .bind(invited_by)
         .bind(expires_at)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok((invitation, replaced))
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Invitation>> {
@@ -4446,7 +4651,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -4457,7 +4662,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where id = $1",
         )
         .bind(id)
@@ -4473,16 +4678,18 @@ impl ProviderGroupRepo<'_> {
         name: &str,
         slug: &str,
         strategy: &str,
+        project_id: Option<Uuid>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "insert into provider_groups (org_id, name, slug, strategy)
-             values ($1, $2, $3, $4)
-             returning id, org_id, name, slug, strategy, created_at",
+            "insert into provider_groups (org_id, name, slug, strategy, project_id)
+             values ($1, $2, $3, $4, $5)
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -4496,19 +4703,23 @@ impl ProviderGroupRepo<'_> {
         name: Option<&str>,
         slug: Option<&str>,
         strategy: Option<&str>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
             "update provider_groups set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
-                 strategy = coalesce($4, strategy)
+                 strategy = coalesce($4, strategy),
+                 project_id = case when $5 then $6 else project_id end
              where id = $1
-             returning id, org_id, name, slug, strategy, created_at",
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -5060,6 +5271,7 @@ mod tests {
                 Some("OPENAI_API_KEY"),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();

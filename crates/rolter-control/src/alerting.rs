@@ -49,8 +49,8 @@ use crate::ControlState;
 /// that lock for long.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Longest a signal query may run. The ClickHouse client has no timeout of its
-/// own, and a pass that hangs on one rule never reaches the rest.
+/// Longest a signal query may run. The ClickHouse client bounds each request at
+/// 15s itself; this outer bound is a backstop so a pass never hangs on one rule.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Why a rule fired or resolved on a window with nothing to measure.
 const NO_DATA_DETAIL: &str = "no data in window";
@@ -2602,6 +2602,32 @@ mod tests {
             assert_eq!(stub.hooks()[1].1["state"], "resolved");
             // error passes write no history of their own
             assert_eq!(history(&db, id).await.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_stalled_clickhouse_is_an_evaluation_error_not_a_hang() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let mut state = state_with(&db, &stub);
+            let id = add_rule(&db, None).await;
+            let stalled = crate::analytics::testing::Stalled::start().await;
+            state.clickhouse = Some(crate::analytics::ClickHouseClient::with_timeouts(
+                &stalled.url,
+                Duration::from_secs(1),
+                Duration::from_millis(300),
+            ));
+
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(10),
+                evaluate_one(&state, id, Lock::Wait, None),
+            )
+            .await
+            .expect("a stalled signal read must not hang the pass");
+            assert!(outcome.is_err());
+            let errored = rule_row(&db, id).await;
+            assert_eq!(errored.state, "error");
+            let last_error = errored.last_error.expect("last_error is set");
+            assert_eq!(last_error, "analytics query timed out");
         }
 
         #[tokio::test]

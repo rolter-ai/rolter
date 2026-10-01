@@ -131,7 +131,7 @@ Rotation reseals every stored secret from the old KEK to a new one. It is all-or
     kubectl scale deployment/rolter-control --replicas 3
     ```
 
-    Between these two commands the fleet is split: a gateway still holding the old value can no longer read a stored credential. Keep the window short, and roll the gateways **after** the control plane so `/internal/snapshot` is already serving secrets the new KEK sealed.
+    Between these two commands a control-plane replica still holding the old value can no longer read a stored credential, so keep the window short. Gateways hold no KEK and need no restart: they keep serving their last snapshot and pick up the next one, which a control plane on the new KEK unseals.
 
   </Step>
 </Steps>

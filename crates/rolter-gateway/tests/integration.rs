@@ -872,6 +872,201 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
     }
 }
 
+/// A provider or group scoped to a project is reached only by that project's
+/// keys, by `slug/model` and through a route alike, while org-wide providers
+/// stay open to every project of the org, as fallbacks and as options (#1919).
+#[tokio::test]
+async fn a_project_scoped_provider_is_reached_only_from_its_own_project() {
+    let (private_upstream, private_hits) = counting_audio_upstream().await;
+    let (shared_upstream, shared_hits) = counting_audio_upstream().await;
+    let owned = |project: Option<&str>| {
+        Some(rolter_core::Tenancy {
+            org_id: "org-1".to_string(),
+            project_id: project.map(str::to_string),
+        })
+    };
+    let mut config = GatewayConfig::default();
+    for (name, upstream, scope) in [
+        ("private", private_upstream, Some("project-1")),
+        ("shared", shared_upstream, None),
+    ] {
+        config.providers.push(ProviderConfig {
+            name: name.to_string(),
+            slug: Some(name.to_string()),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: format!("http://{upstream}"),
+            tenancy: owned(scope),
+            project_scoped: scope.is_some(),
+            ..Default::default()
+        });
+    }
+    let member = |provider: &str| rolter_core::GroupMember {
+        provider: provider.to_string(),
+        model: None,
+        weight: 1,
+    };
+    config
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "private-pool".to_string(),
+            slug: Some("private-pool".to_string()),
+            // a scoped group may hold its own project's providers and org-wide ones
+            members: vec![member("private"), member("shared")],
+            tenancy: owned(Some("project-1")),
+            project_scoped: true,
+            ..Default::default()
+        });
+    config
+        .provider_groups
+        .push(rolter_core::ProviderGroupConfig {
+            name: "shared-pool".to_string(),
+            slug: Some("shared-pool".to_string()),
+            members: vec![member("shared")],
+            tenancy: owned(None),
+            ..Default::default()
+        });
+    let route = |model: &str, providers: &[&str]| ModelRoute {
+        model: model.to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: providers
+            .iter()
+            .map(|provider| Target {
+                provider: provider.to_string(),
+                model: Some("m".to_string()),
+                weight: 1,
+            })
+            .collect(),
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+        tenancy: owned(Some("project-1")),
+    };
+    // neither route is `project_only`: it is the provider behind the first
+    // that keeps another project out, and the second is open to the org
+    config
+        .routes
+        .push(route("private-route", &["private", "shared"]));
+    config.routes.push(route("fallback-route", &["shared"]));
+    let mut keys = Vec::new();
+    for (plaintext, id, project) in [
+        ("sk-p1", "key-p1", "project-1"),
+        ("sk-p2", "key-p2", "project-2"),
+        ("sk-none", "key-none", ""),
+    ] {
+        let mut key = scoped_key(&config, plaintext, id, "team-1", None, Vec::new());
+        key.project_id = project.to_string();
+        keys.push(key);
+    }
+    config.db_virtual_keys.extend(keys);
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+    let chat = |key: &'static str, model: &'static str| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .post(format!("http://{gw}/v1/chat/completions"))
+                .bearer_auth(key)
+                .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            (
+                status,
+                body["error"]["code"].as_str().unwrap_or("").to_string(),
+            )
+        }
+    };
+
+    // the owning project reaches every address behind the provider
+    for model in [
+        "private/m",
+        "private-pool/m",
+        "private-route",
+        "shared/m",
+        "shared-pool/m",
+        "fallback-route",
+    ] {
+        let (status, code) = chat("sk-p1", model).await;
+        assert_eq!(status, 200, "project-1 refused {model}: {code}");
+    }
+
+    // another project of the org, and a key with no project at all, are refused
+    // the project's addresses exactly as a model nobody configured, and its
+    // upstream never sees a request
+    let reached = private_hits.load(Ordering::SeqCst);
+    for key in ["sk-p2", "sk-none"] {
+        for model in ["private/m", "private-pool/m", "private-route"] {
+            let (status, code) = chat(key, model).await;
+            assert_eq!(
+                (status, code.as_str()),
+                (404, "model_not_found"),
+                "{key} {model}"
+            );
+        }
+    }
+    assert_eq!(
+        private_hits.load(Ordering::SeqCst),
+        reached,
+        "another project's call reached the scoped provider's upstream"
+    );
+
+    // org-wide providers stay open to every project, as an option and as the
+    // fallback behind a route another project's admin made org-visible
+    for key in ["sk-p2", "sk-none"] {
+        for model in ["shared/m", "shared-pool/m", "fallback-route"] {
+            let (status, code) = chat(key, model).await;
+            assert_eq!(status, 200, "{key} refused org-wide {model}: {code}");
+        }
+    }
+    assert!(shared_hits.load(Ordering::SeqCst) >= 1);
+
+    // the listing says the same: no scoped address for another project
+    let ids_for = |key: &'static str| {
+        let client = client.clone();
+        async move {
+            let models: Value = client
+                .get(format!("http://{gw}/v1/models"))
+                .bearer_auth(key)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            models["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    let own = ids_for("sk-p1").await;
+    for id in ["private/m", "private-pool/m", "private-route", "shared/m"] {
+        assert!(
+            own.iter().any(|listed| listed == id),
+            "{id} missing: {own:?}"
+        );
+    }
+    let other = ids_for("sk-p2").await;
+    for id in ["private/m", "private-pool/m", "private-route"] {
+        assert!(
+            !other.iter().any(|listed| listed == id),
+            "{id} listed: {other:?}"
+        );
+    }
+    for id in ["shared/m", "shared-pool/m", "fallback-route"] {
+        assert!(
+            other.iter().any(|listed| listed == id),
+            "{id} missing: {other:?}"
+        );
+    }
+}
+
 /// Another org's route takes no name away from this org, on any request path.
 /// Org 2 holds a route literally called `edge/gpt-4o`, which is also the
 /// address of org 1's provider `edge`, and a route called `fake-llm`, which is
@@ -4555,6 +4750,8 @@ async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
         .await
         .unwrap();
     assert_eq!(closed.status(), 401);
+    let body: serde_json::Value = closed.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_api_key");
 
     // and the same deployment with the toggle off answers — so the test is
     // measuring the toggle, not the absence of keys
@@ -4631,6 +4828,9 @@ async fn an_expired_virtual_key_is_refused_at_the_gateway() {
     let expired = call("sk-rolter-expired").await;
     assert_eq!(expired.status(), 401);
     let body = expired.text().await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["error"]["code"], "invalid_api_key", "{body}");
+    assert_eq!(parsed["error"]["type"], "authentication_error", "{body}");
     // the rejection must not leak which key it was or when it lapsed
     assert!(!body.contains("yesterday"), "{body}");
 
@@ -4687,6 +4887,7 @@ async fn group_over_counting_upstreams(
             strategy,
             members,
             tenancy: None,
+            ..Default::default()
         });
     (serve_gateway(&config).await, counters)
 }
@@ -4801,6 +5002,7 @@ async fn a_dead_group_member_fails_over_to_a_sibling() {
                 })
                 .collect(),
             tenancy: None,
+            ..Default::default()
         });
     let gw = serve_gateway(&config).await;
 
@@ -5318,4 +5520,48 @@ async fn response_lifecycle_reauthorizes_pinned_addresses() {
         1,
         "a refused call reached upstream"
     );
+}
+
+#[tokio::test]
+async fn every_invalid_key_401_carries_the_openai_invalid_api_key_code() {
+    // #2385: OpenAI SDKs branch on `code`, and the realtime close already sends
+    // `invalid_api_key` (#1881), so the HTTP 401 must agree for each cause
+    let config = GatewayConfig {
+        virtual_keys: vec![
+            VirtualKeyConfig {
+                key: "sk-rolter-live".to_string(),
+                ..Default::default()
+            },
+            VirtualKeyConfig {
+                key: "sk-rolter-off".to_string(),
+                disabled: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+    let body = json!({"model": "fake-llm", "messages": [{"role":"user","content":"hi"}]});
+
+    for (path, key) in [
+        ("/v1/chat/completions", None),
+        ("/v1/chat/completions", Some("sk-rolter-unknown")),
+        ("/v1/chat/completions", Some("sk-rolter-off")),
+        ("/v1/messages", Some("sk-rolter-unknown")),
+        ("/v1/messages", None),
+    ] {
+        let mut req = client.post(format!("http://{gw}{path}")).json(&body);
+        if let Some(key) = key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await.unwrap();
+        assert_eq!(resp.status(), 401, "{path} {key:?}");
+        let parsed: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(parsed["error"]["code"], "invalid_api_key", "{path} {key:?}");
+        assert_eq!(
+            parsed["error"]["type"], "authentication_error",
+            "{path} {key:?}"
+        );
+    }
 }

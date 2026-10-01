@@ -177,7 +177,7 @@ async fn create(
     .fetch_one(pool(&state))
     .await
     .map_err(|e| Error::Store(e.to_string()))?;
-    audit(&state, &principal, "connector.create", &connector).await;
+    audit(&state, &principal, "connector.create", &connector, None).await;
     Ok(Json(connector))
 }
 
@@ -190,13 +190,39 @@ async fn update(
     authorize_superadmin(&principal, superadmin_cap!("connector", Update))?;
     validate(&input, &state.egress)?;
     let secret = input.managed_auth_secret.as_deref().map(seal).transpose()?;
+    let mut tx = pool(&state)
+        .begin()
+        .await
+        .map_err(|e| Error::Store(e.to_string()))?;
+    let (stored, had_secret): (String, bool) = sqlx::query_as(
+        "select endpoint, auth_ciphertext is not null from observability_connectors \
+         where id=$1 for no key update",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| Error::Store(e.to_string()))?
+    .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
+    // a secret was given for one receiver; repointed at another origin, the
+    // connector would hand it to whoever answers there, so it is dropped
+    // unless this request brings the new receiver's own. An unparsable
+    // stored endpoint counts as moved
+    let origin_changed = match (
+        reqwest::Url::parse(&stored),
+        reqwest::Url::parse(input.endpoint.trim()),
+    ) {
+        (Ok(stored), Ok(new)) => stored.origin() != new.origin(),
+        _ => true,
+    };
+    let clear_secret = origin_changed && secret.is_none();
     // coalesce leaves an existing secret in place when the caller does not
-    // resend it, so editing the sampling rate cannot silently drop the
-    // credential the connector needs
+    // resend it on the same origin, so editing the sampling rate cannot
+    // silently drop the credential the connector needs
     let connector: Connector = sqlx::query_as(&format!(
         "update observability_connectors set name=$2, kind=$3, endpoint=$4, enabled=$5, \
          sampling_rate=$6, auth_secret_ref=$7, \
-         auth_ciphertext=coalesce($8, auth_ciphertext), auth_nonce=coalesce($9, auth_nonce), \
+         auth_ciphertext = case when $10 then null else coalesce($8, auth_ciphertext) end, \
+         auth_nonce = case when $10 then null else coalesce($9, auth_nonce) end, \
          updated_at=now() where id=$1 returning {}",
         columns()
     ))
@@ -209,11 +235,19 @@ async fn update(
     .bind(input.auth_secret_ref.as_deref())
     .bind(secret.as_ref().map(|(c, _)| c.as_slice()))
     .bind(secret.as_ref().map(|(_, n)| n.as_slice()))
-    .fetch_optional(pool(&state))
+    .bind(clear_secret)
+    .fetch_one(&mut *tx)
     .await
-    .map_err(|e| Error::Store(e.to_string()))?
-    .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
-    audit(&state, &principal, "connector.update", &connector).await;
+    .map_err(|e| Error::Store(e.to_string()))?;
+    tx.commit().await.map_err(|e| Error::Store(e.to_string()))?;
+    audit(
+        &state,
+        &principal,
+        "connector.update",
+        &connector,
+        Some(clear_secret && had_secret),
+    )
+    .await;
     Ok(Json(connector))
 }
 
@@ -351,7 +385,16 @@ async fn deliver_probe(
 /// Audit a connector write. Endpoint and credential are deliberately absent:
 /// the endpoint can carry a token in its query string, and the audit log is a
 /// wider-read surface than the connector table.
-async fn audit(state: &ControlState, principal: &Principal, action: &str, connector: &Connector) {
+///
+/// `secret_cleared` records on an update that the stored secret was dropped
+/// because the endpoint moved origin.
+async fn audit(
+    state: &ControlState,
+    principal: &Principal,
+    action: &str,
+    connector: &Connector,
+    secret_cleared: Option<bool>,
+) {
     let actor = match principal {
         Principal::User(user) => Some(user.id),
         Principal::Superadmin => None,
@@ -363,13 +406,19 @@ async fn audit(state: &ControlState, principal: &Principal, action: &str, connec
             action,
             Some("connector"),
             Some(connector.id),
-            Some(serde_json::json!({
-                "name": connector.name,
-                "kind": connector.kind,
-                "enabled": connector.enabled,
-                "sampling_rate": connector.sampling_rate,
-                "auth_secret_configured": connector.auth_secret_configured,
-            })),
+            Some({
+                let mut detail = serde_json::json!({
+                    "name": connector.name,
+                    "kind": connector.kind,
+                    "enabled": connector.enabled,
+                    "sampling_rate": connector.sampling_rate,
+                    "auth_secret_configured": connector.auth_secret_configured,
+                });
+                if let Some(cleared) = secret_cleared {
+                    detail["secret_cleared"] = cleared.into();
+                }
+                detail
+            }),
         )
         .await
     {

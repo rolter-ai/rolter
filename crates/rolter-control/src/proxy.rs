@@ -7,7 +7,9 @@
 //! `/gw/*` to it — HTTP (including SSE streaming) and the realtime WebSocket.
 //!
 //! No admin-token gate: the gateway authenticates every call with a virtual key,
-//! so `/gw` exposes nothing the gateway doesn't already expose itself.
+//! so `/gw` exposes nothing the gateway doesn't already expose itself. That
+//! holds only while the gateway is as reachable as this port, and it is why the
+//! proxy's own error bodies never name the gateway's address (#1840).
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -101,11 +103,11 @@ async fn proxy_http(
 
     let resp = match upstream {
         Ok(resp) => resp,
-        Err(err) => {
-            return gw_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("gateway unreachable: {err}"),
-            )
+        Err(error) => {
+            // the driver's message carries the gateway's internal address, and
+            // this route answers callers who hold no session (#1840)
+            tracing::warn!(%error, "gateway unreachable through the /gw proxy");
+            return gw_error(StatusCode::BAD_GATEWAY, "gateway unreachable");
         }
     };
 
@@ -142,11 +144,9 @@ fn proxy_ws(
             }
             request
         }
-        Err(err) => {
-            return gw_error(
-                StatusCode::BAD_GATEWAY,
-                &format!("invalid realtime url: {err}"),
-            )
+        Err(error) => {
+            tracing::warn!(%error, "invalid realtime url for the /gw proxy");
+            return gw_error(StatusCode::BAD_GATEWAY, "invalid realtime url");
         }
     };
     ws.on_upgrade(move |socket| relay(socket, request))
