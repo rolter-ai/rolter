@@ -12,6 +12,8 @@
 //! `Query`, not axum's, so a `since`/`until` ClickHouse would misread as the
 //! epoch is a `400` before any SQL is built (#1192).
 
+use std::time::Duration;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -30,11 +32,55 @@ pub struct ClickHouseClient {
     client: reqwest::Client,
 }
 
+/// How long a connection to ClickHouse may take to open. A healthy server on
+/// the same network answers in milliseconds, so three seconds already means it
+/// is down or unreachable; failing fast keeps a dashboard request from waiting
+/// on a host that will not answer. Matches the gateway's client (#2373).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Whole-request bound for every ClickHouse call the control plane makes: the
+/// analytics and health reads, the alert signal reads, and the MCP and UX
+/// ingest inserts.
+///
+/// Fifteen seconds is above what an interactive dashboard read over the
+/// indexed `request_logs` window should ever need, yet short enough that the
+/// operator gets an error rather than a spinner, and it stays under the 30s an
+/// alert pass allows one signal query ([`crate::alerting`]). The gateway uses
+/// ten seconds for its inserts; the control plane's inserts are small
+/// single-batch posts of the same shape, so one bound serves them too rather
+/// than a second client. The retention DDL runs under [`DDL_TIMEOUT`] since
+/// `alter table ... modify ttl` is not an interactive read.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Bound for the log-retention `alter table` statements, which may rewrite
+/// table metadata on a large table and are run by an admin, not a dashboard
+/// poll.
+const DDL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Build the one `reqwest` client every ClickHouse call goes through, so a
+/// stalled server can never hold a request, an ingest handler or an alert pass
+/// open (#1951).
+fn build_http(connect: Duration, request: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(request)
+        .build()
+        // building only fails when the TLS backend cannot initialise, which
+        // `Client::new()` would hit as well; fall back to it rather than panic
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl ClickHouseClient {
     pub fn new(url: &str) -> Self {
+        Self::with_timeouts(url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// [`ClickHouseClient::new`] with explicit bounds, so a test can prove a
+    /// stalled server is cut off without waiting out the production values.
+    pub(crate) fn with_timeouts(url: &str, connect: Duration, request: Duration) -> Self {
         Self {
             base: url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: build_http(connect, request),
         }
     }
 
@@ -58,13 +104,13 @@ impl ClickHouseClient {
         for (k, v) in params {
             req = req.query(&[(k.as_str(), v.as_str())]);
         }
-        let resp = req.body(sql.to_string()).send().await?;
+        let resp = req.body(sql.to_string()).send().await.map_err(strip_url)?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("clickhouse query failed ({status}): {body}");
         }
-        let value: Value = resp.json().await?;
+        let value: Value = resp.json().await.map_err(strip_url)?;
         Ok(value
             .get("data")
             .and_then(|d| d.as_array())
@@ -88,8 +134,10 @@ impl ClickHouseClient {
                 .client
                 .post(format!("{}/", self.base))
                 .body(statement.clone())
+                .timeout(DDL_TIMEOUT)
                 .send()
-                .await?;
+                .await
+                .map_err(strip_url)?;
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -116,7 +164,8 @@ impl ClickHouseClient {
             ))
             .body(serde_json::to_vec(event)?)
             .send()
-            .await?;
+            .await
+            .map_err(strip_url)?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -152,7 +201,8 @@ impl ClickHouseClient {
             ))
             .body(body)
             .send()
-            .await?;
+            .await
+            .map_err(strip_url)?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -160,6 +210,14 @@ impl ClickHouseClient {
         let text = response.text().await.unwrap_or_default();
         anyhow::bail!("clickhouse UX event insert failed ({status}): {text}")
     }
+}
+
+/// Drop the request URL from a transport error. `CLICKHOUSE_URL` can carry
+/// userinfo, and reqwest's message quotes the URL, which would put the password
+/// in the warn log and in an alert rule's stored `last_error`. The error keeps
+/// its type, so `is_timeout()` and `is_connect()` still classify it.
+fn strip_url(err: reqwest::Error) -> anyhow::Error {
+    err.without_url().into()
 }
 
 /// Map a bucket name to a ClickHouse start-of-interval function. Whitelisted so
@@ -752,10 +810,91 @@ fn retention_statements(retention_days: u32, payload_retention_hours: u32) -> [S
     ]
 }
 
+/// Test support: a stand-in for a ClickHouse that has stopped answering.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// A listener that accepts connections and never replies, so a client
+    /// without a request timeout waits forever. The accepted sockets are held
+    /// open (dropping one would be a reset, not a stall).
+    pub(crate) struct Stalled {
+        pub(crate) url: String,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Stalled {
+        pub(crate) async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a local port");
+            let port = listener.local_addr().expect("a local address").port();
+            let task = tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((socket, _)) = listener.accept().await {
+                    held.push(socket);
+                }
+            });
+            Self {
+                // userinfo on purpose: it must never reach an error or a log
+                url: format!("http://ch:hunter2@127.0.0.1:{port}"),
+                _task: task,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    /// A regression must fail the test, not hang the suite.
+    const CEILING: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn a_stalled_clickhouse_read_times_out_without_leaking_the_url() {
+        let stalled = testing::Stalled::start().await;
+        let ch = ClickHouseClient::with_timeouts(
+            &stalled.url,
+            Duration::from_secs(1),
+            Duration::from_millis(300),
+        );
+        let result = tokio::time::timeout(CEILING, ch.query("select 1 format JSON", &[]))
+            .await
+            .expect("the client bounds the request itself");
+        let err = result.expect_err("a stalled server is an error");
+        let source = err
+            .downcast_ref::<reqwest::Error>()
+            .expect("a transport error");
+        assert!(source.is_timeout(), "{err}");
+        let text = format!("{err:#}");
+        assert!(
+            !text.contains("hunter2") && !text.contains("127.0.0.1"),
+            "{text}"
+        );
+        // the route-level mapping carries no driver text either
+        let response = run(Err(err));
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_clickhouse_insert_times_out() {
+        let stalled = testing::Stalled::start().await;
+        let ch = ClickHouseClient::with_timeouts(
+            &stalled.url,
+            Duration::from_secs(1),
+            Duration::from_millis(300),
+        );
+        let event = json!({"event_id": "e"});
+        let ui = tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("ui-event insert is bounded");
+        assert!(ui.is_err());
+        let mcp = tokio::time::timeout(CEILING, ch.insert_mcp_tool_call(&event))
+            .await
+            .expect("mcp insert is bounded");
+        assert!(mcp.is_err());
+    }
 
     #[test]
     fn bucket_fn_whitelists() {
