@@ -2633,7 +2633,7 @@
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
       },
       "emptyTitle": "No MCP tool calls yet",
-      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy.",
+      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
       "noMatchBody": "Nothing in this window matched the status and transport you selected.",
       "statusFilterAria": "Filter by status",
@@ -2657,6 +2657,10 @@
       "arguments": "Arguments",
       "result": "Result",
       "closeDetails": "Close MCP log details",
+      "argumentsAndResult": "Arguments and result",
+      "payloadWithheld": "The arguments and result were captured for this call, but they are hidden for your role: on this project, tool arguments and results are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
+      "notFoundTitle": "This call is not available",
+      "notFoundBody": "It no longer exists, or it belongs to an organization, team or project you do not hold a role in.",
       "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
     },
     "providerGroups": {

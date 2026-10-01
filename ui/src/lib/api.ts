@@ -3613,6 +3613,9 @@ export interface McpLogRow {
 export interface McpLogDetail extends McpLogRow {
   arguments: string | null;
   result: string | null;
+  /// 1 when the arguments and result were captured but the caller's role is
+  /// below the payload floor, so the server blanked them (#2396)
+  payload_withheld?: number | string;
 }
 
 export interface McpLogsQuery extends AnalyticsWindow {
