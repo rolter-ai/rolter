@@ -2252,6 +2252,11 @@ export interface MeMembership extends MembershipRow {
 export interface MeResponse {
   user: UserRow;
   memberships: MeMembership[];
+  /**
+   * The saved Client Settings public base URL, or null. Readable by every role,
+   * unlike `client_settings:read` (#2512). Absent from an older control plane.
+   */
+  gateway_base_url?: string | null;
 }
 
 /**

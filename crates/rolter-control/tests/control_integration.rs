@@ -1046,6 +1046,19 @@ async fn members_below_the_org_list_what_they_reach() {
     assert_eq!(me["memberships"][0]["scope_org_id"], acme.to_string());
     assert_eq!(me["memberships"][0]["scope_team_id"], core.to_string());
     assert_eq!(me["memberships"][0]["project_id"], app_project.to_string());
+    // the saved gateway base URL rides along for a role that cannot read
+    // client settings (#2512); null until one is saved
+    assert!(me["gateway_base_url"].is_null());
+    sqlx::query(
+        "update client_settings set public_base_url = 'https://gw.acme.test' where id = true",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, me) = get("/api/v1/auth/me".into(), pm.clone()).await;
+    assert_eq!(me["gateway_base_url"], "https://gw.acme.test");
+    let (denied, _) = get("/api/v1/client-settings".into(), pm.clone()).await;
+    assert_eq!(denied, 403);
     // and the org's rule table, which the dashboard reads to say why a control
     // is disabled: the custom roles are the org's, a project role is enough
     let (status, matrix) = get(format!("/api/v1/rbac/matrix?org_id={acme}"), pm.clone()).await;

@@ -18,7 +18,7 @@ Enter it without `/v1`, since the snippets add the path themselves. A trailing `
 
 Leave it empty and the snippets go through the dashboard's own `/gw` proxy, for example `https://rolter.example.com:4001/gw/v1/chat/completions`. The proxy answers every OpenAI-compatible call, so an empty field is fine for trying Rolter out, but each call then passes through the control plane on its way to the gateway. For production, give clients the gateway's own address.
 
-Only a superadmin can read client settings, so the snippets other roles see are built on the `/gw` proxy even when a base URL is saved.
+Every signed-in user's snippets use the saved base URL, whatever their role. Only a superadmin can read client settings, but the address is not a secret (it is what clients already dial), so `GET /api/v1/auth/me` returns it as `gateway_base_url` (`null` when none is saved) for any session.
 
 This value is advisory: the gateway never reads it, and setting it does not change what the gateway listens on.
 

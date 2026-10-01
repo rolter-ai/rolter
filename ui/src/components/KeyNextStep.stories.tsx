@@ -4,7 +4,14 @@ import { expect, waitFor, within } from "storybook/test";
 import { KeyNextStep } from "./KeyNextStep";
 import type { ClientSettingsDto } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
-import { expectGateAnswered, Harness, json, recording, routes } from "@/pages/story-harness";
+import {
+  expectGateAnswered,
+  Harness,
+  json,
+  recording,
+  routes,
+  StaleSession,
+} from "@/pages/story-harness";
 
 const SAVED: ClientSettingsDto = {
   public_base_url: "https://gateway.example.com/v1/",
@@ -102,23 +109,40 @@ export const UsesTheSavedPublicBaseUrl: Story = {
   },
 };
 
-const asAdmin = recording(async (input) =>
-  String(input).includes("/api/v1/client-settings") ? json(SAVED) : json([]),
-);
+const asAdmin = recording(async (input) => {
+  const url = String(input);
+  if (url.includes("/api/v1/auth/me")) {
+    return json({
+      user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+      memberships: [],
+      display_name_managed: false,
+      gateway_base_url: SAVED.public_base_url,
+    });
+  }
+  return url.includes("/api/v1/client-settings") ? json(SAVED) : json([]);
+});
 
 /**
- * Client settings are superadmin-only, so an org admin never asks for them and
- * gets the proxy, even on a deployment that saved a public base URL.
+ * Client settings are superadmin-only, so an org admin never asks for them,
+ * yet the saved public base URL still reaches the snippet through `/auth/me`
+ * (#2512).
  */
-export const AnAdminKeepsTheProxy: Story = {
+export const AnAdminGetsTheSavedUrlFromTheSession: Story = {
   render: (args) => (
     <Harness fetchStub={asAdmin.stub} role="admin">
-      <KeyNextStep {...args} />
+      <StaleSession>
+        <KeyNextStep {...args} />
+      </StaleSession>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     await expectGateAnswered();
-    await expect(await address(canvasElement)).toHaveTextContent("/gw/v1");
+    await waitFor(async () =>
+      expect(await address(canvasElement)).toHaveTextContent("https://gateway.example.com/v1"),
+    );
+    const snippet = await request(canvasElement);
+    await expect(snippet).toHaveTextContent("curl https://gateway.example.com/v1/chat/completions");
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
     asAdmin.expectNotSent("GET", "/api/v1/client-settings");
   },
 };

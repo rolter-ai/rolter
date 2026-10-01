@@ -184,7 +184,8 @@ const asAdmin = withSavedBaseUrl();
 /**
  * Client settings are superadmin-only, so an org admin never asks for them —
  * the 403 would say nothing the gate did not — and gets the `/gw` proxy with
- * the comment saying so, even on a deployment that saved a public base URL.
+ * the comment saying so. Here there is no signed-in session either, so `/auth/me`
+ * has no saved address to hand over (#2512; `KeyNextStep` covers the session).
  */
 export const AnAdminKeepsTheProxy: Story = {
   render: (args) => (
