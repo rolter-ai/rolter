@@ -121,7 +121,7 @@ rustup update stable   # CI runs current stable clippy; an older local one misse
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p rolter-store -p rolter-control --all-targets --features postgres -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 cargo test --workspace
 cargo test -p rolter-control -p rolter-store --features postgres
 ```
