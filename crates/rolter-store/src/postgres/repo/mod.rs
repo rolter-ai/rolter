@@ -1501,12 +1501,15 @@ impl ProviderRepo<'_> {
     }
 }
 
-/// Outcome of a write that is refused when it would leave an org with no way
-/// to sign in (#2233).
+/// Outcome of a write that is refused when it would lock someone out for good:
+/// an org with no way to sign in (#2233), or a deployment with no active
+/// superadmin (#2344).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LockoutGuard<T> {
     Done(T),
-    /// password sign-in is off and no enabled sso provider would remain
+    /// the write would leave nothing behind: no way to sign in to the org
+    /// (password sign-in is off and no enabled sso provider would remain), or
+    /// no active superadmin account
     WouldLockOut,
 }
 
@@ -3335,18 +3338,35 @@ impl UserRepo<'_> {
     /// update mutable account fields. each `Some` is applied via `coalesce`, so
     /// `None` leaves the stored value untouched. `password_hash` follows the same
     /// rule; there is no way to clear a password back to null through this path.
-    pub async fn update(
+    ///
+    /// `deactivated` stamps or clears `deactivated_at` in the same transaction.
+    /// the write is refused with [`LockoutGuard::WouldLockOut`] when it would
+    /// demote or deactivate the last active superadmin (#2344); the caller is
+    /// responsible for deleting live sessions when deactivating.
+    pub async fn update_account(
         &self,
         id: Uuid,
         email: Option<&str>,
         password_hash: Option<&str>,
         is_superadmin: Option<bool>,
-    ) -> Result<User> {
-        sqlx::query_as(
+        deactivated: Option<bool>,
+    ) -> Result<LockoutGuard<User>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if is_superadmin == Some(false) || deactivated == Some(true) {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
             "update users set
                  email = coalesce($2, email),
                  password_hash = coalesce($3, password_hash),
-                 is_superadmin = coalesce($4, is_superadmin)
+                 is_superadmin = coalesce($4, is_superadmin),
+                 deactivated_at = case
+                     when $5::boolean is null then deactivated_at
+                     when $5 then coalesce(deactivated_at, now())
+                     else null end
              where id = $1
              returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
                     display_name, bio",
@@ -3355,33 +3375,27 @@ impl UserRepo<'_> {
         .bind(email)
         .bind(password_hash)
         .bind(is_superadmin)
-        .fetch_optional(self.0)
+        .bind(deactivated)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(user))
     }
 
     /// flip the deactivation flag. `true` stamps `deactivated_at = now()` (login
     /// blocked); `false` clears it back to null (re-enabled). the caller is
-    /// responsible for deleting live sessions when deactivating.
-    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<User> {
-        sqlx::query_as(
-            "update users set deactivated_at = case when $2 then now() else null end
-             where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio",
-        )
-        .bind(id)
-        .bind(deactivated)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    /// responsible for deleting live sessions when deactivating. refused when it
+    /// would deactivate the last active superadmin (#2344).
+    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<LockoutGuard<User>> {
+        self.update_account(id, None, None, None, Some(deactivated))
+            .await
     }
 
     /// set the self-service profile. each `Some(x)` replaces the column with `x`
     /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
-    /// from [`Self::update`]: that one names `is_superadmin` in its `set` list
+    /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
     /// and so fires the `config_version` trigger, which a name edit must not.
     /// callers validate and normalise; the table's check constraints are the
     /// backstop
@@ -3410,17 +3424,60 @@ impl UserRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
+    /// delete the account, refused when it is the last active superadmin
+    /// (#2344)
+    pub async fn delete(&self, id: Uuid) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        lock_superadmins(&mut tx).await?;
+        if last_active_superadmin(&mut tx, id).await? {
+            return Ok(LockoutGuard::WouldLockOut);
+        }
         let res = sqlx::query("delete from users where id = $1")
             .bind(id)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("user {id}")));
         }
-        Ok(())
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
     }
+}
+
+/// Serialise every write that can shrink the set of active superadmins.
+///
+/// A row lock on the target is not enough: two concurrent demotions of two
+/// different superadmins each lock only their own row, each sees the other
+/// still active, and both commit. One advisory lock for the whole set, held to
+/// the end of the transaction, makes the second writer wait and then count the
+/// first one's commit. Writes that only grow the set never take it.
+async fn lock_superadmins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('superadmins', 0))")
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Whether `id` is an active superadmin and no other account is. Call it under
+/// [`lock_superadmins`]; an unknown id answers `false` and the write reports
+/// the not-found itself.
+async fn last_active_superadmin(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar(
+        "select exists (
+             select 1 from users where id = $1 and is_superadmin and deactivated_at is null
+         ) and not exists (
+             select 1 from users where id <> $1 and is_superadmin and deactivated_at is null
+         )",
+    )
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
 }
 
 /// per-user preference documents (#1824). one row per user, created on first
