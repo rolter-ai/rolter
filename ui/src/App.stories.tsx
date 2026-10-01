@@ -101,7 +101,9 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     await expect(await within(figures).findByText("132")).toBeVisible();
     await expect(figures).toHaveTextContent(/215\s*ms/);
     await expect(
-      await canvas.findByRole("img", { name: en.pages.dashboard.spendChartAria }),
+      await canvas.findByRole("img", {
+        name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),
+      }),
     ).toBeVisible();
     await expect(
       await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),
