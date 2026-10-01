@@ -137,10 +137,10 @@ shows the gateway URL and a first request written for that key: a `curl` call to
 reach, or the built-in `fake-llm` model when the key may reach every route. The
 request reads the key from the `ROLTER_API_KEY` environment variable instead of
 carrying it, so export the key as that variable and the request runs as shown.
-The address is the public base URL a superadmin saved under **Client Settings**,
-and the dashboard's own `/gw` proxy when none is saved. The proxy requires a
-dashboard session, so a client outside the dashboard cannot call it: save a base
-URL so the snippet points at the gateway itself.
+The address is the public base URL a superadmin saved under **Client Settings**.
+When none is saved, or your role cannot read it, the dialog asks for one instead
+of showing a request: the dashboard's own `/gw` proxy requires a dashboard
+session, so a client outside the dashboard cannot call it.
 
 Closing the dialog, by **Done**, the close button, Escape or a click outside it,
 asks "Close without copying?" while the key has not been copied, since the key

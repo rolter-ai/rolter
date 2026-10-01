@@ -583,17 +583,14 @@ export const MintsAKey: Story = {
     // the user never gets the secret they just created
     await waitFor(() => expect(within(dialog).getByText(MINTED.key)).toBeInTheDocument());
 
-    // the step after it (#2217). this key may reach every route, so the
-    // request names the gateway's built-in model; the address is the
-    // dashboard's own proxy, and the key is referenced, never written out
-    const origin = window.location.origin;
-    await expect(
-      await within(dialog).findByRole("region", { name: /Gateway URL/ }),
-    ).toHaveTextContent(`${origin}/gw/v1`);
-    const request = within(dialog).getByRole("region", { name: /First request/ });
-    await waitFor(() => expect(request).toHaveTextContent(`curl ${origin}/gw/v1/chat/completions`));
-    await expect(request).toHaveTextContent(`"model":"fake-llm"`);
-    await expect(request).not.toHaveTextContent(MINTED.key);
+    // the step after it (#2217). a member cannot read the saved base URL and
+    // the /gw proxy is no address for an external client (#2486), so it asks
+    // for a base URL rather than printing a request, and never the key
+    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
+      "Save your gateway base URL under Client Settings",
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
+    await expect(dialog.textContent ?? "").not.toContain("curl ");
 
     // nobody copied the key, so closing asks, and only the confirm closes it
     await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));

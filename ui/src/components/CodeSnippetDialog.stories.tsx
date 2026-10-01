@@ -21,7 +21,7 @@ const withSavedBaseUrl = () =>
     String(input).includes("/api/v1/client-settings") ? json(SAVED) : json([]),
   );
 
-/** a stub that answers nothing in particular; no default story reads client settings */
+/** a stub that answers nothing in particular: no client settings, so no base URL */
 const noSettings = routes([]);
 
 const meta = {
@@ -29,11 +29,10 @@ const meta = {
   component: CopyAsCodeButton,
   parameters: { layout: "centered" },
   args: { request: { model: "llama-3.1-8b", prompt: "hello there" } },
-  // no role, so no capability provider and no client-settings read: the
-  // snippet falls back to the dashboard's /gw proxy, as it does for a caller
-  // whose gate has not answered yet
+  // a superadmin with a saved public base URL, the one caller a snippet can be
+  // addressed for (#2486). the stories without an address override the render
   render: (args) => (
-    <Harness fetchStub={noSettings}>
+    <Harness fetchStub={withSavedBaseUrl().stub} role="superadmin">
       <CopyAsCodeButton {...args} />
     </Harness>
   ),
@@ -64,7 +63,9 @@ export const Curl: Story = {
     const dialog = await open();
     // curl is the default because it needs no project to try. the snippet is
     // split across token spans now, so it is the region's text that carries it
-    await expect(dialog).toHaveTextContent(/curl .*\/gw\/v1\/chat\/completions/);
+    await expect(dialog).toHaveTextContent(
+      /curl https:\/\/gateway\.example\.com\/v1\/chat\/completions/,
+    );
     await expect(dialog).toHaveTextContent(/llama-3\.1-8b/);
   },
 };
@@ -182,11 +183,12 @@ export const UsesTheSavedBaseUrl: Story = {
 const asAdmin = withSavedBaseUrl();
 
 /**
- * Client settings are superadmin-only, so an org admin never asks for them —
- * the 403 would say nothing the gate did not — and gets the `/gw` proxy with
- * the comment saying so, even on a deployment that saved a public base URL.
+ * Client settings are superadmin-only, so an org admin never asks for them — the
+ * 403 would say nothing the gate did not — and is asked to have a base URL
+ * saved rather than handed the `/gw` proxy, which needs a dashboard session an
+ * external client lacks (#2486).
  */
-export const AnAdminKeepsTheProxy: Story = {
+export const AnAdminIsAskedForABaseUrl: Story = {
   render: (args) => (
     <Harness fetchStub={asAdmin.stub} role="admin">
       <CopyAsCodeButton {...args} />
@@ -195,9 +197,26 @@ export const AnAdminKeepsTheProxy: Story = {
   play: async () => {
     await expectGateAnswered();
     const dialog = await open();
-    await waitFor(() => expect(dialog).toHaveTextContent(/curl .*\/gw\/v1\/chat\/completions/));
-    await expect(dialog).toHaveTextContent(/in production/);
+    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
+      "Save your gateway base URL under Client Settings",
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
+    await expect(within(dialog).queryByRole("tab")).toBeNull();
     asAdmin.expectNotSent("GET", "/api/v1/client-settings");
+  },
+};
+
+/** With no public base URL saved, not even a superadmin gets a `/gw` snippet. */
+export const NoBaseUrlSavedAsksForOne: Story = {
+  render: (args) => (
+    <Harness fetchStub={noSettings} role="superadmin">
+      <CopyAsCodeButton {...args} />
+    </Harness>
+  ),
+  play: async () => {
+    const dialog = await open();
+    await expect(await within(dialog).findByRole("note")).toBeVisible();
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 

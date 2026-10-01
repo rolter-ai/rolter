@@ -349,18 +349,13 @@ export const CreatesAKey: Story = {
     // that dialog means the caller never gets their secret
     await waitFor(() => expect(within(dialog).getByText(MINTED_KEY)).toBeInTheDocument());
 
-    // and the step after it: where to send the key, and a request that does.
-    // the address is the dashboard's own /gw proxy when no public base URL is
-    // saved (#2218), the model is the first the key may reach, and the key
-    // itself stays out of the snippet
-    const origin = window.location.origin;
-    const address = await within(dialog).findByRole("region", { name: /Gateway URL/ });
-    await expect(address).toHaveTextContent(`${origin}/gw/v1`);
-    const request = within(dialog).getByRole("region", { name: /First request/ });
-    await waitFor(() => expect(request).toHaveTextContent(`curl ${origin}/gw/v1/chat/completions`));
-    await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
-    await expect(request).toHaveTextContent("$ROLTER_API_KEY");
-    await expect(request).not.toHaveTextContent(MINTED_KEY);
+    // and the step after it. with no public base URL known there is no
+    // address to hand out: the /gw proxy needs a dashboard session an external
+    // client lacks, so the step asks for a base URL instead (#2486)
+    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
+      "Save your gateway base URL under Client Settings",
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 
@@ -394,6 +389,11 @@ export const TheNextStepUsesTheSavedGatewayUrl: Story = {
       "curl https://llm.example.com/v1/chat/completions",
     );
     await expect(dialog.textContent ?? "").not.toContain("/gw/");
+    // the key is referenced, never written out, and names the first model it may reach
+    const request = within(dialog).getByRole("region", { name: /First request/ });
+    await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
+    await expect(request).toHaveTextContent("$ROLTER_API_KEY");
+    await expect(request).not.toHaveTextContent(MINTED_KEY);
   },
 };
 
@@ -467,7 +467,17 @@ export const TheRevealFitsAPhoneInRussian: Story = {
   globals: { ...atMobile.globals, locale: "ru" },
   beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
   render: () => (
-    <Harness fetchStub={minting()}>
+    // a saved base URL, so the step shows the snippet whose width is under test
+    <Harness
+      role="superadmin"
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
+        if (String(input).includes("/client-settings")) {
+          return json({ public_base_url: "https://llm.example.com" });
+        }
+        return lookups(String(input)) ?? json(KEYS);
+      })}
+    >
       <Keys />
     </Harness>
   ),
