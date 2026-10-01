@@ -256,6 +256,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 - **Time window** is one of the [reporting windows](#time-windows). The address carries it as `window=7d`.
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
+- **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
 - **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
 

@@ -62,6 +62,7 @@ import {
   type PlaygroundKeyState,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
+import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -1062,6 +1063,11 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
+  // the account's saved Playground model (#2448) is what the column opens on,
+  // once the catalog confirms the gateway serves it; a stale name that no
+  // longer routes would only make the first message fail
+  const saved = useOptionalPreferences()?.preferences?.default_playground_model ?? null;
+  const preferredModel = saved && models.some((option) => option.id === saved) ? saved : preferred;
   // a column's thread lives in the column, so a column needs an identity that
   // outlasts its position: removing the first of two must not hand its thread
   // to the one that moved up
@@ -1076,13 +1082,13 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   const touched = React.useRef(false);
   const auto = React.useRef(FAKE);
   React.useEffect(() => {
-    if (touched.current || !preferred) return;
+    if (touched.current || !preferredModel) return;
     const previous = auto.current;
-    auto.current = preferred;
+    auto.current = preferredModel;
     setCols((c) =>
-      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferred }] : c,
+      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferredModel }] : c,
     );
-  }, [preferred]);
+  }, [preferredModel]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;

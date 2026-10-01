@@ -256,6 +256,7 @@
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
       "projectSettings": "project settings",
+      "preferences": "your preferences",
       "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
@@ -491,7 +492,8 @@
     "security": "Security",
     "api-keys": "My Virtual Keys",
     "performance": "Performance Tuning",
-    "feature-flags": "Feature Flags"
+    "feature-flags": "Feature Flags",
+    "preferences": "Preferences"
   },
   "pages": {
     "gettingStarted": {
@@ -2559,6 +2561,7 @@
       "statusOkHint": "OK is any request answered with a status below 400.",
       "statusErrors": "Errors",
       "allModels": "All models",
+      "allKeys": "All keys",
       "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
@@ -2635,6 +2638,7 @@
         "title": "MCP tool-call logs need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
       },
+      "myCalls": "My calls",
       "emptyTitle": "No MCP tool calls yet",
       "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
@@ -3278,6 +3282,36 @@
           "desc": "Run the configured pre- and post-call guardrail rules on every request."
         }
       }
+    },
+    "preferences": {
+      "language": {
+        "title": "Language",
+        "hint": "The language of the dashboard. “Browser default” follows your browser’s language.",
+        "label": "Dashboard language",
+        "browser": "Browser default"
+      },
+      "scope": {
+        "title": "Default scope",
+        "hint": "The org, team and project the dashboard opens on. A scope you pick in the switcher during a session wins until you sign out.",
+        "none": "None",
+        "lost": "Your saved default is no longer available to you, so the dashboard opens on the first scope you can reach.",
+        "moved": "Part of your saved default is no longer available to you, so the dashboard opens on the closest scope you can reach."
+      },
+      "playground": {
+        "title": "Playground model",
+        "hint": "The model the Playground’s chat opens on, when the gateway serves it.",
+        "label": "Default model",
+        "placeholder": "for example gpt-4o"
+      },
+      "zone": {
+        "title": "Time zone",
+        "description": "The zone charts, time axes and timestamps are drawn in.",
+        "label": "Time zone",
+        "hint": "Left empty, times follow your browser’s zone ({{zone}}).",
+        "browser": "Browser default ({{zone}})",
+        "unknown": "This browser does not know the zone “{{zone}}”, so times follow its own zone instead."
+      },
+      "discard": "Discard changes"
     }
   },
   "playground": {
@@ -3674,6 +3708,10 @@
     "feature-flags": {
       "title": "Feature Flags",
       "subtitle": "Toggle experimental gateway features."
+    },
+    "preferences": {
+      "title": "Preferences",
+      "subtitle": "Your language, default scope, Playground model and time zone, kept with your account."
     }
   },
   "shell": {

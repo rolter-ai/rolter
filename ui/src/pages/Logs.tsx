@@ -220,6 +220,7 @@ function useLogFilters() {
       }),
     setStatus: (next: StatusFilter) => update({ status: next === "all" ? "" : next }),
     setModel: (next: string) => update({ model: next }),
+    setKey: (next: string) => update({ key: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
     setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
@@ -315,6 +316,18 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     queryFn: () => fetchCustomers(scope.orgId as string),
     enabled: !!scope.orgId,
     retry: false,
+  });
+
+  // the keys the caller can read in the scoped project, which is the list the
+  // key picker offers and the drawer already asks for (#1983). a caller the
+  // gate refuses gets no picker rather than a list that always fails
+  const can = useCan();
+  const keys = useQuery({
+    queryKey: ["virtual-keys", scope.projectId],
+    queryFn: () => fetchVirtualKeys(scope.projectId as string),
+    enabled: can("virtual_key", "read") !== false && !!scope.projectId,
+    retry: false,
+    staleTime: 60_000,
   });
 
   React.useEffect(() => setCursors([]), [filters.key]);
@@ -472,6 +485,20 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     if (model && !names.includes(model)) names.push(model);
     return names.map((name) => ({ value: name, label: name }));
   }, [models.data, model]);
+
+  // the list the key filter picks from, by name. a key the address names but
+  // this project's list does not hold (a saved view from another project, a
+  // pasted link) still filters the log, so it is offered by its id too
+  const keyOptions = React.useMemo(() => {
+    const options = (keys.data ?? []).map((k) => ({
+      value: k.id,
+      label: k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`,
+    }));
+    if (keyId && !options.some((o) => o.value === keyId)) {
+      options.push({ value: keyId, label: keyId });
+    }
+    return options;
+  }, [keys.data, keyId]);
 
   // a deployment with no analytics store is a shape rolter supports, not a
   // failure, so it gets a calm panel naming the setting rather than the red
@@ -698,6 +725,19 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 clearable
               />
             </FilterSection>
+            {/* the control plane filters on one exact key id, shown by its name */}
+            {keyOptions.length > 0 && (
+              <FilterSection title={t("pages.logs.virtualKey")} defaultOpen count={keyId ? 1 : 0}>
+                <Combobox
+                  aria-label={t("pages.logs.virtualKey")}
+                  options={keyOptions}
+                  value={keyId}
+                  onChange={filters.setKey}
+                  placeholder={t("pages.logs.allKeys")}
+                  clearable
+                />
+              </FilterSection>
+            )}
             {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
             <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>

@@ -347,6 +347,7 @@ curl -X PUT "$ROLTER_URL/api/v1/me/preferences" \
 - `PUT` replaces the whole document: a key you leave out is cleared. Send every value you want to keep.
 - Preferences never widen access. A default scope you cannot read is stored as written, because access can change later, but `GET` also returns `effective_default_scope` (`org_id`, `team_id`, `project_id`): your stored default if you can still read it, otherwise the first scope you can read, otherwise `null`. The dashboard opens on that and never on the raw `default_*_id` fields.
 - Each change is written to the audit log as `user.preferences.update`, listing the key names that changed but not their values.
+- The dashboard edits all of this on **Settings → Preferences**, and the language picker in the sidebar saves to the same document. The saved language, Playground model and time zone apply on every browser you sign in on; a scope you pick in the scope switcher wins for the session, and your saved default is used the next time you sign in. A time zone the browser does not recognise is ignored and times follow the browser's own zone.
 
 ## Saved views
 

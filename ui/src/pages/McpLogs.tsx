@@ -32,6 +32,7 @@ import {
   type McpLogRow,
 } from "@/lib/api";
 import type { CodeLanguage } from "@/lib/code";
+import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
@@ -70,6 +71,10 @@ function McpLogsScreen() {
   const ms = (v: number) => t("analytics.ms", { value: fmt.number(Math.round(v)) });
   const [status, setStatus] = React.useState("");
   const [transport, setTransport] = React.useState("");
+  // the signed-in account's id, off the session. an open-mode session has no
+  // account, so it has no calls of its own to narrow to and no shortcut
+  const myId = useOptionalAuth()?.user?.id ?? "";
+  const [mine, setMine] = React.useState(false);
   const [cursors, setCursors] = React.useState<string[]>([]);
   const cursor = cursors[cursors.length - 1];
   const [selected, setSelected] = React.useState<string | null>(null);
@@ -88,12 +93,13 @@ function McpLogsScreen() {
 
   useErrorState(!!summary.error, "mcp-logs");
   const logs = useQuery({
-    queryKey: ["mcp-logs", status, transport, cursor],
+    queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
     queryFn: () =>
       fetchMcpLogs({
         since: new Date(Date.now() - 86_400_000).toISOString(),
         status: status || undefined,
         transport: transport || undefined,
+        user: mine && myId ? myId : undefined,
         limit: 50,
         cursor,
       }),
@@ -124,10 +130,11 @@ function McpLogsScreen() {
   // a filtered page that came back empty is a different answer from a
   // deployment that has never seen an MCP call, and only one of them is fixed
   // by clearing something
-  const filtersActive = !!status || !!transport || cursors.length > 0;
+  const filtersActive = !!status || !!transport || mine || cursors.length > 0;
   const clearFilters = () => {
     setStatus("");
     setTransport("");
+    setMine(false);
     resetPaging();
   };
 
@@ -182,6 +189,21 @@ function McpLogsScreen() {
             ...MCP_TRANSPORTS.map((kind) => ({ value: kind, label: kind })),
           ]}
         />
+        {/* one click to the caller's own calls, through the `user` filter the
+            API already takes. every role that reaches the screen sees it */}
+        {myId && (
+          <Button
+            size="sm"
+            variant={mine ? "default" : "outline"}
+            aria-pressed={mine}
+            onClick={() => {
+              setMine((v) => !v);
+              resetPaging();
+            }}
+          >
+            {t("pages.mcpLogs.myCalls")}
+          </Button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <Button
             size="sm"
