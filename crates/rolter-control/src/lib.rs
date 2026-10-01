@@ -2415,23 +2415,36 @@ mod startup_log_tests {
         }
     }
 
+    /// A throwaway secret built at run time, so no credential-shaped literal
+    /// sits in the source for secret scanners to flag
+    fn throwaway_secret(tag: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        format!("{tag}{}x{nanos}", std::process::id())
+    }
+
     #[test]
     fn startup_lines_keep_the_redis_and_clickhouse_passwords_out() {
+        let redis_secret = throwaway_secret("r");
+        let user_secret = throwaway_secret("u");
+        let query_secret = throwaway_secret("q");
         let captured = Captured::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         tracing::subscriber::with_default(subscriber, || {
             super::log_endpoint(
                 "publishing config bumps to redis",
-                "redis://:r3dispw@cache:6379/0",
+                &format!("redis://:{redis_secret}@cache:6379/0"),
             );
             super::log_endpoint(
                 "usage/cost analytics enabled",
-                "http://default:chpw@ch:8123/?password=chpw2",
+                &format!("http://default:{user_secret}@ch:8123/?password={query_secret}"),
             );
         });
         let seen = captured.0.lock().join("\n");
-        for secret in ["r3dispw", "chpw"] {
-            assert!(!seen.contains(secret), "{secret} leaked:\n{seen}");
+        for secret in [&redis_secret, &user_secret, &query_secret] {
+            assert!(!seen.contains(secret.as_str()), "{secret} leaked:\n{seen}");
         }
         assert!(seen.contains("cache:6379"), "{seen}");
         assert!(seen.contains("ch:8123"), "{seen}");
