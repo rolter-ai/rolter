@@ -1158,7 +1158,9 @@ export const EditsTheName: Story = {
     await expect(save).toBeEnabled();
     await userEvent.click(save);
 
-    await expect(await within(document.body).findByText("Profile saved")).toBeVisible();
+    // the toast fades in, so wait for it to finish rather than reading opacity
+    // on the frame it mounts (#2287)
+    await waitFor(() => expect(within(document.body).getByText("Profile saved")).toBeVisible());
     await expect(await nameEdit.expectSentBody("PATCH", "/me/profile")).toEqual({
       display_name: "Ada King",
     });
