@@ -57,8 +57,9 @@ Two deployment secrets matter here:
   (fine on localhost; a startup warning reminds you).
 - **`ROLTER_KEK`** — key-encryption key. Provider API keys submitted over the
   API are sealed with AES-256-GCM before they reach Postgres; the KEK never
-  leaves the process environment. Set the same value on the control plane and
-  gateway (with `easy-up` it is one process, so one export). Without a KEK,
+  leaves the process environment. Set it on the control plane only: gateways
+  receive provider keys already unsealed over `/internal/snapshot` (with
+  `easy-up` both planes are one process, so one export). Without a KEK,
   requests that include an `api_key` are rejected — there is no plaintext
   fallback.
 

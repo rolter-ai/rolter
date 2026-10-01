@@ -2624,8 +2624,12 @@ fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     require_non_empty(api_key, "api_key")?;
     let Some(kek) = Kek::from_env() else {
         return Err(ApiError::Core(Error::Config(format!(
+            // only the control plane holds the KEK: it unseals provider keys
+            // when it builds the snapshot, and gateways receive them over the
+            // token-guarded /internal/snapshot, so naming the gateway here
+            // would send operators to copy the KEK where it is not needed
             "storing provider keys requires the {KEK_ENV} environment variable on the \
-             control plane (and the gateway, to decrypt snapshots)"
+             control plane to seal them at rest"
         ))));
     };
     Ok(kek.encrypt(api_key)?)
