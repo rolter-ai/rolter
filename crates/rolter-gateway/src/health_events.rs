@@ -96,13 +96,32 @@ impl HealthEventSink {
         queue_capacity: usize,
         metrics: Arc<Metrics>,
     ) -> Self {
+        Self::spawn_with_client(
+            clickhouse_url,
+            batch_max,
+            flush,
+            queue_capacity,
+            metrics,
+            crate::clickhouse_client::client(),
+        )
+    }
+
+    /// [`Self::spawn`] with an explicit HTTP client, so tests can bound it tightly.
+    pub(crate) fn spawn_with_client(
+        clickhouse_url: String,
+        batch_max: usize,
+        flush: Duration,
+        queue_capacity: usize,
+        metrics: Arc<Metrics>,
+        client: reqwest::Client,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
         let writer = BatchWriter {
             url: format!(
                 "{}/?query=INSERT%20INTO%20provider_health_events%20FORMAT%20JSONEachRow{BEST_EFFORT_DATES}",
                 clickhouse_url.trim_end_matches('/')
             ),
-            client: reqwest::Client::new(),
+            client,
             batch_max: batch_max.max(1),
             flush,
             metrics: metrics.clone(),
@@ -219,7 +238,7 @@ impl BatchWriter {
                     .fetch_add(count, Relaxed);
             }
             Err(err) => {
-                tracing::warn!(%err, "failed to write health event batch to clickhouse");
+                tracing::warn!(timed_out = err.is_timeout(), err = %err.without_url(), "failed to write health event batch to clickhouse");
                 self.metrics
                     .health_events_dropped_total
                     .fetch_add(count, Relaxed);
