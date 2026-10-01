@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { providersUsableFrom, usableFrom } from "./provider-scope";
+import { providersUsableFrom, rowGateScope, usableFrom } from "./provider-scope";
 
 interface Row {
   id: string;
@@ -31,5 +31,25 @@ describe("usableFrom", () => {
     expect(usableFrom(org, null)).toBe(true);
     // a provider the list does not hold is not judged
     expect(usableFrom(undefined, "a")).toBe(true);
+  });
+});
+
+describe("rowGateScope", () => {
+  const byTeam = [{ team: { id: "team-1" }, projects: [{ id: "project-1" }] }];
+
+  it("an org-wide row is gated at the org", () => {
+    expect(rowGateScope({ project_id: null }, byTeam)).toEqual({ projectId: null });
+    expect(rowGateScope({}, byTeam)).toEqual({ projectId: null });
+  });
+
+  it("a project row is gated at its own team and project", () => {
+    expect(rowGateScope({ project_id: "project-1" }, byTeam)).toEqual({
+      projectId: "project-1",
+      teamId: "team-1",
+    });
+  });
+
+  it("a project the caller cannot list keeps the page's answer", () => {
+    expect(rowGateScope({ project_id: "gone" }, byTeam)).toBeUndefined();
   });
 });

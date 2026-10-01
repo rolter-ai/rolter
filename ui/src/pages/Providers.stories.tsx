@@ -4,11 +4,14 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Providers from "./Providers";
 import {
   Harness,
+  adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectEmptyState,
+  expectAllowed,
   expectNoUxEvent,
+  expectRefused,
   expectSheetClosed,
   expectUxEvent,
   expectLoadError,
@@ -941,5 +944,40 @@ export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
     const row = canvas.getAllByText("openai-prod")[0].closest('[role="row"]') as HTMLElement;
     await expect(within(row).getByText("Project: Gateway")).toBeVisible();
     await expectListTable(canvasElement, "Model Providers");
+  },
+};
+
+/**
+ * A project admin looking at a mixed list (#2522).
+ *
+ * `provider` is a project capability, so asked at their own project the
+ * effective answer grants the writes, and a page-level gate would offer Edit
+ * and Delete on the org-wide row too — which `crud.rs` refuses, because it
+ * checks such a row at the org. Each row is gated at its own scope instead: the
+ * project's row is theirs, the org-wide one names the role it takes.
+ */
+export const ProjectAdminOnAMixedList: Story = {
+  render: () => (
+    <Harness
+      role={adminOfProject("project-1")}
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit provider openai-prod");
+    await expectAllowed(canvasElement, "Delete provider openai-prod");
+    await expectRefused(canvasElement, "Edit provider anthropic-eu");
+    await expectRefused(canvasElement, "Delete provider anthropic-eu");
   },
 };
