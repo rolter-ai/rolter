@@ -917,6 +917,15 @@ jobs:
             --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
             --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
             | uv run --script scripts/check-rendered-manifests.py
+      # the launcher in each Deployment's preflight initContainer runs its own
+      # release check, so one setting must reach both (#2382)
+      - name: helm chart (update check reaches every launcher container)
+        id: helm-update-check
+        if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
+        run: |
+          helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true
+          helm template ci charts/rolter --set control.updateCheck=false \
+            | uv run --script scripts/check-chart-update-check.py false
 
       # the verdict for the whole job, and the one place that knows which step
       # must run on which event. outcomes arrive through env, never inline in
@@ -951,6 +960,7 @@ jobs:
           OUTCOME_HELM_RENDER_DEFAULTS: ${{ steps.helm-render-defaults.outcome }}
           OUTCOME_HELM_RENDER_NO_PREFLIGHT: ${{ steps.helm-render-no-preflight.outcome }}
           OUTCOME_HELM_RENDER_ALL_PREFLIGHT: ${{ steps.helm-render-all-preflight.outcome }}
+          OUTCOME_HELM_UPDATE_CHECK: ${{ steps.helm-update-check.outcome }}
         run: |
           set -euo pipefail
           summary="${GITHUB_STEP_SUMMARY}"
@@ -1034,6 +1044,8 @@ jobs:
             "helm template ci charts/rolter --set preflight.enabled=false | uv run --script scripts/check-rendered-manifests.py"
           row "helm chart" "helm chart (render with every preflight option on)" "${OUTCOME_HELM_RENDER_ALL_PREFLIGHT}" yes \
             "the helm template command of this step in quality.yml, piped to uv run --script scripts/check-rendered-manifests.py"
+          row "helm chart" "helm chart (update check reaches every launcher container)" "${OUTCOME_HELM_UPDATE_CHECK}" yes \
+            "helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true (and --set control.updateCheck=false with false)"
 
           echo >> "${summary}"
           if [ "${failed}" -ne 0 ]; then

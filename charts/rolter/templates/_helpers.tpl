@@ -147,6 +147,12 @@ The gateway's environment, for the same reason.
 - name: CLICKHOUSE_URL
   value: {{ .Values.env.clickhouseUrl | quote }}
 {{- end }}
+{{- /* the preflight initContainer runs the `rolter` launcher, which spawns
+       its own release check beside every subcommand, so the one setting has
+       to reach this Deployment too or an air-gapped install still dials
+       api.github.com on every gateway pod start (#2382) */}}
+- name: ROLTER_UPDATE_CHECK
+  value: {{ .Values.control.updateCheck | quote }}
 {{- with .Values.secretEnv }}
 {{ toYaml . }}
 {{- end }}
