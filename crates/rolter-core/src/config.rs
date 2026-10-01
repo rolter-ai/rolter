@@ -6358,7 +6358,7 @@ mod tests {
     fn egress_policy_denies_link_local_by_default() {
         let policy = EgressPolicy::default();
         let err = policy
-            .check_url("http://169.254.169.254/latest/meta-data/", "api_base")
+            .check_url("https://169.254.169.254/latest/meta-data/", "api_base")
             .unwrap_err();
         assert!(err.contains("link-local"), "{err}");
         // ipv6 metadata address, and with a port
@@ -6413,7 +6413,7 @@ mod tests {
             ..Default::default()
         };
         assert!(policy
-            .check_url("http://169.254.169.254/v1", "api_base")
+            .check_url("https://169.254.169.254/v1", "api_base")
             .is_ok());
     }
 
@@ -6431,13 +6431,13 @@ mod tests {
             "http://169.254.43518/",
             "http://0251.0376.0251.0376/",
             // a trailing dot, and percent-encoded digits
-            "http://169.254.169.254./",
+            "https://169.254.169.254./",
             "http://%31%36%39.254.169.254/",
             // ipv4-mapped ipv6, dialled as the ipv4 address it carries
             "http://[::ffff:169.254.169.254]/",
             "http://[::ffff:a9fe:a9fe]:80/",
             // a backslash ends the authority, so the host is before the '@'
-            "http://169.254.169.254\\@example.com/",
+            "https://169.254.169.254\\@example.com/",
             "HTTP://169.254.169.254/",
             // an egress proxy url: a socks scheme keeps its host opaque
             "socks5://2852039166:1080",
@@ -6541,7 +6541,7 @@ mod tests {
         assert_eq!(url_host("http://example.com:8080/v1"), Some("example.com"));
         assert_eq!(url_host("http://user:pw@10.0.0.1:80/v1"), Some("10.0.0.1"));
         assert_eq!(url_host("http://[::1]:4000/v1"), Some("::1"));
-        assert_eq!(url_host("http://169.254.169.254"), Some("169.254.169.254"));
+        assert_eq!(url_host("https://169.254.169.254"), Some("169.254.169.254"));
     }
 
     #[test]
@@ -6551,7 +6551,7 @@ mod tests {
             [[providers]]
             name = "evil"
             kind = "openai"
-            api_base = "http://169.254.169.254/latest"
+            api_base = "https://169.254.169.254/latest"
 
             [[routes]]
             model = "m"
@@ -6688,7 +6688,7 @@ mod tests {
             .any(|problem| problem.contains("required scopes")));
     }
 
-    const METADATA: &str = "http://169.254.169.254/latest/meta-data/";
+    const METADATA: &str = "https://169.254.169.254/latest/meta-data/";
 
     fn egress_config() -> GatewayConfig {
         GatewayConfig::from_toml_str(

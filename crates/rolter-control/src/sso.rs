@@ -1869,7 +1869,7 @@ mod tests {
     #[tokio::test]
     async fn discovery_refuses_a_metadata_issuer_literal() {
         let egress = Arc::new(EgressPolicy::default());
-        let refused = discover(&egress, "http://169.254.169.254/latest").await;
+        let refused = discover(&egress, "https://169.254.169.254/latest").await;
         assert!(refused.is_err(), "a link-local issuer was fetched");
     }
 
@@ -1879,8 +1879,8 @@ mod tests {
         let discovery = Discovery {
             issuer: "https://idp.example.com".into(),
             authorization_endpoint: "https://idp.example.com/authorize".into(),
-            token_endpoint: "http://169.254.169.254/token".into(),
-            jwks_uri: "http://169.254.169.254/jwks".into(),
+            token_endpoint: "https://169.254.169.254/token".into(),
+            jwks_uri: "https://169.254.169.254/jwks".into(),
         };
         let token = exchange_code(
             &egress,

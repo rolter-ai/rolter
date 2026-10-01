@@ -17124,7 +17124,7 @@ async fn operator_written_urls_the_egress_policy_denies_are_refused_at_save() {
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
-    let denied = "http://169.254.169.254/latest/meta-data/";
+    let denied = "https://169.254.169.254/latest/meta-data/";
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
