@@ -2559,6 +2559,7 @@
       "statusOkHint": "OK is any request answered with a status below 400.",
       "statusErrors": "Errors",
       "allModels": "All models",
+      "allKeys": "All keys",
       "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
