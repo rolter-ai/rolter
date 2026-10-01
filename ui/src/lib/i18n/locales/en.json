@@ -2636,6 +2636,7 @@
         "title": "MCP tool-call logs need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
       },
+      "myCalls": "My calls",
       "emptyTitle": "No MCP tool calls yet",
       "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
