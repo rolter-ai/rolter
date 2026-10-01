@@ -123,7 +123,7 @@ async fn create_invitation(
         Principal::User(user) => Some(user.id),
         Principal::Superadmin => None,
     };
-    let invitation = InvitationRepo(pool_ref)
+    let (invitation, replaced) = InvitationRepo(pool_ref)
         .create(
             org_id,
             &email,
@@ -143,7 +143,9 @@ async fn create_invitation(
         "invitation.create",
         "invitation",
         invitation.id,
-        serde_json::json!({"email": email, "role": body.role}),
+        // `replaced` names the pending invitation this one superseded, so the
+        // revocation is on the record without a second `invitation.revoke` row
+        serde_json::json!({"email": email, "role": body.role, "replaced": replaced}),
     )
     .await;
 
