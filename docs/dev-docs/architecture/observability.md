@@ -588,9 +588,11 @@ connectors, not on all rows (#2364): none at all and all switched off are two
 different empty states, and neither fetches a document. A card's edit sheet (#2101)
 sends one `PUT` to the connector's id and carries the fields it has no control for
 (`enabled`, `auth_secret_ref`) back as found, since the update replaces the whole
-row. The update handler keeps a stored `managed_auth_secret` when the body omits it,
-refuses an empty one, so the secret cannot be cleared, and does not drop it when the
-endpoint moves to another origin the way an alert channel does. `sampling_rate` becomes a `probabilistic_sampler`
+row. The update handler keeps a stored `managed_auth_secret` when the body omits it
+and refuses an empty one, but, as `update_channel` does for an alert channel, clears
+the ciphertext and nonce together when the endpoint moves to another scheme, host or
+port and the body brings no new secret (#2403); the audit entry carries
+`secret_cleared`, never the endpoint. `sampling_rate` becomes a `probabilistic_sampler`
 processor scoped to that connector's own pipeline, since sampling is now the
 collector's decision, applied independently per destination rather than once
 for the whole deployment. A managed secret (`managed_auth_secret`) is decrypted
