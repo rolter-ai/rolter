@@ -17,7 +17,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::logging::{clickhouse_ts, BEST_EFFORT_DATES};
+use crate::logging::{clickhouse_ts, INSERT_SETTINGS};
 use crate::metrics::Metrics;
 use crate::sink_drain::SinkTasks;
 
@@ -118,7 +118,7 @@ impl HealthEventSink {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
         let writer = BatchWriter {
             url: format!(
-                "{}/?query=INSERT%20INTO%20provider_health_events%20FORMAT%20JSONEachRow{BEST_EFFORT_DATES}",
+                "{}/?query=INSERT%20INTO%20provider_health_events%20FORMAT%20JSONEachRow{INSERT_SETTINGS}",
                 clickhouse_url.trim_end_matches('/')
             ),
             client,

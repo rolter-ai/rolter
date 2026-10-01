@@ -28,11 +28,20 @@ use uuid::Uuid;
 
 use crate::metrics::Metrics;
 
-/// ClickHouse setting appended to every insert URL so a `DateTime64(3)` column
-/// accepts the RFC 3339 literal [`clickhouse_ts`] writes. The default `basic`
-/// parser only reads `YYYY-MM-DD hh:mm:ss`, so without this the insert fails
-/// outright rather than falling back to the column default (#1210)
-pub(crate) const BEST_EFFORT_DATES: &str = "&date_time_input_format=best_effort";
+/// ClickHouse settings appended to every insert URL.
+///
+/// `date_time_input_format=best_effort` lets a `DateTime64(3)` column accept
+/// the RFC 3339 literal [`clickhouse_ts`] writes. The default `basic` parser
+/// only reads `YYYY-MM-DD hh:mm:ss`, so without it the insert fails outright
+/// rather than falling back to the column default (#1210).
+///
+/// `input_format_skip_unknown_fields=1` lets a gateway that writes a column a
+/// newer ClickHouse migration adds (for example `log_id`, #1937) keep logging
+/// against a ClickHouse that has not applied that migration yet: the unknown
+/// field is dropped instead of failing the whole batch, so the order of a
+/// rolling upgrade does not matter.
+pub(crate) const INSERT_SETTINGS: &str =
+    "&date_time_input_format=best_effort&input_format_skip_unknown_fields=1";
 
 /// Serialize a timestamp the way ClickHouse's `best_effort` parser reads it
 /// into a `DateTime64(3)`: RFC 3339, UTC, truncated to milliseconds.
@@ -1079,11 +1088,11 @@ impl LogSink {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
         let writer = BatchWriter {
             url: format!(
-                "{}/?query=INSERT%20INTO%20request_logs%20FORMAT%20JSONEachRow{BEST_EFFORT_DATES}",
+                "{}/?query=INSERT%20INTO%20request_logs%20FORMAT%20JSONEachRow{INSERT_SETTINGS}",
                 clickhouse_url.trim_end_matches('/')
             ),
             payload_url: format!(
-                "{}/?query=INSERT%20INTO%20request_payloads%20FORMAT%20JSONEachRow{BEST_EFFORT_DATES}",
+                "{}/?query=INSERT%20INTO%20request_payloads%20FORMAT%20JSONEachRow{INSERT_SETTINGS}",
                 clickhouse_url.trim_end_matches('/')
             ),
             client,
@@ -2097,6 +2106,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         // clickhouse only reads an rfc 3339 literal into DateTime64(3) when the
         // insert asks for the best_effort parser
         assert!(req.contains("date_time_input_format=best_effort"));
+        assert!(req.contains("input_format_skip_unknown_fields=1"));
 
         let body = req.split("\r\n\r\n").nth(1).expect("request has a body");
         let rows: Vec<serde_json::Value> = body
