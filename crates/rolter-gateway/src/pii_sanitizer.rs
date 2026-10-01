@@ -11,7 +11,6 @@
 //! entity types — never a matched value, never the token.
 
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::OnceLock;
 
 use rolter_core::pii_sanitizer::{
     FailureMode, PiiSanitizerConfig, RestorationTicket, RestoreRequest, RestoreResponse,
@@ -19,14 +18,8 @@ use rolter_core::pii_sanitizer::{
 };
 use serde_json::Value;
 
+use crate::egress_client::EgressClient;
 use crate::metrics::Metrics;
-
-/// Shared client: connection pooling across requests, no per-call setup cost.
-/// Per-call timeouts are applied on the request builder.
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
 
 /// What the gateway should do after consulting the sanitizer.
 #[derive(Debug)]
@@ -52,6 +45,7 @@ pub enum SanitizeOutcome {
 pub async fn sanitize(
     config: &PiiSanitizerConfig,
     metrics: &Metrics,
+    egress: &EgressClient,
     direction: &'static str,
     model: &str,
     route: &str,
@@ -76,7 +70,7 @@ pub async fn sanitize(
         content: &payload,
     };
 
-    match call_sanitize(config, &envelope).await {
+    match call_sanitize(config, egress, &envelope).await {
         Ok(response) => {
             let replaced = response.replaced();
             if replaced > 0 {
@@ -119,9 +113,11 @@ pub async fn sanitize(
 /// failed — in which case the caller keeps the placeholder-bearing content,
 /// which is safe by construction. A restore failure is never fatal: the
 /// response is already deliverable, just less convenient.
+#[allow(clippy::too_many_arguments)]
 pub async fn restore(
     config: &PiiSanitizerConfig,
     metrics: &Metrics,
+    egress: &EgressClient,
     ticket: &RestorationTicket,
     scope: &TokenScope,
     trace_id: &str,
@@ -146,7 +142,7 @@ pub async fn restore(
         content,
     };
 
-    match call_restore(config, &envelope).await {
+    match call_restore(config, egress, &envelope).await {
         Ok(response) => {
             metrics.pii_restorations_total.fetch_add(1, Relaxed);
             let _ = response.restored;
@@ -161,11 +157,20 @@ pub async fn restore(
 
 async fn call_sanitize(
     config: &PiiSanitizerConfig,
+    egress: &EgressClient,
     envelope: &SanitizeRequest<'_>,
 ) -> Result<SanitizeResponse, ()> {
     let attempts = config.max_retries.saturating_add(1);
     for _ in 0..attempts {
-        if let Some(parsed) = post(config, config.url.trim(), envelope, envelope.trace_id).await {
+        if let Some(parsed) = post(
+            egress,
+            config,
+            config.url.trim(),
+            envelope,
+            envelope.trace_id,
+        )
+        .await
+        {
             return Ok(parsed);
         }
     }
@@ -174,11 +179,13 @@ async fn call_sanitize(
 
 async fn call_restore(
     config: &PiiSanitizerConfig,
+    egress: &EgressClient,
     envelope: &RestoreRequest<'_>,
 ) -> Result<RestoreResponse, ()> {
     let attempts = config.max_retries.saturating_add(1);
     for _ in 0..attempts {
         if let Some(parsed) = post(
+            egress,
             config,
             config.restore_url.trim(),
             envelope,
@@ -200,13 +207,16 @@ async fn call_restore(
 /// forwarding content the gateway believes is sanitized and is not — the caller
 /// must get to apply its failure mode instead.
 async fn post<B: serde::Serialize, R: serde::de::DeserializeOwned>(
+    egress: &EgressClient,
     config: &PiiSanitizerConfig,
     url: &str,
     body: &B,
     trace_id: &str,
 ) -> Option<R> {
-    let mut req = client()
-        .post(url)
+    // refused again here, not only at save: the policy may have been tightened
+    // since, and a stored row is not a standing permission to egress
+    let mut req = egress
+        .post(url)?
         .timeout(std::time::Duration::from_millis(config.timeout_ms))
         .header("X-Rolter-Trace-Id", trace_id)
         .json(body);
@@ -310,6 +320,7 @@ mod tests {
         sanitize(
             config,
             metrics,
+            &crate::egress_client::testing::permissive(),
             "request",
             "gpt-4o",
             "gpt-4o",
@@ -414,6 +425,7 @@ mod tests {
         let out = sanitize(
             &enabled(&base, RestorationPolicy::Never),
             &Metrics::default(),
+            &crate::egress_client::testing::permissive(),
             "request",
             "gpt-4o",
             "gpt-4o",
@@ -442,6 +454,7 @@ mod tests {
         let restored = restore(
             &enabled(&base, RestorationPolicy::TrustedDownstream),
             &metrics,
+            &crate::egress_client::testing::permissive(),
             &ticket,
             &scope(),
             "trace",
@@ -471,6 +484,7 @@ mod tests {
         let restored = restore(
             &unreachable(FailureMode::FailOpen),
             &metrics,
+            &crate::egress_client::testing::permissive(),
             &ticket,
             &other,
             "trace",
@@ -492,6 +506,7 @@ mod tests {
         let restored = restore(
             &unreachable(FailureMode::FailOpen),
             &metrics,
+            &crate::egress_client::testing::permissive(),
             &ticket,
             &scope(),
             "trace",
@@ -502,5 +517,36 @@ mod tests {
         assert!(restored.is_none());
         assert_eq!(metrics.pii_restore_errors_total.load(Relaxed), 1);
         assert_eq!(metrics.pii_sanitizer_errors_total.load(Relaxed), 0);
+    }
+
+    /// #2383: neither leg reaches a metadata literal, whatever the failure
+    /// mode, and a hostname that resolves to a denied address is never dialled.
+    #[tokio::test]
+    async fn the_sanitizer_refuses_a_metadata_literal_and_a_denied_name() {
+        let metrics = Metrics::default();
+        let mut config = unreachable(FailureMode::FailClosed);
+        config.url = "http://169.254.169.254/sanitize".to_string();
+        let out = sanitize_with(&config, &metrics, json!({"messages": []})).await;
+        assert!(matches!(out, SanitizeOutcome::Block(_)), "{out:?}");
+
+        let listener = crate::egress_client::testing::Counter::start().await;
+        config.url = listener.url("/sanitize");
+        let denied = EgressClient::new(crate::egress_client::testing::deny_loopback());
+        let out = sanitize(
+            &config,
+            &metrics,
+            &denied,
+            "request",
+            "gpt-4o",
+            "gpt-4o",
+            "trace",
+            WebhookTenant::default(),
+            scope(),
+            true,
+            &json!({"messages": []}),
+        )
+        .await;
+        assert!(matches!(out, SanitizeOutcome::Block(_)), "{out:?}");
+        assert_eq!(listener.accepted(), 0);
     }
 }

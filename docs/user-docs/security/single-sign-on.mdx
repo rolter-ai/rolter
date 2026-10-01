@@ -229,6 +229,7 @@ Scripts and other non-browser clients that call the callback directly (without a
 - **No open redirect.** The redirect URI comes from the deployment's own base URL, never from the request.
 - **One-shot state.** The login state row is consumed by the callback and expires, so a replayed `code`+`state` pair finds nothing to redeem.
 - **One-shot sign-in code.** A browser is handed a code, not the session. The code expires after a minute, works once, and only its digest is stored.
+- **No metadata addresses.** The issuer is checked against the [egress policy](/configuration/egress) when the provider is saved, and the discovery document, token endpoint and JWKS are checked again each time they are fetched. These calls do not follow redirects.
 - **No implicit access.** A user in no mapped group gets the provider's default role, or is refused when there is none.
 
 ## Removing a provider

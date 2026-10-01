@@ -1,0 +1,48 @@
+---
+title: "Egress policy"
+description: "Which destinations Rolter refuses to send to, and every URL the policy covers."
+---
+
+Rolter sends requests to URLs an operator writes. An admin surface that accepts an arbitrary one would turn the gateway into a way to reach whatever its network position can reach, and the prize on a cloud host is instance metadata at `169.254.169.254`. The egress policy refuses those destinations.
+
+## Configuration
+
+```toml
+[egress]
+block_link_local = true   # default: cloud instance metadata (169.254.0.0/16, fe80::/10)
+block_loopback   = false  # set true to refuse the local host
+block_private    = false  # set true to refuse RFC1918 and unique-local ranges
+allow_hosts      = []     # exact hosts exempt from every check
+```
+
+Self-hosted and air-gapped upstreams live on loopback and private networks, so only the link-local range is denied by default.
+
+## What it covers
+
+Every URL below is checked when it is saved, and again before each request. A stored row is not a standing permission to egress: a policy tightened later applies to rows saved earlier.
+
+| URL                                                                       | Saved through                       | A denied value is                           |
+| ------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------- |
+| Provider `api_base`, egress proxy                                         | provider API, config file           | a `400`; in a snapshot, row dropped         |
+| Provider `status_page_url`, `kv_events.endpoint`, `lmcache.endpoint`      | config file                         | refused at load; row dropped                |
+| MCP server URL and MCP OAuth URLs                                         | MCP API, config file                | a `400`                                     |
+| Alert channel and connector endpoints                                     | alerting and connector APIs         | a `400`                                     |
+| SSO issuer, and the endpoints its discovery document names                | SSO provider API                    | a `400`; at login, the login fails          |
+| Guardrail webhook `url` (`[guardrail_webhook]` and Guardrails, Providers) | guardrail provider API, config file | a `400`; in a snapshot, switched off        |
+| PII sanitizer `url` and `restore_url`                                     | config file                         | refused at load; switched off in a snapshot |
+| Plugin `endpoint`                                                         | plugin API                          | a `400`; in a snapshot, plugin dropped      |
+
+A denied value in a snapshot is dropped or switched off rather than refused, so one bad row cannot stop every gateway from receiving its configuration. The problem is listed by `GET /api/v1/config/problems`. A switched-off guardrail webhook or sanitizer is not running, so check that list after tightening the policy.
+
+## Hostnames and redirects
+
+A saved URL is classified by its IP literal in every spelling a client would dial it by (`2852039166`, `0xa9fea9fe`, `169.254.169.254.`). A hostname cannot be classified without DNS, so the connection itself is checked: the addresses the name resolves to are filtered immediately before connecting, which also catches a name that later rebinds to a denied address. A name that resolves to several addresses keeps the permitted ones.
+
+None of the clients above follows a redirect, because a `3xx` is how an endpoint that passed the check hands the request to one that would not have.
+
+<Note>
+  The `kv_events` subscription speaks ZeroMQ rather than HTTP. Its endpoint is
+  checked, and a hostname is resolved and filtered, before each connect, but
+  the transport resolves the name again itself, so a rebind in between is not
+  caught.
+</Note>

@@ -217,6 +217,42 @@ the shared `ControlState::http` client, which follows up to ten. The client is
 built per request from the deployment's policy rather than pooled, since these
 calls are rare.
 
+### Every path, and where it is checked (#2383)
+
+Each operator-written URL is checked when it is saved and again before it is
+sent. A denied value in a snapshot is pruned per row in
+`GatewayConfig::sanitize_for_snapshot` with a problem line (shown by
+`/api/v1/config/problems`), while `validate()` stays strict for file configs.
+
+| URL                                                                          | Save time                                               | Request time                                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| provider `api_base`, egress proxy                                            | `require_allowed_egress` (400); `provider_problems`     | `rolter-proxy` `EgressResolver` on every upstream client                          |
+| provider `status_page_url`                                                   | `provider_problems` (file config; provider row dropped) | `gateway::egress_client::EgressClient` (literal check and resolver, no redirects) |
+| provider `lmcache.endpoint`                                                  | `provider_problems`                                     | `EgressClient` on every refresh                                                   |
+| provider `kv_events.endpoint`                                                | `provider_problems`                                     | `kv_endpoint_permitted` before each connect (see the gap below)                   |
+| MCP server URL, MCP OAuth URLs                                               | `validate`; `require_allowed_egress`                    | `rolter-control` `egress_client::builder`                                         |
+| alert channel and connector endpoints                                        | `require_allowed_egress`-style check in each module     | `egress_client::builder` plus `url_deny_reason`                                   |
+| SSO issuer; discovery `authorization_endpoint`, `token_endpoint`, `jwks_uri` | `require_allowed_egress` on create and update           | `sso::idp_client` (`egress_client::builder`) and `check_idp_url` on every fetch   |
+| guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot switches the webhook off                |
+| PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)    | `EgressClient` before each call; snapshot switches the sanitizer off              |
+| plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot drops the plugin                        |
+
+The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
+same live policy handle as the upstream forwarder, so a reload re-tunes it. It
+carries two checks because neither covers the other: the resolver sees what DNS
+returned for a name, but `reqwest` never resolves an IP literal, so the literal
+check (`url_deny_reason`) runs on each request.
+
+Gaps that remain:
+
+- **`kv_events` rebinding.** The subscription is ZeroMQ, not HTTP, so there is
+  no resolver to install. The endpoint is checked, and a hostname is resolved
+  and filtered, before each connect, but the transport resolves again itself,
+  so a rebind in the gap between the two is not caught.
+- **Process-level URLs.** The datastore, snapshot and similar URLs a process
+  is started with are written by whoever runs it, not by a tenant or an admin
+  surface, and are not checked.
+
 ## Control-plane input validation
 
 Every control-plane mutation body is decoded through a `SafeJson` extractor

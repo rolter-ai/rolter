@@ -10,12 +10,12 @@
 //! webhook.
 
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::OnceLock;
 
 use rolter_core::guardrail_webhook::{WebhookAuth, WebhookDecision};
 use rolter_core::{FailureMode, PluginInstanceConfig, PluginRequest, PluginStage, WebhookTenant};
 use serde_json::Value;
 
+use crate::egress_client::EgressClient;
 use crate::metrics::Metrics;
 
 /// Per-call timeout. The registry table carries no per-instance timeout
@@ -25,14 +25,6 @@ const TIMEOUT_MS: u64 = rolter_core::guardrail_webhook::DEFAULT_TIMEOUT_MS;
 /// Cap on the content bytes forwarded to a plugin; oversized content is
 /// truncated and flagged, same policy as the guardrail webhook.
 const MAX_BODY_BYTES: usize = rolter_core::guardrail_webhook::DEFAULT_MAX_BODY_BYTES;
-
-/// Shared client for plugin calls: connection pooling across requests, no
-/// per-call setup cost. Separate from the guardrail webhook's client so a
-/// burst of plugin traffic cannot starve guardrail connections or vice versa.
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
 
 /// What the gateway should do after running a stage's plugin chain.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +45,7 @@ pub async fn dispatch(
     plugins: &[&PluginInstanceConfig],
     stage: PluginStage,
     metrics: &Metrics,
+    egress: &EgressClient,
     model: &str,
     route: &str,
     trace_id: &str,
@@ -62,7 +55,7 @@ pub async fn dispatch(
     let mut current = content.clone();
     for plugin in plugins {
         match consult_one(
-            plugin, stage, metrics, model, route, trace_id, tenant, &current,
+            plugin, stage, metrics, egress, model, route, trace_id, tenant, &current,
         )
         .await
         {
@@ -87,6 +80,7 @@ async fn consult_one(
     plugin: &PluginInstanceConfig,
     stage: PluginStage,
     metrics: &Metrics,
+    egress: &EgressClient,
     model: &str,
     route: &str,
     trace_id: &str,
@@ -112,7 +106,7 @@ async fn consult_one(
         content: &payload,
     };
 
-    match call_once(plugin, &envelope).await {
+    match call_once(egress, plugin, &envelope).await {
         Some(decision) => decision,
         None => {
             metrics.plugin_errors_total.fetch_add(1, Relaxed);
@@ -133,6 +127,7 @@ async fn consult_one(
 pub struct PostResponsePlugins<'a> {
     pub plugins: Vec<&'a PluginInstanceConfig>,
     pub metrics: &'a Metrics,
+    pub egress: &'a EgressClient,
     /// owned rather than borrowed: the request path moves `model`/`trace_id`
     /// into the request log before this reaches [`apply_post_response`]
     pub model: String,
@@ -169,6 +164,7 @@ pub async fn apply_post_response(
         &ctx.plugins,
         PluginStage::PostResponse,
         ctx.metrics,
+        ctx.egress,
         &ctx.model,
         &ctx.route,
         &ctx.trace_id,
@@ -189,11 +185,14 @@ pub async fn apply_post_response(
 /// plugin's `failure_mode`. No retries: the registry has no per-instance
 /// retry count, and the guardrail webhook's default is zero anyway.
 async fn call_once(
+    egress: &EgressClient,
     plugin: &PluginInstanceConfig,
     envelope: &PluginRequest<'_>,
 ) -> Option<WebhookDecision> {
-    let mut req = client()
-        .post(plugin.endpoint.trim())
+    // refused again here, not only at save: the policy may have been tightened
+    // since, and a stored row is not a standing permission to egress
+    let mut req = egress
+        .post(plugin.endpoint.trim())?
         .timeout(std::time::Duration::from_millis(TIMEOUT_MS))
         .header("X-Rolter-Trace-Id", envelope.trace_id)
         .json(envelope);
@@ -237,6 +236,7 @@ mod tests {
             &[],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -260,6 +260,7 @@ mod tests {
             &[&p],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -283,6 +284,7 @@ mod tests {
             &[&p],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -318,6 +320,7 @@ mod tests {
             &[&p],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -348,6 +351,7 @@ mod tests {
             &[&first, &second],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -377,6 +381,7 @@ mod tests {
             &[&first, &second],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -399,6 +404,7 @@ mod tests {
         let ctx = PostResponsePlugins {
             plugins: vec![&p],
             metrics: &metrics,
+            egress: &crate::egress_client::testing::permissive(),
             model: "gpt-4".to_string(),
             route: "route".to_string(),
             trace_id: "trace".to_string(),
@@ -423,6 +429,7 @@ mod tests {
         let ctx = PostResponsePlugins {
             plugins: vec![&p],
             metrics: &metrics,
+            egress: &crate::egress_client::testing::permissive(),
             model: "gpt-4".to_string(),
             route: "route".to_string(),
             trace_id: "trace".to_string(),
@@ -445,6 +452,7 @@ mod tests {
         let ctx = PostResponsePlugins {
             plugins: vec![&p],
             metrics: &metrics,
+            egress: &crate::egress_client::testing::permissive(),
             model: "gpt-4".to_string(),
             route: "route".to_string(),
             trace_id: "trace".to_string(),
@@ -490,6 +498,7 @@ mod tests {
             &[&p],
             PluginStage::PreUpstream,
             &metrics,
+            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -503,5 +512,39 @@ mod tests {
         );
         // SAFETY: cleanup of the test-local var set above
         unsafe { std::env::remove_var("ROLTER_TEST_PLUGIN_TOKEN") };
+    }
+
+    /// #2383: a fail-closed plugin whose endpoint the policy denies blocks
+    /// rather than reaching it, for a literal and for a name that resolves to
+    /// a denied address.
+    #[tokio::test]
+    async fn a_denied_plugin_endpoint_is_never_called() {
+        let metrics = Metrics::default();
+        let content = serde_json::json!({"messages": []});
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let denied = EgressClient::new(crate::egress_client::testing::deny_loopback());
+        for (egress, endpoint) in [
+            (
+                crate::egress_client::testing::permissive(),
+                "http://169.254.169.254/hook".to_string(),
+            ),
+            (denied, listener.url("/hook")),
+        ] {
+            let p = plugin("audit", endpoint, FailureMode::FailClosed);
+            let out = dispatch(
+                &[&p],
+                PluginStage::PreUpstream,
+                &metrics,
+                &egress,
+                "gpt-4",
+                "route",
+                "trace",
+                &WebhookTenant::default(),
+                &content,
+            )
+            .await;
+            assert!(matches!(out, DispatchOutcome::Block(_)), "{out:?}");
+        }
+        assert_eq!(listener.accepted(), 0);
     }
 }
