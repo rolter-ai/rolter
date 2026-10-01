@@ -35,7 +35,7 @@
     },
     {
       "resource": "provider",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -51,7 +51,7 @@
     },
     {
       "resource": "provider_group",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",

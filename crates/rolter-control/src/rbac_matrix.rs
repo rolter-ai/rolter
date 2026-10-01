@@ -171,9 +171,14 @@ const CAPABILITIES: &[Capability] = &[
         update: ADMIN,
         delete: NA,
     },
+    // a provider or group may be scoped to one project of an org (#1919), whose
+    // admin then manages it. The scope is `project` so the advisory answer
+    // reaches a project role; an org admin still passes there through the
+    // org membership. An org-wide row stays an org admin's: crud.rs checks
+    // the org for it, and that, not this table, is the authority
     Capability {
         resource: "provider",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -189,7 +194,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "provider_group",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -1244,11 +1249,10 @@ mod tests {
     fn a_team_admin_is_not_promised_org_scoped_capabilities() {
         let ms = [membership(chain().org, chain().team, None, "admin")];
         let allowed = allowed_for(false, &ms, &[], chain());
-        // provider is org-scoped: the guard checks the org alone and a team
+        // org is org-scoped: the guard checks the org alone and a team
         // membership does not reach it
-        assert!(!allowed.contains(&"provider:create".to_string()));
-        assert!(!allowed.contains(&"provider:read".to_string()));
         assert!(!allowed.contains(&"team:create".to_string()));
+        assert!(!allowed.contains(&"budget:read".to_string()));
         // route is team-scoped, so the team membership does
         assert!(allowed.contains(&"route:create".to_string()));
     }
@@ -1262,7 +1266,46 @@ mod tests {
             "member",
         )];
         let allowed = allowed_for(false, &ms, &[], chain());
-        assert!(!allowed.contains(&"provider:read".to_string()));
+        assert!(!allowed.contains(&"budget:read".to_string()));
+    }
+
+    /// a provider or group may be scoped to one project (#1919), so a project
+    /// admin's own project reaches the capability crud.rs grants them, while a
+    /// project viewer and a caller who names no project get no write
+    #[test]
+    fn a_project_admin_is_promised_provider_writes_on_their_project() {
+        let c = chain();
+        let admin = [membership(c.org, c.team, c.project, "admin")];
+        let allowed = allowed_for(false, &admin, &[], c);
+        for res in ["provider", "provider_group"] {
+            for action in ["read", "create", "update", "delete"] {
+                assert!(
+                    allowed.contains(&format!("{res}:{action}")),
+                    "{res}:{action}"
+                );
+            }
+        }
+        // still not an org-scoped capability
+        assert!(!allowed.contains(&"budget:create".to_string()));
+
+        let viewer = [membership(c.org, c.team, c.project, "viewer")];
+        let allowed = allowed_for(false, &viewer, &[], c);
+        assert!(allowed.contains(&"provider:read".to_string()));
+        assert!(!allowed.contains(&"provider:create".to_string()));
+        assert!(!allowed.contains(&"provider_group:delete".to_string()));
+
+        // asked at the org alone, a project membership does not reach it
+        let org_only = ScopeChain::org(c.org.unwrap_or_default());
+        let allowed = allowed_for(false, &admin, &[], org_only);
+        assert!(!allowed.contains(&"provider:create".to_string()));
+
+        // an org admin still passes, with or without a project in the query
+        let org_admin = [membership(c.org, None, None, "admin")];
+        for chain in [c, org_only] {
+            let allowed = allowed_for(false, &org_admin, &[], chain);
+            assert!(allowed.contains(&"provider:create".to_string()));
+            assert!(allowed.contains(&"provider_group:update".to_string()));
+        }
     }
 
     fn grant(
@@ -1286,9 +1329,9 @@ mod tests {
 
     #[test]
     fn a_team_custom_grant_is_trimmed_like_a_membership() {
-        let g = [grant(chain().org, chain().team, "provider", "create")];
+        let g = [grant(chain().org, chain().team, "budget", "create")];
         let allowed = allowed_for(false, &[], &g, chain());
-        assert!(!allowed.contains(&"provider:create".to_string()));
+        assert!(!allowed.contains(&"budget:create".to_string()));
     }
 
     /// `allowed_for` and the guard must not drift: for every row, the answer
