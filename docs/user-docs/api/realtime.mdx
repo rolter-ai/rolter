@@ -8,9 +8,11 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
   **Experimental.** `/v1/realtime` carries the `realtime`
   [stability marker](/api/stability) and may change shape in a minor release.
   Budgets, rate limits, usage recording, guardrails, the guardrail webhook and
-  `pre_upstream` plugins apply to a session's text events. The PII sanitizer
-  and `pre_route` / `post_response` plugins do not run on them yet, and
-  function-call arguments are not scanned
+  `pre_upstream` plugins apply to a session's text events, and guardrails to
+  the arguments of the model's function calls. The PII sanitizer and
+  `pre_route` / `post_response` plugins do not run on a session, so a
+  deployment that relies on the sanitizer to keep PII from the provider is not
+  protected on a realtime route
   ([#2489](https://github.com/rolter-ai/rolter/issues/2489)).
 </Warning>
 

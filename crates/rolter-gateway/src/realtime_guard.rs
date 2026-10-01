@@ -412,6 +412,10 @@ impl ContentPolicy {
         if let Some(item_id) = event.get("item_id").and_then(Value::as_str) {
             self.tails.retain(|(id, _)| id != item_id);
         }
+        if kind == FUNCTION_ARGS_DONE && self.blocked.contains(&response_id) {
+            // the response is already cancelled and its client told
+            return drop_frame();
+        }
         let already_told = self.blocked.contains(&response_id);
         if already_told && kind == "response.done" {
             self.blocked.retain(|id| *id != response_id);
@@ -449,6 +453,13 @@ impl ContentPolicy {
             metrics
                 .guardrail_output_redactions_total
                 .fetch_add(report.redactions as u64, Relaxed);
+        }
+        if kind == FUNCTION_ARGS_DONE {
+            if let Some(rule) = blocked_by {
+                // blanking would hand the client a call with no arguments to
+                // run, so the event is withheld and the response stopped
+                return self.withhold(metrics, response_id, rule);
+            }
         }
         let notice = blocked_by.map(|rule| {
             metrics.guardrail_output_blocks_total.fetch_add(1, Relaxed);
@@ -544,6 +555,9 @@ fn rejection(code: &'static str, message: String, event_id: Option<String>) -> S
     event
 }
 
+/// The model's completed tool call arguments, a JSON document in a string.
+const FUNCTION_ARGS_DONE: &str = "response.function_call_arguments.done";
+
 fn is_delta(kind: &str) -> bool {
     matches!(
         kind,
@@ -565,6 +579,7 @@ fn is_text_event(kind: &str) -> bool {
                 | "response.content_part.done"
                 | "response.output_item.done"
                 | "response.done"
+                | FUNCTION_ARGS_DONE
         )
 }
 
@@ -585,12 +600,29 @@ fn content_texts(holder: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
     }
 }
 
+/// What the model emitted in an output item: message text, or for a function
+/// call its arguments, which stand where a message's text does. Only the
+/// server leg reads arguments; a client's own call items are left alone.
+fn output_item_texts(item: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
+    content_texts(item, visit);
+    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+        if let Some(slot) = item.get_mut("arguments").filter(|slot| slot.is_string()) {
+            visit(slot);
+        }
+    }
+}
+
 fn for_each_server_text(event: &mut Value, kind: &str, visit: &mut dyn FnMut(&mut Value)) {
     match kind {
         "response.output_text.done"
         | "response.text.done"
         | "response.audio_transcript.done"
         | "response.output_audio_transcript.done" => part_texts(event, visit),
+        FUNCTION_ARGS_DONE => {
+            if let Some(slot) = event.get_mut("arguments").filter(|slot| slot.is_string()) {
+                visit(slot);
+            }
+        }
         "response.content_part.done" => {
             if let Some(part) = event.get_mut("part") {
                 part_texts(part, visit);
@@ -598,7 +630,7 @@ fn for_each_server_text(event: &mut Value, kind: &str, visit: &mut dyn FnMut(&mu
         }
         "response.output_item.done" => {
             if let Some(item) = event.get_mut("item") {
-                content_texts(item, visit);
+                output_item_texts(item, visit);
             }
         }
         "response.done" => {
@@ -607,7 +639,7 @@ fn for_each_server_text(event: &mut Value, kind: &str, visit: &mut dyn FnMut(&mu
                 .and_then(Value::as_array_mut)
             {
                 for item in items {
-                    content_texts(item, visit);
+                    output_item_texts(item, visit);
                 }
             }
         }
