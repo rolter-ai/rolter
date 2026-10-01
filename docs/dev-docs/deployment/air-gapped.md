@@ -41,12 +41,11 @@ or `off` (trimmed, case-insensitive) turns off both callers; unset leaves them o
 The endpoint then reports `enabled: false` and the footer shows the running
 version alone.
 
-The Helm chart writes `control.updateCheck` (default `true`) into
-`rolter.controlEnv`, which the control Deployment's containers share, preflight
-init container included. `rolter.gatewayEnv` carries no such variable, so the
-gateway Deployment's preflight init container (`rolter check`, the launcher) still
-makes the attempt. Until #2382 is fixed, an air-gapped chart install also sets
-`ROLTER_UPDATE_CHECK=false` through `gateway.extraEnv`.
+The Helm chart writes `control.updateCheck` (default `true`) into both
+`rolter.controlEnv` and `rolter.gatewayEnv`, so the preflight init container of each
+Deployment (`rolter check`, the launcher) is covered by the one setting. The
+`scripts/check-chart-update-check.py` step in `quality.yml` fails when a container
+that runs the launcher lacks the variable.
 
 ### Every outbound path
 
@@ -198,8 +197,7 @@ cargo build --workspace --release --offline
 **Set before you deploy:**
 
 - `ROLTER_UPDATE_CHECK=false` on the control plane and wherever the `rolter`
-  launcher runs. In Helm, `control.updateCheck: false` plus `ROLTER_UPDATE_CHECK`
-  in `gateway.extraEnv` (#2382).
+  launcher runs. In Helm, `control.updateCheck: false` covers both Deployments.
 
 **Must be reachable inside the enclave:**
 
