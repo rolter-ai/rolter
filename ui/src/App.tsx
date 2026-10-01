@@ -108,6 +108,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "oauth-grants": named(() => import("@/pages/McpOAuth"), "OAuthGrants"),
   "mcp-settings": named(() => import("@/pages/McpManagement"), "McpSettings"),
   "api-keys": screen(() => import("@/pages/Account")),
+  preferences: screen(() => import("@/pages/Preferences")),
   security: screen(() => import("@/pages/Security")),
   "effective-config": screen(() => import("@/pages/Config")),
   "client-settings": screen(() => import("@/pages/ClientSettings")),
