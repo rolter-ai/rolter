@@ -395,10 +395,17 @@ should be paired with a `block` rule for the same entity.
   chooses between refusing it and serving it unrestored. A realtime session is
   always streamed, so sanitizing only the request leg would send the model
   placeholders it will echo back, which the client would never see restored.
-  **A deployment that depends on the sanitizer to keep PII from the provider is
-  not protected on `/v1/realtime`**: use a `redact` guardrail rule, which
-  removes the entity in place and needs no mapping, or do not offer a realtime
-  route to that tenant.
+  **A fail-closed sanitizer refuses the session (#2496).** With
+  `[pii_sanitizer]` enabled and `failure_mode = "fail_closed"`, the upgrade is
+  refused with HTTP 400 `sanitizer_unsupported_on_realtime` before any budget,
+  rate-limit or upstream side effect, so a deployment that made the sanitizer a
+  hard requirement never gets an unsanitized session. This is the chat path's
+  contract: `fail_closed` means no unsanitized body reaches the provider. The
+  sanitizer config is deployment-wide, so there is no per-tenant scope to
+  consult. Under `fail_open` (availability over enforcement) the session is
+  admitted unsanitized, as a chat request is when the sanitizer is down; use a
+  `redact` guardrail rule, which removes the entity in place and needs no
+  mapping, to protect those sessions.
 - **Guardrails are pinned when the session opens.** A snapshot reload does not
   change the rules, webhook or plugins a live session is held to; a changed
   rule applies to the next session. Ending live sessions on a rule change was
@@ -443,8 +450,8 @@ These are tracked rather than silently missing:
   guardrail webhook and `pre_upstream` plugins do (see
   [Content policy](#content-policy-on-a-bidirectional-stream-1880)).
   `realtime` still carries its [stability marker](../development/stability-markers.md):
-  its note names the gaps that remain (the PII sanitizer and `pre_route` /
-  `post_response` plugins), and the dashboard's translated notes follow it.
+  its note names the gaps that remain (the PII sanitizer, which fails closed
+  but does not run, and `pre_route` / `post_response` plugins), and the dashboard's translated notes follow it.
 - A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).

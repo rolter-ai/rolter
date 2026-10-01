@@ -10,10 +10,10 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
   Budgets, rate limits, usage recording, guardrails, the guardrail webhook and
   `pre_upstream` plugins apply to a session's text events, and guardrails to
   the arguments of the model's function calls. The PII sanitizer and
-  `pre_route` / `post_response` plugins do not run on a session, so a
-  deployment that relies on the sanitizer to keep PII from the provider is not
-  protected on a realtime route
-  ([#2489](https://github.com/rolter-ai/rolter/issues/2489)).
+  `pre_route` / `post_response` plugins do not run on a session. A
+  `fail_closed` PII sanitizer refuses the session with
+  `sanitizer_unsupported_on_realtime`; under `fail_open` the session is
+  admitted unsanitized.
 </Warning>
 
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
@@ -143,7 +143,8 @@ moment, the rows and charges still queued are lost after those 5 seconds.
   blocked response is cancelled. Output is checked as it streams, so the part
   of a match before the delta that completes it can already have been
   delivered. The PII sanitizer and `pre_route`/`post_response` plugins do not
-  run on realtime events, audio itself is not inspected, and a binary frame is
+  run on realtime events (a `fail_closed` sanitizer refuses the session with
+  `sanitizer_unsupported_on_realtime`), audio itself is not inspected, and a binary frame is
   refused while a policy applies. See
   [Content policy](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/architecture/realtime-metering.md#content-policy-on-a-bidirectional-stream-1880)
   for the detail.
