@@ -1237,11 +1237,13 @@ mod tests {
         // a loopback port that was just released: the connect is refused
         // immediately and deterministically. an off-host address would be at the
         // mercy of whatever the test environment does to outbound traffic
-        let closed = {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
+        // bound but never listening: refused, and the port stays reserved so a
+        // parallel test cannot be handed it
+        let (_closed_guard, closed) = {
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = socket.local_addr().unwrap();
+            (socket, addr)
         };
         let env = FakeEnv::healthy()
             .with(

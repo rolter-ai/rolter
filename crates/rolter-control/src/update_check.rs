@@ -548,10 +548,14 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_endpoint_leaves_the_status_untouched() {
-        // a closed local port fails fast and stands in for "offline"
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        drop(listener);
+        // a closed local port fails fast and stands in for "offline";
+        // bound but never listening: refused, and held so a parallel test
+        // cannot be handed the port
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind("127.0.0.1:0".parse().expect("addr"))
+            .expect("bind");
+        let port = socket.local_addr().expect("addr").port();
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).expect("proxy"))
             .build()
