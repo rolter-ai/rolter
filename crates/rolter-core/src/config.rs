@@ -1535,6 +1535,11 @@ impl ParamPolicy {
     }
 }
 
+/// The example virtual key that ships in `rolter.example.toml`, the image's
+/// baked config and `easy-up`. It is public, allows every model and is for
+/// local development only.
+pub const PUBLIC_EXAMPLE_KEY: &str = "sk-rolter-dev";
+
 /// A virtual api key that clients present to the gateway.
 ///
 /// `Default` is a nameless, unscoped, non-expiring key with an empty secret —
@@ -1568,6 +1573,11 @@ pub struct VirtualKeyConfig {
 }
 
 impl VirtualKeyConfig {
+    /// Whether this is the example key every rolter checkout publishes.
+    pub fn is_public_example_key(&self) -> bool {
+        self.key == PUBLIC_EXAMPLE_KEY
+    }
+
     /// Whether the key may authenticate at `now`: not disabled and not expired.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
@@ -3063,6 +3073,23 @@ impl GatewayConfig {
     /// Find a provider by name.
     pub fn resolve_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
+    }
+
+    /// Drop the public example key from a file config. Callers decide *when*:
+    /// only a deployment that is not in open mode has any business refusing it,
+    /// since `easy-up` serves it on purpose. Returns a problem line when a key
+    /// was dropped.
+    pub fn prune_public_example_key(&mut self) -> Option<String> {
+        let before = self.virtual_keys.len();
+        self.virtual_keys.retain(|k| !k.is_public_example_key());
+        (self.virtual_keys.len() != before).then(|| {
+            format!(
+                "virtual key '{PUBLIC_EXAMPLE_KEY}' omitted from the snapshot: it is the public \
+                 example key from the bundled rolter.example.toml and allows every model, so a \
+                 deployment with auth enforced must not hand it to gateways. Remove the \
+                 [[virtual_keys]] entry from the control plane's config file"
+            )
+        })
     }
 
     /// Validate internal consistency and surface every problem at once so an

@@ -12779,6 +12779,80 @@ async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
 }
 
 // ---------------------------------------------------------------------------
+// the public example key (#2408)
+// ---------------------------------------------------------------------------
+
+/// Snapshot virtual-key secrets and `/config/problems` for a control plane whose
+/// config file declares the public example key.
+async fn example_key_snapshot(admin_token: Option<String>) -> (Vec<String>, Vec<String>) {
+    let db = fresh_db().await;
+    let file_config = rolter_core::GatewayConfig {
+        virtual_keys: vec![rolter_core::config::VirtualKeyConfig {
+            key: rolter_core::PUBLIC_EXAMPLE_KEY.to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let app = rolter_control::test_app_with_file_config(
+        db.pool().clone(),
+        admin_token.clone(),
+        file_config,
+    )
+    .await
+    .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let mut request = client.get(format!("http://{addr}/internal/snapshot"));
+    if let Some(token) = &admin_token {
+        request = request.bearer_auth(token);
+    }
+    let snapshot: Value = request.send().await.unwrap().json().await.unwrap();
+    let keys = snapshot["config"]["virtual_keys"]
+        .as_array()
+        .expect("virtual_keys")
+        .iter()
+        .map(|k| k["key"].as_str().unwrap_or_default().to_string())
+        .collect();
+    let problems: Value = client
+        .get(format!("http://{addr}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let problems = problems["problems"]
+        .as_array()
+        .expect("problems array")
+        .iter()
+        .map(|p| p.as_str().unwrap_or_default().to_string())
+        .collect();
+    (keys, problems)
+}
+
+#[tokio::test]
+async fn the_snapshot_withholds_the_public_example_key_once_an_admin_token_is_set() {
+    skip_without_db!();
+    let (keys, problems) = example_key_snapshot(Some(random_password())).await;
+    assert!(keys.is_empty(), "the public key leaked: {keys:?}");
+    assert!(
+        problems.iter().any(|p| p.contains("sk-rolter-dev")),
+        "the omission must be reported: {problems:?}"
+    );
+}
+
+#[tokio::test]
+async fn open_mode_still_serves_the_public_example_key() {
+    skip_without_db!();
+    let (keys, problems) = example_key_snapshot(None).await;
+    assert_eq!(keys, ["sk-rolter-dev"]);
+    assert!(
+        !problems.iter().any(|p| p.contains("sk-rolter-dev")),
+        "{problems:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TOTP second factor (#1078)
 // ---------------------------------------------------------------------------
 
