@@ -345,7 +345,7 @@ mod tests {
     async fn a_metadata_literal_is_refused_per_the_failure_mode() {
         let egress = crate::egress_client::testing::permissive();
         let out = consult(
-            &fail_closed("http://169.254.169.254/latest/meta-data/".to_string()),
+            &fail_closed("https://169.254.169.254/latest/meta-data/".to_string()),
             &egress,
         )
         .await;
@@ -393,7 +393,7 @@ mod tests {
     #[tokio::test]
     async fn a_denied_webhook_url_follows_a_fail_open_failure_mode() {
         let egress = crate::egress_client::testing::permissive();
-        let mut cfg = fail_closed("http://169.254.169.254/latest/meta-data/".to_string());
+        let mut cfg = fail_closed("https://169.254.169.254/latest/meta-data/".to_string());
         cfg.failure_mode = FailureMode::FailOpen;
         assert_eq!(consult(&cfg, &egress).await, WebhookOutcome::Allow);
     }

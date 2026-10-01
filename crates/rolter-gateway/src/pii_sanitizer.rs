@@ -525,7 +525,7 @@ mod tests {
     async fn the_sanitizer_refuses_a_metadata_literal_and_a_denied_name() {
         let metrics = Metrics::default();
         let mut config = unreachable(FailureMode::FailClosed);
-        config.url = "http://169.254.169.254/sanitize".to_string();
+        config.url = "https://169.254.169.254/sanitize".to_string();
         let out = sanitize_with(&config, &metrics, json!({"messages": []})).await;
         assert!(matches!(out, SanitizeOutcome::Block(_)), "{out:?}");
 
@@ -556,7 +556,7 @@ mod tests {
     async fn a_denied_sanitizer_url_follows_its_failure_mode() {
         let metrics = Metrics::default();
         let mut config = unreachable(FailureMode::FailOpen);
-        config.url = "http://169.254.169.254/sanitize".to_string();
+        config.url = "https://169.254.169.254/sanitize".to_string();
         let out = sanitize_with(&config, &metrics, json!({"messages": []})).await;
         assert!(matches!(out, SanitizeOutcome::Unchanged), "{out:?}");
         config.failure_mode = FailureMode::FailClosed;

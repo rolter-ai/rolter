@@ -769,7 +769,7 @@ mod tests {
         let provider: ProviderConfig = serde_json::from_value(serde_json::json!({
             "name": "cache-node",
             "kind": "openai_compatible",
-            "api_base": "http://cache-node:8000",
+            "api_base": "https://cache-node:8000",
             "kv_events": {
                 "endpoint": "invalid://endpoint",
                 "topic": "kv-events",
@@ -816,7 +816,7 @@ mod tests {
         let provider: ProviderConfig = serde_json::from_value(serde_json::json!({
             "name": "cache-node",
             "kind": "openai_compatible",
-            "api_base": "http://cache-node:8000",
+            "api_base": "https://cache-node:8000",
             "kv_events": {
                 "endpoint": "tcp://169.254.169.254:5557",
                 "topic": "kv-events",

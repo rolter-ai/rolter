@@ -526,7 +526,7 @@ mod tests {
         for (egress, endpoint) in [
             (
                 crate::egress_client::testing::permissive(),
-                "http://169.254.169.254/hook".to_string(),
+                "https://169.254.169.254/hook".to_string(),
             ),
             (denied, listener.url("/hook")),
         ] {
@@ -555,7 +555,7 @@ mod tests {
         let content = serde_json::json!({"messages": []});
         let p = plugin(
             "audit",
-            "http://169.254.169.254/hook".to_string(),
+            "https://169.254.169.254/hook".to_string(),
             FailureMode::FailOpen,
         );
         let out = dispatch(
