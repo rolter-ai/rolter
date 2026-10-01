@@ -1252,7 +1252,26 @@
         },
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
-        "namePlaceholder": "high error rate"
+        "namePlaceholder": "high error rate",
+        "fieldComparison": "Comparison",
+        "comparison": {
+          "above": "Above or equal",
+          "below": "Below or equal"
+        },
+        "thresholdInclusive": "The threshold is inclusive: the rule fires when the value equals it.",
+        "trafficStoppedHelp": "This rule fires when no requests arrive in the window, so it alerts when traffic stops.",
+        "fieldNoData": "When there is no data",
+        "noData": {
+          "ignore": "Keep current state",
+          "fire": "Fire",
+          "ok": "Resolve"
+        },
+        "noDataHint": "What the rule does when the window holds no requests to measure.",
+        "reading": {
+          "above": "above {{value}}",
+          "below": "below {{value}}"
+        },
+        "noDataReading": "No data"
       },
       "signals": {
         "error_rate": {

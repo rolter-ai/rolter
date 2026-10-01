@@ -63,6 +63,8 @@ const RULES: AlertRuleRow[] = [
     name: "high error rate",
     signal: "error_rate",
     threshold: 0.05,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -78,6 +80,8 @@ const RULES: AlertRuleRow[] = [
     name: "slow p95",
     signal: "p95_latency_ms",
     threshold: 2000,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 600,
     channel_id: null,
     enabled: true,
@@ -93,6 +97,8 @@ const RULES: AlertRuleRow[] = [
     name: "spend spike",
     signal: "spend_velocity",
     threshold: 50,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 3600,
     channel_id: "chan-1",
     enabled: true,
@@ -109,6 +115,8 @@ const RULES: AlertRuleRow[] = [
     name: "traffic surge",
     signal: "request_volume",
     threshold: 1000,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -124,6 +132,8 @@ const RULES: AlertRuleRow[] = [
     name: "provider trouble",
     signal: "provider_health_flaps",
     threshold: 10,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -543,14 +553,20 @@ export const RuleCardsReadInTheSignalsUnit: Story = {
     const canvas = within(canvasElement);
     const cards: [string, string, RegExp, RegExp, RegExp][] = [
       // name, signal, threshold, last value, window
-      ["high error rate", "Error rate", /^5%$/, /^11%$/, /^5m$/],
-      ["slow p95", "p95 latency", /^2,000 ms$/, /^840 ms$/, /^10m$/],
-      ["spend spike", "Spend rate", /^€50\.00\/h$/, /^€12\.50\/h$/, /^1h$/],
-      ["traffic surge", "Request volume", /^1,000 requests in 5m$/, /^340 requests in 5m$/, /^5m$/],
+      ["high error rate", "Error rate", /^above 5%$/, /^11%$/, /^5m$/],
+      ["slow p95", "p95 latency", /^above 2,000 ms$/, /^840 ms$/, /^10m$/],
+      ["spend spike", "Spend rate", /^above €50\.00\/h$/, /^€12\.50\/h$/, /^1h$/],
+      [
+        "traffic surge",
+        "Request volume",
+        /^above 1,000 requests in 5m$/,
+        /^340 requests in 5m$/,
+        /^5m$/,
+      ],
       [
         "provider trouble",
         "Provider health failures",
-        /^10 failed health events in 5m$/,
+        /^above 10 failed health events in 5m$/,
         /^1 failed health event in 5m$/,
         /^5m$/,
       ],
@@ -579,13 +595,13 @@ export const RuleCardsReadInRussian: Story = {
     const { statThreshold, statLastValue } = ru.pages.alerting.rules;
     const traffic = await canvas.findByRole("article", { name: "traffic surge" });
     await waitFor(() =>
-      expect(stat(traffic, statThreshold)).toHaveTextContent(/^1\s000 запросов за 5\sмин$/),
+      expect(stat(traffic, statThreshold)).toHaveTextContent(/^выше 1\s000 запросов за 5\sмин$/),
     );
     await expect(stat(traffic, statLastValue)).toHaveTextContent(/^340 запросов за 5\sмин$/);
     const health = canvas.getByRole("article", { name: "provider trouble" });
     await expect(stat(health, statLastValue)).toHaveTextContent(/^1 отказ за 5\sмин$/);
     const errors = canvas.getByRole("article", { name: "high error rate" });
-    await expect(stat(errors, statThreshold)).toHaveTextContent(/^5\s%$/);
+    await expect(stat(errors, statThreshold)).toHaveTextContent(/^выше 5\s%$/);
   },
 };
 
@@ -648,7 +664,7 @@ export const ThePercentThresholdRoundTrips: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const errors = await canvas.findByRole("article", { name: "high error rate" });
-    await expect(stat(errors, "Threshold")).toHaveTextContent(/^5%$/);
+    await expect(stat(errors, "Threshold")).toHaveTextContent(/^above 5%$/);
 
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = sheet();
@@ -790,6 +806,8 @@ type RuleBody = {
   name: string;
   signal: string;
   threshold: number;
+  comparison?: string;
+  no_data?: string;
   window_secs: number;
   channel_id: string | null;
   enabled: boolean;
@@ -838,6 +856,8 @@ export const EditsARule: Story = {
       name: "high error rate",
       signal: "error_rate",
       threshold: 0.02,
+      comparison: "above",
+      no_data: "ignore",
       window_secs: 300,
       channel_id: "chan-1",
       enabled: false,
@@ -1829,4 +1849,155 @@ export const HistoryRefusedToAViewer: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+// the comparison and the no-data policy (#2423)
+const BELOW: AlertRuleRow = {
+  ...RULES[3],
+  id: "rule-6",
+  name: "traffic stopped",
+  threshold: 0,
+  comparison: "below",
+};
+const SILENT: AlertRuleRow = {
+  ...RULES[0],
+  id: "rule-7",
+  name: "silent errors",
+  no_data: "fire",
+  state: "ok",
+  last_value: null,
+};
+const withComparisons = routes([
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => [...RULES, BELOW, SILENT]],
+  ["/alert-notifications", () => HISTORY],
+  ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
+]);
+
+export const RuleCardShowsTheComparisonAndNoData: Story = {
+  render: () => (
+    <Harness fetchStub={withComparisons}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const below = await canvas.findByRole("article", { name: "traffic stopped" });
+    await expect(stat(below, "Threshold")).toHaveTextContent(/^below 0 requests in 5m$/);
+    // evaluated, but the window held nothing to measure
+    const silent = await canvas.findByRole("article", { name: "silent errors" });
+    await expect(stat(silent, "Last value")).toHaveTextContent(/^No data$/);
+    // a rule never evaluated has no reading yet, which is not "no data"
+    const fresh = within(canvasElement).getByRole("article", { name: "high error rate" });
+    await expect(stat(fresh, "Last value")).toHaveTextContent(/^11%$/);
+  },
+};
+
+const comparisonWrites = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return loaded(input, init);
+  }),
+);
+
+export const ComparisonAndNoDataAreChosenInTheForm: Story = {
+  render: () => (
+    <Harness fetchStub={comparisonWrites.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "errors gone quiet");
+    const comparison = form.getByRole("radiogroup", { name: "Comparison" });
+    await expect(within(comparison).getByRole("radio", { name: "Above or equal" })).toBeChecked();
+    await expect(form.getByText(/threshold is inclusive/)).toBeVisible();
+    const noData = form.getByRole("radiogroup", { name: "When there is no data" });
+    await expect(within(noData).getByRole("radio", { name: "Keep current state" })).toBeChecked();
+
+    await userEvent.click(within(comparison).getByRole("radio", { name: "Below or equal" }));
+    await userEvent.click(within(noData).getByRole("radio", { name: "Fire" }));
+    await expect(within(noData).getByRole("radio", { name: "Fire" })).toBeChecked();
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    const body = await comparisonWrites.expectSentBody<RuleBody>("POST", "/alert-rules");
+    await expect(body).toMatchObject({
+      signal: "error_rate",
+      comparison: "below",
+      no_data: "fire",
+    });
+    await expectSheetClosed();
+  },
+};
+
+const volumeWrites = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[3], 201);
+    return loaded(input, init);
+  }),
+);
+
+export const NoDataIsOfferedOnlyToSignalsThatHaveIt: Story = {
+  render: () => (
+    <Harness fetchStub={volumeWrites.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "traffic stopped");
+    await expect(form.getByRole("radiogroup", { name: "When there is no data" })).toBeVisible();
+    await userEvent.click(
+      within(form.getByRole("radiogroup", { name: "When there is no data" })).getByRole("radio", {
+        name: "Resolve",
+      }),
+    );
+
+    await pickOption(form.getByLabelText("Signal"), /^Request volume/);
+    await waitFor(() =>
+      expect(form.queryByRole("radiogroup", { name: "When there is no data" })).toBeNull(),
+    );
+    // the traffic-stopped help appears for Below with a threshold of 0
+    await expect(form.queryByText(/alerts when traffic stops/)).toBeNull();
+    await userEvent.click(
+      within(form.getByRole("radiogroup", { name: "Comparison" })).getByRole("radio", {
+        name: "Below or equal",
+      }),
+    );
+    const threshold = form.getByLabelText("Threshold (requests per window)");
+    await userEvent.clear(threshold);
+    await userEvent.type(threshold, "0");
+    await expect(await form.findByText(/alerts when traffic stops/)).toBeVisible();
+
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    const body = await volumeWrites.expectSentBody<RuleBody>("POST", "/alert-rules");
+    await expect(body.comparison).toBe("below");
+    await expect(body).not.toHaveProperty("no_data");
+    await expectSheetClosed();
+  },
+};
+
+const editsNoData = editsRules([SILENT, ...RULES.slice(1)]);
+
+export const AnEditOpensOnTheStoredComparisonAndNoData: Story = {
+  render: () => (
+    <Harness fetchStub={editsNoData.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit rule silent errors");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit rule silent errors" }),
+    );
+    await waitFor(() => expect(form.getByLabelText("Name")).toHaveValue("silent errors"));
+    const noData = form.getByRole("radiogroup", { name: "When there is no data" });
+    await expect(within(noData).getByRole("radio", { name: "Fire" })).toBeChecked();
+    await userEvent.click(within(noData).getByRole("radio", { name: "Resolve" }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await editsNoData.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-7");
+    await expect(body).toMatchObject({ comparison: "above", no_data: "ok" });
+    await expectSheetClosed();
+  },
 };
