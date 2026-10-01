@@ -50,10 +50,12 @@ advisory answer cannot promise more than the guard grants (#1877).
 org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
 a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
 on a provider scoped to that project, and an org admin still passes through the
-org membership. The page-level gate cannot tell an org-wide row from a scoped
-one: a project admin sees Edit on an org-wide provider and the handler answers
-`403`, because `crud.rs` checks such a row at the org. That check, not this
-table, is the authority. Asked at the org alone (no `project_id`) a project
+org membership. The page-level answer cannot tell an org-wide row from a scoped
+one: a project admin would see Edit on an org-wide provider and the handler
+would answer `403`, because `crud.rs` checks such a row at the org. That check,
+not this table, is the authority, so the two list screens gate each row at the
+row's own scope (#2522), see
+[Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
 membership reaches neither.
 
 `budget` and `rate_limit` are `project` rows for the same reason (#2527): a caller
@@ -71,6 +73,33 @@ capability gates the page: `GET /api/v1/rbac/matrix` publishes what roles can do
 not anyone's data, and answers every signed-in caller. The org's custom roles on
 it keep their own check (a role anywhere in that org), and the write controls stay
 gated on `custom_role:create`, `:update` and `:delete`.
+
+## Gating a row at its own scope
+
+A capability whose rows may live at more than one scope (`provider`,
+`provider_group`) cannot be answered once for the page. Wrap the row's controls
+in `RowCapabilityScope` (`ui/src/lib/can.tsx`) and hand it
+`rowGateScope(row, orgScope.byTeam)` from `ui/src/lib/provider-scope.ts`:
+
+```tsx
+<RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
+  <GatedButton gate="provider:update" control="provider-edit">
+    …
+  </GatedButton>
+  <DeleteIconButton gate="provider:delete" control="provider-delete" … />
+</RowCapabilityScope>
+```
+
+It swaps the capability context for the controls below it, so the primitives
+stay as they are and keep recording their refusals. An org-wide row
+(`project_id` null) is asked at the org alone, where a project membership
+reaches nothing; a project row is asked at its org + team + project, the team
+read from the org's project list. The query key is the provider's, so rows
+sharing a scope share one request. A project the dashboard cannot place
+(deleted, or not listable by this caller) keeps the page's answer and the `403`
+stays the backstop. Stories play a project admin with
+`role={adminOfProject(id)}` on `Harness`, which answers `rbac/effective` per
+queried chain.
 
 ## Three answers, not two
 

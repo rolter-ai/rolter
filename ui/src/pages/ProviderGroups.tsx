@@ -36,6 +36,8 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
+import { RowCapabilityScope } from "@/lib/can";
+import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -227,32 +229,34 @@ export default function ProviderGroups() {
               )}
             </ListCell>
             <ListCell className="flex items-center justify-end gap-1.5">
-              <GatedButton
-                gate="provider_group:update"
-                control="provider-group-edit"
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("pages.providerGroups.editOne", { name: group.name })}
-                onClick={() => setSheet({ mode: "edit", group })}
-              >
-                {t("pages.providerGroups.edit")}
-              </GatedButton>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("labels.labelsOf", { name: group.name })}
-                onClick={() => setLabelling(group)}
-              >
-                <Tag className="h-3.5 w-3.5" />
-              </Button>
-              <DeleteIconButton
-                gate="provider_group:delete"
-                control="provider-group-delete"
-                label={t("pages.providerGroups.deleteOne", { name: group.name })}
-                onClick={() => setDeleteTarget(group)}
-              />
+              <RowCapabilityScope at={rowGateScope(group, orgScope.byTeam)}>
+                <GatedButton
+                  gate="provider_group:update"
+                  control="provider-group-edit"
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.providerGroups.editOne", { name: group.name })}
+                  onClick={() => setSheet({ mode: "edit", group })}
+                >
+                  {t("pages.providerGroups.edit")}
+                </GatedButton>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("labels.labelsOf", { name: group.name })}
+                  onClick={() => setLabelling(group)}
+                >
+                  <Tag className="h-3.5 w-3.5" />
+                </Button>
+                <DeleteIconButton
+                  gate="provider_group:delete"
+                  control="provider-group-delete"
+                  label={t("pages.providerGroups.deleteOne", { name: group.name })}
+                  onClick={() => setDeleteTarget(group)}
+                />
+              </RowCapabilityScope>
             </ListCell>
           </ListRow>
         ))}
