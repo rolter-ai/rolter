@@ -15,7 +15,7 @@ docker compose -f docker/docker-compose.yml logs -f gateway
 
 The gateway follows the control plane (`ROLTER_SNAPSHOT_URL=http://control:4001/internal/snapshot`, plus `ROLTER_REDIS_URL` for immediate wake-ups), so a provider, route or virtual key created in the dashboard reaches it within a poll (5 s). It starts whether or not the control plane answers yet: the watcher logs a failed poll and retries, and `depends_on: control` only orders the start, since the distroless image has no shell to run a container healthcheck with. The control plane reads `ROLTER_GATEWAY_URL=http://gateway:4000` for the Playground's `/gw/*` proxy, whose default, `localhost:4000`, is the control container itself. `ROLTER_KEK` is passed through when exported; without it the dashboard refuses to store a provider key.
 
-All three rolter services share one `build:` block that sets `CARGO_FEATURES=postgres`. The Dockerfile default is no features, and a control plane built that way has no `--database-url`, no CRUD API and no sign-in, so the Postgres next to it would sit unused (#2405 tracks the published image, which is built that way).
+All three rolter services share one `build:` block that sets `CARGO_FEATURES=postgres`. That is also the Dockerfile default, so the published image gets it too (#2405). A control plane built with `CARGO_FEATURES=` has no `--database-url`, no CRUD API and no sign-in, so the Postgres next to it would sit unused; the `image-smoke` job fails if the image's `rolter-control --help` does not list `--database-url`. The feature is enabled on the launcher as well, so `rolter config export`, `mfa reset` and `kek verify` work from the image.
 
 ### Team shape
 

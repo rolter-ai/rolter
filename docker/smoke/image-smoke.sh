@@ -70,6 +70,23 @@ stop() {
   docker rm -f "$1" >/dev/null
 }
 
+echo "== the control plane was built with the postgres feature (#2405) =="
+# without it there is no --database-url / ROLTER_DATABASE_URL and a helm install
+# with a database would silently run in memory; the distroless image has no
+# shell, so run the binary directly through --entrypoint
+for bin in rolter-control rolter; do
+  help_args=(--help)
+  [ "$bin" = rolter ] && help_args=(easy-up --help)
+  docker run --rm ${platform_args[@]+"${platform_args[@]}"} \
+    --entrypoint "/usr/local/bin/$bin" "$image" "${help_args[@]}" >"$work/$bin-help.txt" 2>&1
+  if ! grep -q -- '--database-url' "$work/$bin-help.txt"; then
+    echo "FAILED: $bin --help does not list --database-url: the image was built without the postgres feature" >&2
+    cat "$work/$bin-help.txt" >&2
+    exit 1
+  fi
+done
+echo "database url accepted by both binaries"
+
 echo "== open mode with no acknowledgement: refuses to start =="
 refused="rolter-image-smoke-refused-$$"
 start "$refused"
