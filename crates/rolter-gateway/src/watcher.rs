@@ -281,7 +281,7 @@ async fn poll_once(
         return Ok(None);
     }
     // never apply a broken snapshot; keep serving the last good config
-    if let Err(problems) = body.config.validate() {
+    if let Err(problems) = body.config.validate_snapshot() {
         anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
     }
     state.reload(&body.config, body.version);

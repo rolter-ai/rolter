@@ -3090,7 +3090,7 @@ impl GatewayConfig {
             }
         }
 
-        self.prune_denied_operator_urls(&mut warnings);
+        self.report_denied_operator_urls(&mut warnings);
 
         let provider_names: std::collections::HashSet<&str> = self
             .providers
@@ -3179,54 +3179,21 @@ impl GatewayConfig {
         warnings
     }
 
-    /// Drop each gateway-side URL the egress policy denies, saying why in
-    /// `warnings`, so one denied endpoint cannot withhold `/internal/snapshot`
-    /// from every tenant. A plugin instance is one row and is dropped. The
-    /// webhook and the sanitizer are single blocks and are switched off: the
-    /// gateway could not reach them under the same policy anyway, and the
-    /// warning is what tells the operator their guard is not running.
-    /// `validate` still rejects the same URLs in a file config.
-    fn prune_denied_operator_urls(&mut self, warnings: &mut Vec<String>) {
-        let egress = self.egress.clone();
-        self.plugins.instances.retain(|instance| {
-            match egress.check_url(
-                instance.endpoint.trim(),
-                &format!("plugin '{}' endpoint", instance.slug),
-            ) {
-                Ok(()) => true,
-                Err(problem) => {
-                    warnings.push(format!(
-                        "plugin '{}' omitted from the snapshot: {problem}",
-                        instance.slug
-                    ));
-                    false
-                }
-            }
-        });
-        if self.guardrail_webhook.enabled {
-            if let Err(problem) =
-                egress.check_url(self.guardrail_webhook.url.trim(), "guardrail_webhook.url")
-            {
-                warnings.push(format!(
-                    "guardrail webhook disabled in the snapshot: {problem}"
-                ));
-                self.guardrail_webhook.enabled = false;
-            }
-        }
-        if self.pii_sanitizer.enabled {
-            let denied = [
-                ("pii_sanitizer.url", self.pii_sanitizer.url.trim()),
-                (
-                    "pii_sanitizer.restore_url",
-                    self.pii_sanitizer.restore_url.trim(),
-                ),
-            ]
-            .into_iter()
-            .find_map(|(what, url)| egress.check_url(url, what).err());
-            if let Some(problem) = denied {
-                warnings.push(format!("pii sanitizer disabled in the snapshot: {problem}"));
-                self.pii_sanitizer.enabled = false;
-            }
+    /// Report each gateway-side URL the egress policy denies in `warnings`,
+    /// without removing or switching off anything.
+    ///
+    /// The webhook, the sanitizer and a plugin are guards with a failure mode.
+    /// Dropping one would turn a fail-closed control into a silent fail-open,
+    /// so it stays: the gateway refuses the call at request time and the
+    /// block's own failure mode decides what the request does. Nothing here
+    /// can withhold `/internal/snapshot`, since
+    /// [`validate_snapshot`](Self::validate_snapshot) does not repeat the
+    /// check; `validate` still rejects the same URLs in a file config.
+    fn report_denied_operator_urls(&self, warnings: &mut Vec<String>) {
+        for problem in self.operator_url_problems() {
+            warnings.push(format!(
+                "{problem}: calls will fail and follow the failure_mode of the control that uses it"
+            ));
         }
     }
 
@@ -3492,6 +3459,18 @@ impl GatewayConfig {
     }
 
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
+        self.validate_with(true)
+    }
+
+    /// [`validate`](Self::validate) for a store-sourced snapshot, which keeps a
+    /// guardrail webhook, PII sanitizer or plugin whose URL the egress policy denies
+    /// (see [`sanitize_for_snapshot`](Self::sanitize_for_snapshot)). A file
+    /// config goes through the strict `validate`.
+    pub fn validate_snapshot(&self) -> std::result::Result<(), Vec<String>> {
+        self.validate_with(false)
+    }
+
+    fn validate_with(&self, strict_urls: bool) -> std::result::Result<(), Vec<String>> {
         let mut problems = Vec::new();
 
         if let Err(mut ca_problems) = self.validate_ca_bundles() {
@@ -3786,7 +3765,9 @@ impl GatewayConfig {
 
         // validate every enabled plugin instance's endpoint at load time
         problems.append(&mut self.plugins.validate());
-        problems.append(&mut self.operator_url_problems());
+        if strict_urls {
+            problems.append(&mut self.operator_url_problems());
+        }
 
         // validate prompt templates: unique versions, well-formed variables, and
         // decorator placeholders that reference only declared variables
@@ -6540,7 +6521,7 @@ mod tests {
     /// One denied endpoint must not withhold the snapshot from every tenant:
     /// the row is pruned with a problem line instead.
     #[test]
-    fn the_snapshot_prunes_a_denied_operator_url_instead_of_failing() {
+    fn the_snapshot_keeps_a_guard_with_a_denied_url_and_reports_it() {
         let mut config = egress_config();
         config.guardrail_webhook.enabled = true;
         config.guardrail_webhook.url = METADATA.to_string();
@@ -6556,16 +6537,21 @@ mod tests {
 
         let warnings = config.sanitize_for_snapshot();
 
-        assert!(config.validate().is_ok(), "the pruned config must validate");
-        assert!(!config.guardrail_webhook.enabled);
-        assert!(!config.pii_sanitizer.enabled);
-        assert_eq!(config.plugins.instances.len(), 1);
-        assert_eq!(config.plugins.instances[0].slug, "good");
+        assert!(
+            config.validate_snapshot().is_ok(),
+            "a kept guard must not withhold the snapshot"
+        );
+        // file configs stay strict
+        assert!(config.validate().is_err());
+        // kept, not switched off: a fail-closed guard must not turn fail-open
+        assert!(config.guardrail_webhook.enabled);
+        assert!(config.pii_sanitizer.enabled);
+        assert_eq!(config.plugins.instances.len(), 2);
         // the provider is dropped like one with a denied api_base
         assert!(config.providers.is_empty());
         for needle in [
-            "guardrail webhook",
-            "pii sanitizer",
+            "guardrail_webhook.url",
+            "pii_sanitizer.restore_url",
             "plugin 'bad'",
             "status_page_url",
         ] {

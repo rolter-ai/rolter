@@ -547,4 +547,29 @@ mod tests {
         }
         assert_eq!(listener.accepted(), 0);
     }
+
+    /// A plugin keeps its own failure mode when the policy refuses its
+    /// endpoint: fail-open passes the content on unchanged.
+    #[tokio::test]
+    async fn a_denied_fail_open_plugin_endpoint_passes_the_request() {
+        let content = serde_json::json!({"messages": []});
+        let p = plugin(
+            "audit",
+            "http://169.254.169.254/hook".to_string(),
+            FailureMode::FailOpen,
+        );
+        let out = dispatch(
+            &[&p],
+            PluginStage::PreUpstream,
+            &Metrics::default(),
+            &crate::egress_client::testing::permissive(),
+            "gpt-4",
+            "route",
+            "trace",
+            &WebhookTenant::default(),
+            &content,
+        )
+        .await;
+        assert_eq!(out, DispatchOutcome::Allow(content));
+    }
 }

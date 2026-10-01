@@ -387,4 +387,14 @@ mod tests {
         assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
         assert_eq!(listener.accepted(), 0);
     }
+
+    /// A request-time refusal is a call failure like any other, so the
+    /// webhook's failure mode decides: fail-open lets the request through.
+    #[tokio::test]
+    async fn a_denied_webhook_url_follows_a_fail_open_failure_mode() {
+        let egress = crate::egress_client::testing::permissive();
+        let mut cfg = fail_closed("http://169.254.169.254/latest/meta-data/".to_string());
+        cfg.failure_mode = FailureMode::FailOpen;
+        assert_eq!(consult(&cfg, &egress).await, WebhookOutcome::Allow);
+    }
 }

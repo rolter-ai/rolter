@@ -2047,7 +2047,7 @@ async fn get_config_problems(State(state): State<ControlState>) -> Json<Value> {
     let mut problems = config.sanitize_for_snapshot();
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
-    if let Err(fatal) = config.validate() {
+    if let Err(fatal) = config.validate_snapshot() {
         problems.extend(fatal);
     }
     // rows the loader could only serve by guessing, such as a budget period it
@@ -2226,7 +2226,7 @@ async fn build_snapshot(
             // served — dropping one of two colliding rows would be a guess —
             // so they still refuse. Row-local defects were pruned above and
             // ride out in `problems` instead of withholding the fleet (#926)
-            if let Err(problems) = config.validate() {
+            if let Err(problems) = config.validate_snapshot() {
                 tracing::error!(?problems, "refusing to serve invalid config snapshot");
                 return BuiltSnapshot::error(
                     (
