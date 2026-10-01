@@ -255,7 +255,7 @@ docker run --rm -p 4001:4001 \
 
 Both binaries and the compiled dashboard UI are packaged into a single slim Debian image. To build it from source:
 
-Add `--build-arg CARGO_FEATURES=postgres` to build the control plane with its database support, sign-in and CRUD API. The Compose files do, and the default build leaves it out.
+The build includes the control plane's database support, sign-in and CRUD API (`CARGO_FEATURES=postgres`, the Dockerfile default), the same as the published image. Pass `--build-arg CARGO_FEATURES=` to build an in-memory-only control plane without them.
 
 <CodeGroup>
 
