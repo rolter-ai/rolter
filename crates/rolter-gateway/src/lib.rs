@@ -557,7 +557,12 @@ mod startup_log_tests {
         });
         let seen = captured.0.lock().join("\n");
         for secret in [&user_secret, &query_secret] {
-            assert!(!seen.contains(secret.as_str()), "{secret} leaked:\n{seen}");
+            // the message names neither the secret nor the captured line, so a
+            // failure cannot itself print the credential
+            assert!(
+                !seen.contains(secret.as_str()),
+                "a test credential reached the startup log"
+            );
         }
         assert!(seen.contains("ch:8123"), "{seen}");
     }
