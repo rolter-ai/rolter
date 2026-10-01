@@ -212,7 +212,22 @@ docker run --rm -p 4000:4000 -p 4001:4001 \
 
 <Warning>
   The admin token closes the management API only. The gateway on port 4000 accepts the virtual keys in `rolter.toml`, and the one the image ships, `sk-rolter-dev`, is printed in these docs and allows every model. Before other hosts can reach port 4000, replace it in the `[[virtual_keys]]` section of your own `rolter.toml` with a key nobody else knows, and mount that file as above. Deleting the section instead leaves the gateway open to anyone.
+
+Once an admin token is set, the control plane also stops handing `sk-rolter-dev` to gateways that poll its snapshot, and reports the omission under `GET /api/v1/config/problems`. A gateway that loads its own `rolter.toml` directly is not covered by that, so the file is still the place to remove it.
+
 </Warning>
+
+Where `sk-rolter-dev` can come from, and how each production path avoids it:
+
+| Path                               | Where the key comes from                                       | What avoids it                                                                        |
+| ---------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Single image, no mounted config    | the example baked in as `/app/rolter.toml`                     | mount your own `rolter.toml` without `[[virtual_keys]]`, or run open on loopback only |
+| Team compose stack                 | none: it mounts `docker/rolter.team.toml`                      | nothing to do                                                                         |
+| Helm chart                         | none: control plane, gateways and preflight read `config.file` | keep `[[virtual_keys]]` out of `config.file` or your `existingConfigMap`              |
+| `rolter init --profile production` | none: the generated `rolter.toml` has no `[[virtual_keys]]`    | create keys in the dashboard or API                                                   |
+| `rolter init --profile local`      | the example, on purpose                                        | do not ship it                                                                        |
+
+`rolter check` fails with an error on any config file that still declares `sk-rolter-dev`.
 
 ## Run just the gateway
 
@@ -240,7 +255,7 @@ docker run --rm -p 4001:4001 \
 
 Both binaries and the compiled dashboard UI are packaged into a single slim Debian image. To build it from source:
 
-Add `--build-arg CARGO_FEATURES=postgres` to build the control plane with its database support, sign-in and CRUD API. The Compose files do, and the default build leaves it out.
+The build includes the control plane's database support, sign-in and CRUD API (`CARGO_FEATURES=postgres`, the Dockerfile default), the same as the published image. Pass `--build-arg CARGO_FEATURES=` to build an in-memory-only control plane without them.
 
 <CodeGroup>
 

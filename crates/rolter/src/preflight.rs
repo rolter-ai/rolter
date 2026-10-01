@@ -498,6 +498,30 @@ fn custom_api_base_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding>
         .collect()
 }
 
+/// The public example key in a config file is a credential the whole internet
+/// knows, with access to every model. Fatal rather than a warning: a production
+/// config that carries it serves it to every gateway polling the control plane
+/// (#2408).
+fn example_key_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    if !config
+        .virtual_keys
+        .iter()
+        .any(|k| k.is_public_example_key())
+    {
+        return Vec::new();
+    }
+    vec![Finding::error(
+        format!(
+            "config declares the public virtual key {}",
+            rolter_core::PUBLIC_EXAMPLE_KEY
+        ),
+        "it ships in rolter.example.toml and the image's baked config, is published in the \
+         repository, and allows every model. Delete its [[virtual_keys]] entry (`rolter init \
+         --profile production` writes a config without it) and mint keys from the dashboard \
+         or API instead.",
+    )]
+}
+
 /// Report every key in the file the config model does not recognise (#1424).
 ///
 /// rolter's config types have no `deny_unknown_fields` on purpose: a file
@@ -625,7 +649,10 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
             }
         }
         match rolter_core::GatewayConfig::load(std::path::Path::new(path)) {
-            Ok(config) => findings.extend(custom_api_base_findings(&config)),
+            Ok(config) => {
+                findings.extend(custom_api_base_findings(&config));
+                findings.extend(example_key_findings(&config));
+            }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
                 error.to_string(),
@@ -756,6 +783,25 @@ mod tests {
             out.is_empty(),
             "no preview for a file that does not parse: {out}"
         );
+    }
+
+    #[test]
+    fn the_public_example_key_is_a_fatal_finding() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            "[[virtual_keys]]\nkey = \"sk-rolter-dev\"\n",
+        )
+        .expect("parses");
+        let findings = example_key_findings(&config);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].fatal, "must be an error, not a warning");
+        let (_, failed) = report(&findings, false);
+        assert!(failed, "a plain `rolter check` must fail on it");
+
+        let other = rolter_core::GatewayConfig::from_toml_str(
+            "[[virtual_keys]]\nkey = \"sk-something-else\"\n",
+        )
+        .expect("parses");
+        assert!(example_key_findings(&other).is_empty());
     }
 
     #[test]
