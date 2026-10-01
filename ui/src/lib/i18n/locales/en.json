@@ -2234,10 +2234,9 @@
         "body": "People signing in through it lose that route immediately. Its registration, client secret and group mappings stay, so turning it back on restores sign-in.",
         "confirm": "Take out of service"
       },
-      "lockout": {
-        "title": "Members would be locked out of sign-in",
-        "body": "Password sign-in is off and {{name}} is the only enabled provider, so no member could sign in. Superadmins are exempt from the password setting, so only they could still get in, and they could turn password sign-in back on from this screen.",
-        "noPassword": "Accounts created through a provider have no password. Turning password sign-in back on does not restore them; a superadmin has to set one."
+      "lastMethod": {
+        "reason": "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off, so no member could sign in. Enable password sign-in or another provider first.",
+        "refused": "Another change left no other way to sign in, so the control plane refused this one. Enable password sign-in or another provider first."
       },
       "clearSecret": {
         "title": "Remove the stored client secret for {{name}}?",
