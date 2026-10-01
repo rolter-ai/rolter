@@ -29,9 +29,10 @@ use rolter_store::postgres::models::{
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
-    BusinessUnitRepo, CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
-    PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
-    RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
+    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo,
+    VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -229,6 +230,9 @@ pub(crate) enum ApiError {
     Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
+    /// a 409 a client can branch on: `code` is part of the API and never
+    /// renamed, `message` is for the person reading it
+    CodedConflict { code: &'static str, message: String },
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -256,6 +260,10 @@ impl IntoResponse for ApiError {
             Self::TooManyAttempts(remaining) => Some(*remaining),
             _ => None,
         };
+        let code = match &self {
+            Self::CodedConflict { code, .. } => Some(*code),
+            _ => None,
+        };
         let (status, message) = match self {
             Self::Core(err) => match &err {
                 Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
@@ -271,7 +279,9 @@ impl IntoResponse for ApiError {
                 }
             },
             Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
+            Self::Conflict(message) | Self::CodedConflict { message, .. } => {
+                (StatusCode::CONFLICT, message)
+            }
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
                 "missing or invalid credentials".to_string(),
@@ -285,11 +295,11 @@ impl IntoResponse for ApiError {
                 "too many rejected attempts; try again later".to_string(),
             ),
         };
-        let mut response = (
-            status,
-            Json(serde_json::json!({"error": {"message": message}})),
-        )
-            .into_response();
+        let mut error = serde_json::json!({"message": message});
+        if let Some(code) = code {
+            error["code"] = code.into();
+        }
+        let mut response = (status, Json(serde_json::json!({ "error": error }))).into_response();
         // say what the lock reads, so a client waits rather than polling. rounded
         // up, so a sub-second remainder never renders as `0`
         if let Some(retry_after) = retry_after {
@@ -4966,6 +4976,20 @@ struct UpdateUser {
     deactivated: Option<bool>,
 }
 
+/// stable code of the 409 for a write that would leave the deployment with no
+/// active superadmin account (#2344)
+pub(crate) const LAST_SUPERADMIN: &str = "last_superadmin";
+
+/// the refusal for a write that would leave no active superadmin. the admin
+/// token is not an account, so it never counts as the one that remains
+pub(crate) fn last_superadmin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_SUPERADMIN,
+        message: "this is the last active superadmin; make another account superadmin first"
+            .to_string(),
+    }
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -4998,19 +5022,25 @@ async fn update_user(
         }
     }
 
-    let mut user = UserRepo(pool)
-        .update(
+    // one transaction under the superadmin lock, so the guard and the write
+    // cannot be split by a concurrent demotion (#2344)
+    let user = match UserRepo(pool)
+        .update_account(
             id,
             email.as_deref(),
             password_hash.as_deref(),
             body.is_superadmin,
+            body.deactivated,
         )
-        .await?;
+        .await?
+    {
+        LockoutGuard::Done(user) => user,
+        LockoutGuard::WouldLockOut => return Err(last_superadmin()),
+    };
 
     let mut sessions_revoked = 0;
     let mut detail = serde_json::json!({"email": user.email, "deactivated": body.deactivated});
     if let Some(deactivated) = body.deactivated {
-        user = UserRepo(pool).set_deactivated(id, deactivated).await?;
         if deactivated {
             // cut existing access immediately, not just at token expiry
             sessions_revoked = SessionRepo(pool).delete_for_user_except(id, None).await?;
@@ -5064,7 +5094,9 @@ async fn delete_user(
         .into_iter()
         .filter_map(|(_membership, org, _team)| org)
         .collect();
-    UserRepo(pool(&state)).delete(id).await?;
+    if UserRepo(pool(&state)).delete(id).await? == LockoutGuard::WouldLockOut {
+        return Err(last_superadmin());
+    }
     let detail = serde_json::json!({"personal_keys": personal_keys});
     // an account that belonged to no org still gets its row, with none
     let scopes: Vec<Option<Uuid>> = if orgs.is_empty() {

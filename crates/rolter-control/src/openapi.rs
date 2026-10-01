@@ -124,6 +124,10 @@ impl QueryParam {
     }
 }
 
+/// the `409` an account write answers when it would leave no active superadmin
+const LAST_SUPERADMIN_409: &str =
+    "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -143,6 +147,9 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
+    /// when this operation can answer `409` with a stable `error.code`, what
+    /// that refusal means
+    conflict: Option<&'static str>,
 }
 
 impl Op {
@@ -163,6 +170,7 @@ impl Op {
             query: &[],
             public: false,
             see_other: None,
+            conflict: None,
         }
     }
 
@@ -212,6 +220,11 @@ impl Op {
         self
     }
 
+    fn conflict(mut self, description: &'static str) -> Self {
+        self.conflict = Some(description);
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -250,6 +263,12 @@ impl Op {
                     "description": description,
                     "headers": {"Location": {"schema": {"type": "string"}}}
                 }),
+            );
+        }
+        if let Some(description) = self.conflict {
+            responses.insert(
+                "409".into(),
+                json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
         responses.insert(
@@ -811,8 +830,10 @@ fn operations() -> Vec<Op> {
             .ok(Payload::Ref("CreatedUser")),
             Op::put("/api/v1/users/{id}", "updateUser", "Edit a global account")
                 .body(Payload::Ref("UpdateUser"))
-                .ok(Payload::Ref("User")),
-            Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account"),
+                .ok(Payload::Ref("User"))
+                .conflict(LAST_SUPERADMIN_409),
+            Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
+                .conflict(LAST_SUPERADMIN_409),
             Op::get(
                 "/api/v1/orgs/{org_id}/memberships",
                 "listMemberships",

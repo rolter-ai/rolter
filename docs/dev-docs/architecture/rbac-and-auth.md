@@ -401,6 +401,8 @@ Human users authenticate to the control plane. Two providers ship today: **local
 
 Roles are granted via `memberships` at an **org / team / project** scope. Permission checks resolve the most specific membership for the target resource.
 
+The deployment always keeps one active superadmin (`is_superadmin` and not deactivated, #2344). `UserRepo::update_account`, `set_deactivated` and `delete` take one transaction-scoped advisory lock (`pg_advisory_xact_lock(hashtextextended('superadmins', 0))`) before they count the other active superadmins, and return `LockoutGuard::WouldLockOut` when the target is the last one. The API maps that to `409` with `error.code = last_superadmin`; SCIM deprovisioning and `active: false` answer a SCIM `409`. The lock is one key for the whole set rather than a row lock on the target because two concurrent demotions of two different superadmins would each lock only their own row and each see the other still active. `ROLTER_ADMIN_TOKEN` is not an account and never counts as a remaining superadmin, nor is it exempt. The `rolter-seed` bootstrap and `rolter mfa reset` only create or promote accounts or clear a second factor, so they cannot shrink the set.
+
 Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
 
 ```mermaid
