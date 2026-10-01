@@ -218,7 +218,6 @@ priorities live on the issues.
 | #1825 | saved filter presets on LLM Logs and the Dashboard                                     | V5, F2                                         |
 | #1831 | members cannot read their own MCP tool-call logs                                       | E6                                             |
 | #1841 | a deprovisioned person's own virtual keys keep working                                 | T6, S2                                         |
-| #1840 | anonymous `/api/v1/config` still describes the upstream topology                       | S1.3                                           |
 | #1133 | a database-backed provider cannot opt out of the hosted host pin                       | A3-e                                           |
 | #1826 | LDAP is implemented but not reachable from sign-in                                     | A1-c                                           |
 | #1827 | no SAML single sign-on                                                                 | A1-b (SAML-only IdPs)                          |
