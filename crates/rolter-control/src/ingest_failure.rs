@@ -183,35 +183,11 @@ fn report(
             stream = stream.label(),
             reason = reason.label(),
             suppressed,
-            error = %redact_userinfo(detail),
+            error = %rolter_core::redact::redact_urls_in_text(detail),
             "telemetry ingest failed; the events were dropped (further failures on this \
              stream are summarised once a minute)"
         );
     }
-}
-
-/// Mask the `user:password@` part of any URL in `text`.
-///
-/// The store's error quotes the URL it posted to, and `CLICKHOUSE_URL` may
-/// carry its credentials inline; the log is the right place for the URL but
-/// not for the password in it.
-fn redact_userinfo(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(scheme_end) = rest.find("://") {
-        let authority_start = scheme_end + 3;
-        out.push_str(&rest[..authority_start]);
-        rest = &rest[authority_start..];
-        let authority_end = rest
-            .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace() || c == ')')
-            .unwrap_or(rest.len());
-        if let Some(at) = rest[..authority_end].rfind('@') {
-            out.push_str("***");
-            rest = &rest[at..];
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 #[cfg(test)]
@@ -321,19 +297,6 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert!(!seen[0].contains("s3cret"), "{}", seen[0]);
         assert!(seen[0].contains("http://***@ch:8123/"), "{}", seen[0]);
-    }
-
-    #[test]
-    fn userinfo_redaction_leaves_everything_else_alone() {
-        assert_eq!(redact_userinfo("no url here"), "no url here");
-        assert_eq!(
-            redact_userinfo("post http://ch:8123/?q=a@b failed"),
-            "post http://ch:8123/?q=a@b failed"
-        );
-        assert_eq!(
-            redact_userinfo("a https://u:p@h/x and http://v@k"),
-            "a https://***@h/x and http://***@k"
-        );
     }
 
     async fn body_of(err: ApiError) -> (u16, String) {

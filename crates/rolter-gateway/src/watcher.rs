@@ -168,7 +168,7 @@ async fn run(
                 .metrics
                 .config_reload_failures_total
                 .fetch_add(1, Relaxed);
-            tracing::warn!(error = %err, "config snapshot poll failed");
+            tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "config snapshot poll failed");
         }
     }
 }

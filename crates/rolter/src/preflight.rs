@@ -177,7 +177,7 @@ fn check_datastores(env: &dyn Env, out: &mut Vec<Finding>) {
                 "ROLTER_DATABASE_URL is not a postgres URL",
                 format!(
                     "expected a postgres:// or postgresql:// URL, got `{}`",
-                    redact(&url)
+                    rolter_core::redact::redact_url(&url)
                 ),
             )),
         Some(_) => {}
@@ -254,17 +254,6 @@ fn check_exposure(env: &dyn Env, out: &mut Vec<Finding>) {
             "the management API is reachable on every interface. Bind it to a private address, \
              or keep it behind an ingress that terminates TLS and restricts access.",
         ));
-    }
-}
-
-/// Redact anything that looks like credentials in a URL before printing it —
-/// this output goes to CI logs.
-fn redact(url: &str) -> String {
-    match (url.find("://"), url.find('@')) {
-        (Some(scheme), Some(at)) if at > scheme => {
-            format!("{}://***@{}", &url[..scheme], &url[at + 1..])
-        }
-        _ => url.to_string(),
     }
 }
 
@@ -1091,7 +1080,7 @@ mod tests {
             !text.contains("hunter2"),
             "credentials leaked into the report:\n{text}"
         );
-        assert!(text.contains("***@db/rolter"));
+        assert!(text.contains("***@db/rolter"), "{text}");
     }
 
     #[test]
@@ -1141,14 +1130,6 @@ mod tests {
         assert_eq!(KEK_ENV, rolter_store::postgres::crypto::KEK_ENV);
     }
 
-    #[test]
-    fn redact_leaves_a_credential_free_url_alone() {
-        assert_eq!(
-            redact("postgres://db:5432/rolter"),
-            "postgres://db:5432/rolter"
-        );
-        assert_eq!(redact("not-a-url"), "not-a-url");
-    }
     #[test]
     fn a_missing_key_pepper_warns() {
         let mut env = FakeEnv::healthy();

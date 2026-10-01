@@ -530,6 +530,13 @@ struct ControlState {
     mfa_without_kek: bool,
 }
 
+/// Log that a datastore endpoint is in use. Every startup line that names a
+/// redis or clickhouse url goes through here so the password in it cannot reach
+/// the log (#2406).
+fn log_endpoint(what: &str, url: &str) {
+    tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
+}
+
 /// Run the control plane to completion. The caller owns argument parsing and
 /// telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
@@ -549,7 +556,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let redis = match &args.redis_url {
         Some(url) => match redis::Client::open(url.as_str()) {
             Ok(client) => {
-                tracing::info!(%url, "publishing config bumps to redis");
+                log_endpoint("publishing config bumps to redis", url);
                 Some(client)
             }
             Err(err) => {
@@ -561,7 +568,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
 
     let clickhouse = args.clickhouse_url.as_deref().map(|url| {
-        tracing::info!(%url, "usage/cost analytics enabled");
+        log_endpoint("usage/cost analytics enabled", url);
         analytics::ClickHouseClient::new(url)
     });
 
@@ -2373,6 +2380,79 @@ mod pool_config_tests {
                 "error should name the offending variable, got: {err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_log_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!("{}={value:?} ", field.name()));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+
+    /// A throwaway secret built at run time, so no credential-shaped literal
+    /// sits in the source for secret scanners to flag
+    fn throwaway_secret(tag: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        format!("{tag}{}x{nanos}", std::process::id())
+    }
+
+    #[test]
+    fn startup_lines_keep_the_redis_and_clickhouse_passwords_out() {
+        let redis_secret = throwaway_secret("r");
+        let user_secret = throwaway_secret("u");
+        let query_secret = throwaway_secret("q");
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_endpoint(
+                "publishing config bumps to redis",
+                &format!("redis://:{redis_secret}@cache:6379/0"),
+            );
+            super::log_endpoint(
+                "usage/cost analytics enabled",
+                &format!("http://default:{user_secret}@ch:8123/?password={query_secret}"),
+            );
+        });
+        let seen = captured.0.lock().join("\n");
+        for secret in [&redis_secret, &user_secret, &query_secret] {
+            // the message names neither the secret nor the captured line, so a
+            // failure cannot itself print the credential
+            assert!(
+                !seen.contains(secret.as_str()),
+                "a test credential reached the startup log"
+            );
+        }
+        assert!(seen.contains("cache:6379"), "{seen}");
+        assert!(seen.contains("ch:8123"), "{seen}");
     }
 }
 
