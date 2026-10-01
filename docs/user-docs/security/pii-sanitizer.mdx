@@ -75,6 +75,8 @@ A request-only setup (`direction = "request"`, `restoration = "never"`) has no r
 If the sanitizer is a compliance control rather than a best-effort improvement, use `fail_closed`. Under `fail_open` an outage silently sends untouched personal data to the provider.
 </Warning>
 
+The sanitizer cannot run on a [realtime](/api/realtime) session. Under `fail_closed`, a `/v1/realtime` upgrade is refused with HTTP 400 `sanitizer_unsupported_on_realtime`, so no unsanitized session is opened. Under `fail_open` the session is admitted and its content reaches the provider unsanitized; protect those with a `redact` guardrail rule.
+
 A failure on the _response_ leg never fails the request, in either mode: the upstream call already happened and was already billed, so refusing to deliver would spend the caller's money and return nothing. The `rolter_pii_sanitizer_errors_total` counter records it.
 
 ## The service contract

@@ -141,8 +141,8 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         note: "guardrails, the guardrail webhook and pre_upstream plugins run \
                on /v1/realtime text events and function-call arguments, but \
                the PII sanitizer and pre_route / post_response plugins do \
-               not, so a deployment that relies on the sanitizer is not \
-               protected on a realtime route (#2489)",
+               not; a fail_closed PII sanitizer refuses the session, a \
+               fail_open one admits it unsanitized (#2489)",
         nav_keys: &[],
     },
     SubsystemStability {

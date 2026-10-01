@@ -496,3 +496,71 @@ async fn redacted_function_call_arguments_are_rewritten() {
         .unwrap()
         .starts_with(r#"{"token": ""#));
 }
+
+/// The PII sanitizer cannot run on a realtime socket (#2496): a fail-closed
+/// deployment refuses the upgrade, a fail-open one admits it, and none at all
+/// is unaffected.
+async fn open_with_sanitizer(sanitizer: Option<Value>) -> Result<Client, (u16, Value)> {
+    let (upstream, _) = upstream(vec!["hi"]).await;
+    let mut config = config(upstream, json!([]));
+    if let Some(sanitizer) = sanitizer {
+        config.pii_sanitizer = serde_json::from_value(sanitizer).unwrap();
+    }
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!(
+            "ws://{gw}/v1/realtime?model={MODEL}"
+        ))
+        .unwrap();
+    request.headers_mut().insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {KEY}").parse().unwrap(),
+    );
+    match tokio_tungstenite::connect_async(request).await {
+        Ok((client, _)) => Ok(client),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => Err((
+            response.status().as_u16(),
+            response
+                .body()
+                .as_deref()
+                .and_then(|body| serde_json::from_slice(body).ok())
+                .unwrap_or(Value::Null),
+        )),
+        Err(other) => panic!("expected an admission or an HTTP refusal, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn a_fail_closed_sanitizer_refuses_the_session() {
+    let sanitizer = json!({"enabled": true, "url": "http://127.0.0.1:9/sanitize",
+        "failure_mode": "fail_closed"});
+    let (status, body) = open_with_sanitizer(Some(sanitizer))
+        .await
+        .expect_err("the upgrade is refused");
+    assert_eq!(status, 400);
+    assert_eq!(body["error"]["code"], "sanitizer_unsupported_on_realtime");
+}
+
+#[tokio::test]
+async fn a_fail_open_sanitizer_admits_the_session() {
+    let sanitizer = json!({"enabled": true, "url": "http://127.0.0.1:9/sanitize",
+        "failure_mode": "fail_open"});
+    assert!(open_with_sanitizer(Some(sanitizer)).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_disabled_fail_closed_sanitizer_admits_the_session() {
+    let sanitizer = json!({"enabled": false, "failure_mode": "fail_closed"});
+    assert!(open_with_sanitizer(Some(sanitizer)).await.is_ok());
+}
+
+#[tokio::test]
+async fn no_sanitizer_admits_the_session() {
+    assert!(open_with_sanitizer(None).await.is_ok());
+}

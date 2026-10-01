@@ -154,6 +154,20 @@ pub async fn realtime(
         return denial.into_response();
     }
 
+    // the sanitizer cannot run on a realtime socket (#2489), so a deployment
+    // that made it a hard requirement must not get a session that silently
+    // skips it. fail-open keeps its availability-over-enforcement contract and
+    // is admitted. refused before any budget, rate-limit or upstream side effect
+    if sanitizer_blocks_realtime(&snap.pii_sanitizer) {
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "this deployment requires the PII sanitizer (failure_mode = fail_closed), which \
+             cannot be applied to a realtime session; use a non-realtime endpoint",
+        )
+        .with_code("sanitizer_unsupported_on_realtime")
+        .into_response();
+    }
+
     // the policy an HTTP request meets, on the same scope chain (#1396). a
     // session opens only while every budget it draws on has room left, and
     // only for a model this deployment is willing to serve unpriced
@@ -727,6 +741,13 @@ fn to_client(message: UpstreamMessage) -> Message {
         UpstreamMessage::Close(_) => Message::Close(None),
         UpstreamMessage::Frame(_) => Message::Close(None),
     }
+}
+
+/// Whether the PII sanitizer is enabled and fail-closed, the one setting under
+/// which skipping it on realtime must refuse the session. The sanitizer config
+/// is deployment-wide, so there is no per-tenant or per-route scope to consult.
+fn sanitizer_blocks_realtime(config: &rolter_core::PiiSanitizerConfig) -> bool {
+    config.enabled && config.failure_mode == rolter_core::FailureMode::FailClosed
 }
 
 fn api_error(status: StatusCode, message: &str) -> Response {
