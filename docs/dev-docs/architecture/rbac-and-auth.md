@@ -188,9 +188,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. The unauthenticated
-`GET /api/v1/config` still lists every org's providers, routes and groups;
-whether it may describe that topology at all is #1840.
+every key's org, team, project and creator. `GET /api/v1/config` still lists
+every org's providers, routes and groups, so it needs a session of any role
+(#1840).
 
 ### One org never reaches another (#1844, #1845)
 
@@ -269,9 +269,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. The unauthenticated
-`GET /api/v1/config` still lists every org's providers, routes and groups;
-whether it may describe that topology at all is #1840.
+every key's org, team, project and creator. `GET /api/v1/config` still lists
+every org's providers, routes and groups, so it needs a session of any role
+(#1840).
 
 ### Empty key sets
 

@@ -129,6 +129,6 @@ curl -X PUT $BASE/providers/$PROVIDER \
 - **Config file still wins** — anything declared in the bootstrap
   `rolter.toml` is a read-only "config model" (LiteLLM-style): the API
   rejects runtime mutations to it with `409`.
-- **Reads never leak secrets** — `GET /api/v1/config` (the dashboard read)
-  redacts `api_key`; only the token-guarded snapshot endpoint carries
+- **Reads never leak secrets** — `GET /api/v1/config` (the dashboard read,
+  session required) redacts `api_key`; only the token-guarded snapshot endpoint carries
   decrypted keys, because the gateway needs them to call upstreams.
