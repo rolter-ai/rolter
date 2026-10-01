@@ -1691,7 +1691,7 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
     if config.provider_defaults.is_empty() {
         return Ok(());
     }
-    let Some((_project_id, org_id)) = default_project(pool).await? else {
+    let Some((project_id, org_id)) = default_project(pool).await? else {
         tracing::warn!(
             "providers.default was not seeded: create the default org/team/project first with rolter-seed"
         );
@@ -1737,6 +1737,8 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 provider.api_key_env_name(),
                 provider.egress_proxy.as_deref(),
                 &provider.egress_proxies,
+                // `project_scoped` means the default project here (#1919)
+                provider.project_scoped.then_some(project_id),
             )
             .await?;
         if provider.surplus_api_key_count() > 0 {
@@ -1783,7 +1785,7 @@ async fn seed_default_provider_groups(
     if config.provider_group_defaults.is_empty() {
         return Ok(());
     }
-    let Some((_project_id, org_id)) = default_project(pool).await? else {
+    let Some((project_id, org_id)) = default_project(pool).await? else {
         tracing::warn!(
             "provider_groups.default was not seeded: create the default org/team/project first with rolter-seed"
         );
@@ -1816,10 +1818,23 @@ async fn seed_default_provider_groups(
             continue;
         }
         let strategy = balancing_strategy_str(group.strategy);
-        let created = groups.create(org_id, &group.name, &slug, strategy).await?;
+        let scope = group.project_scoped.then_some(project_id);
+        let created = groups
+            .create(org_id, &group.name, &slug, strategy, scope)
+            .await?;
         let mut members = Vec::with_capacity(group.members.len());
         for member in &group.members {
             match providers.iter().find(|p| p.name == member.provider) {
+                // a provider scoped to a project the group does not share
+                // would be reachable from outside it through the group (#1919)
+                Some(provider) if provider.project_id.is_some() && provider.project_id != scope => {
+                    tracing::warn!(
+                        group = %group.name,
+                        provider = %member.provider,
+                        "provider_groups.default member skipped: the provider is scoped to a \
+                         project the group is not"
+                    )
+                }
                 Some(provider) => members.push((
                     provider.id,
                     member.model.clone(),
@@ -3784,6 +3799,7 @@ mod tests {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         };
         let route = |model: &str| -> ModelRoute {
             serde_json::from_value(json!({

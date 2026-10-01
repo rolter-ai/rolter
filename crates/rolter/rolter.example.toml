@@ -72,6 +72,16 @@ api_key_env = "OPENROUTER_API_KEY"
 # that sets it, and `--strict` fails on it. See ADR-0029.
 # allow_custom_api_base = true
 
+# a provider is org-wide by default: every project of the organization can use
+# it. `project_scoped = true` keeps it (and any route or group behind it) to
+# the project a file is imported into with `rolter-seed --import`; a gateway
+# reading this file directly ignores it, since its keys carry no project.
+# [[providers]]
+# name = "team-vllm"
+# kind = "openai_compatible"
+# api_base = "http://vllm-team:8000"
+# project_scoped = true
+
 # OpenAI-compatible cloud-provider endpoints (uncomment the providers you use).
 # Azure uses `api-key`; Bedrock and Vertex use bearer tokens.
 # [[providers]]
@@ -285,6 +295,9 @@ weight = 1
 # provider = "vllm-msk-2"
 # model = "qwen3-awq"          # optional upstream rewrite; omit for passthrough
 # weight = 1
+# `project_scoped = true` (on the group, before its members) keeps the group to
+# one project. a scoped group may hold that project's providers and org-wide
+# ones; an org-wide group may hold only org-wide providers.
 
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development

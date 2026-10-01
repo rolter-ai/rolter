@@ -2097,6 +2097,30 @@ async fn create_team(
     Ok(Json(team))
 }
 
+/// Refuse deleting a project, or a team holding it, while a provider or group
+/// is scoped to it (#1919). The database refuses too, with a foreign-key error;
+/// this says what to move first.
+async fn require_no_scoped_resources(
+    state: &ControlState,
+    project_ids: &[Uuid],
+    what: &str,
+) -> ApiResult<()> {
+    if project_ids.is_empty() {
+        return Ok(());
+    }
+    let held = ProjectRepo(pool(state))
+        .scoped_resources(project_ids)
+        .await?;
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(ApiError::Conflict(format!(
+        "this {what} still owns {}; delete them or make them org-wide first, since deleting \
+         the project would otherwise widen their access or destroy them",
+        held.join(", ")
+    )))
+}
+
 async fn delete_team(
     principal: Principal,
     State(state): State<ControlState>,
@@ -2105,6 +2129,13 @@ async fn delete_team(
     let chain = ScopeChain::from_team(pool(&state), id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("team", Delete)).await?;
+    let project_ids: Vec<Uuid> = ProjectRepo(pool(&state))
+        .list(id)
+        .await?
+        .into_iter()
+        .map(|project| project.id)
+        .collect();
+    require_no_scoped_resources(&state, &project_ids, "team").await?;
     TeamRepo(pool(&state)).delete(id).await?;
     log_audit(
         &state,
@@ -2228,6 +2259,7 @@ async fn delete_project(
     let chain = ScopeChain::from_project(pool(&state), id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("project", Delete)).await?;
+    require_no_scoped_resources(&state, &[id], "project").await?;
     ProjectRepo(pool(&state)).delete(id).await?;
     log_audit(
         &state,
@@ -2538,14 +2570,112 @@ async fn list_providers(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Provider>>> {
-    authorize(
+    let rows = ProviderRepo(pool(&state)).list(org_id).await?;
+    let visible = visible_in_scope(
         &state,
         &principal,
-        ScopeChain::org(org_id),
         cap!("provider", Read),
+        org_id,
+        rows,
+        |row| row.project_id,
     )
     .await?;
-    Ok(Json(ProviderRepo(pool(&state)).list(org_id).await?))
+    Ok(Json(visible))
+}
+
+/// The rows of an org listing the caller may see, where a row may be scoped to
+/// one project (#1919).
+///
+/// Holding the read role at the org shows every row. Below it, a caller who
+/// holds a role somewhere in the org sees the org-wide rows, which every
+/// project may use, plus the rows scoped to a project they hold the role in;
+/// a caller with no role in the org at all is refused, as the listing always
+/// did.
+async fn visible_in_scope<T>(
+    state: &ControlState,
+    principal: &Principal,
+    requirement: Requirement,
+    org_id: Uuid,
+    rows: Vec<T>,
+    project_of: impl Fn(&T) -> Option<Uuid>,
+) -> ApiResult<Vec<T>> {
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(rows);
+    }
+    let reach = filter.reach(pool(state)).await?;
+    if !reaches_org(&reach, org_id) {
+        return Err(ApiError::Forbidden);
+    }
+    let mut chains: HashMap<Uuid, ScopeChain> = HashMap::new();
+    let mut visible = Vec::new();
+    for row in rows {
+        let Some(project) = project_of(&row) else {
+            visible.push(row);
+            continue;
+        };
+        let chain = match chains.get(&project) {
+            Some(chain) => *chain,
+            None => {
+                let chain = ScopeChain::from_project(pool(state), project).await?;
+                chains.insert(project, chain);
+                chain
+            }
+        };
+        if filter.allows(chain) {
+            visible.push(row);
+        }
+    }
+    Ok(visible)
+}
+
+/// The project a provider or group is being scoped to, checked against the org
+/// it lives in: a project of another org is refused, and so is an unknown one,
+/// with the same message so neither confirms what exists elsewhere (#1919).
+async fn require_scope_project(
+    state: &ControlState,
+    org_id: Uuid,
+    project_id: Uuid,
+) -> ApiResult<()> {
+    if ProjectRepo(pool(state)).in_org(project_id, org_id).await? {
+        return Ok(());
+    }
+    Err(ApiError::Core(Error::Config(
+        "project_id must name a project of this organization".to_string(),
+    )))
+}
+
+/// Refuse a route or group owned by `owner` (a route's project, a group's
+/// scope, `None` for an org-wide group) using a provider scoped to a different
+/// project, since the provider would then be reachable from outside its
+/// project through it (#1919).
+async fn require_providers_usable_from(
+    state: &ControlState,
+    provider_ids: &[Uuid],
+    owner: Option<Uuid>,
+    what: &str,
+) -> ApiResult<()> {
+    let outside = ProviderRepo(pool(state))
+        .scoped_outside(provider_ids, owner)
+        .await?;
+    if outside.is_empty() {
+        return Ok(());
+    }
+    let owner_note = if owner.is_some() {
+        "a different project"
+    } else {
+        "a project, and an org-wide group would expose it to every project"
+    };
+    Err(ApiError::Conflict(format!(
+        "{what} cannot use provider{} {}: scoped to {owner_note}; use org-wide providers \
+         or ones scoped to the same project",
+        if outside.len() == 1 { "" } else { "s" },
+        outside
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 #[derive(Deserialize)]
@@ -2563,6 +2693,11 @@ struct CreateProvider {
     egress_proxy: Option<String>,
     #[serde(default)]
     egress_proxies: Vec<String>,
+    /// scope the provider to one project of the org: only keys minted in it may
+    /// reach the provider, through a route or `provider-slug/model`. Omit for an
+    /// org-wide provider, usable by every project
+    #[serde(default)]
+    project_id: Option<Uuid>,
 }
 
 const PROVIDER_KINDS: [&str; 48] = [
@@ -2887,13 +3022,24 @@ async fn create_provider(
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProvider>,
 ) -> ApiResult<Json<Provider>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("provider", Create),
-    )
-    .await?;
+    // a project-scoped provider is authorised at its project, so a project admin
+    // may create one for their own project. Naming an environment variable is
+    // a read of the control plane's environment, which is an org admin's call
+    // whatever the scope, so that half is checked at the org
+    if let Some(project_id) = body.project_id {
+        require_scope_project(&state, org_id, project_id).await?;
+        let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+        authorize(&state, &principal, chain, cap!("provider", Create)).await?;
+    }
+    if body.project_id.is_none() || has_env_name(&body.api_key_env) {
+        authorize(
+            &state,
+            &principal,
+            ScopeChain::org(org_id),
+            cap!("provider", Create),
+        )
+        .await?;
+    }
     require_non_empty(&body.name, "name")?;
     require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
@@ -2918,6 +3064,7 @@ async fn create_provider(
             body.api_key_env.as_deref(),
             body.egress_proxy.as_deref(),
             &body.egress_proxies,
+            body.project_id,
         )
         .await?;
     if let Some((ciphertext, nonce)) = sealed {
@@ -2933,7 +3080,9 @@ async fn create_provider(
         "provider.create",
         "provider",
         row.id,
-        serde_json::json!({"name": row.name, "slug": row.slug, "kind": row.kind}),
+        serde_json::json!({
+            "name": row.name, "slug": row.slug, "kind": row.kind, "project_id": row.project_id
+        }),
     )
     .await;
     Ok(Json(row))
@@ -2961,6 +3110,15 @@ struct UpdateProvider {
     egress_proxy: Option<String>,
     /// omit to leave unchanged; an empty array clears
     egress_proxies: Option<Vec<String>>,
+    /// omit to leave the scope unchanged; a project id scopes the provider to
+    /// that project; `null` makes it org-wide again
+    #[serde(default, deserialize_with = "explicit_null")]
+    project_id: Option<Option<Uuid>>,
+}
+
+/// Whether a request names an environment variable to read a credential from.
+fn has_env_name(field: &Option<String>) -> bool {
+    field.as_deref().is_some_and(|name| !name.trim().is_empty())
 }
 
 /// Map an optional string field to the repo's tri-state: omitted = unchanged,
@@ -2979,14 +3137,41 @@ async fn update_provider(
 ) -> ApiResult<Json<Provider>> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
     let org_id = existing.org_id;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider", Update),
-    )
-    .await?;
+    // an org-wide provider is an org admin's, and so is any change of scope or
+    // of the environment variable a credential is read from. Only edits inside
+    // a provider already scoped to a project are the project admin's (#1919)
+    match existing.project_id {
+        Some(project_id) if body.project_id.is_none() && !has_env_name(&body.api_key_env) => {
+            let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+            authorize(&state, &principal, chain, cap!("provider", Update)).await?;
+        }
+        _ => {
+            authorize(
+                &state,
+                &principal,
+                ScopeChain::org(existing.org_id),
+                cap!("provider", Update),
+            )
+            .await?;
+        }
+    }
     require_not_config_owned(&state.config_owned.providers, &existing.name, "provider")?;
+    if let Some(Some(project_id)) = body.project_id {
+        require_scope_project(&state, org_id, project_id).await?;
+    }
+    if let Some(scope) = body.project_id {
+        let dependents = ProviderRepo(pool(&state))
+            .dependents_outside(id, scope)
+            .await?;
+        if !dependents.is_empty() {
+            return Err(ApiError::Conflict(format!(
+                "provider '{}' is used by {}, which belong to other projects; remove it from \
+                 them before scoping it to one project",
+                existing.name,
+                dependents.join(", ")
+            )));
+        }
+    }
     if let Some(kind) = &body.kind {
         validate_kind(kind)?;
     }
@@ -3017,6 +3202,7 @@ async fn update_provider(
             tri_state(&body.api_key_env),
             tri_state(&body.egress_proxy),
             body.egress_proxies.as_deref(),
+            body.project_id,
         )
         .await?;
     match sealed {
@@ -3036,7 +3222,7 @@ async fn update_provider(
         "provider.update",
         "provider",
         id,
-        serde_json::json!({"slug": row.slug}),
+        serde_json::json!({"slug": row.slug, "project_id": row.project_id}),
     )
     .await;
     Ok(Json(row))
@@ -3048,13 +3234,11 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider", Delete),
-    )
-    .await?;
+    let chain = match existing.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider", Delete)).await?;
     ProviderRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -3233,14 +3417,16 @@ async fn list_provider_groups(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<ProviderGroupView>>> {
-    authorize(
+    let groups = ProviderGroupRepo(pool(&state)).list(org_id).await?;
+    let groups = visible_in_scope(
         &state,
         &principal,
-        ScopeChain::org(org_id),
         cap!("provider_group", Read),
+        org_id,
+        groups,
+        |group| group.project_id,
     )
     .await?;
-    let groups = ProviderGroupRepo(pool(&state)).list(org_id).await?;
     let mut views = Vec::with_capacity(groups.len());
     for group in groups {
         views.push(view_of(&state, group).await?);
@@ -3258,6 +3444,11 @@ struct CreateProviderGroup {
     strategy: String,
     #[serde(default)]
     members: Vec<GroupMemberInput>,
+    /// scope the group to one project of the org, as for a provider. A scoped
+    /// group may hold that project's providers and org-wide ones; an org-wide
+    /// group may hold only org-wide providers. Omit for an org-wide group
+    #[serde(default)]
+    project_id: Option<Uuid>,
 }
 
 async fn create_provider_group(
@@ -3266,13 +3457,14 @@ async fn create_provider_group(
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProviderGroup>,
 ) -> ApiResult<Json<ProviderGroupView>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("provider_group", Create),
-    )
-    .await?;
+    let chain = match body.project_id {
+        Some(project_id) => {
+            require_scope_project(&state, org_id, project_id).await?;
+            ScopeChain::from_project(pool(&state), project_id).await?
+        }
+        None => ScopeChain::org(org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Create)).await?;
     require_non_empty(&body.name, "name")?;
     validate_strategy(&body.strategy)?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
@@ -3282,8 +3474,9 @@ async fn create_provider_group(
     require_address_slug_free(&state, "provider group slug", &slug, None).await?;
     let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
     require_providers_in_org(&state, org_id, &member_providers).await?;
+    require_providers_usable_from(&state, &member_providers, body.project_id, "this group").await?;
     let group = repo
-        .create(org_id, &body.name, &slug, &body.strategy)
+        .create(org_id, &body.name, &slug, &body.strategy, body.project_id)
         .await?;
     repo.set_members(group.id, &to_member_tuples(&body.members))
         .await?;
@@ -3295,7 +3488,10 @@ async fn create_provider_group(
         "provider_group.create",
         "provider_group",
         group.id,
-        serde_json::json!({"name": group.name, "slug": group.slug, "strategy": group.strategy}),
+        serde_json::json!({
+            "name": group.name, "slug": group.slug, "strategy": group.strategy,
+            "project_id": group.project_id
+        }),
     )
     .await;
     Ok(Json(view_of(&state, group).await?))
@@ -3311,6 +3507,10 @@ struct UpdateProviderGroup {
     strategy: Option<String>,
     /// when present, replaces the entire membership; omit to leave unchanged
     members: Option<Vec<GroupMemberInput>>,
+    /// omit to leave the scope unchanged; a project id scopes the group to that
+    /// project; `null` makes it org-wide again
+    #[serde(default, deserialize_with = "explicit_null")]
+    project_id: Option<Option<Uuid>>,
 }
 
 async fn update_provider_group(
@@ -3321,14 +3521,19 @@ async fn update_provider_group(
 ) -> ApiResult<Json<ProviderGroupView>> {
     let repo = ProviderGroupRepo(pool(&state));
     let existing = repo.get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider_group", Update),
-    )
-    .await?;
+    // changing the scope is an org admin's call; edits inside a scoped group
+    // are its project admin's
+    let chain = match existing.project_id {
+        Some(project_id) if body.project_id.is_none() => {
+            ScopeChain::from_project(pool(&state), project_id).await?
+        }
+        _ => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Update)).await?;
     require_group_not_config_owned(&state, &existing.slug)?;
+    if let Some(Some(project_id)) = body.project_id {
+        require_scope_project(&state, existing.org_id, project_id).await?;
+    }
     if let Some(name) = &body.name {
         require_non_empty(name, "name")?;
     }
@@ -3344,12 +3549,28 @@ async fn update_provider_group(
         let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
         require_providers_in_org(&state, existing.org_id, &member_providers).await?;
     }
+    // the rule is checked against the group as it will be: its new scope, or
+    // the old one, over its new members, or the ones it already has
+    if body.members.is_some() || body.project_id.is_some() {
+        let scope = body.project_id.unwrap_or(existing.project_id);
+        let member_providers: Vec<Uuid> = match &body.members {
+            Some(members) => members.iter().map(|m| m.provider_id).collect(),
+            None => repo
+                .members(id)
+                .await?
+                .into_iter()
+                .map(|m| m.provider_id)
+                .collect(),
+        };
+        require_providers_usable_from(&state, &member_providers, scope, "this group").await?;
+    }
     let group = repo
         .update(
             id,
             body.name.as_deref(),
             slug_change.as_deref(),
             body.strategy.as_deref(),
+            body.project_id,
         )
         .await?;
     if let Some(members) = &body.members {
@@ -3363,7 +3584,7 @@ async fn update_provider_group(
         "provider_group.update",
         "provider_group",
         id,
-        serde_json::json!({"slug": group.slug}),
+        serde_json::json!({"slug": group.slug, "project_id": group.project_id}),
     )
     .await;
     Ok(Json(view_of(&state, group).await?))
@@ -3376,13 +3597,11 @@ async fn delete_provider_group(
 ) -> ApiResult<StatusCode> {
     let repo = ProviderGroupRepo(pool(&state));
     let existing = repo.get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider_group", Delete),
-    )
-    .await?;
+    let chain = match existing.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Delete)).await?;
     require_group_not_config_owned(&state, &existing.slug)?;
     repo.delete(id).await?;
     publish_config_change(&state).await?;
@@ -3831,6 +4050,15 @@ async fn create_route_target(
     if let Some(org_id) = org_id {
         require_providers_in_org(&state, org_id, &[body.provider_id]).await?;
     }
+    // a route may use its own project's providers and org-wide ones (#1919)
+    let route = RouteRepo(pool(&state)).get(route_id).await?;
+    require_providers_usable_from(
+        &state,
+        &[body.provider_id],
+        Some(route.project_id),
+        "this route",
+    )
+    .await?;
     let row = RouteTargetRepo(pool(&state))
         .create(
             route_id,
