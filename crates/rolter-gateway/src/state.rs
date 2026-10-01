@@ -994,6 +994,7 @@ impl AppState {
         forwarder.set_compatibility(&config.compatibility);
         forwarder.set_client_policy(&config.client);
         forwarder.set_model_defaults(&config.model_defaults);
+        health_events.set_provider_orgs(&config.providers);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
         let cache_telemetry = crate::cache_telemetry::CacheTelemetry::new(metrics.clone());
         cache_telemetry.configure(&config.providers);
@@ -1065,6 +1066,7 @@ impl AppState {
         // effect on the next connect without rebuilding a single client
         self.egress.store(Arc::new(config.egress.clone()));
         self.cache_telemetry.configure(&config.providers);
+        self.health_events.set_provider_orgs(&config.providers);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
             config,
             &self.loads,

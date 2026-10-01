@@ -212,8 +212,8 @@ mod tests {
 
     #[test]
     fn every_rollup_is_filtered_to_the_providers_the_caller_may_read() {
-        // a health row names a provider and carries no org, so the provider
-        // filter is the only thing between a rollup and every tenant (#1820)
+        // the org filter is the only thing between a rollup and every tenant
+        // (#1820), and it matches the row's org, never the bare provider name
         for sql in [uptime_sql(0.99), mttr_sql(), timeline_sql("toStartOfHour")] {
             assert!(
                 sql.contains(&format!("{WHERE_WINDOW} and {PROVIDER_VISIBLE}")),
