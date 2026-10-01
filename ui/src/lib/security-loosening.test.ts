@@ -4,7 +4,6 @@ import { loosenings, type SecurityPolicy } from "@/lib/security-loosening";
 
 const CLOSED: SecurityPolicy = {
   virtualKeyRequired: true,
-  dashboardAuthEnabled: true,
   authBypassRoutes: ["/v1/models"],
 };
 
@@ -12,12 +11,6 @@ describe("a save that loosens", () => {
   it("names virtual keys going from enforced to not", () => {
     expect(loosenings(CLOSED, { ...CLOSED, virtualKeyRequired: false })).toEqual([
       { kind: "virtualKeys" },
-    ]);
-  });
-
-  it("names the dashboard going from protected to not", () => {
-    expect(loosenings(CLOSED, { ...CLOSED, dashboardAuthEnabled: false })).toEqual([
-      { kind: "dashboardAuth" },
     ]);
   });
 
@@ -37,14 +30,9 @@ describe("a save that loosens", () => {
     expect(
       loosenings(CLOSED, {
         virtualKeyRequired: false,
-        dashboardAuthEnabled: false,
         authBypassRoutes: ["/v1/models", "/v1/ping"],
       }),
-    ).toEqual([
-      { kind: "virtualKeys" },
-      { kind: "dashboardAuth" },
-      { kind: "bypassRoute", route: "/v1/ping" },
-    ]);
+    ).toEqual([{ kind: "virtualKeys" }, { kind: "bypassRoute", route: "/v1/ping" }]);
   });
 
   it("counts a route typed twice once", () => {
@@ -62,7 +50,6 @@ describe("a save that does not loosen", () => {
   it("is silent when a switch that was already off stays off", () => {
     const open: SecurityPolicy = {
       virtualKeyRequired: false,
-      dashboardAuthEnabled: false,
       authBypassRoutes: [],
     };
     expect(loosenings(open, open)).toEqual([]);
@@ -71,12 +58,9 @@ describe("a save that does not loosen", () => {
   it("is silent when a switch goes from off to on", () => {
     const open: SecurityPolicy = {
       virtualKeyRequired: false,
-      dashboardAuthEnabled: false,
       authBypassRoutes: [],
     };
-    expect(
-      loosenings(open, { ...open, virtualKeyRequired: true, dashboardAuthEnabled: true }),
-    ).toEqual([]);
+    expect(loosenings(open, { ...open, virtualKeyRequired: true })).toEqual([]);
   });
 
   it("is silent when a bypass route is taken away", () => {

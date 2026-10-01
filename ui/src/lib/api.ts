@@ -2936,9 +2936,6 @@ export interface SecuritySettingsDto {
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
-  dashboard_auth_enabled: boolean;
-  dashboard_credential_ref: string | null;
-  dashboard_secret_configured: boolean;
   updated_at: string;
 }
 
@@ -2948,10 +2945,6 @@ export interface UpdateSecuritySettingsInput {
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
-  dashboard_auth_enabled: boolean;
-  dashboard_credential_ref?: string | null;
-  /// write-only; sealed server-side, never echoed back
-  managed_dashboard_secret?: string;
 }
 
 export function fetchSecuritySettings(): Promise<SecuritySettingsDto> {
