@@ -203,6 +203,61 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     );
 }
 
+/// Find every field name declared in `ProviderConfig` struct in `crates/rolter-core/src/config.rs`.
+fn provider_config_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct ProviderConfig {")
+        .expect("config.rs declares `pub struct ProviderConfig {`");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n}")
+        .expect("ProviderConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_provider_config_fields_are_documented_in_config_file_reference() {
+    let mut fields = provider_config_fields();
+    assert!(!fields.is_empty(), "no ProviderConfig fields were found");
+
+    // Internal or non-direct fields in ProviderConfig:
+    // egress_proxies (advanced proxy pool list, egress_proxy is documented)
+    // kv_events, lmcache, role_profile, model_role_profiles, tenancy
+    let internal_fields = [
+        "egress_proxies",
+        "kv_events",
+        "lmcache",
+        "role_profile",
+        "model_role_profiles",
+        "tenancy",
+    ];
+    fields.retain(|f| !internal_fields.contains(&f.as_str()));
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these ProviderConfig fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 #[test]
 fn all_server_config_fields_are_in_example_toml() {
     let fields = server_config_fields();
