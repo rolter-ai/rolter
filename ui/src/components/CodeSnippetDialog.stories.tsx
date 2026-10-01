@@ -50,6 +50,17 @@ const open = async () => {
   return waitFor(() => screen().getByRole("dialog"));
 };
 
+/**
+ * Opens the dialog for a caller with a saved base URL and waits for the
+ * snippet that uses it. The client-settings read can answer after the dialog
+ * opens, and until it does the dialog shows the base-URL prompt instead
+ */
+const openAddressed = async () => {
+  const dialog = await open();
+  await waitFor(() => expect(dialog).toHaveTextContent(/gateway\.example\.com/));
+  return dialog;
+};
+
 /** the snippet, once the highlighter chunk has arrived */
 const highlighted = async (dialog: HTMLElement) =>
   waitFor(() => {
@@ -60,7 +71,7 @@ const highlighted = async (dialog: HTMLElement) =>
 
 export const Curl: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     // curl is the default because it needs no project to try. the snippet is
     // split across token spans now, so it is the region's text that carries it
     await expect(dialog).toHaveTextContent(
@@ -78,7 +89,7 @@ export const Curl: Story = {
  */
 export const IsWideEnoughToRead: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     await waitFor(() => expect(dialog.getBoundingClientRect().width).toBeGreaterThan(640));
     // and the snippet scrolls sideways rather than wrapping mid-token
     const region = within(dialog).getByRole("region", { name: /code snippet/i });
@@ -90,7 +101,7 @@ export const IsWideEnoughToRead: Story = {
  *  dashboard uses — bundled, never fetched (#948, #949). */
 export const Highlighted: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     const token = await highlighted(dialog);
     await expect(token).toBeVisible();
   },
@@ -98,7 +109,7 @@ export const Highlighted: Story = {
 
 export const SwitchesLanguage: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     const canvas = within(dialog);
 
     await userEvent.click(canvas.getByRole("tab", { name: "Python" }));
@@ -117,7 +128,7 @@ export const SwitchesLanguage: Story = {
  *  without a pointer — the snippet below the fold is not a mouse-only region. */
 export const KeyboardOperable: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     const canvas = within(dialog);
 
     const python = canvas.getByRole("tab", { name: "Python" });
@@ -138,7 +149,7 @@ export const KeyboardOperable: Story = {
 // operator's live virtual key
 export const NeverInlinesTheKey: Story = {
   play: async () => {
-    const dialog = await open();
+    const dialog = await openAddressed();
     const canvas = within(dialog);
     for (const lang of ["curl", "Python", "JavaScript"]) {
       await userEvent.click(canvas.getByRole("tab", { name: lang }));
