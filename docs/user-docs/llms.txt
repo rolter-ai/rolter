@@ -65,6 +65,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Config Export](/configuration/config-export): Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs.
 - [Env Vars](/configuration/environment-variables): All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values.
 - [Providers](/configuration/providers): How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it.
+- [Egress policy](/configuration/egress): Which destinations Rolter refuses to send to, and every URL the policy covers.
 - [Hot Reload](/configuration/hot-reload): Rolter applies provider, route, and key changes from the dashboard instantly without restarting gateways or dropping in-flight connections.
 - [Feature Flags](/configuration/feature-flags): Toggle the response cache, cache-aware routing, circuit breaker, health checks, complexity routing and guardrails from the dashboard, and have every gateway replica pick the change up without a restart.
 - [Plugins](/configuration/plugins): Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline.

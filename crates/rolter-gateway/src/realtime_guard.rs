@@ -83,6 +83,8 @@ pub(crate) struct ContentPolicy {
     route: String,
     trace_id: String,
     tenant: WebhookTenant,
+    /// the egress-checked client the webhook and plugins are consulted through
+    egress: crate::egress_client::EgressClient,
     /// responses whose text was withheld; the rest of their text events are
     /// dropped
     blocked: Vec<String>,
@@ -100,6 +102,7 @@ impl ContentPolicy {
         scope: &ScopeIds,
         model: &str,
         trace_id: &str,
+        egress: &crate::egress_client::EgressClient,
     ) -> Option<Self> {
         let input = snap.guardrails.pre_call_active_for(&entry.guardrails);
         let output = snap.guardrails.post_call_active_for(&entry.guardrails);
@@ -127,6 +130,7 @@ impl ContentPolicy {
             route: entry.route.model.clone(),
             trace_id: trace_id.to_string(),
             tenant: crate::handlers::plugin_tenant(scope),
+            egress: egress.clone(),
             blocked: Vec::new(),
             tails: Vec::new(),
         })
@@ -194,6 +198,7 @@ impl ContentPolicy {
             match crate::guardrail_webhook::consult_pre_call(
                 webhook,
                 metrics,
+                &self.egress,
                 &self.model,
                 &self.route,
                 &self.trace_id,
@@ -229,6 +234,7 @@ impl ContentPolicy {
                 &list,
                 PluginStage::PreUpstream,
                 metrics,
+                &self.egress,
                 &self.model,
                 &self.route,
                 &self.trace_id,

@@ -30,6 +30,7 @@ mod cancel;
 mod clickhouse_client;
 #[doc(hidden)]
 pub mod cooldowns;
+mod egress_client;
 mod error;
 mod fake_llm;
 mod genai;

@@ -1283,6 +1283,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &pre_route_plugins,
             rolter_core::PluginStage::PreRoute,
             &state.metrics,
+            &state.side_client,
             &model,
             "", // no route resolved yet at this stage
             trace_id,
@@ -1504,6 +1505,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         match crate::guardrail_webhook::consult_pre_call(
             &snap.guardrail_webhook,
             &state.metrics,
+            &state.side_client,
             &model,
             &entry.route.model,
             trace_id,
@@ -1556,6 +1558,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         match crate::pii_sanitizer::sanitize(
             &snap.pii_sanitizer,
             &state.metrics,
+            &state.side_client,
             "request",
             &model,
             &entry.route.model,
@@ -1611,6 +1614,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &pre_upstream_plugins,
             rolter_core::PluginStage::PreUpstream,
             &state.metrics,
+            &state.side_client,
             &model,
             &entry.route.model,
             trace_id,
@@ -1795,6 +1799,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         crate::plugin_dispatch::PostResponsePlugins {
             plugins: post_response_plugin_list,
             metrics: &state.metrics,
+            egress: &state.side_client,
             model: model.clone(),
             route: entry.route.model.clone(),
             trace_id: trace_id.clone(),
@@ -3759,6 +3764,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
         match crate::pii_sanitizer::sanitize(
             config,
             &state.metrics,
+            &state.side_client,
             "response",
             model,
             route,
@@ -3788,6 +3794,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
             if let Some(restored) = crate::pii_sanitizer::restore(
                 config,
                 &state.metrics,
+                &state.side_client,
                 ticket,
                 scope,
                 trace_id,

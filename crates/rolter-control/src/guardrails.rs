@@ -320,6 +320,7 @@ async fn create_provider(
 ) -> ApiResult<(StatusCode, Json<GuardrailProvider>)> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Create))?;
     validate_provider(&body)?;
+    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
     let row = GuardrailRepo(pool(&state))
         .create_provider(body.as_input())
         .await?;
@@ -345,6 +346,7 @@ async fn update_provider(
 ) -> ApiResult<Json<GuardrailProvider>> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Update))?;
     validate_provider(&body)?;
+    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
     let row = GuardrailRepo(pool(&state))
         .update_provider(id, body.as_input())
         .await?;
