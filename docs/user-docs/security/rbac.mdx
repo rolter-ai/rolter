@@ -159,6 +159,8 @@ Rolter publishes its own permission table, so you never have to keep a copy in s
 | `GET /api/v1/rbac/matrix`                                 | For every resource, the minimum role each of read / create / update / delete takes — or that the action is reserved for a superadmin, open to any authenticated caller (`authenticated_only`), or does not exist. |
 | `GET /api/v1/rbac/effective?org_id=&team_id=&project_id=` | What _you_ may do at that scope, resolved from your own memberships.                                                                                                                                              |
 
+Providers and provider groups can be scoped to one project, so a project admin is answered `yes` to creating, editing and deleting them when the query names their project, and the dashboard offers those controls on that project. An org-wide provider or group stays an org admin's: a project admin who tries it anyway gets `403`.
+
 Both read the same table the control plane enforces with, so the answer is never a guess: a request that `effective` says you cannot make returns `403` if you make it anyway.
 
 A resource's sub-resources sit at the same bar as the resource itself. A route's complexity-routing tiers are the one part of a route with their own endpoint, and they follow that rule: reading them takes `route:read`, replacing them takes `route:update`. So a viewer sees every policy on the **Complexity Router** screen for the routes it can already list, and changes none of them.

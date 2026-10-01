@@ -39,12 +39,22 @@ exactly the chain its route's guard passes to `authorize`:
 | `project`   | org + team + project | the org, that team, or that project |
 
 A team admin asked at `(org, team, project)` therefore gets `route:create` (a
-team-scoped row) but not `provider:create` or `team:create` (org-scoped rows),
+team-scoped row) but not `budget:create` or `team:create` (org-scoped rows),
 which the guard would refuse with a 403. Custom-role grants are trimmed the
 same way, and `deployment` rows keep the whole chain because they name no
 tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
 `rbac_matrix.rs` walks every row against the guard's own decision, so the
 advisory answer cannot promise more than the guard grants (#1877).
+
+`provider` and `provider_group` are `project` rows although a row may also be
+org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
+a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
+on a provider scoped to that project, and an org admin still passes through the
+org membership. The page-level gate cannot tell an org-wide row from a scoped
+one: a project admin sees Edit on an org-wide provider and the handler answers
+`403`, because `crud.rs` checks such a row at the org. That check, not this
+table, is the authority. Asked at the org alone (no `project_id`) a project
+membership reaches neither.
 
 ## Three answers, not two
 
