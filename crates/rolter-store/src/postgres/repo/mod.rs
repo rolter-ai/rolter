@@ -4065,8 +4065,7 @@ impl SecuritySettingsRepo<'_> {
     pub async fn get(&self) -> Result<SecuritySettings> {
         sqlx::query_as(
             "select virtual_key_required, allowed_origins, allowed_headers, \
-                    required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
-                    dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at \
+                    required_headers, auth_bypass_routes, updated_at \
              from security_settings where id = true",
         )
         .fetch_one(self.0)
@@ -4077,8 +4076,9 @@ impl SecuritySettingsRepo<'_> {
     /// `allow_direct_provider_keys` is pinned to `false` in the statement
     /// rather than taken as an argument: the gateway has no
     /// direct-provider-key passthrough, so the column never controlled
-    /// anything and is no longer offered by the API (#1162).
-    #[allow(clippy::too_many_arguments)]
+    /// anything and is no longer offered by the API (#1162). The dashboard
+    /// password columns are likewise left untouched (#2356): they stay in the
+    /// table, unread and unwritten, because migrations are append-only.
     pub async fn update(
         &self,
         virtual_key_required: bool,
@@ -4086,36 +4086,21 @@ impl SecuritySettingsRepo<'_> {
         allowed_headers: &[String],
         required_headers: serde_json::Value,
         auth_bypass_routes: &[String],
-        dashboard_auth_enabled: bool,
-        dashboard_credential_ref: Option<&str>,
-        dashboard_secret: Option<(&[u8], &[u8])>,
     ) -> Result<SecuritySettings> {
-        let (ciphertext, nonce) = match dashboard_secret {
-            Some((ciphertext, nonce)) => (Some(ciphertext), Some(nonce)),
-            None => (None, None),
-        };
         sqlx::query_as(
             "update security_settings set \
                 virtual_key_required = $1, allowed_origins = $2, \
                 allowed_headers = $3, required_headers = $4, auth_bypass_routes = $5, \
-                dashboard_auth_enabled = $6, dashboard_credential_ref = $7, \
-                dashboard_credential_ciphertext = coalesce($8, dashboard_credential_ciphertext), \
-                dashboard_credential_nonce = coalesce($9, dashboard_credential_nonce), \
                 allow_direct_provider_keys = false, updated_at = now() \
              where id = true \
              returning virtual_key_required, allowed_origins, allowed_headers, \
-                       required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
-                       dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at",
+                       required_headers, auth_bypass_routes, updated_at",
         )
         .bind(virtual_key_required)
         .bind(allowed_origins)
         .bind(allowed_headers)
         .bind(required_headers)
         .bind(auth_bypass_routes)
-        .bind(dashboard_auth_enabled)
-        .bind(dashboard_credential_ref)
-        .bind(ciphertext)
-        .bind(nonce)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
