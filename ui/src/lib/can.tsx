@@ -157,9 +157,9 @@ export function CapabilityProvider({ children }: { children: React.ReactNode }) 
 
 /** The chain a row is gated at, when that is not the chain the page is scoped to. */
 export interface RowScope {
-  /** the row's own project, or `null` for an org-wide row */
+  /** the row's own project, or `null` for a row above one */
   projectId: string | null;
-  /** the team that owns `projectId`; the guard walks org + team + project */
+  /** the team that owns `projectId`, or the team itself for a team row; the guard walks org + team + project */
   teamId?: string | null;
 }
 
@@ -171,7 +171,8 @@ export interface RowScope {
  * "yes" to a project admin on a row `crud.rs` checks at the org. The page-level
  * gate cannot tell the two rows apart; this can. An org-wide row (`projectId`
  * null) is asked at the org alone, where a project membership reaches nothing,
- * and a project row at its own org + team + project chain.
+ * a team row (#2529) at org + team, and a project row at its own org + team +
+ * project chain.
  *
  * It replaces the context rather than adding a prop to every control, so
  * `GatedButton`, `DeleteIconButton` and the rest gate on the row's scope
@@ -191,7 +192,7 @@ export function RowCapabilityScope({
   const scope = useScope();
   const chain = {
     orgId: scope.orgId,
-    teamId: at?.projectId ? (at.teamId ?? undefined) : undefined,
+    teamId: at?.teamId ?? undefined,
     projectId: at?.projectId ?? undefined,
   };
   const effective = useQuery({

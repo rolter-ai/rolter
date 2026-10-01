@@ -101,6 +101,15 @@ stays the backstop. Stories play a project admin with
 `role={adminOfProject(id)}` on `Harness`, which answers `rbac/effective` per
 queried chain.
 
+Budgets and rate limits (#2529) are the second user. A cap names its own scope,
+so `capGateScope(row, { byTeam, keyProjectId })` (`ui/src/lib/limit-scope.ts`)
+maps `scope_type` to the chain: `org` is asked at the org alone, `team` at org +
+team (`RowScope` carries a `teamId` with no project for it), `project` at org +
+team + project, and `virtual_key` at the project the page lists keys of. A
+business unit or customer cap, and a project the dashboard cannot place, keep
+the page's answer. A project admin therefore edits their project's caps and is
+refused the team's and the org's above it, as the guard does.
+
 ## Three answers, not two
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:
