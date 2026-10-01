@@ -222,7 +222,14 @@ pub async fn realtime(
     crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
     // resolved before `scope` moves into the meter, and pinned for the session
     let trace_id = crate::trace::request_trace_id(&headers);
-    let policy = ContentPolicy::for_session(&snap, entry, &scope, &query.model, &trace_id);
+    let policy = ContentPolicy::for_session(
+        &snap,
+        entry,
+        &scope,
+        &query.model,
+        &trace_id,
+        &state.side_client,
+    );
     let meter = SessionMeter {
         state: state.clone(),
         scope,
