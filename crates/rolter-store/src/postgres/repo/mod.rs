@@ -3294,7 +3294,7 @@ impl UserRepo<'_> {
 
     /// set the self-service profile. each `Some(x)` replaces the column with `x`
     /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
-    /// from [`Self::update`]: that one names `is_superadmin` in its `set` list
+    /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
     /// and so fires the `config_version` trigger, which a name edit must not.
     /// callers validate and normalise; the table's check constraints are the
     /// backstop
