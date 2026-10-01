@@ -30,7 +30,8 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo, VirtualKeyRepo,
+    LockoutGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
+    VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -583,7 +584,16 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 /// the audit row.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
-    UserRepo(pool).set_deactivated(user_id, deactivated).await?;
+    if let LockoutGuard::WouldLockOut = UserRepo(pool).set_deactivated(user_id, deactivated).await?
+    {
+        // an IdP that disables the only superadmin would strand the deployment
+        // with nobody who can administer it (#2344)
+        return Err(ScimError::new(
+            StatusCode::CONFLICT,
+            None,
+            "this account is the last active superadmin; make another account superadmin first",
+        ));
+    }
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
         MfaRepo(pool).delete_challenges_for_user(user_id).await?;
@@ -768,6 +778,9 @@ impl From<ApiError> for ScimError {
             }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
+            }
+            ApiError::CodedConflict { message, .. } => {
+                Self::new(StatusCode::CONFLICT, None, message)
             }
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,

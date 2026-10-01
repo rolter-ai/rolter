@@ -16821,3 +16821,293 @@ async fn members_list_their_projects_providers_and_project_admins_scope_their_ow
         "an org-wide provider is the org admin's"
     );
 }
+
+// ---------------------------------------------------------------------------
+// last active superadmin (#2344)
+// ---------------------------------------------------------------------------
+
+/// The three account writes that can take the deployment's last superadmin
+/// away, as `(name, request)` pairs against `target_id`.
+fn last_superadmin_calls(
+    client: &reqwest::Client,
+    base: &str,
+    target_id: uuid::Uuid,
+    bearer: &str,
+) -> Vec<(&'static str, reqwest::RequestBuilder)> {
+    let url = format!("{base}/api/v1/users/{target_id}");
+    vec![
+        (
+            "demote",
+            client
+                .put(&url)
+                .bearer_auth(bearer)
+                .json(&json!({"is_superadmin": false})),
+        ),
+        (
+            "deactivate",
+            client
+                .put(&url)
+                .bearer_auth(bearer)
+                .json(&json!({"deactivated": true})),
+        ),
+        ("delete", client.delete(&url).bearer_auth(bearer)),
+    ]
+}
+
+async fn user_row(pool: &sqlx::PgPool, id: uuid::Uuid) -> Option<(bool, bool)> {
+    sqlx::query_as("select is_superadmin, deactivated_at is not null from users where id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_last_active_superadmin_cannot_be_demoted_deactivated_or_deleted() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let only = seed_user(&pool, "only@example.com", true).await;
+    let session = seed_session(&pool, only, "last_superadmin").await;
+    // a deactivated superadmin and a plain user do not count as the remainder
+    let gone = seed_user(&pool, "gone@example.com", true).await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    seed_user(&pool, "plain@example.com", false).await;
+
+    // the account itself and the admin token get the same refusal
+    for bearer in [session.as_str(), "admintok"] {
+        for (name, request) in last_superadmin_calls(&client, &base, only, bearer) {
+            let res = request.send().await.unwrap();
+            assert_eq!(res.status(), 409, "{name} as {bearer}");
+            let body: Value = res.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "last_superadmin", "{name}");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("last active superadmin"),
+                "{body}"
+            );
+            assert_eq!(user_row(&pool, only).await, Some((true, false)), "{name}");
+        }
+    }
+    let live: i64 = sqlx::query_scalar("select count(*) from sessions where user_id = $1")
+        .bind(only)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(live, 1, "a refused deactivation must keep the sessions");
+
+    // edits that leave the account an active superadmin still go through
+    let res = client
+        .put(format!("{base}/api/v1/users/{only}"))
+        .bearer_auth("admintok")
+        .json(&json!({"email": "renamed@example.com", "is_superadmin": true, "deactivated": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn a_second_active_superadmin_lets_each_call_through() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    seed_user(&pool, "keeper@example.com", true).await;
+    for (idx, expected) in [
+        (0, Some((false, false))),
+        (1, Some((true, true))),
+        (2, None),
+    ] {
+        let target_id = seed_user(&pool, &format!("target{idx}@example.com"), true).await;
+        let mut calls = last_superadmin_calls(&client, &base, target_id, "admintok");
+        let (name, request) = calls.remove(idx);
+        let res = request.send().await.unwrap();
+        assert!(res.status().is_success(), "{name}: {}", res.status());
+        assert_eq!(user_row(&pool, target_id).await, expected, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_deactivated_superadmin_does_not_count_as_the_remaining_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let active = seed_user(&pool, "active@example.com", true).await;
+    let dormant = seed_user(&pool, "dormant@example.com", true).await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(dormant)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for (name, request) in last_superadmin_calls(&client, &base, active, "admintok") {
+        assert_eq!(request.send().await.unwrap().status(), 409, "{name}");
+    }
+    // the dormant one is not the last active superadmin, so it can go, and
+    // bringing it back makes the other one expendable
+    let res = client
+        .put(format!("{base}/api/v1/users/{dormant}"))
+        .bearer_auth("admintok")
+        .json(&json!({"deactivated": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let res = client
+        .put(format!("{base}/api/v1/users/{active}"))
+        .bearer_auth("admintok")
+        .json(&json!({"is_superadmin": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn concurrent_demotions_cannot_both_remove_a_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    // building the app runs the migrations
+    let _app = rolter_control::test_app_with_admin_token(pool.clone(), None)
+        .await
+        .unwrap();
+    let first = seed_user(&pool, "first@example.com", true).await;
+    let second = seed_user(&pool, "second@example.com", true).await;
+    let repo = |id| {
+        let pool = pool.clone();
+        async move {
+            rolter_store::postgres::repo::UserRepo(&pool)
+                .update_account(id, None, None, Some(false), None)
+                .await
+                .unwrap()
+        }
+    };
+    let (a, b) = tokio::join!(repo(first), repo(second));
+    let refused = [&a, &b]
+        .iter()
+        .filter(|r| matches!(r, rolter_store::postgres::repo::LockoutGuard::WouldLockOut))
+        .count();
+    assert_eq!(refused, 1, "exactly one demotion must be refused");
+    let left: i64 = sqlx::query_scalar("select count(*) from users where is_superadmin")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 1);
+}
+
+#[tokio::test]
+async fn scim_cannot_deprovision_the_last_active_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    sqlx::query("update users set is_superadmin = true where id = $1")
+        .bind(boss)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{"op": "replace", "path": "active", "value": false}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+
+    // with another active superadmin the same call deprovisions
+    seed_user(&pool, "second@example.com", true).await;
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(user_row(&pool, boss).await, Some((true, true)));
+}
