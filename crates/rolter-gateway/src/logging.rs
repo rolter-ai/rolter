@@ -24,6 +24,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::metrics::Metrics;
 
@@ -127,6 +128,12 @@ pub struct RequestLog {
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     pub ts: DateTime<Utc>,
     pub request_id: String,
+    /// the gateway's own key for this row, minted when the row is queued. the
+    /// caller picks `request_id`, so only this names one request: the control
+    /// plane joins a captured body to its row on it (#1937). nil on a row that
+    /// was never queued, which is written as the column's empty default
+    #[serde(skip_serializing_if = "Uuid::is_nil")]
+    pub log_id: Uuid,
     /// inbound distributed-trace id (W3C traceparent / B3), empty when the caller
     /// sent none — lets logs join a caller's trace across services
     pub trace_id: String,
@@ -205,6 +212,7 @@ impl Default for RequestLog {
             // fall straight past the table's ttl
             ts: Utc::now(),
             request_id: String::new(),
+            log_id: Uuid::nil(),
             trace_id: String::new(),
             org_id: String::new(),
             team_id: String::new(),
@@ -1161,13 +1169,16 @@ impl LogSink {
     }
 
     /// The ClickHouse half of [`LogSink::log`].
-    fn enqueue(&self, record: RequestLog) {
+    fn enqueue(&self, mut record: RequestLog) {
         if !should_sample_request(&record.request_id, record.sample_rate) {
             return;
         }
         let Some(tx) = &self.tx else {
             return;
         };
+        // minted here, after sampling and only for a sink that writes, so a
+        // dropped or disabled row costs no entropy
+        record.log_id = Uuid::new_v4();
         if tx.try_send(record).is_err() {
             self.metrics.logs_dropped_total.fetch_add(1, Relaxed);
         }
@@ -1301,12 +1312,18 @@ impl BatchWriter {
 struct PayloadLog<'a> {
     /// the same instant as the metadata row, so a payload and the request it
     /// belongs to sit in the same partition and sort together. the control
-    /// plane joins a body to its row on `(request_id, ts)` because the caller
-    /// chooses `request_id`, so this must stay the row's own `ts` through the
+    /// plane joins a body to a row written before `log_id` existed on
+    /// `(request_id, ts)`, so this must stay the row's own `ts` through the
     /// same serializer (#1820)
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     ts: DateTime<Utc>,
     request_id: &'a str,
+    /// the log row's own key, which is what the control plane joins on (#1937)
+    #[serde(skip_serializing_if = "Uuid::is_nil")]
+    log_id: Uuid,
+    /// the tenancy of the row, so the join can require it on both sides
+    org_id: &'a str,
+    project_id: &'a str,
     request_payload: &'a str,
     response_payload: &'a str,
 }
@@ -1316,6 +1333,9 @@ impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
         Self {
             ts: log.ts,
             request_id: &log.request_id,
+            log_id: log.log_id,
+            org_id: &log.org_id,
+            project_id: &log.project_id,
             request_payload: &log.request_payload,
             response_payload: &log.response_payload,
         }
@@ -1401,6 +1421,97 @@ mod tests {
         let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
         assert_eq!(payload["ts"], log["ts"]);
         assert_eq!(payload["request_id"], log["request_id"]);
+    }
+
+    #[test]
+    fn a_payload_row_carries_its_log_rows_key_and_tenancy() {
+        // the control plane joins a body to its row on log_id, the gateway's
+        // own key, because request_id is whatever the caller sent (#1937)
+        let rec = RequestLog {
+            log_id: Uuid::new_v4(),
+            request_id: "shared-id".to_string(),
+            org_id: "org-1".to_string(),
+            project_id: "project-1".to_string(),
+            request_payload: "{}".to_string(),
+            ..Default::default()
+        };
+        let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
+        let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert_eq!(log["log_id"], rec.log_id.to_string());
+        assert_eq!(payload["log_id"], log["log_id"]);
+        assert_eq!(payload["org_id"], "org-1");
+        assert_eq!(payload["project_id"], "project-1");
+    }
+
+    #[test]
+    fn an_unkeyed_row_leaves_the_column_to_its_empty_default() {
+        // a nil key written as "0000-..." would read as a real key and stop the
+        // control plane's fallback to (request_id, ts)
+        let rec = RequestLog::default();
+        let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
+        let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert!(log.get("log_id").is_none());
+        assert!(payload.get("log_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn requests_sharing_a_caller_request_id_get_distinct_log_keys() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // one connection per insert, so request_logs and request_payloads
+        // arrive as separate bodies
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while seen.len() < 2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 16384];
+                let n = sock.read(&mut buf).await.unwrap();
+                seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+            seen
+        });
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            2,
+            Duration::from_millis(50),
+            100,
+            Arc::new(Metrics::default()),
+        );
+        for project in ["p-1", "p-2"] {
+            sink.log(RequestLog {
+                request_id: "constant".to_string(),
+                project_id: project.to_string(),
+                request_payload: "{}".to_string(),
+                ..Default::default()
+            });
+        }
+        let seen = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        let rows = |marker: &str| -> Vec<serde_json::Value> {
+            let request = seen.iter().find(|r| r.contains(marker)).unwrap();
+            let body = request.split("\r\n\r\n").nth(1).unwrap();
+            body.lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        };
+        let logs = rows("INTO%20request_logs");
+        let payloads = rows("INTO%20request_payloads");
+        assert_eq!(logs.len(), 2);
+        assert_ne!(logs[0]["log_id"], logs[1]["log_id"]);
+        assert!(logs[0]["log_id"].as_str().is_some_and(|id| id.len() == 36));
+        // each body is keyed to its own row, not to the shared request id
+        for (log, payload) in logs.iter().zip(&payloads) {
+            assert_eq!(log["log_id"], payload["log_id"]);
+            assert_eq!(log["project_id"], payload["project_id"]);
+        }
     }
 
     #[test]

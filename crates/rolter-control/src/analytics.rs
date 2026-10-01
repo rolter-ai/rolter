@@ -225,6 +225,17 @@ pub(crate) fn with_access(
 pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffortOrZero({since:String})) \
      and ts < if({until:String} = '', now64(3), parseDateTime64BestEffortOrZero({until:String}))";
 
+/// The key a captured body is joined to its log row on, evaluated against
+/// whichever table the clause sits in; both carry the same columns it reads.
+///
+/// A keyed row (`log_id` set) is `log_id|org_id|project_id`: the gateway-minted
+/// id, plus the tenancy the gateway copied onto the payload so a body can never
+/// meet a row of another project even if an id were reused. An unkeyed row
+/// predates `log_id` and keeps the `request_id|ts` pair. The two shapes cannot
+/// equal each other (a UUID holds no `|`), so a keyed row never falls back.
+const PAYLOAD_KEY: &str = "if(log_id != '', concat(log_id, '|', org_id, '|', project_id), \
+     concat(request_id, '|', toString(ts)))";
+
 pub fn router() -> Router<crate::ControlState> {
     Router::new()
         .route("/api/v1/analytics/summary", get(summary))
@@ -594,11 +605,18 @@ impl TimeBounds for InvocationsQuery {
 /// same one. Joining on the id alone let a caller log a bodiless request under
 /// an id they had seen in another project and read that project's prompt
 /// through their own row, which the mask above passes because it is evaluated
-/// against the row, not against the body. The join is therefore on
-/// `(request_id, ts)`: the gateway stamps a payload with its log row's own
-/// `ts`, through the same serializer, so the pair names one request. The
-/// payload side is bounded by the same window as the rows, since a body outside
-/// it has no row to join to, and grouped on the pair so a row never repeats.
+/// against the row, not against the body. Adding the row's `ts` narrowed that
+/// to one millisecond but did not close it: a client that sends a constant id
+/// still collides with itself, and a caller can reproduce a `ts` (#1937).
+///
+/// The join is therefore on `log_id`, a UUID the gateway mints per request and
+/// writes to both tables, together with the row's `org_id` and `project_id`
+/// as defence in depth (see [`PAYLOAD_KEY`]). A row with a `log_id` never falls
+/// back to anything weaker. Only a row written before the key existed, where
+/// it is empty, joins on `(request_id, ts)` as it always did, so old bodies
+/// stay attached until they expire. The payload side is bounded by the same
+/// window as the rows, since a body outside it has no row to join to, and
+/// grouped on the key so a row never repeats.
 ///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
@@ -635,10 +653,10 @@ fn invocations_sql(status_expr: &str) -> String {
                     as payload_withheld \
          from request_logs \
          left join ( \
-             select request_id, ts, any(request_payload) as request_payload, \
+             select {PAYLOAD_KEY} as payload_key, any(request_payload) as request_payload, \
                     any(response_payload) as response_payload \
-             from request_payloads where {WHERE_WINDOW} group by request_id, ts \
-         ) as payload using (request_id, ts) \
+             from request_payloads where {WHERE_WINDOW} group by payload_key \
+         ) as payload on payload.payload_key = {PAYLOAD_KEY} \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
            and ({{model:String}} = '' or model = {{model:String}}) \
@@ -816,9 +834,14 @@ mod tests {
         // request_id is whatever the caller sent as x-request-id, so joining on
         // it alone hands one tenant's captured body to another tenant's row
         // under the same id. the log row's own ts is what names the request
-        assert!(sql.contains("as payload using (request_id, ts)"));
-        assert!(!sql.contains("using (request_id)"));
-        assert!(sql.contains("group by request_id, ts"));
+        assert!(sql.contains(&format!("on payload.payload_key = {PAYLOAD_KEY}")));
+        assert!(!sql.contains("using (request_id"));
+        assert!(sql.contains("group by payload_key"));
+        // a keyed row joins on the gateway's own key and its tenancy, and only
+        // an unkeyed (pre-#1937) row falls back to the caller's id and ts
+        assert!(PAYLOAD_KEY.contains("log_id != ''"));
+        assert!(PAYLOAD_KEY.contains("concat(log_id, '|', org_id, '|', project_id)"));
+        assert!(PAYLOAD_KEY.contains("concat(request_id, '|', toString(ts))"));
         // no aggregate may reach across every row that shares an id
         assert!(!sql.contains("argMax(request_payload"));
         assert!(!sql.contains("group by request_id "));
