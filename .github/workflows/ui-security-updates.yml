@@ -236,12 +236,10 @@ jobs:
           else
             # also the path that heals a run whose push landed and whose
             # `gh pr create` then failed: its branch is here, unchanged, with
-            # neither an open nor a declined pull request. station:mac owns
-            # ui/, so the pull request has an owner the way any other does
+            # neither an open nor a declined pull request
             url="$(gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
               --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${RUNNER_TEMP}/body.md" \
-              --label dependencies --label javascript --label security --label ui-dashboard \
-              --label station:mac)"
+              --label dependencies --label javascript --label security --label ui-dashboard)"
             echo "opened ${url}"
             # a pull request this token opens raises no `pull_request_target`
             # event either, so project-automation never adds it to the board.
