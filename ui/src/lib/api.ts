@@ -2213,6 +2213,31 @@ export function confirmSignInEnrolment(
   });
 }
 
+/** what `POST /auth/sso/exchange` answers: the login body plus the roles the sign-in granted */
+export interface SsoExchangeResponse extends LoginResponse {
+  granted_roles: unknown[];
+}
+
+/**
+ * Redeem the one-time code a browser SSO sign-in ends with
+ * (`/login?sso_code=…`) for a session.
+ *
+ * Sent with no `Authorization` header on purpose, and not through `sendJson`,
+ * which attaches whatever token is stored: the caller is mid sign-in, and a
+ * stale token must not ride along. The code is single use, so a caller must
+ * not retry it. A spent, expired or unknown code is a `400` with
+ * `code == "invalid_exchange_code"`.
+ */
+export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+  const res = await fetch("/auth/sso/exchange", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as SsoExchangeResponse;
+}
+
 /** what the login screen may offer; see crates/rolter-control/src/auth_policy.rs */
 export interface AuthMethods {
   /** render the email + password form */
@@ -2257,6 +2282,37 @@ export interface MeResponse {
    * unlike `client_settings:read` (#2512). Absent from an older control plane.
    */
   gateway_base_url?: string | null;
+  /**
+   * A SCIM directory owns `user.display_name`, so a change to it answers 409.
+   * The bio stays editable. Absent from a control plane older than #1823.
+   */
+  display_name_managed?: boolean;
+}
+
+/** longest display name, in characters (`users_display_name_shape`) */
+export const MAX_DISPLAY_NAME_LEN = 80;
+/** longest bio, in characters (`users_bio_shape`) */
+export const MAX_BIO_LEN = 500;
+
+/**
+ * `PATCH /me/profile` body. Send only the fields being changed: an omitted
+ * field is left alone, `null` clears one, and whitespace-only is a 400.
+ */
+export interface ProfileUpdate {
+  display_name?: string | null;
+  bio?: string | null;
+}
+
+/** what `PATCH /me/profile` answers: the profile as stored, trimmed */
+export interface ProfileResult {
+  display_name: string | null;
+  bio: string | null;
+  display_name_managed: boolean;
+}
+
+/** Set the signed-in account's own display name and bio (#1823). */
+export function updateMyProfile(body: ProfileUpdate): Promise<ProfileResult> {
+  return sendJson<ProfileResult>("PATCH", "/api/v1/me/profile", body);
 }
 
 /**
@@ -2459,6 +2515,10 @@ export type MembershipScopeType = (typeof MEMBERSHIP_SCOPE_TYPES)[number];
 export interface UserRow {
   id: string;
   email: string;
+  /** what the account goes by; null until set (or provisioned by an IdP) */
+  display_name?: string | null;
+  /** a line on who to ask about what; null until set */
+  bio?: string | null;
   is_superadmin: boolean;
   /** set when the account is deactivated (login blocked); null when active */
   deactivated_at?: string | null;
@@ -2896,7 +2956,7 @@ export interface AuditLogQuery {
   include_total?: boolean;
 }
 
-export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
+function auditLogQueryString(query: AuditLogQuery): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== "") {
@@ -2904,7 +2964,17 @@ export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Pro
     }
   }
   const qs = params.toString();
-  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`);
+  return qs ? `?${qs}` : "";
+}
+
+export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
+  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${auditLogQueryString(query)}`);
+}
+
+// every audit row in the deployment, org-less account events included;
+// superadmin-only (`deployment_audit_log:read`), a 403 for anyone else
+export function fetchDeploymentAuditLogPage(query: AuditLogQuery = {}): Promise<AuditLogPage> {
+  return getJson<AuditLogPage>(`/api/v1/audit-log${auditLogQueryString(query)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2916,9 +2986,6 @@ export interface SecuritySettingsDto {
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
-  dashboard_auth_enabled: boolean;
-  dashboard_credential_ref: string | null;
-  dashboard_secret_configured: boolean;
   updated_at: string;
 }
 
@@ -2928,10 +2995,6 @@ export interface UpdateSecuritySettingsInput {
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
-  dashboard_auth_enabled: boolean;
-  dashboard_credential_ref?: string | null;
-  /// write-only; sealed server-side, never echoed back
-  managed_dashboard_secret?: string;
 }
 
 export function fetchSecuritySettings(): Promise<SecuritySettingsDto> {

@@ -6,10 +6,20 @@
 //! the gateway cross-origin (no CORS layer there), so the control plane forwards
 //! `/gw/*` to it — HTTP (including SSE streaming) and the realtime WebSocket.
 //!
-//! No admin-token gate: the gateway authenticates every call with a virtual key,
-//! so `/gw` exposes nothing the gateway doesn't already expose itself. That
-//! holds only while the gateway is as reachable as this port, and it is why the
-//! proxy's own error bodies never name the gateway's address (#1840).
+//! `/gw` needs a dashboard session (#2463): the guard is [`AnySession`], so
+//! open mode and the admin token pass, and with a database a live session of
+//! any role does. Without it anyone who can reach this port would reach the
+//! gateway (the built-in `fake-llm`, a keyless route) even where the gateway
+//! itself is kept private.
+//!
+//! The session rides in `Authorization: Bearer`, which is also where a client
+//! puts the virtual key the gateway wants, so the two cannot share it. The
+//! key travels in `x-rolter-gateway-key` and is forwarded as
+//! `Authorization: Bearer <key>`; the inbound `Authorization` (the session) and
+//! `Cookie` are never forwarded. A browser cannot set headers on a WebSocket,
+//! so a realtime upgrade may carry the session as a `rolter_session` query
+//! parameter instead, which is removed before the request goes upstream.
+//! The proxy's error bodies never name the gateway's address (#1840).
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -26,6 +36,13 @@ use tokio_tungstenite::{
 };
 
 use super::ControlState;
+use crate::session_guard::AnySession;
+
+/// Header carrying the virtual key for the gateway, since `Authorization`
+/// carries the dashboard session.
+const KEY_HEADER: &str = "x-rolter-gateway-key";
+/// Query parameter carrying the session on a realtime upgrade only.
+const WS_SESSION_PARAM: &str = "rolter_session";
 
 // generous ceiling so audio uploads (/v1/audio/transcriptions) pass through,
 // while still bounding memory per request
@@ -59,7 +76,7 @@ async fn proxy(State(state): State<ControlState>, req: Request) -> Response {
         .strip_prefix("/gw")
         .unwrap_or_default()
         .to_string();
-    let query = parts
+    let mut query = parts
         .uri
         .query()
         .map(|q| format!("?{q}"))
@@ -68,6 +85,23 @@ async fn proxy(State(state): State<ControlState>, req: Request) -> Response {
     let ws = WebSocketUpgrade::from_request_parts(&mut parts, &state)
         .await
         .ok();
+    if ws.is_some() {
+        // a browser cannot set headers on a WebSocket, so the session may ride
+        // in the query; lift it into Authorization for the guard and keep it
+        // out of the forwarded url
+        let (rest, session) = take_query_param(&query, WS_SESSION_PARAM);
+        query = rest;
+        if let Some(session) = session {
+            if !parts.headers.contains_key(header::AUTHORIZATION) {
+                if let Ok(value) = header::HeaderValue::from_str(&format!("Bearer {session}")) {
+                    parts.headers.insert(header::AUTHORIZATION, value);
+                }
+            }
+        }
+    }
+    if let Err(rejection) = AnySession::from_request_parts(&mut parts, &state).await {
+        return rejection;
+    }
     if let Some(ws) = ws {
         return proxy_ws(state, ws, &parts.headers, &path, &query);
     }
@@ -92,6 +126,7 @@ async fn proxy_http(
     strip_hop_by_hop(&mut headers);
     headers.remove(header::HOST);
     headers.remove(header::CONTENT_LENGTH);
+    gateway_credentials(&mut headers);
 
     let upstream = state
         .http
@@ -136,8 +171,11 @@ fn proxy_ws(
     let request = match url.into_client_request() {
         Ok(mut request) => {
             // browsers can't set WS headers, so the virtual key usually rides in
-            // the query string; forward an Authorization header too when present
-            if let Some(value) = headers.get(header::AUTHORIZATION) {
+            // the query string; forward the key carrier as Authorization when
+            // present
+            let mut carried = headers.clone();
+            gateway_credentials(&mut carried);
+            if let Some(value) = carried.get(header::AUTHORIZATION) {
                 request
                     .headers_mut()
                     .insert(header::AUTHORIZATION, value.clone());
@@ -204,6 +242,45 @@ fn ws_url(gateway_url: &str, path: &str, query: &str) -> String {
     format!("{ws_base}{path}{query}")
 }
 
+/// Replace the caller's credentials with the ones meant for the gateway: the
+/// inbound `Authorization` is the dashboard session and `Cookie` is the
+/// control plane's, so neither may reach the gateway; the virtual key, if the
+/// caller sent one, becomes the `Authorization` the gateway expects.
+fn gateway_credentials(headers: &mut HeaderMap) {
+    headers.remove(header::AUTHORIZATION);
+    headers.remove(header::COOKIE);
+    if let Some(key) = headers.remove(KEY_HEADER) {
+        if let Ok(value) =
+            header::HeaderValue::from_str(&format!("Bearer {}", key.to_str().unwrap_or_default()))
+        {
+            headers.insert(header::AUTHORIZATION, value);
+        }
+    }
+}
+
+/// Split `name` out of a `?a=b&c=d` query, returning the rest (with its
+/// leading `?`, or empty) and the removed value.
+fn take_query_param(query: &str, name: &str) -> (String, Option<String>) {
+    let mut taken = None;
+    let kept: Vec<&str> = query
+        .trim_start_matches('?')
+        .split('&')
+        .filter(|pair| {
+            match pair.split_once('=') {
+                Some((key, value)) if key == name => taken = Some(value.to_string()),
+                _ => return !pair.is_empty(),
+            }
+            false
+        })
+        .collect();
+    let rest = if kept.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", kept.join("&"))
+    };
+    (rest, taken)
+}
+
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in HOP_BY_HOP {
         headers.remove(name);
@@ -237,7 +314,23 @@ fn to_client(message: UpstreamMessage) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use super::ws_url;
+    use super::{take_query_param, ws_url};
+
+    #[test]
+    fn lifts_the_session_out_of_a_query() {
+        assert_eq!(
+            take_query_param("?model=m&rolter_session=abc&api_key=k", "rolter_session"),
+            ("?model=m&api_key=k".to_string(), Some("abc".to_string()))
+        );
+        assert_eq!(
+            take_query_param("?rolter_session=abc", "rolter_session"),
+            (String::new(), Some("abc".to_string()))
+        );
+        assert_eq!(
+            take_query_param("", "rolter_session"),
+            (String::new(), None)
+        );
+    }
 
     #[test]
     fn builds_ws_url_from_http_base() {

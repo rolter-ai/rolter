@@ -12,6 +12,20 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "sso": {
+      "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
+      "errors": {
+        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
+        "state_expired": "This sign-in took too long or was already used. Start it again.",
+        "sso_disabled": "Single sign-on is turned off for this organization.",
+        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
+        "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
+      },
+      "provider": "Identity provider: {{name}}"
+    },
     "errors": {
       "invalidCredentials": "That email and password do not match an account here.",
       "passwordLoginDisabled": "Password sign-in is turned off for this organization. Use single sign-on below.",
@@ -57,6 +71,7 @@
     }
   },
   "common": {
+    "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
     "clearSearch": "Clear search",
     "close": "Close",
@@ -239,7 +254,8 @@
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
-      "projectSettings": "project settings"
+      "projectSettings": "project settings",
+      "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2253,10 +2269,9 @@
         "body": "People signing in through it lose that route immediately. Its registration, client secret and group mappings stay, so turning it back on restores sign-in.",
         "confirm": "Take out of service"
       },
-      "lockout": {
-        "title": "Members would be locked out of sign-in",
-        "body": "Password sign-in is off and {{name}} is the only enabled provider, so no member could sign in. Superadmins are exempt from the password setting, so only they could still get in, and they could turn password sign-in back on from this screen.",
-        "noPassword": "Accounts created through a provider have no password. Turning password sign-in back on does not restore them; a superadmin has to set one."
+      "lastMethod": {
+        "reason": "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off, so no member could sign in. Enable password sign-in or another provider first.",
+        "refused": "Another change left no other way to sign in, so the control plane refused this one. Enable password sign-in or another provider first."
       },
       "clearSecret": {
         "title": "Remove the stored client secret for {{name}}?",
@@ -2353,11 +2368,19 @@
         "actor": "Actor",
         "action": "Action",
         "target": "Target",
-        "detail": "Detail"
+        "detail": "Detail",
+        "org": "Org"
       },
       "unknownTarget": "unknown",
       "hideDetails": "hide",
-      "showDetails": "show"
+      "showDetails": "show",
+      "scopeAria": "Audit log scope",
+      "scopes": {
+        "org": "This organization",
+        "deployment": "Whole deployment"
+      },
+      "noOrg": "No org",
+      "unknownAddress": "Unknown address"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -2991,7 +3014,7 @@
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
-      "baseUrlHint": "The address clients point their SDK at. Left empty, the dashboard’s snippets go through its own /gw proxy, which is fine for trying rolter out but sends every call through the control plane; for production, set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so snippets shown to other roles keep the /gw proxy.",
+      "baseUrlHint": "The address clients point their SDK at. Until you save one, the dashboard shows no snippet for external clients: its own /gw proxy needs a dashboard session, so it is not an address they can use. Set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so other roles are asked to have a superadmin save it.",
       "publicBaseUrl": "Public base URL",
       "forwarded": "Forwarded request headers",
       "forwardedHint": "Inbound client headers passed through to the upstream provider, comma or newline separated. Everything not listed is dropped at the gateway.",
@@ -3021,13 +3044,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "dashboardAuth": "Password protect the dashboard",
-      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
-      "credentialRef": "Credential reference",
-      "managedSecret": "Managed secret",
-      "secretConfigured": "configured — enter to replace",
-      "secretPlaceholder": "Enter a secret to store",
-      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
       "enforceVk": "Enforce Virtual Keys on Inference",
       "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
@@ -3069,10 +3085,6 @@
         "virtualKeys": {
           "label": "Virtual keys are no longer enforced on inference",
           "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
-        "dashboardAuth": {
-          "label": "The dashboard is no longer password protected",
-          "effect": "The dashboard stops requiring its credential to open."
         },
         "bypassRoute": {
           "label": "Auth bypass route added:",
@@ -3858,6 +3870,30 @@
         "enabled": "Two-factor authentication is on",
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
+      }
+    },
+    "profile": {
+      "title": "Profile",
+      "subtitle": "The name other people see beside your account, and a line on what to ask you about.",
+      "name": "Display name",
+      "nameHint": "Shown in place of your email. Leave it empty to go by your email.",
+      "namePlaceholder": "Ada Lovelace",
+      "managed": "Your name is managed by your identity provider",
+      "bio": "Bio",
+      "bioPlaceholder": "Who to ask about what",
+      "bioHint": "{{count}} of {{max}} characters",
+      "save": "Save profile",
+      "saved": "Profile saved",
+      "saveFailed": "Could not save your profile.",
+      "problem": {
+        "name": {
+          "blank": "The name cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A display name is at most {{max}} characters."
+        },
+        "bio": {
+          "blank": "The bio cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A bio is at most {{max}} characters."
+        }
       }
     }
   },

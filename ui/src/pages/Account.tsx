@@ -28,6 +28,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
+import { ProfileCard } from "@/components/ProfileCard";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -123,6 +124,8 @@ export default function Account() {
 
   return (
     <PageBody>
+      {/* who you are comes before how you sign in (#2434) */}
+      <ProfileCard />
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
