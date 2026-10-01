@@ -23,6 +23,7 @@
 //!   admitted with an empty membership set.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::{Path, Query, State};
@@ -33,6 +34,7 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use rolter_auth::{Credential, Identity, IdentityError, IdentityProvider};
+use rolter_core::EgressPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -65,6 +67,8 @@ pub(crate) struct OidcIdentityProvider {
     /// the token exchange. OAuth requires the two to match, so it is read back
     /// from the login state rather than recomputed
     redirect_uri: String,
+    /// the deployment's egress policy, applied to the token and JWKS fetches
+    egress: Arc<EgressPolicy>,
 }
 
 impl OidcIdentityProvider {
@@ -73,12 +77,14 @@ impl OidcIdentityProvider {
         provider: SsoProvider,
         secret: Option<String>,
         redirect_uri: String,
+        egress: Arc<EgressPolicy>,
     ) -> Self {
         Self {
             discovery,
             provider,
             secret,
             redirect_uri,
+            egress,
         }
     }
 }
@@ -100,6 +106,7 @@ impl IdentityProvider for OidcIdentityProvider {
         };
 
         let id_token = exchange_code(
+            &self.egress,
             &self.discovery,
             &self.provider,
             self.secret.as_deref(),
@@ -110,10 +117,16 @@ impl IdentityProvider for OidcIdentityProvider {
         .await
         .map_err(api_error_message)
         .map_err(IdentityError::Provider)?;
-        let claims = verify_id_token(&self.discovery, &self.provider, &id_token, &nonce)
-            .await
-            .map_err(api_error_message)
-            .map_err(IdentityError::Provider)?;
+        let claims = verify_id_token(
+            &self.egress,
+            &self.discovery,
+            &self.provider,
+            &id_token,
+            &nonce,
+        )
+        .await
+        .map_err(api_error_message)
+        .map_err(IdentityError::Provider)?;
 
         let email = claims
             .email
@@ -260,12 +273,13 @@ pub(crate) struct Discovery {
 /// Fetch the issuer's discovery document. The issuer in the document must match
 /// the one configured: a provider that answers for a different issuer is either
 /// misconfigured or hostile, and either way its tokens must not be trusted.
-async fn discover(issuer: &str) -> ApiResult<Discovery> {
+async fn discover(egress: &Arc<EgressPolicy>, issuer: &str) -> ApiResult<Discovery> {
     let url = format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
     );
-    let doc: Discovery = reqwest::Client::new()
+    check_idp_url(egress, &url, "sso issuer")?;
+    let doc: Discovery = idp_client(egress)?
         .get(&url)
         .send()
         .await
@@ -281,7 +295,34 @@ async fn discover(issuer: &str) -> ApiResult<Discovery> {
             doc.issuer
         )));
     }
+    // the document names the endpoints the flow goes on to call, so an IdP
+    // that passed the check cannot hand the control plane a metadata address
+    check_idp_url(
+        egress,
+        &doc.authorization_endpoint,
+        "sso authorization_endpoint",
+    )?;
+    check_idp_url(egress, &doc.token_endpoint, "sso token_endpoint")?;
+    check_idp_url(egress, &doc.jwks_uri, "sso jwks_uri")?;
     Ok(doc)
+}
+
+/// How long an IdP call may take before the login gives up on it.
+const IDP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A client for calls to an issuer: connect-time egress filtering, and no
+/// redirects, since a `3xx` is how an issuer that passed the check hands the
+/// request to one that would not have.
+fn idp_client(egress: &Arc<EgressPolicy>) -> ApiResult<reqwest::Client> {
+    crate::egress_client::builder(egress)
+        .timeout(IDP_TIMEOUT)
+        .build()
+        .map_err(|e| invalid(format!("sso http client could not be built: {e}")))
+}
+
+/// Refuse an issuer-supplied URL the egress policy denies before sending to it.
+fn check_idp_url(egress: &EgressPolicy, url: &str, field: &str) -> ApiResult<()> {
+    egress.check_url(url, field).map_err(invalid)
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,8 +331,13 @@ struct Jwks {
 }
 
 /// Find the signing key for a token's `kid` in the provider's JWKS.
-async fn signing_key(jwks_uri: &str, kid: &str) -> ApiResult<jsonwebtoken::jwk::Jwk> {
-    let jwks: Jwks = reqwest::Client::new()
+async fn signing_key(
+    egress: &Arc<EgressPolicy>,
+    jwks_uri: &str,
+    kid: &str,
+) -> ApiResult<jsonwebtoken::jwk::Jwk> {
+    check_idp_url(egress, jwks_uri, "sso jwks_uri")?;
+    let jwks: Jwks = idp_client(egress)?
         .get(jwks_uri)
         .send()
         .await
@@ -338,7 +384,7 @@ async fn start_login(
         .find_provider_by_slug(&slug)
         .await?
         .ok_or_else(|| invalid(format!("no enabled sso provider '{slug}'")))?;
-    let discovery = discover(&provider.issuer).await?;
+    let discovery = discover(&state.egress, &provider.issuer).await?;
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
     let nonce = random_token();
@@ -784,7 +830,7 @@ async fn complete_login(
         // can be switched back on
         return Err(failed(SsoDisabled, named)(ApiError::Forbidden));
     }
-    let discovery = discover(&provider.issuer)
+    let discovery = discover(&state.egress, &provider.issuer)
         .await
         .map_err(failed(IdpVerificationFailed, named))?;
 
@@ -803,6 +849,7 @@ async fn complete_login(
         provider.clone(),
         secret,
         login.redirect_uri.clone(),
+        state.egress.clone(),
     );
     let identity = identity_provider
         .resolve(Credential::AuthorizationCode {
@@ -878,6 +925,7 @@ async fn complete_login(
 
 /// Exchange the authorization code for tokens.
 async fn exchange_code(
+    egress: &Arc<EgressPolicy>,
     discovery: &Discovery,
     provider: &SsoProvider,
     secret: Option<&str>,
@@ -895,7 +943,8 @@ async fn exchange_code(
     if let Some(secret) = secret {
         form.push(("client_secret", secret.to_string()));
     }
-    let response = reqwest::Client::new()
+    check_idp_url(egress, &discovery.token_endpoint, "sso token_endpoint")?;
+    let response = idp_client(egress)?
         .post(&discovery.token_endpoint)
         .form(&form)
         .send()
@@ -917,6 +966,7 @@ async fn exchange_code(
 /// Verify the id token against the provider's JWKS, issuer, audience and the
 /// nonce recorded when the login started.
 async fn verify_id_token(
+    egress: &Arc<EgressPolicy>,
     discovery: &Discovery,
     provider: &SsoProvider,
     id_token: &str,
@@ -933,7 +983,7 @@ async fn verify_id_token(
     let kid = header
         .kid
         .ok_or_else(|| invalid("id token has no kid to select a signing key"))?;
-    let jwk = signing_key(&discovery.jwks_uri, &kid).await?;
+    let jwk = signing_key(egress, &discovery.jwks_uri, &kid).await?;
     let key = jsonwebtoken::DecodingKey::from_jwk(&jwk)
         .map_err(|e| invalid(format!("signing key is unusable: {e}")))?;
     let mut validation = jsonwebtoken::Validation::new(header.alg);
@@ -1137,6 +1187,7 @@ async fn create_provider(
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
         return Err(invalid("issuer must be an http(s) url"));
     }
+    crate::crud::require_allowed_egress(&state, &body.issuer, "issuer")?;
     if let Some(role) = &body.default_role {
         parse_role(role)?;
     }
@@ -1276,6 +1327,7 @@ async fn update_provider(
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
         return Err(invalid("issuer must be an http(s) url"));
     }
+    crate::crud::require_allowed_egress(&state, &body.issuer, "issuer")?;
     if let Some(role) = &body.default_role {
         parse_role(role)?;
     }
@@ -1792,5 +1844,78 @@ mod tests {
         assert_eq!(hash.len(), 64);
         assert_ne!(hash, "abc");
         assert_eq!(hash, exchange_code_hash("abc"));
+    }
+
+    fn provider_row() -> SsoProvider {
+        SsoProvider {
+            id: Uuid::nil(),
+            org_id: Uuid::nil(),
+            name: "idp".into(),
+            slug: "idp".into(),
+            issuer: "https://idp.example.com".into(),
+            client_id: "client".into(),
+            secret_ciphertext: None,
+            secret_nonce: None,
+            scopes: vec!["openid".into()],
+            group_claim: "groups".into(),
+            default_role: None,
+            enabled: true,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_refuses_a_metadata_issuer_literal() {
+        let egress = Arc::new(EgressPolicy::default());
+        let refused = discover(&egress, "http://169.254.169.254/latest").await;
+        assert!(refused.is_err(), "a link-local issuer was fetched");
+    }
+
+    #[tokio::test]
+    async fn the_token_and_jwks_fetches_refuse_a_metadata_literal() {
+        let egress = Arc::new(EgressPolicy::default());
+        let discovery = Discovery {
+            issuer: "https://idp.example.com".into(),
+            authorization_endpoint: "https://idp.example.com/authorize".into(),
+            token_endpoint: "http://169.254.169.254/token".into(),
+            jwks_uri: "http://169.254.169.254/jwks".into(),
+        };
+        let token = exchange_code(
+            &egress,
+            &discovery,
+            &provider_row(),
+            None,
+            "code",
+            "verifier",
+            "https://rolter.example.com/cb",
+        )
+        .await;
+        assert!(token.is_err(), "the token endpoint was called");
+        let key = signing_key(&egress, &discovery.jwks_uri, "kid").await;
+        assert!(key.is_err(), "the jwks was fetched");
+    }
+
+    /// A hostname is not classified at save time, so only the connect-time
+    /// filter can stop one that resolves to a denied address (#2383).
+    #[tokio::test]
+    async fn discovery_never_connects_to_an_issuer_that_resolves_to_a_denied_address() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let egress = crate::egress_client::testing::deny_loopback();
+        let refused = discover(&egress, &listener.url("")).await;
+        assert!(refused.is_err());
+        assert_eq!(listener.accepted(), 0);
+    }
+
+    #[tokio::test]
+    async fn discovery_reaches_an_issuer_the_policy_permits() {
+        // the counter is only evidence if it can count
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let egress = Arc::new(EgressPolicy::default());
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            discover(&egress, &listener.url("")),
+        )
+        .await;
+        assert_eq!(listener.accepted(), 1);
     }
 }

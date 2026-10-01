@@ -3090,6 +3090,8 @@ impl GatewayConfig {
             }
         }
 
+        self.prune_denied_operator_urls(&mut warnings);
+
         let provider_names: std::collections::HashSet<&str> = self
             .providers
             .iter()
@@ -3175,6 +3177,57 @@ impl GatewayConfig {
             }
         }
         warnings
+    }
+
+    /// Drop each gateway-side URL the egress policy denies, saying why in
+    /// `warnings`, so one denied endpoint cannot withhold `/internal/snapshot`
+    /// from every tenant. A plugin instance is one row and is dropped. The
+    /// webhook and the sanitizer are single blocks and are switched off: the
+    /// gateway could not reach them under the same policy anyway, and the
+    /// warning is what tells the operator their guard is not running.
+    /// `validate` still rejects the same URLs in a file config.
+    fn prune_denied_operator_urls(&mut self, warnings: &mut Vec<String>) {
+        let egress = self.egress.clone();
+        self.plugins.instances.retain(|instance| {
+            match egress.check_url(
+                instance.endpoint.trim(),
+                &format!("plugin '{}' endpoint", instance.slug),
+            ) {
+                Ok(()) => true,
+                Err(problem) => {
+                    warnings.push(format!(
+                        "plugin '{}' omitted from the snapshot: {problem}",
+                        instance.slug
+                    ));
+                    false
+                }
+            }
+        });
+        if self.guardrail_webhook.enabled {
+            if let Err(problem) =
+                egress.check_url(self.guardrail_webhook.url.trim(), "guardrail_webhook.url")
+            {
+                warnings.push(format!(
+                    "guardrail webhook disabled in the snapshot: {problem}"
+                ));
+                self.guardrail_webhook.enabled = false;
+            }
+        }
+        if self.pii_sanitizer.enabled {
+            let denied = [
+                ("pii_sanitizer.url", self.pii_sanitizer.url.trim()),
+                (
+                    "pii_sanitizer.restore_url",
+                    self.pii_sanitizer.restore_url.trim(),
+                ),
+            ]
+            .into_iter()
+            .find_map(|(what, url)| egress.check_url(url, what).err());
+            if let Some(problem) = denied {
+                warnings.push(format!("pii sanitizer disabled in the snapshot: {problem}"));
+                self.pii_sanitizer.enabled = false;
+            }
+        }
     }
 
     /// Drop each prompt template that fails validation on its own, saying why
@@ -3351,7 +3404,24 @@ impl GatewayConfig {
                 problems.push(problem);
             }
         }
+        // fetched by the gateway (the status poller, the lmcache refresh, the
+        // kv-event subscriber) from a URL an operator wrote, so each is as
+        // much an SSRF target as api_base
+        if let Some(url) = &provider.status_page_url {
+            if let Err(problem) = self.egress.check_url(
+                url,
+                &format!("provider '{}' status_page_url", provider.name),
+            ) {
+                problems.push(problem);
+            }
+        }
         if let Some(kv) = &provider.kv_events {
+            if let Err(problem) = self.egress.check_url(
+                &kv.endpoint,
+                &format!("provider '{}' kv_events.endpoint", provider.name),
+            ) {
+                problems.push(problem);
+            }
             if !kv.endpoint.starts_with("tcp://") || kv.endpoint.len() <= "tcp://".len() {
                 problems.push(format!(
                     "provider '{}' kv_events.endpoint must be a non-empty tcp:// URL",
@@ -3366,6 +3436,12 @@ impl GatewayConfig {
             }
         }
         if let Some(lmcache) = &provider.lmcache {
+            if let Err(problem) = self.egress.check_url(
+                &lmcache.endpoint,
+                &format!("provider '{}' lmcache.endpoint", provider.name),
+            ) {
+                problems.push(problem);
+            }
             if !is_http_url(&lmcache.endpoint) {
                 problems.push(format!(
                     "provider '{}' lmcache.endpoint must be an http(s) URL",
@@ -3380,6 +3456,39 @@ impl GatewayConfig {
             }
         }
         problems
+    }
+
+    /// Egress-policy problems with the gateway-side URLs an operator writes
+    /// outside a provider: the guardrail webhook, the PII sanitizer and each
+    /// plugin endpoint. A disabled block is never a problem, matching the
+    /// block's own `validate`. Provider URLs are covered by
+    /// [`provider_problems`](Self::provider_problems).
+    pub fn operator_url_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.guardrail_webhook.enabled {
+            problems.extend(
+                self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
+            );
+        }
+        if self.pii_sanitizer.enabled {
+            problems
+                .extend(self.egress_problem(self.pii_sanitizer.url.trim(), "pii_sanitizer.url"));
+            problems.extend(self.egress_problem(
+                self.pii_sanitizer.restore_url.trim(),
+                "pii_sanitizer.restore_url",
+            ));
+        }
+        for instance in &self.plugins.instances {
+            problems.extend(self.egress_problem(
+                instance.endpoint.trim(),
+                &format!("plugin '{}' endpoint", instance.slug),
+            ));
+        }
+        problems
+    }
+
+    fn egress_problem(&self, url: &str, what: &str) -> Option<String> {
+        self.egress.check_url(url, what).err()
     }
 
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
@@ -3677,6 +3786,7 @@ impl GatewayConfig {
 
         // validate every enabled plugin instance's endpoint at load time
         problems.append(&mut self.plugins.validate());
+        problems.append(&mut self.operator_url_problems());
 
         // validate prompt templates: unique versions, well-formed variables, and
         // decorator placeholders that reference only declared variables
@@ -6308,5 +6418,161 @@ mod tests {
         assert!(problems
             .iter()
             .any(|problem| problem.contains("required scopes")));
+    }
+
+    const METADATA: &str = "http://169.254.169.254/latest/meta-data/";
+
+    fn egress_config() -> GatewayConfig {
+        GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "vllm"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+            api_key_env = "KEY"
+
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "vllm"
+            model = "m"
+        "#,
+        )
+        .expect("a config")
+    }
+
+    fn plugin(slug: &str, endpoint: &str) -> crate::plugin_dispatch::PluginInstanceConfig {
+        crate::plugin_dispatch::PluginInstanceConfig {
+            slug: slug.to_string(),
+            org_id: "org".to_string(),
+            project_id: None,
+            stage: crate::plugin_dispatch::PluginStage::PreUpstream,
+            position: 0,
+            failure_mode: crate::guardrail_webhook::FailureMode::FailOpen,
+            endpoint: endpoint.to_string(),
+            auth: None,
+        }
+    }
+
+    /// #2383: every operator-written URL goes through the egress policy in a
+    /// file config, and `validate` names the field.
+    #[test]
+    fn validate_refuses_a_denied_url_in_every_operator_written_field() {
+        type Mutation = Box<dyn Fn(&mut GatewayConfig)>;
+        let cases: Vec<(&str, Mutation)> = vec![
+            (
+                "guardrail_webhook.url",
+                Box::new(|c| {
+                    c.guardrail_webhook.enabled = true;
+                    c.guardrail_webhook.url = METADATA.to_string();
+                }),
+            ),
+            (
+                "pii_sanitizer.url",
+                Box::new(|c| {
+                    c.pii_sanitizer.enabled = true;
+                    c.pii_sanitizer.url = METADATA.to_string();
+                }),
+            ),
+            (
+                "pii_sanitizer.restore_url",
+                Box::new(|c| {
+                    c.pii_sanitizer.enabled = true;
+                    c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
+                    c.pii_sanitizer.restore_url = METADATA.to_string();
+                }),
+            ),
+            (
+                "plugin 'audit' endpoint",
+                Box::new(|c| c.plugins.instances.push(plugin("audit", METADATA))),
+            ),
+            (
+                "status_page_url",
+                Box::new(|c| c.providers[0].status_page_url = Some(METADATA.to_string())),
+            ),
+            (
+                "lmcache.endpoint",
+                Box::new(|c| {
+                    c.providers[0].lmcache = Some(LmCacheConfig {
+                        endpoint: METADATA.to_string(),
+                        refresh_secs: 2,
+                        stale_secs: 10,
+                    })
+                }),
+            ),
+            (
+                "kv_events.endpoint",
+                Box::new(|c| {
+                    c.providers[0].kv_events = Some(KvEventsConfig {
+                        endpoint: "tcp://169.254.169.254:5557".to_string(),
+                        topic: "kv-events".to_string(),
+                        max_blocks: 10,
+                        stale_secs: 30,
+                    })
+                }),
+            ),
+        ];
+        for (field, mutate) in cases {
+            let mut config = egress_config();
+            assert!(
+                config.validate().is_ok(),
+                "{field}: the base config is valid"
+            );
+            mutate(&mut config);
+            let problems = config.validate().expect_err(field);
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.contains(field) && p.contains("egress policy")),
+                "{field}: no problem names it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_webhook_or_sanitizer_is_not_checked_for_egress() {
+        let mut config = egress_config();
+        config.guardrail_webhook.url = METADATA.to_string();
+        config.pii_sanitizer.url = METADATA.to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    /// One denied endpoint must not withhold the snapshot from every tenant:
+    /// the row is pruned with a problem line instead.
+    #[test]
+    fn the_snapshot_prunes_a_denied_operator_url_instead_of_failing() {
+        let mut config = egress_config();
+        config.guardrail_webhook.enabled = true;
+        config.guardrail_webhook.url = METADATA.to_string();
+        config.pii_sanitizer.enabled = true;
+        config.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
+        config.pii_sanitizer.restore_url = METADATA.to_string();
+        config.plugins.instances.push(plugin("bad", METADATA));
+        config
+            .plugins
+            .instances
+            .push(plugin("good", "https://plugins.example.com/hook"));
+        config.providers[0].status_page_url = Some(METADATA.to_string());
+
+        let warnings = config.sanitize_for_snapshot();
+
+        assert!(config.validate().is_ok(), "the pruned config must validate");
+        assert!(!config.guardrail_webhook.enabled);
+        assert!(!config.pii_sanitizer.enabled);
+        assert_eq!(config.plugins.instances.len(), 1);
+        assert_eq!(config.plugins.instances[0].slug, "good");
+        // the provider is dropped like one with a denied api_base
+        assert!(config.providers.is_empty());
+        for needle in [
+            "guardrail webhook",
+            "pii sanitizer",
+            "plugin 'bad'",
+            "status_page_url",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "no warning names {needle}"
+            );
+        }
     }
 }

@@ -15922,3 +15922,141 @@ async fn a_saved_view_reports_the_filters_the_user_can_no_longer_read() {
     assert_eq!(kept["unavailable"], json!([]));
     assert_eq!(kept["effective_filters"], json!({"key": kept_key}));
 }
+
+/// #2383: the SSO issuer, the guardrail webhook url and a plugin endpoint are
+/// operator-written URLs the control plane or the gateway later fetches, so a
+/// cloud-metadata address must be a 400 at save, naming the field.
+#[tokio::test]
+async fn operator_written_urls_the_egress_policy_denies_are_refused_at_save() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app =
+        rolter_control::test_app_with_admin_token(db.pool().clone(), Some("admintok".to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let denied = "http://169.254.169.254/latest/meta-data/";
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "EgressOrg", "slug": "egress-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let refused = |response: reqwest::Response, field: &'static str| async move {
+        let status = response.status();
+        let body: Value = response.json().await.unwrap();
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert_eq!(status, 400, "{field}: expected a 400");
+        assert!(message.contains(field), "{field}: the 400 names no field");
+        assert!(
+            message.contains("egress policy"),
+            "{field}: the 400 does not cite the egress policy"
+        );
+    };
+
+    refused(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+            .bearer_auth("admintok")
+            .json(&json!({
+                "name": "Idp", "slug": "idp", "issuer": denied, "client_id": "c"
+            }))
+            .send()
+            .await
+            .unwrap(),
+        "issuer",
+    )
+    .await;
+
+    let webhook = |url: &str| {
+        json!({
+            "name": "guard", "enabled": true, "url": url, "stage": "pre_call",
+            "timeout_ms": 1000, "max_retries": 0, "failure_mode": "fail_closed",
+            "max_body_bytes": 1024, "auth_kind": "none", "auth_env": null
+        })
+    };
+    refused(
+        client
+            .post(format!("{base}/api/v1/guardrails/providers"))
+            .bearer_auth("admintok")
+            .json(&webhook(denied))
+            .send()
+            .await
+            .unwrap(),
+        "guardrail provider url",
+    )
+    .await;
+    let ok = client
+        .post(format!("{base}/api/v1/guardrails/providers"))
+        .bearer_auth("admintok")
+        .json(&webhook("https://guard.example.com/check"))
+        .send()
+        .await
+        .unwrap();
+    assert!(ok.status().is_success(), "a permitted url must still save");
+    let created: Value = ok.json().await.unwrap();
+    let provider_id = created["id"].as_str().unwrap().to_string();
+    refused(
+        client
+            .put(format!("{base}/api/v1/guardrails/providers/{provider_id}"))
+            .bearer_auth("admintok")
+            .json(&webhook(denied))
+            .send()
+            .await
+            .unwrap(),
+        "guardrail provider url",
+    )
+    .await;
+
+    let plugin = |endpoint: &str| {
+        json!({
+            "name": "audit", "description": "", "kind": "webhook",
+            "stage": "pre_upstream", "enabled": true, "position": 1,
+            "failure_mode": "fail_open", "endpoint": endpoint, "config": {}
+        })
+    };
+    refused(
+        client
+            .post(format!("{base}/api/v1/orgs/{org_id}/plugins"))
+            .bearer_auth("admintok")
+            .json(&plugin(denied))
+            .send()
+            .await
+            .unwrap(),
+        "plugin endpoint",
+    )
+    .await;
+    let ok = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/plugins"))
+        .bearer_auth("admintok")
+        .json(&plugin("https://plugins.example.com/hook"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        ok.status().is_success(),
+        "a permitted endpoint must still save"
+    );
+    let created: Value = ok.json().await.unwrap();
+    let plugin_id = created["id"].as_str().unwrap().to_string();
+    refused(
+        client
+            .put(format!("{base}/api/v1/plugins/{plugin_id}"))
+            .bearer_auth("admintok")
+            .json(&plugin(denied))
+            .send()
+            .await
+            .unwrap(),
+        "plugin endpoint",
+    )
+    .await;
+}
