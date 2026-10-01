@@ -3701,12 +3701,132 @@ mod tests {
         let addr = serve(build_app_with(state, true)).await;
         let response = reqwest::Client::new()
             .get(format!("http://{addr}/gw/v1/models"))
+            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), 502);
         let body = response.text().await.unwrap();
         assert!(!body.contains("127.0.0.1"), "address leaked: {body}");
+    }
+
+    /// stand-in gateway that answers with the credentials it was handed
+    async fn credential_echo_gateway() -> std::net::SocketAddr {
+        async fn echo(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
+            let get = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+            };
+            axum::Json(serde_json::json!({
+                "authorization": get("authorization"),
+                "cookie": get("cookie"),
+                "carrier": get("x-rolter-gateway-key"),
+            }))
+        }
+        serve(Router::new().route("/v1/echo", axum::routing::any(echo))).await
+    }
+
+    /// without a session `/gw` reached the gateway for anyone who could reach
+    /// the control plane (#2463)
+    #[tokio::test]
+    async fn the_gateway_proxy_refuses_an_anonymous_caller() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/gw/v1/echo");
+        for method in [
+            reqwest::Method::GET,
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let anonymous = client.request(method.clone(), &url).send().await.unwrap();
+            assert_eq!(anonymous.status(), 401, "{method} reached the gateway");
+            // a virtual key alone is not a session
+            let key_only = client
+                .request(method.clone(), &url)
+                .bearer_auth("sk-virtual")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(key_only.status(), 401, "{method} took a key as a session");
+            let carrier_only = client
+                .request(method.clone(), &url)
+                .header("x-rolter-gateway-key", "sk-virtual")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(carrier_only.status(), 401, "{method} took the key carrier");
+        }
+    }
+
+    /// the session authenticates to the control plane and the key to the
+    /// gateway; neither may stand in for the other, and the session must not
+    /// reach the gateway at all
+    #[tokio::test]
+    async fn the_gateway_proxy_forwards_the_key_and_drops_the_session() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/gw/v1/echo");
+
+        let seen: serde_json::Value = client
+            .post(&url)
+            .bearer_auth("admin-secret")
+            .header("x-rolter-gateway-key", "sk-virtual")
+            .header("cookie", "rolter_session=cookie-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(seen["authorization"], "Bearer sk-virtual");
+        assert!(seen["carrier"].is_null(), "carrier forwarded: {seen}");
+        assert!(seen["cookie"].is_null(), "cookie forwarded: {seen}");
+
+        // no key: the gateway sees no Authorization, not the session
+        let seen: serde_json::Value = client
+            .get(&url)
+            .bearer_auth("admin-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(seen["authorization"].is_null(), "session forwarded: {seen}");
+    }
+
+    #[tokio::test]
+    async fn the_gateway_proxy_stays_open_in_open_mode() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(None)
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let seen: serde_json::Value = reqwest::Client::new()
+            .get(format!("http://{addr}/gw/v1/echo"))
+            .header("x-rolter-gateway-key", "sk-virtual")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(seen["authorization"], "Bearer sk-virtual");
     }
 
     #[tokio::test]

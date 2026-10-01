@@ -73,19 +73,21 @@ const example = (canvasElement: HTMLElement) =>
 /**
  * The shipped default: no base URL override, no header policy.
  *
- * The example request goes through the dashboard's `/gw` proxy, the one
- * address the control plane serves the gateway on. It used to fall back to the
- * bare origin, and `/v1/chat/completions` there is a 404 (#2075).
+ * With no address saved there is no example request: the dashboard's `/gw`
+ * proxy needs a dashboard session, so it is no address for a client (#2486).
+ * The field's placeholder is only a shape.
  */
 export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No headers injected/)).toBeVisible());
-    const proxy = `${window.location.origin}/gw`;
-    await expect(example(canvasElement)).toContain(`curl ${proxy}/v1/chat/completions`);
-    // the placeholder is the address an empty field stands for
-    await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute("placeholder", proxy);
+    await expect(canvas.getByRole("note")).toHaveTextContent(en.common.gatewayBasePrompt);
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/v1");
+    await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute(
+      "placeholder",
+      "https://gateway.example.com",
+    );
     await expect(canvas.getByText(en.pages.clientSettings.baseUrlHint)).toBeVisible();
   },
 };

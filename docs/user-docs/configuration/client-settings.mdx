@@ -16,9 +16,9 @@ The address clients point their SDK at: the gateway's own root, such as `https:/
 
 Enter it without `/v1`, since the snippets add the path themselves. A trailing `/v1`, the way the OpenAI SDKs write their base URL, is dropped rather than doubled.
 
-Leave it empty and the snippets go through the dashboard's own `/gw` proxy, for example `https://rolter.example.com:4001/gw/v1/chat/completions`. The proxy answers every OpenAI-compatible call, so an empty field is fine for trying Rolter out, but each call then passes through the control plane on its way to the gateway. For production, give clients the gateway's own address.
+Leave it empty and the dashboard shows no connection snippet: it asks you to save a base URL instead. The dashboard's own `/gw` proxy is never offered as an address for your clients. It requires a dashboard session as `Authorization: Bearer <session token>` (or the admin token; a control plane in open mode needs none), which a client outside the dashboard does not have, and each call passes through the control plane on its way to the gateway. The Playground and the gateway status pill are the proxy's callers: they send the session, and the virtual key goes in an `x-rolter-gateway-key` header, which the proxy forwards to the gateway as `Authorization: Bearer <key>`.
 
-Only a superadmin can read client settings, so the snippets other roles see are built on the `/gw` proxy even when a base URL is saved.
+Only a superadmin can read client settings, so every other role sees the same prompt to have a superadmin save a base URL, even when one is saved.
 
 This value is advisory: the gateway never reads it, and setting it does not change what the gateway listens on.
 

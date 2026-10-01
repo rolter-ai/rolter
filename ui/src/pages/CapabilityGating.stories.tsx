@@ -47,9 +47,6 @@ const SECURITY: SecuritySettingsDto = {
   allowed_headers: ["x-request-id"],
   required_headers: {},
   auth_bypass_routes: ["/healthz"],
-  dashboard_auth_enabled: true,
-  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
-  dashboard_secret_configured: true,
   updated_at: "2026-08-01T09:00:00Z",
 };
 
@@ -288,7 +285,9 @@ export const SecurityAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByText("Enforce Virtual Keys on Inference")).toBeVisible(),
+    );
   },
 };
 

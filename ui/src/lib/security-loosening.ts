@@ -2,13 +2,12 @@
  * Which part of a Security save takes a protection away.
  *
  * The screen saves every field in one request, so a reviewer cannot tell from
- * the button whether it tightens the deployment or opens it. Three edits open
+ * the button whether it tightens the deployment or opens it. Two edits open
  * something, and only those raise the confirmation:
  *
  * - **Virtual keys not enforced.** `virtual_key_required` goes from on to off.
  *   A gateway that holds no virtual keys stops refusing every request by
  *   default, and is left to decide by how it was started.
- * - **Dashboard not protected.** `dashboard_auth_enabled` goes from on to off.
  * - **A bypass route added.** `auth_bypass_routes` gains a path, which then
  *   answers with no key at all.
  *
@@ -18,19 +17,17 @@
  * matters, so they save at once.
  */
 
-/** The three settings a loosening can come from. */
+/** The settings a loosening can come from. */
 export interface SecurityPolicy {
   virtualKeyRequired: boolean;
-  dashboardAuthEnabled: boolean;
   authBypassRoutes: readonly string[];
 }
 
-export type Loosening =
-  { kind: "virtualKeys" } | { kind: "dashboardAuth" } | { kind: "bypassRoute"; route: string };
+export type Loosening = { kind: "virtualKeys" } | { kind: "bypassRoute"; route: string };
 
 /**
  * The protections `next` removes from `saved`, in the order the screen lists
- * them: virtual keys, dashboard, then each route added.
+ * them: virtual keys, then each route added.
  *
  * `saved` is what the control plane holds now, not the draft. A switch flipped
  * off and back on is no change, and a route that was already exempt and stays
@@ -39,7 +36,6 @@ export type Loosening =
 export function loosenings(saved: SecurityPolicy, next: SecurityPolicy): Loosening[] {
   const out: Loosening[] = [];
   if (saved.virtualKeyRequired && !next.virtualKeyRequired) out.push({ kind: "virtualKeys" });
-  if (saved.dashboardAuthEnabled && !next.dashboardAuthEnabled) out.push({ kind: "dashboardAuth" });
   const had = new Set(saved.authBypassRoutes);
   const added = new Set<string>();
   for (const route of next.authBypassRoutes) {
