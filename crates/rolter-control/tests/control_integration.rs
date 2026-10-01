@@ -16623,6 +16623,163 @@ async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_
     );
 }
 
+/// A caller whose only role is on a project reads the budgets and rate limits
+/// that apply to it, at the project, its team and its org, and nothing else:
+/// another project's, a sibling team's, and no write at any of them (#2527).
+#[tokio::test]
+async fn a_project_viewer_reads_the_caps_of_their_own_scope_chain_only() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("caps".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut teams = Vec::new();
+    for name in ["core", "other"] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, $2) returning id")
+                .bind(org)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        teams.push(id);
+    }
+    let mut projects = Vec::new();
+    for (team, name) in [(teams[0], "one"), (teams[0], "two"), (teams[1], "three")] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into projects (team_id, name) values ($1, $2) returning id")
+                .bind(team)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        projects.push(id);
+    }
+    let scopes = [
+        ("org", org),
+        ("team", teams[0]),
+        ("team", teams[1]),
+        ("project", projects[0]),
+        ("project", projects[1]),
+        ("project", projects[2]),
+    ];
+    for (scope_type, scope_id) in scopes {
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ($1, $2, '10', 'monthly')",
+        )
+        .bind(scope_type)
+        .bind(scope_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into rate_limits (scope_type, scope_id, rpm) values ($1, $2, 60)")
+            .bind(scope_type)
+            .bind(scope_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let viewer = seed_user(&pool, "viewer@acme.test", false).await;
+    seed_membership(&pool, viewer, None, None, Some(projects[0]), "viewer").await;
+    let token = seed_session(&pool, viewer, "caps_viewer").await;
+
+    let status_of = |method: reqwest::Method, path: String, body: Option<Value>| {
+        let (client, base, token) = (client.clone(), base.clone(), token.clone());
+        async move {
+            let mut req = client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token);
+            if let Some(body) = body {
+                req = req.json(&body);
+            }
+            let resp = req.send().await.unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+
+    for resource in ["budgets", "rate-limits"] {
+        for (scope_type, scope_id, readable) in [
+            ("project", projects[0], true),
+            ("team", teams[0], true),
+            ("org", org, true),
+            ("project", projects[1], false),
+            ("project", projects[2], false),
+            ("team", teams[1], false),
+        ] {
+            let (status, rows) = status_of(
+                reqwest::Method::GET,
+                format!("/api/v1/{resource}?scope_type={scope_type}&scope_id={scope_id}"),
+                None,
+            )
+            .await;
+            if readable {
+                assert_eq!(status, 200, "{resource} {scope_type}: {rows}");
+                assert_eq!(rows.as_array().unwrap().len(), 1, "{resource} {scope_type}");
+            } else {
+                assert_eq!(status, 403, "{resource} {scope_type} {scope_id}: {rows}");
+            }
+        }
+    }
+
+    // reading is all a viewer gets: no create, even on their own project
+    let (status, _) = status_of(
+        reqwest::Method::POST,
+        "/api/v1/budgets".to_string(),
+        Some(json!({"scope_type": "project", "scope_id": projects[0], "limit_usd": "5"})),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = status_of(
+        reqwest::Method::POST,
+        "/api/v1/rate-limits".to_string(),
+        Some(json!({"scope_type": "project", "scope_id": projects[0], "rpm": 5})),
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    // the advisory answer agrees: read yes, write no, at the project's chain
+    let (status, effective) = status_of(
+        reqwest::Method::GET,
+        format!(
+            "/api/v1/rbac/effective?org_id={org}&team_id={}&project_id={}",
+            teams[0], projects[0]
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{effective}");
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for pair in ["budget:read", "rate_limit:read"] {
+        assert!(allowed.contains(&pair), "{pair}");
+    }
+    for pair in [
+        "budget:create",
+        "budget:update",
+        "budget:delete",
+        "rate_limit:create",
+    ] {
+        assert!(!allowed.contains(&pair), "{pair}");
+    }
+}
+
 /// A project's members see the providers and groups of their project plus the
 /// org-wide ones, never another project's; a project admin may create and
 /// delete their own project's, but widening to the org, another project, or

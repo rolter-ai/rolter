@@ -39,7 +39,7 @@ exactly the chain its route's guard passes to `authorize`:
 | `project`   | org + team + project | the org, that team, or that project |
 
 A team admin asked at `(org, team, project)` therefore gets `route:create` (a
-team-scoped row) but not `budget:create` or `team:create` (org-scoped rows),
+team-scoped row) but not `team:create` or `custom_role:read` (org-scoped rows),
 which the guard would refuse with a 403. Custom-role grants are trimmed the
 same way, and `deployment` rows keep the whole chain because they name no
 tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
@@ -57,6 +57,22 @@ not this table, is the authority, so the two list screens gate each row at the
 row's own scope (#2522), see
 [Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
 membership reaches neither.
+
+`budget` and `rate_limit` are `project` rows for the same reason (#2527): a caller
+whose only role is on a project must read the caps that throttle their own keys,
+and a project membership never satisfied an org-scoped read. The row's own scope
+is still what the guard checks, so the writes are unchanged: a project admin may
+write caps on their project and its keys, never on the team or org above it. The
+list routes `GET /api/v1/budgets` and `GET /api/v1/rate-limits` take a
+`scope_type` and `scope_id`, and answer `200` for the caller's own project, and for
+the team and org above any place they hold a role; another project, a sibling team,
+a customer or a business unit answer `403`.
+
+The Roles & Permissions screen (`rbac` in `nav.tsx`) names no resource, so no
+capability gates the page: `GET /api/v1/rbac/matrix` publishes what roles can do,
+not anyone's data, and answers every signed-in caller. The org's custom roles on
+it keep their own check (a role anywhere in that org), and the write controls stay
+gated on `custom_role:create`, `:update` and `:delete`.
 
 ## Gating a row at its own scope
 

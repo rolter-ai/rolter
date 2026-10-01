@@ -281,9 +281,14 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // budgets and rate limits attach to any scope, so the scope is `project`:
+    // the read answer reaches a project member, who may see the caps that
+    // throttle their own keys (#2527). The writes are unchanged, the guard
+    // still checks the row's own scope, so an org or team row stays an
+    // admin's of that org or team; the list routes narrow what a reader sees
     Capability {
         resource: "budget",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -291,7 +296,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "rate_limit",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -1252,7 +1257,7 @@ mod tests {
         // org is org-scoped: the guard checks the org alone and a team
         // membership does not reach it
         assert!(!allowed.contains(&"team:create".to_string()));
-        assert!(!allowed.contains(&"budget:read".to_string()));
+        assert!(!allowed.contains(&"custom_role:read".to_string()));
         // route is team-scoped, so the team membership does
         assert!(allowed.contains(&"route:create".to_string()));
     }
@@ -1266,7 +1271,38 @@ mod tests {
             "member",
         )];
         let allowed = allowed_for(false, &ms, &[], chain());
+        assert!(!allowed.contains(&"custom_role:read".to_string()));
+        assert!(!allowed.contains(&"team:read".to_string()));
+    }
+
+    /// the caps that throttle a project's keys are readable by anyone holding
+    /// a role on it, and only readable (#2527)
+    #[test]
+    fn a_project_viewer_reads_budgets_and_rate_limits_but_writes_none() {
+        let c = chain();
+        let viewer = [membership(c.org, c.team, c.project, "viewer")];
+        let allowed = allowed_for(false, &viewer, &[], c);
+        for res in ["budget", "rate_limit"] {
+            assert!(allowed.contains(&format!("{res}:read")), "{res}:read");
+            for action in ["create", "update", "delete"] {
+                assert!(
+                    !allowed.contains(&format!("{res}:{action}")),
+                    "{res}:{action}"
+                );
+            }
+        }
+        // asked at the org alone, or by a caller with no role, nothing is read
+        let org_only = ScopeChain::org(c.org.unwrap_or_default());
+        let allowed = allowed_for(false, &viewer, &[], org_only);
         assert!(!allowed.contains(&"budget:read".to_string()));
+        let allowed = allowed_for(false, &[], &[], c);
+        assert!(!allowed.contains(&"rate_limit:read".to_string()));
+        // an org viewer still reads at any chain
+        let org_viewer = [membership(c.org, None, None, "viewer")];
+        for chain in [c, org_only] {
+            let allowed = allowed_for(false, &org_viewer, &[], chain);
+            assert!(allowed.contains(&"budget:read".to_string()));
+        }
     }
 
     /// a provider or group may be scoped to one project (#1919), so a project
@@ -1286,7 +1322,7 @@ mod tests {
             }
         }
         // still not an org-scoped capability
-        assert!(!allowed.contains(&"budget:create".to_string()));
+        assert!(!allowed.contains(&"team:create".to_string()));
 
         let viewer = [membership(c.org, c.team, c.project, "viewer")];
         let allowed = allowed_for(false, &viewer, &[], c);
@@ -1329,9 +1365,9 @@ mod tests {
 
     #[test]
     fn a_team_custom_grant_is_trimmed_like_a_membership() {
-        let g = [grant(chain().org, chain().team, "budget", "create")];
+        let g = [grant(chain().org, chain().team, "team", "create")];
         let allowed = allowed_for(false, &[], &g, chain());
-        assert!(!allowed.contains(&"budget:create".to_string()));
+        assert!(!allowed.contains(&"team:create".to_string()));
     }
 
     /// `allowed_for` and the guard must not drift: for every row, the answer
