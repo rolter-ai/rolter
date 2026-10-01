@@ -605,8 +605,12 @@ locally-clean branch red, because `cargo fmt`, `cargo clippy` and
 `cargo nextest` are all silent about it. Run it before pushing:
 
 ```bash
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
+
+Keep `--all-features`: it is what CI runs, and the `postgres` modules are
+feature-gated, so without it a broken link inside them (a doc comment still
+naming a renamed function, say) passes locally and fails in CI.
 
 The usual failure is `rustdoc::private_intra_doc_links`: a public item whose
 doc comment links `[`Something`]` that is private. It is easy to write, because
