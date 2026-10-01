@@ -508,22 +508,28 @@ Two details carry the design:
   string, so naming another org's project beside one's own org reads nothing
   back.
 
-A captured body is joined to its log row on `(request_id, ts)`, never on the
-id alone. The gateway keeps whatever `x-request-id` the caller sent, so two
-tenants' requests can share an id; an id-only join let a caller log a bodiless
-request under an id seen on another project's rows and read that project's
-prompt through their own row, which the mask passed because it judges the row,
-not the body. `PayloadLog` copies its log row's `ts` through the same
-serializer, so the pair names one request.
+A captured body is joined to its log row on `log_id`, never on the caller's id.
+The gateway keeps whatever `x-request-id` the caller sent, so two tenants'
+requests can share an id; an id-only join let a caller log a bodiless request
+under an id seen on another project's rows and read that project's prompt
+through their own row, which the mask passed because it judges the row, not the
+body. `log_id` is a UUID the gateway mints per request when it queues the row
+and writes to both `request_logs` and `request_payloads`, so the caller can
+neither choose nor observe it, and a client that sends one constant id no
+longer collides with itself (#1937). The caller's `x-request-id` stays in
+`request_id` for lookup and search. The join key also carries the row's
+`org_id` and `project_id`, which the gateway copies onto the payload row, so a
+body cannot meet a row of another project even if a key were somehow reused.
 
-The pair is not a perfect key. Two requests that share an `x-request-id` and
-were logged in the same millisecond (`ts` is `DateTime64(3)`) still get one
-body between them, which takes a client sending predictable or constant ids.
-Keying the join on something the caller cannot choose is #1937. The pair also
-drops bodies written by gateways from v0.1.0 or earlier, which let ClickHouse
-stamp the log row and the payload row separately: after the control plane is
-upgraded those bodies stop showing until payload retention removes them. The
-user docs' upgrade page says to upgrade gateways first for that reason.
+A row that has a `log_id` never falls back to a weaker join. Only a row written
+before migration `012_request_log_key.sql`, where `log_id` is empty, joins on
+`(request_id, ts)` as before, so old bodies stay visible until retention
+removes them; that fallback keeps the same-millisecond limit for those rows and
+disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
+earlier, which let ClickHouse stamp the log row and the payload row separately,
+never joined on `ts` and still do not: after the control plane is upgraded those
+bodies stop showing until payload retention removes them. The user docs'
+upgrade page says to upgrade gateways first for that reason.
 
 Two limits are known and tracked:
 
