@@ -1,6 +1,6 @@
 //! A Postgres database per worktree, derived rather than configured.
 //!
-//! [`test_schema`](crate::postgres::test_schema) already gives every *test* a
+//! [`test_schema`] already gives every *test* a
 //! schema of its own, which is what makes plain `cargo test` — threads in one
 //! process, as the coverage job runs — safe. It does nothing about the level
 //! above: every worktree on a developer's machine points
@@ -53,7 +53,7 @@ static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
 /// Whether a test database was configured at all, without connecting.
 ///
 /// Test modules guard on this before doing any work, so it has to stay cheap
-/// and synchronous; [`url()`](crate::postgres::test_database::url) is what
+/// and synchronous; [`url()`] is what
 /// actually resolves the database.
 pub fn is_configured() -> bool {
     std::env::var(URL_ENV).is_ok_and(|url| !url.is_empty())
