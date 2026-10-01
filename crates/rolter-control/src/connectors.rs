@@ -205,7 +205,7 @@ async fn update(
     .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
     // a secret was given for one receiver; repointed at another origin, the
     // connector would hand it to whoever answers there, so it is dropped
-    // unless this request brings the new receiver's own. An unparseable
+    // unless this request brings the new receiver's own. An unparsable
     // stored endpoint counts as moved
     let origin_changed = match (
         reqwest::Url::parse(&stored),
