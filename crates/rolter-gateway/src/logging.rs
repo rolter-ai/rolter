@@ -1049,6 +1049,25 @@ impl LogSink {
         queue_capacity: usize,
         metrics: Arc<Metrics>,
     ) -> Self {
+        Self::spawn_with_client(
+            clickhouse_url,
+            batch_max,
+            flush,
+            queue_capacity,
+            metrics,
+            crate::clickhouse_client::client(),
+        )
+    }
+
+    /// [`Self::spawn`] with an explicit HTTP client, so tests can bound it tightly.
+    pub(crate) fn spawn_with_client(
+        clickhouse_url: String,
+        batch_max: usize,
+        flush: Duration,
+        queue_capacity: usize,
+        metrics: Arc<Metrics>,
+        client: reqwest::Client,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
         let writer = BatchWriter {
             url: format!(
@@ -1059,7 +1078,7 @@ impl LogSink {
                 "{}/?query=INSERT%20INTO%20request_payloads%20FORMAT%20JSONEachRow{BEST_EFFORT_DATES}",
                 clickhouse_url.trim_end_matches('/')
             ),
-            client: reqwest::Client::new(),
+            client,
             batch_max: batch_max.max(1),
             flush,
             metrics: metrics.clone(),
@@ -1233,7 +1252,7 @@ impl BatchWriter {
                 self.metrics.logs_dropped_total.fetch_add(count, Relaxed);
             }
             Err(err) => {
-                tracing::warn!(%err, "failed to write log batch to clickhouse");
+                tracing::warn!(timed_out = err.is_timeout(), err = %err.without_url(), "failed to write log batch to clickhouse");
                 self.metrics.logs_dropped_total.fetch_add(count, Relaxed);
             }
         }
@@ -1268,7 +1287,9 @@ impl BatchWriter {
                     let detail = resp.text().await.unwrap_or_default();
                     tracing::warn!(%status, detail, "clickhouse rejected payload batch");
                 }
-                Err(err) => tracing::warn!(%err, "failed to write payload batch to clickhouse"),
+                Err(err) => {
+                    tracing::warn!(timed_out = err.is_timeout(), err = %err.without_url(), "failed to write payload batch to clickhouse")
+                }
             }
         }
         batch.clear();

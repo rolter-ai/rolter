@@ -27,6 +27,7 @@ mod cache;
 mod cache_policy_tests;
 mod cache_telemetry;
 mod cancel;
+mod clickhouse_client;
 #[doc(hidden)]
 pub mod cooldowns;
 mod error;
