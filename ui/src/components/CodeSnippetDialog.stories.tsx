@@ -3,7 +3,14 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { CopyAsCodeButton } from "./CodeSnippetDialog";
 import type { ClientSettingsDto } from "@/lib/api";
-import { expectGateAnswered, Harness, json, recording, routes } from "@/pages/story-harness";
+import {
+  expectGateAnswered,
+  Harness,
+  json,
+  recording,
+  routes,
+  StaleSession,
+} from "@/pages/story-harness";
 
 const SAVED: ClientSettingsDto = {
   public_base_url: "https://gateway.example.com",
@@ -191,18 +198,58 @@ export const UsesTheSavedBaseUrl: Story = {
   },
 };
 
-const asAdmin = withSavedBaseUrl();
+/** `/auth/me` as a signed-in org admin, carrying whatever address was saved */
+const adminSession = (gatewayBaseUrl: string | null) =>
+  recording(async (input) => {
+    const url = String(input);
+    if (url.includes("/api/v1/auth/me")) {
+      return json({
+        user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+        memberships: [],
+        display_name_managed: false,
+        gateway_base_url: gatewayBaseUrl,
+      });
+    }
+    return url.includes("/api/v1/client-settings") ? json(SAVED) : json([]);
+  });
+const asAdmin = adminSession(SAVED.public_base_url);
+const asAdminNoUrl = adminSession(null);
 
 /**
- * Client settings are superadmin-only, so an org admin never asks for them — the
- * 403 would say nothing the gate did not — and is asked to have a base URL
- * saved rather than handed the `/gw` proxy, which needs a dashboard session an
- * external client lacks (#2486).
+ * Client settings are superadmin-only, so an org admin never asks for them, yet
+ * the saved address still reaches the snippet through `/auth/me`, which every
+ * signed-in role reads (#2512).
+ */
+export const AnAdminGetsTheSavedBaseUrl: Story = {
+  render: (args) => (
+    <Harness fetchStub={asAdmin.stub} role="admin">
+      <StaleSession>
+        <CopyAsCodeButton {...args} />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async () => {
+    await expectGateAnswered();
+    const dialog = await openAddressed();
+    await expect(dialog).toHaveTextContent(
+      /curl https:\/\/gateway\.example\.com\/v1\/chat\/completions/,
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
+    asAdmin.expectNotSent("GET", "/api/v1/client-settings");
+  },
+};
+
+/**
+ * With nothing saved an admin is asked to have a base URL saved rather than
+ * handed the `/gw` proxy, which needs a dashboard session an external client
+ * lacks (#2486).
  */
 export const AnAdminIsAskedForABaseUrl: Story = {
   render: (args) => (
-    <Harness fetchStub={asAdmin.stub} role="admin">
-      <CopyAsCodeButton {...args} />
+    <Harness fetchStub={asAdminNoUrl.stub} role="admin">
+      <StaleSession>
+        <CopyAsCodeButton {...args} />
+      </StaleSession>
     </Harness>
   ),
   play: async () => {
@@ -213,7 +260,7 @@ export const AnAdminIsAskedForABaseUrl: Story = {
     );
     await expect(dialog.textContent ?? "").not.toContain("/gw/");
     await expect(within(dialog).queryByRole("tab")).toBeNull();
-    asAdmin.expectNotSent("GET", "/api/v1/client-settings");
+    asAdminNoUrl.expectNotSent("GET", "/api/v1/client-settings");
   },
 };
 

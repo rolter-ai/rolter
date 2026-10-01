@@ -4,7 +4,14 @@ import { expect, waitFor, within } from "storybook/test";
 import { KeyNextStep } from "./KeyNextStep";
 import type { ClientSettingsDto } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
-import { expectGateAnswered, Harness, json, recording, routes } from "@/pages/story-harness";
+import {
+  expectGateAnswered,
+  Harness,
+  json,
+  recording,
+  routes,
+  StaleSession,
+} from "@/pages/story-harness";
 
 const SAVED: ClientSettingsDto = {
   public_base_url: "https://gateway.example.com/v1/",
@@ -107,26 +114,62 @@ export const UsesTheSavedPublicBaseUrl: Story = {
   },
 };
 
-const asAdmin = recording(async (input) =>
-  String(input).includes("/api/v1/client-settings") ? json(SAVED) : json([]),
-);
+/** `/auth/me` as a signed-in org admin, carrying whatever address was saved */
+const adminSession = (gatewayBaseUrl: string | null) =>
+  recording(async (input) => {
+    const url = String(input);
+    if (url.includes("/api/v1/auth/me")) {
+      return json({
+        user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+        memberships: [],
+        display_name_managed: false,
+        gateway_base_url: gatewayBaseUrl,
+      });
+    }
+    return url.includes("/api/v1/client-settings") ? json(SAVED) : json([]);
+  });
+const asAdmin = adminSession(SAVED.public_base_url);
+const asAdminNoUrl = adminSession(null);
 
 /**
- * Client settings are superadmin-only, so an org admin never asks for them and
- * is asked to have a superadmin save the base URL, rather than being handed the
- * `/gw` proxy (#2486).
+ * Client settings are superadmin-only, so an org admin never asks for them,
+ * yet the saved public base URL still reaches the snippet through `/auth/me`
+ * (#2512).
  */
-export const AnAdminIsAskedForABaseUrl: Story = {
+export const AnAdminGetsTheSavedUrlFromTheSession: Story = {
   render: (args) => (
     <Harness fetchStub={asAdmin.stub} role="admin">
-      <KeyNextStep {...args} />
+      <StaleSession>
+        <KeyNextStep {...args} />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectGateAnswered();
+    await waitFor(async () =>
+      expect(await address(canvasElement)).toHaveTextContent("https://gateway.example.com/v1"),
+    );
+    const snippet = await request(canvasElement);
+    await expect(snippet).toHaveTextContent("curl https://gateway.example.com/v1/chat/completions");
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
+    asAdmin.expectNotSent("GET", "/api/v1/client-settings");
+  },
+};
+
+/** With no address saved, even a signed-in admin is asked to have one saved (#2486). */
+export const AnAdminIsAskedWhenNothingIsSaved: Story = {
+  render: (args) => (
+    <Harness fetchStub={asAdminNoUrl.stub} role="admin">
+      <StaleSession>
+        <KeyNextStep {...args} />
+      </StaleSession>
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     await expectGateAnswered();
     await expect(await within(canvasElement).findByRole("note")).toBeVisible();
     await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
-    asAdmin.expectNotSent("GET", "/api/v1/client-settings");
+    asAdminNoUrl.expectNotSent("GET", "/api/v1/client-settings");
   },
 };
 

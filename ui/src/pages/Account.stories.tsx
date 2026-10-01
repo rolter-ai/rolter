@@ -21,6 +21,7 @@ import {
   scoped,
   secretClosePrompt,
   sheet,
+  StaleSession,
   stubClipboard,
   answerDiscardPrompt,
   type FetchStub,
@@ -617,6 +618,39 @@ export const MintsAKey: Story = {
     await waitFor(() =>
       expect(within(document.body).queryByText(MINTED.key)).not.toBeInTheDocument(),
     );
+  },
+};
+
+/**
+ * A member cannot read client settings, but `/auth/me` hands every role the
+ * saved public base URL, so the step after minting prints a usable request
+ * (#2512).
+ */
+export const AMemberGetsTheSavedGatewayUrl: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        (init) => (init?.method === "POST" ? json(MINTED, 201) : json(KEYS)),
+        undefined,
+        () => json({ ...ME, gateway_base_url: "https://llm.example.com" }),
+      )}
+    >
+      <StaleSession>
+        <Account />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    await waitFor(() =>
+      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
+        "https://llm.example.com/v1",
+      ),
+    );
+    const request = within(dialog).getByRole("region", { name: /First request/ });
+    await expect(request).toHaveTextContent("curl https://llm.example.com/v1/chat/completions");
+    await expect(request).not.toHaveTextContent(MINTED.key);
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 

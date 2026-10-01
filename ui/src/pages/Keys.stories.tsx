@@ -22,6 +22,7 @@ import {
   recording,
   scoped,
   secretClosePrompt,
+  StaleSession,
   sheet,
   stubClipboard,
   type FetchStub,
@@ -394,6 +395,43 @@ export const TheNextStepUsesTheSavedGatewayUrl: Story = {
     await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
     await expect(request).toHaveTextContent("$ROLTER_API_KEY");
     await expect(request).not.toHaveTextContent(MINTED_KEY);
+  },
+};
+
+/**
+ * An org admin cannot read client settings either, yet the saved public base
+ * URL reaches the next step through `/auth/me` (#2512).
+ */
+export const TheNextStepUsesTheSavedUrlForAnAdmin: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
+        if (String(input).includes("/auth/me")) {
+          return json({
+            user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+            memberships: [],
+            display_name_managed: false,
+            gateway_base_url: "https://llm.example.com",
+          });
+        }
+        return lookups(String(input)) ?? json(KEYS);
+      })}
+    >
+      <StaleSession>
+        <Keys />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    await waitFor(() =>
+      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
+        "https://llm.example.com/v1",
+      ),
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 

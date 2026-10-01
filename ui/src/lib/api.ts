@@ -2294,6 +2294,11 @@ export interface MeResponse {
   user: UserRow;
   memberships: MeMembership[];
   /**
+   * The saved Client Settings public base URL, or null. Readable by every role,
+   * unlike `client_settings:read` (#2512). Absent from an older control plane.
+   */
+  gateway_base_url?: string | null;
+  /**
    * A SCIM directory owns `user.display_name`, so a change to it answers 409.
    * The bio stays editable. Absent from a control plane older than #1823.
    */
