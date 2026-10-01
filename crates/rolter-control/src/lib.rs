@@ -3478,6 +3478,37 @@ mod tests {
         );
     }
 
+    /// #1951: the ClickHouse client had no timeout, so a server that took the
+    /// connection and stopped answering hung the dashboard request forever.
+    #[tokio::test]
+    async fn an_analytics_read_against_a_stalled_clickhouse_answers_an_error() {
+        let stalled = analytics::testing::Stalled::start().await;
+        let mut state = state_with_token(None);
+        state.clickhouse = Some(analytics::ClickHouseClient::with_timeouts(
+            &stalled.url,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(300),
+        ));
+        let addr = serve(build_app_with(state, false)).await;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/analytics/summary"))
+                .send(),
+        )
+        .await
+        .expect("the request must not hang")
+        .unwrap();
+        assert_eq!(response.status(), 502);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("analytics_query_failed"), "{body}");
+        assert!(
+            !body.contains(crate::analytics::testing::STALLED_USERINFO_SECRET)
+                && !body.contains("127.0.0.1"),
+            "the response body names the stalled server's userinfo or host"
+        );
+    }
+
     #[tokio::test]
     async fn a_control_plane_without_analytics_publishes_no_destination() {
         // absent, not empty-string: a gateway must be able to tell "nobody told

@@ -43,12 +43,34 @@ loser they lost — before any account or membership is created.
 
 One unaccepted, unrevoked invitation exists per email per org, enforced by a
 partial unique index (`invitations_live_email_idx`). The index does not look at
-`expires_at`, so an invitation that expired unaccepted still holds its address
-until it is revoked. `InvitationRepo::create` is a plain insert, so inviting an
-address that already holds one fails on that index and answers `500` with the
-database's message, not the replacement the migration comment describes
-([#2324](https://github.com/rolter-ai/rolter/issues/2324)). The dashboard lists
-expired invitations for this reason, so they can be revoked.
+`expires_at`, because a partial-index predicate cannot use `now()`, so an
+invitation that expired unaccepted would still hold its address. The create path
+therefore handles both cases.
+
+### Re-inviting replaces
+
+Inviting an address that already holds an unaccepted, unrevoked invitation in
+the same org, expired or not, **replaces** it
+([#2324](https://github.com/rolter-ai/rolter/issues/2324)).
+`InvitationRepo::create` runs in one transaction that sets `revoked_at = now()`
+on the old row (the same thing `DELETE /api/v1/invitations/{id}` does) and
+inserts the new one. The new link is the only live one and the old link is
+refused like any revoked link (`401`). The email match is case-insensitive,
+like the index. An accepted invitation never counts, so the address can be
+invited again.
+
+Concurrent creates for one address are ordered by a transaction-scoped advisory
+lock on `(org_id, lower(email))`, taken before the revoke. The second request
+waits, revokes the first one's fresh row and inserts its own, so both answer
+`200` and exactly one live row remains. Because the lock serializes the
+revoke-then-insert, the unique index cannot be hit by two creates for one
+address.
+
+The audit log records the replacement on the new invitation's `invitation.create`
+entry as `replaced: <old invitation id>` (`null` when nothing was replaced). No
+separate `invitation.revoke` entry is written for it. The dashboard lists
+expired invitations so they can be revoked by hand; replacing does it
+implicitly.
 
 ## Who may invite, list and revoke
 

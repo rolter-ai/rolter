@@ -737,6 +737,14 @@ goes to the log as `alert signal query failed`.
 - The dashboard queries ClickHouse for usage, spend, latency percentiles and error rates, sliced by org/team/project/key/model.
 - **Who reads it** is decided per row: every analytics and health query binds the caller's tenancy, and captured bodies are masked below the `request_payload` floor (member, or viewer on a project that allows it). See [Who reads the request log](security.md#who-reads-the-request-log-1820).
 
+### ClickHouse call timeouts (#1951)
+
+Every ClickHouse call the control plane makes goes through one `reqwest` client built in `crates/rolter-control/src/analytics.rs`, with a 3s connect timeout and a 15s whole-request timeout. That covers the analytics, health, MCP-log and `/api/v1/me/usage` reads, the alert signal reads, and the MCP and UX-event ingest inserts. Without a bound, a ClickHouse that accepted the connection and stopped answering held the dashboard request (or the alert pass) open indefinitely. The gateway's client has the same connect bound (#2373).
+
+- **Why 15s.** Above what an interactive read over the indexed window needs, short enough that the operator sees an error rather than a spinner, and under the 30s `QUERY_TIMEOUT` the alert evaluator keeps as an outer backstop. The log-retention `alter table` statements run under their own 60s bound, since an admin triggers them and they are not an interactive read.
+- **How it surfaces.** A read answers `502` with the curated `analytics query failed` message and `analytics_query_failed` code, never driver text. An ingest insert goes through `ingest_failure::insert_failed`, the same path as any other insert failure. The alert evaluator records the rule as `error` with `last_error = "analytics query timed out"` and keeps the last value it read.
+- **No credentials in logs.** Transport errors drop their URL (`reqwest::Error::without_url`) before they are logged or stored, because `CLICKHOUSE_URL` may carry userinfo.
+
 ### Time bounds on the read API
 
 Every control-plane read over ClickHouse (the five `/api/v1/analytics/*` endpoints, the three `/api/v1/health/*` rollups, `/api/v1/mcp/logs` and its summary, and `/api/v1/me/usage`) takes a caller-supplied `since`/`until`, and the two keyset-paged lists also take a cursor whose first half is a timestamp. All of them are bound as ClickHouse parameters and parsed in SQL with `parseDateTime64BestEffortOrZero`. The `OrZero` variant is required: ClickHouse constant-folds both branches of the `if` that picks the default window, so a strict parse of an absent (empty) bound aborts the query (#1177). Its side effect is that anything the parser cannot read becomes `1970-01-01`, so before #1192 a typo in `since` silently scanned the whole table.
