@@ -363,27 +363,27 @@ export default function AuditLog() {
                 {total != null && t("pages.auditLog.totalSuffix", { total })}
               </span>
               <div className="flex gap-1">
-                <button
-                  type="button"
+                <Button
+                  size="sm"
+                  variant="outline"
                   aria-label={t("pages.auditLog.prevPageAria")}
                   disabled={cursors.length === 0}
                   onClick={() => setCursors((c) => c.slice(0, -1))}
-                  className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
                   {t("pages.auditLog.prev")}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   aria-label={t("pages.auditLog.nextPageAria")}
                   disabled={!page.data?.has_next || !page.data.next_cursor}
                   onClick={() =>
                     page.data?.next_cursor &&
                     setCursors((c) => [...c, page.data.next_cursor as string])
                   }
-                  className="rounded-md border border-border px-2.5 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
                 >
                   {t("pages.auditLog.next")}
-                </button>
+                </Button>
               </div>
             </div>
           )}
