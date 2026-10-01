@@ -2942,14 +2942,16 @@ async fn a_failure_hidden_by_failover_is_counted_against_the_target_that_failed(
 async fn a_superseded_attempt_is_not_counted_twice_by_the_error_row() {
     // two dead ports: every attempt is a connection failure, and the loop runs
     // out of untried targets before it runs out of retries
-    async fn dead_port() -> SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        addr
+    // the socket is bound but never listens: connects are refused, and holding
+    // it keeps the port from being handed to a parallel test
+    async fn dead_port() -> (tokio::net::TcpSocket, SocketAddr) {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = socket.local_addr().unwrap();
+        (socket, addr)
     }
-    let a = dead_port().await;
-    let b = dead_port().await;
+    let (_guard_a, a) = dead_port().await;
+    let (_guard_b, b) = dead_port().await;
 
     let mut config = config_for("test-model", vec![("a", a), ("b", b)]);
     config.cooldown.base_secs = 0;

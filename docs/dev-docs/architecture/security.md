@@ -111,9 +111,8 @@ first the operator hears of it.
   keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
   `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
   rule widened on one side shows up as a red test rather than as a toast.
-- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only three edits loosen:
-  `virtual_key_required` going on to off, `dashboard_auth_enabled` going on to off, and a path added
-  to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only two edits loosen:
+  `virtual_key_required` going on to off and a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
   and a save that only tightens goes out without a dialog (see
   [destructive actions](../development/destructive-actions.md)).
 - **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
@@ -129,9 +128,19 @@ The virtual-key switch is narrower than its label in the gateway: `authenticate`
 an empty key set, and every gateway that receives the setting through a snapshot is managed, so the
 switch never changes what one of them does (#2357). The confirmation words the consequence as the
 documented one (the gateway "decides by how it was started") and claims no more.
-`dashboard_auth_enabled` and the dashboard credential are stored and returned, and no code path in the
-control plane reads them yet (#2356), so the dashboard-protection row says what the setting asks for
-and nothing about an effect.
+
+### No shared dashboard password
+
+The dashboard is protected by per-user sessions: local password login, SSO and optional MFA, each
+session bound to a user and a role. There is no shared dashboard password. The Security screen used
+to offer a "Password protect the dashboard" switch (`dashboard_auth_enabled`, plus a credential
+reference or a sealed managed secret); it was stored and returned but no code path read it, so it
+read as a control and was not one (#2356, the same shape as the direct-provider-key toggle removed
+in #1162). It is removed from the API, and the store no longer reads or writes the columns. They stay
+in `security_settings` because migrations are append-only. `dashboard_credential_ciphertext` stays in
+`SEALED_COLUMNS` so `rolter kek verify` still checks any secret sealed before the removal. A client
+that still sends the old fields is not rejected; `PUT /api/v1/security-settings` ignores unknown
+fields.
 
 ## Egress policy (SSRF)
 

@@ -12230,9 +12230,9 @@ async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
-/// snapshot *and* that the dashboard credential material does not.
+/// snapshot *and* that the retired dashboard password fields are gone (#2356).
 #[tokio::test]
-async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
+async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password() {
     skip_without_db!();
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
@@ -12279,9 +12279,27 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
         .await
         .unwrap();
     assert_eq!(saved["virtual_key_required"], true, "{saved}");
-    // the write-only column is reported as configured, never returned
-    assert_eq!(saved["dashboard_secret_configured"], true);
-    assert!(saved.get("managed_dashboard_secret").is_none());
+    // the dashboard password was removed because nothing enforced it (#2356):
+    // an old client's fields are ignored, and none of them comes back
+    for field in [
+        "dashboard_auth_enabled",
+        "dashboard_credential_ref",
+        "dashboard_secret_configured",
+        "managed_dashboard_secret",
+    ] {
+        assert!(saved.get(field).is_none(), "{field} in {saved}");
+    }
+    let read: Value = client
+        .get(format!("{base}/api/v1/security-settings"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(read.get("dashboard_auth_enabled").is_none(), "{read}");
+    assert!(read.get("dashboard_secret_configured").is_none(), "{read}");
     // and the toggle that controlled nothing is gone from the surface (#1162)
     assert!(saved.get("allow_direct_provider_keys").is_none());
 
