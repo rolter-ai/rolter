@@ -114,8 +114,8 @@ const state = (canvasElement: HTMLElement, step: string) =>
   within(canvasElement).getByTestId(`getting-started-state-${step}`).textContent;
 
 /**
- * An empty deployment: four steps, none of them done, and the curl a client
- * would send once there is a key to send it with.
+ * An empty deployment: four steps, none of them done, and, with no base URL to
+ * read, the prompt to save one rather than a request through `/gw` (#2486).
  */
 export const Loaded: Story = {
   render: () => render(empty),
@@ -131,11 +131,10 @@ export const Loaded: Story = {
     await expect(
       canvas.getByRole("link", { name: new RegExp(en.pages.gettingStarted.steps.provider.action) }),
     ).toHaveAttribute("href", "/providers");
-    // no public base URL to read, so the request goes through the dashboard's
-    // own /gw proxy — the bare origin would be a 404 (#2075)
-    await expect(canvasElement.textContent ?? "").toContain(
-      `${window.location.origin}/gw/v1/chat/completions`,
-    );
+    // no public base URL to read: the /gw proxy needs a dashboard session, so
+    // it is no address for a client, and the card asks for a base URL instead
+    await expect(await canvas.findByRole("note")).toHaveTextContent(en.common.gatewayBasePrompt);
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
   },
 };
 

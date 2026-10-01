@@ -14,16 +14,20 @@ import { gatewayBase, type GatewayBase } from "@/lib/gateway";
 export const CLIENT_SETTINGS_QUERY_KEY = ["client-settings"] as const;
 
 /**
- * The gateway address for a snippet on this screen (#2218).
+ * The gateway address for a snippet on this screen (#2218), or `null` when
+ * there is none to show.
  *
  * Reads the saved public base URL from the same query Client Settings uses,
  * so any number of snippets share one request, and hands it to
  * {@link gatewayBase}. Client settings are superadmin-only
- * (`client_settings:read`), so only a caller the gate has cleared asks: a
- * lesser role, or one whose gate has not answered yet, gets the `/gw` proxy
- * rather than a 403 per snippet.
+ * (`client_settings:read`), so only a caller the gate has cleared asks, and
+ * the other roles get `null` rather than a 403 per snippet.
+ *
+ * `null` is never answered with the dashboard's `/gw` proxy (#2486): it needs
+ * a dashboard session, and a snippet is for a client that has none. Callers
+ * show {@link GatewayBasePrompt} instead.
  */
-export function useGatewayBase(): GatewayBase {
+export function useGatewayBase(): GatewayBase | null {
   const can = useCan();
   const readable = can("client_settings", "read") === true;
   const settings = useQuery({
