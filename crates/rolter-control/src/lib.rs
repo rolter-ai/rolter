@@ -1325,6 +1325,24 @@ pub async fn test_app_with_bootstrap(
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app_with_admin_token`] whose snapshot also carries `file_config`, the
+/// way a control plane started with `--config` does.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_file_config(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    file_config: GatewayConfig,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool.clone(), admin_token, None);
+    state.config_owned = Arc::new(ConfigOwned::from_config(&file_config));
+    state.store = Arc::new(MergedConfigStore::new(
+        file_config,
+        Arc::new(rolter_store::PostgresConfigStore::new(pool)),
+    ));
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] publishing config bumps to a live Redis, for asserting that a
 /// write announces itself on [`rolter_core::CONFIG_CHANNEL`].
 ///
@@ -2076,7 +2094,7 @@ async fn get_config_problems(
     State(state): State<ControlState>,
 ) -> Json<Value> {
     let mut config = state.store.load().await.unwrap_or_default();
-    let mut problems = config.sanitize_for_snapshot();
+    let mut problems = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
     if let Err(fatal) = config.validate() {
@@ -2090,6 +2108,26 @@ async fn get_config_problems(
         Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
     Json(json!({ "problems": problems }))
+}
+
+/// [`GatewayConfig::sanitize_for_snapshot`](rolter_core::GatewayConfig::sanitize_for_snapshot)
+/// plus the one rule that depends on how this control plane is deployed.
+///
+/// The public example key travels in the image's baked `rolter.toml`, so a
+/// control plane started with no config of its own would hand it to every
+/// gateway (#2408). Open mode (no admin token, no `require_auth`) keeps serving
+/// it because that is `easy-up`'s whole point; anything that has turned auth on
+/// does not. Gateways polling a snapshot fail closed on an empty key set, so
+/// dropping the only key locks the data plane rather than opening it.
+fn sanitize_snapshot(state: &ControlState, config: &mut rolter_core::GatewayConfig) -> Vec<String> {
+    let mut problems = config.sanitize_for_snapshot();
+    let auth_enforced = state.admin_token.is_some() || config.server.require_auth == Some(true);
+    if auth_enforced {
+        if let Some(problem) = config.prune_public_example_key() {
+            problems.push(problem);
+        }
+    }
+    problems
 }
 
 #[derive(Debug, Deserialize)]
@@ -2228,7 +2266,7 @@ async fn build_snapshot(
             let sanitize = rolter_core::stage_span!("snapshot.sanitize");
             let omitted = {
                 let _entered = sanitize.enter();
-                config.sanitize_for_snapshot()
+                sanitize_snapshot(&state, &mut config)
             };
             if !omitted.is_empty() {
                 tracing::warn!(
@@ -3475,6 +3513,37 @@ mod tests {
         assert_eq!(
             body["config"]["logging"]["clickhouse_url"],
             "http://clickhouse:8123"
+        );
+    }
+
+    /// #1951: the ClickHouse client had no timeout, so a server that took the
+    /// connection and stopped answering hung the dashboard request forever.
+    #[tokio::test]
+    async fn an_analytics_read_against_a_stalled_clickhouse_answers_an_error() {
+        let stalled = analytics::testing::Stalled::start().await;
+        let mut state = state_with_token(None);
+        state.clickhouse = Some(analytics::ClickHouseClient::with_timeouts(
+            &stalled.url,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(300),
+        ));
+        let addr = serve(build_app_with(state, false)).await;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/analytics/summary"))
+                .send(),
+        )
+        .await
+        .expect("the request must not hang")
+        .unwrap();
+        assert_eq!(response.status(), 502);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("analytics_query_failed"), "{body}");
+        assert!(
+            !body.contains(crate::analytics::testing::STALLED_USERINFO_SECRET)
+                && !body.contains("127.0.0.1"),
+            "the response body names the stalled server's userinfo or host"
         );
     }
 

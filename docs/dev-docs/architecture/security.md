@@ -205,17 +205,30 @@ address produces. The resolver reads the policy from a live handle, so a hot
 reload re-tunes enforcement without discarding pooled connections.
 
 The control plane enforces the policy at connect time too. Its own requests to
-operator-supplied URLs (the connector test probe, alert channel delivery, and
-MCP OAuth discovery and token exchange) check the stored URL when it is saved
+operator-supplied URLs (the provider and connector test probes, alert channel
+delivery, and MCP OAuth discovery and token exchange) check the stored URL when it is saved
 and again before each request, and every one of them is sent through the client
 built by `crates/rolter-control/src/egress_client.rs`. That builder installs a
 resolver that drops the addresses `EgressPolicy::filter_resolved` denies, the
 same function the gateway's `EgressResolver` calls, so the two planes cannot
 disagree about an address. It also refuses redirects, so a `3xx` cannot hand a
-request to a host the check never saw; the connector probe used to send through
-the shared `ControlState::http` client, which follows up to ten. The client is
+request to a host the check never saw; the provider and connector probes used to
+send through the shared `ControlState::http` client, which follows up to ten and
+classifies only IP literals. The client is
 built per request from the deployment's policy rather than pooled, since these
-calls are rare.
+calls are rare. The provider probe has never used a provider's `egress_proxy`,
+and still sends direct.
+
+Two paths intentionally keep the plain `ControlState::http` client: the `/gw/*`
+reverse proxy, and the ClickHouse client in `analytics.rs`. Both target an
+address the operator configured for the deployment (the gateway address and the
+ClickHouse URL), not a per-row URL a tenant can write, so there is no
+attacker-chosen destination to classify.
+
+One caveat applies to every connect-time check: when `HTTP_PROXY` or
+`HTTPS_PROXY` is configured for outbound traffic, the proxy resolves the target
+name, not the egress resolver, so the check covers only direct connections.
+Enforce the policy on the proxy itself in that deployment.
 
 ## Control-plane input validation
 

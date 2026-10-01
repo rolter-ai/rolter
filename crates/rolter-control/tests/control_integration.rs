@@ -9588,6 +9588,167 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
 }
 
+/// Inviting an address again replaces its pending invitation (#2324): the old
+/// link stops working like a revoked one, an expired invitation no longer holds
+/// the address, the match ignores case, and parallel creates neither 500 nor
+/// leave two live rows.
+#[tokio::test]
+async fn reinviting_an_address_replaces_its_pending_invitation() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "ReinviteOrg", "slug": "reinvite-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let invite = |email: &'static str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/orgs/{org_id}/invitations");
+        async move {
+            client
+                .post(url)
+                .bearer_auth("admintok")
+                .json(&json!({"email": email, "role": "member"}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let live_count = |pool: sqlx::PgPool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "select count(*) from invitations where accepted_at is null and revoked_at is null",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // twice for one address, the second spelled differently
+    let first = invite("ada@example.com").await;
+    assert_eq!(first.status(), 200);
+    let first: Value = first.json().await.unwrap();
+    let second = invite("Ada@Example.COM").await;
+    assert_eq!(second.status(), 200);
+    let second: Value = second.json().await.unwrap();
+    let first_token = first["token"].as_str().unwrap();
+    let second_token = second["token"].as_str().unwrap();
+    let first_id = first["invitation"]["id"].as_str().unwrap().to_string();
+
+    let old_preview = client
+        .get(format!("{base}/api/v1/invitations/accept/{first_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_preview.status(), 401);
+    let old_accept = client
+        .post(format!(
+            "{base}/api/v1/invitations/accept/{first_token}/accept"
+        ))
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_accept.status(), 401);
+    let new_preview = client
+        .get(format!("{base}/api/v1/invitations/accept/{second_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(new_preview.status(), 200);
+    assert_eq!(live_count(pool.clone()).await, 1);
+
+    // the audit entry of the replacement names what it replaced
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'invitation.create' \
+         and target_id = $1::uuid",
+    )
+    .bind(second["invitation"]["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["replaced"], json!(first_id));
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'invitation.create' \
+         and target_id = $1::uuid",
+    )
+    .bind(first_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(detail["replaced"].is_null());
+
+    // an invitation that expired unaccepted does not hold the address
+    sqlx::query("update invitations set expires_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let third = invite("ada@example.com").await;
+    assert_eq!(third.status(), 200);
+    let revoked: i64 =
+        sqlx::query_scalar("select count(*) from invitations where revoked_at is not null")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(revoked, 2);
+    assert_eq!(live_count(pool.clone()).await, 1);
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pending = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["revoked_at"].is_null() && i["accepted_at"].is_null())
+        .count();
+    assert_eq!(pending, 1);
+
+    // parallel creates for one address: no failure, one live row
+    let (a, b, c) = tokio::join!(
+        invite("grace@example.com"),
+        invite("GRACE@example.com"),
+        invite("grace@example.com")
+    );
+    for response in [a, b, c] {
+        assert_eq!(response.status(), 200);
+    }
+    let grace_live: i64 = sqlx::query_scalar(
+        "select count(*) from invitations where lower(email) = 'grace@example.com' \
+         and accepted_at is null and revoked_at is null",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(grace_live, 1);
+    let grace_all: i64 = sqlx::query_scalar(
+        "select count(*) from invitations where lower(email) = 'grace@example.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(grace_all, 3);
+}
+
 /// An invitation token proves someone was sent the link, not who holds it: the
 /// inviter gets the same token back. So an org admin who invites an existing
 /// account's email -- a superadmin's here, one with a password and one that
@@ -12228,6 +12389,179 @@ async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     );
 }
 
+/// a sink that records the raw head of every request it receives and answers 200
+async fn serve_capturing_sink() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// #2403: a connector's stored secret belongs to the endpoint's origin.
+#[tokio::test]
+async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new_one() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (old_sink, _) = serve_capturing_sink().await;
+    let (new_sink, seen) = serve_capturing_sink().await;
+    let old_secret = random_password();
+    let new_secret = random_password();
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": format!("http://{old_sink}/v1/logs"),
+            "enabled": true,
+            "sampling_rate": 1.0,
+            "managed_auth_secret": old_secret,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["auth_secret_configured"], true);
+    let put = |endpoint: String, secret: Option<String>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        async move {
+            let mut body = json!({
+                "name": "Sink",
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret.into();
+            }
+            let response = client
+                .put(url)
+                .bearer_auth("sekrit")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let columns = || async {
+        sqlx::query_as::<_, (bool, bool)>(
+            "select auth_ciphertext is not null, auth_nonce is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let audit_detail = || async {
+        sqlx::query_scalar::<_, Value>(
+            "select detail from audit_log where action = 'connector.update' \
+             order by at desc limit 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // another path on the same origin keeps it
+    let body = put(format!("http://{old_sink}/other"), None).await;
+    assert_eq!(body["auth_secret_configured"], true);
+    assert_eq!(columns().await, (true, true));
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // another origin with a new secret stores the new one
+    let body = put(
+        format!("http://{new_sink}/v1/logs"),
+        Some(new_secret.clone()),
+    )
+    .await;
+    assert_eq!(body["auth_secret_configured"], true);
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(config.contains(&new_secret), "the new secret is rendered");
+    assert!(!config.contains(&old_secret), "the old secret is rendered");
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // back to the first origin without one: dropped, columns and all
+    let body = put(format!("http://{old_sink}/v1/logs"), None).await;
+    assert_eq!(body["auth_secret_configured"], false);
+    assert_eq!(columns().await, (false, false));
+    let detail = audit_detail().await;
+    assert_eq!(detail["secret_cleared"], true);
+    assert!(!detail.to_string().contains(&old_sink.to_string()));
+
+    // another origin: the probe and the collector config carry no token
+    put(format!("http://{new_sink}/v1/logs"), None).await;
+    let tested = client
+        .post(format!("{base}/api/v1/connectors/{id}/test"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tested.status(), 200);
+    let requests = seen.lock().unwrap().clone();
+    let probe = requests.last().expect("the sink received the probe");
+    assert!(
+        !probe.to_ascii_lowercase().contains("authorization"),
+        "the probe carried an authorization header"
+    );
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config.contains("Bearer"),
+        "the config carries a bearer header"
+    );
+}
+
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
@@ -12442,6 +12776,78 @@ async fn a_minted_key_must_be_named_and_carries_the_ttl_the_caller_chose() {
         .await
         .unwrap();
     assert_eq!(zero.status(), 400);
+}
+
+// ---------------------------------------------------------------------------
+// the public example key (#2408)
+// ---------------------------------------------------------------------------
+
+/// Snapshot virtual-key secrets and `/config/problems` for a control plane whose
+/// config file declares the public example key.
+async fn example_key_snapshot(admin_token: Option<String>) -> (Vec<String>, Vec<String>) {
+    let db = fresh_db().await;
+    let file_config = rolter_core::GatewayConfig {
+        virtual_keys: vec![rolter_core::config::VirtualKeyConfig {
+            key: rolter_core::PUBLIC_EXAMPLE_KEY.to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let app = rolter_control::test_app_with_file_config(
+        db.pool().clone(),
+        admin_token.clone(),
+        file_config,
+    )
+    .await
+    .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let mut request = client.get(format!("http://{addr}/internal/snapshot"));
+    if let Some(token) = &admin_token {
+        request = request.bearer_auth(token);
+    }
+    let snapshot: Value = request.send().await.unwrap().json().await.unwrap();
+    let keys = snapshot["config"]["virtual_keys"]
+        .as_array()
+        .expect("virtual_keys")
+        .iter()
+        .map(|k| k["key"].as_str().unwrap_or_default().to_string())
+        .collect();
+    // the problems view needs a session once a token is set (#1840)
+    let mut request = client.get(format!("http://{addr}/api/v1/config/problems"));
+    if let Some(token) = &admin_token {
+        request = request.bearer_auth(token);
+    }
+    let problems: Value = request.send().await.unwrap().json().await.unwrap();
+    let problems = problems["problems"]
+        .as_array()
+        .expect("problems array")
+        .iter()
+        .map(|p| p.as_str().unwrap_or_default().to_string())
+        .collect();
+    (keys, problems)
+}
+
+#[tokio::test]
+async fn the_snapshot_withholds_the_public_example_key_once_an_admin_token_is_set() {
+    skip_without_db!();
+    let (keys, problems) = example_key_snapshot(Some(random_password())).await;
+    assert!(keys.is_empty(), "the public key leaked: {keys:?}");
+    assert!(
+        problems.iter().any(|p| p.contains("sk-rolter-dev")),
+        "the omission must be reported: {problems:?}"
+    );
+}
+
+#[tokio::test]
+async fn open_mode_still_serves_the_public_example_key() {
+    skip_without_db!();
+    let (keys, problems) = example_key_snapshot(None).await;
+    assert_eq!(keys, ["sk-rolter-dev"]);
+    assert!(
+        !problems.iter().any(|p| p.contains("sk-rolter-dev")),
+        "{problems:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -16412,4 +16818,294 @@ async fn members_list_their_projects_providers_and_project_admins_scope_their_ow
         403,
         "an org-wide provider is the org admin's"
     );
+}
+
+// ---------------------------------------------------------------------------
+// last active superadmin (#2344)
+// ---------------------------------------------------------------------------
+
+/// The three account writes that can take the deployment's last superadmin
+/// away, as `(name, request)` pairs against `target_id`.
+fn last_superadmin_calls(
+    client: &reqwest::Client,
+    base: &str,
+    target_id: uuid::Uuid,
+    bearer: &str,
+) -> Vec<(&'static str, reqwest::RequestBuilder)> {
+    let url = format!("{base}/api/v1/users/{target_id}");
+    vec![
+        (
+            "demote",
+            client
+                .put(&url)
+                .bearer_auth(bearer)
+                .json(&json!({"is_superadmin": false})),
+        ),
+        (
+            "deactivate",
+            client
+                .put(&url)
+                .bearer_auth(bearer)
+                .json(&json!({"deactivated": true})),
+        ),
+        ("delete", client.delete(&url).bearer_auth(bearer)),
+    ]
+}
+
+async fn user_row(pool: &sqlx::PgPool, id: uuid::Uuid) -> Option<(bool, bool)> {
+    sqlx::query_as("select is_superadmin, deactivated_at is not null from users where id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_last_active_superadmin_cannot_be_demoted_deactivated_or_deleted() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let only = seed_user(&pool, "only@example.com", true).await;
+    let session = seed_session(&pool, only, "last_superadmin").await;
+    // a deactivated superadmin and a plain user do not count as the remainder
+    let gone = seed_user(&pool, "gone@example.com", true).await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    seed_user(&pool, "plain@example.com", false).await;
+
+    // the account itself and the admin token get the same refusal
+    for bearer in [session.as_str(), "admintok"] {
+        for (name, request) in last_superadmin_calls(&client, &base, only, bearer) {
+            let res = request.send().await.unwrap();
+            assert_eq!(res.status(), 409, "{name} as {bearer}");
+            let body: Value = res.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "last_superadmin", "{name}");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("last active superadmin"),
+                "{body}"
+            );
+            assert_eq!(user_row(&pool, only).await, Some((true, false)), "{name}");
+        }
+    }
+    let live: i64 = sqlx::query_scalar("select count(*) from sessions where user_id = $1")
+        .bind(only)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(live, 1, "a refused deactivation must keep the sessions");
+
+    // edits that leave the account an active superadmin still go through
+    let res = client
+        .put(format!("{base}/api/v1/users/{only}"))
+        .bearer_auth("admintok")
+        .json(&json!({"email": "renamed@example.com", "is_superadmin": true, "deactivated": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn a_second_active_superadmin_lets_each_call_through() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    seed_user(&pool, "keeper@example.com", true).await;
+    for (idx, expected) in [
+        (0, Some((false, false))),
+        (1, Some((true, true))),
+        (2, None),
+    ] {
+        let target_id = seed_user(&pool, &format!("target{idx}@example.com"), true).await;
+        let mut calls = last_superadmin_calls(&client, &base, target_id, "admintok");
+        let (name, request) = calls.remove(idx);
+        let res = request.send().await.unwrap();
+        assert!(res.status().is_success(), "{name}: {}", res.status());
+        assert_eq!(user_row(&pool, target_id).await, expected, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_deactivated_superadmin_does_not_count_as_the_remaining_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let active = seed_user(&pool, "active@example.com", true).await;
+    let dormant = seed_user(&pool, "dormant@example.com", true).await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(dormant)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for (name, request) in last_superadmin_calls(&client, &base, active, "admintok") {
+        assert_eq!(request.send().await.unwrap().status(), 409, "{name}");
+    }
+    // the dormant one is not the last active superadmin, so it can go, and
+    // bringing it back makes the other one expendable
+    let res = client
+        .put(format!("{base}/api/v1/users/{dormant}"))
+        .bearer_auth("admintok")
+        .json(&json!({"deactivated": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let res = client
+        .put(format!("{base}/api/v1/users/{active}"))
+        .bearer_auth("admintok")
+        .json(&json!({"is_superadmin": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn concurrent_demotions_cannot_both_remove_a_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    // building the app runs the migrations
+    let _app = rolter_control::test_app_with_admin_token(pool.clone(), None)
+        .await
+        .unwrap();
+    let first = seed_user(&pool, "first@example.com", true).await;
+    let second = seed_user(&pool, "second@example.com", true).await;
+    let repo = |id| {
+        let pool = pool.clone();
+        async move {
+            rolter_store::postgres::repo::UserRepo(&pool)
+                .update_account(id, None, None, Some(false), None)
+                .await
+                .unwrap()
+        }
+    };
+    let (a, b) = tokio::join!(repo(first), repo(second));
+    let refused = [&a, &b]
+        .iter()
+        .filter(|r| matches!(r, rolter_store::postgres::repo::LockoutGuard::WouldLockOut))
+        .count();
+    assert_eq!(refused, 1, "exactly one demotion must be refused");
+    let left: i64 = sqlx::query_scalar("select count(*) from users where is_superadmin")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 1);
+}
+
+#[tokio::test]
+async fn scim_cannot_deprovision_the_last_active_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    sqlx::query("update users set is_superadmin = true where id = $1")
+        .bind(boss)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{"op": "replace", "path": "active", "value": false}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+
+    // with another active superadmin the same call deprovisions
+    seed_user(&pool, "second@example.com", true).await;
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(user_row(&pool, boss).await, Some((true, true)));
 }

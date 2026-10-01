@@ -239,6 +239,7 @@ fn render_config(profile: Profile) -> String {
 # state the answer rather than let it be inferred.
 require_auth = true
 ";
+            let base = strip_example_key(base);
             match base.split_once("[server]\n") {
                 Some((head, tail)) => format!("{head}[server]\n{HARDENING}{tail}"),
                 // the example lost its [server] table: emit our own rather than
@@ -247,6 +248,30 @@ require_auth = true
             }
         }
     }
+}
+
+/// The example config without its `[[virtual_keys]]` entry.
+///
+/// That entry is `sk-rolter-dev`, a public key that allows every model. A
+/// production config that carried it would hand it to every gateway through the
+/// control plane's snapshot (#2408); keys belong in the dashboard or API, where
+/// they are minted per caller and stored as digests.
+fn strip_example_key(base: &str) -> String {
+    const START: &str = "[[virtual_keys]]";
+    const NEXT_SECTION: &str = "# --- per-model token pricing";
+    let Some(start) = base.find(START) else {
+        return base.to_string();
+    };
+    let end = base[start..]
+        .find(NEXT_SECTION)
+        .map_or(base.len(), |offset| start + offset);
+    format!(
+        "{}# no virtual keys here on purpose: create keys in the dashboard or through\n\
+         # the API. a key in this file is plaintext and shared by every deployment that\n\
+         # copies it.\n\n{}",
+        &base[..start],
+        &base[end..]
+    )
 }
 
 /// Write `contents` to `path`, refusing to clobber unless `force`.
@@ -359,6 +384,24 @@ mod tests {
             key_pepper: "pepper".to_string(),
             session_pepper: "session-pepper".to_string(),
         }
+    }
+
+    #[test]
+    fn the_production_config_carries_no_virtual_keys() {
+        let config = render_config(Profile::Production);
+        assert!(!config.contains("[[virtual_keys]]"), "{config}");
+        assert!(!config.contains("sk-rolter-dev"), "{config}");
+        // what is left is still a config the loader accepts
+        let parsed = rolter_core::GatewayConfig::from_toml_str(&config).expect("parses");
+        assert!(parsed.virtual_keys.is_empty());
+        assert_eq!(parsed.server.require_auth, Some(true));
+        // the pricing section that follows the stripped entry survived
+        assert!(config.contains("# --- per-model token pricing"));
+    }
+
+    #[test]
+    fn the_local_profile_keeps_the_example_key() {
+        assert!(render_config(Profile::Local).contains("[[virtual_keys]]"));
     }
 
     #[test]
