@@ -3599,6 +3599,18 @@ const INVITATION_COLUMNS: &str = "id, org_id, email, role, team_id, project_id, 
      invited_by, expires_at, accepted_at, revoked_at, created_at";
 
 impl InvitationRepo<'_> {
+    /// Create an invitation, replacing the address's live one in the same
+    /// transaction. Returns the new row and the id of the invitation it
+    /// revoked, if any.
+    ///
+    /// `invitations_live_email_idx` forbids two unaccepted, unrevoked rows for
+    /// one address but ignores `expires_at` (its predicate cannot use
+    /// `now()`), so an expired invitation still holds the address. Revoking
+    /// whatever holds it first, expired or not, makes the new link the only
+    /// live one and the old link stop working. A transaction-scoped advisory
+    /// lock on `(org, lower(email))` orders concurrent creates for one
+    /// address: the second waits, then revokes the first's row, so neither
+    /// trips the index.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
@@ -3610,8 +3622,26 @@ impl InvitationRepo<'_> {
         token_hash: &str,
         invited_by: Option<Uuid>,
         expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Invitation> {
-        sqlx::query_as(&format!(
+    ) -> Result<(Invitation, Option<Uuid>)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('invitation:' || $1::text || ':' || lower($2), 0))")
+            .bind(org_id)
+            .bind(email)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let replaced: Option<Uuid> = sqlx::query_scalar(
+            "update invitations set revoked_at = now() \
+             where org_id = $1 and lower(email) = lower($2) \
+               and accepted_at is null and revoked_at is null \
+             returning id",
+        )
+        .bind(org_id)
+        .bind(email)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let invitation = sqlx::query_as(&format!(
             "insert into invitations (org_id, email, role, team_id, project_id, token_hash, \
                     invited_by, expires_at) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -3625,9 +3655,11 @@ impl InvitationRepo<'_> {
         .bind(token_hash)
         .bind(invited_by)
         .bind(expires_at)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok((invitation, replaced))
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Invitation>> {

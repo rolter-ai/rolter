@@ -9588,6 +9588,167 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
 }
 
+/// Inviting an address again replaces its pending invitation (#2324): the old
+/// link stops working like a revoked one, an expired invitation no longer holds
+/// the address, the match ignores case, and parallel creates neither 500 nor
+/// leave two live rows.
+#[tokio::test]
+async fn reinviting_an_address_replaces_its_pending_invitation() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "ReinviteOrg", "slug": "reinvite-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let invite = |email: &'static str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/orgs/{org_id}/invitations");
+        async move {
+            client
+                .post(url)
+                .bearer_auth("admintok")
+                .json(&json!({"email": email, "role": "member"}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let live_count = |pool: sqlx::PgPool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "select count(*) from invitations where accepted_at is null and revoked_at is null",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // twice for one address, the second spelled differently
+    let first = invite("ada@example.com").await;
+    assert_eq!(first.status(), 200);
+    let first: Value = first.json().await.unwrap();
+    let second = invite("Ada@Example.COM").await;
+    assert_eq!(second.status(), 200);
+    let second: Value = second.json().await.unwrap();
+    let first_token = first["token"].as_str().unwrap();
+    let second_token = second["token"].as_str().unwrap();
+    let first_id = first["invitation"]["id"].as_str().unwrap().to_string();
+
+    let old_preview = client
+        .get(format!("{base}/api/v1/invitations/accept/{first_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_preview.status(), 401);
+    let old_accept = client
+        .post(format!(
+            "{base}/api/v1/invitations/accept/{first_token}/accept"
+        ))
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_accept.status(), 401);
+    let new_preview = client
+        .get(format!("{base}/api/v1/invitations/accept/{second_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(new_preview.status(), 200);
+    assert_eq!(live_count(pool.clone()).await, 1);
+
+    // the audit entry of the replacement names what it replaced
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'invitation.create' \
+         and target_id = $1::uuid",
+    )
+    .bind(second["invitation"]["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["replaced"], json!(first_id));
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'invitation.create' \
+         and target_id = $1::uuid",
+    )
+    .bind(first_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(detail["replaced"].is_null());
+
+    // an invitation that expired unaccepted does not hold the address
+    sqlx::query("update invitations set expires_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let third = invite("ada@example.com").await;
+    assert_eq!(third.status(), 200);
+    let revoked: i64 =
+        sqlx::query_scalar("select count(*) from invitations where revoked_at is not null")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(revoked, 2);
+    assert_eq!(live_count(pool.clone()).await, 1);
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pending = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["revoked_at"].is_null() && i["accepted_at"].is_null())
+        .count();
+    assert_eq!(pending, 1);
+
+    // parallel creates for one address: no failure, one live row
+    let (a, b, c) = tokio::join!(
+        invite("grace@example.com"),
+        invite("GRACE@example.com"),
+        invite("grace@example.com")
+    );
+    for response in [a, b, c] {
+        assert_eq!(response.status(), 200);
+    }
+    let grace_live: i64 = sqlx::query_scalar(
+        "select count(*) from invitations where lower(email) = 'grace@example.com' \
+         and accepted_at is null and revoked_at is null",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(grace_live, 1);
+    let grace_all: i64 = sqlx::query_scalar(
+        "select count(*) from invitations where lower(email) = 'grace@example.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(grace_all, 3);
+}
+
 /// An invitation token proves someone was sent the link, not who holds it: the
 /// inviter gets the same token back. So an org admin who invites an existing
 /// account's email -- a superadmin's here, one with a password and one that
