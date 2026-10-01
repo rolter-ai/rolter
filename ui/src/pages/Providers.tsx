@@ -4,6 +4,8 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
+import { useOrgScope, orgScopeText } from "@/components/OrgScopePicker";
+import { ProjectScopeBadge } from "@/components/ProjectScopeField";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
@@ -154,6 +156,8 @@ export default function Providers() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  // the names of the projects a row can be scoped to, for the Scope column
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -188,7 +192,9 @@ export default function Providers() {
     provider?: ProviderRow | null;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
-  const { sort, cycle, apply } = useSort<"name" | "kind" | "apiBase" | "slug" | "keyEnv">();
+  const { sort, cycle, apply } = useSort<
+    "name" | "kind" | "apiBase" | "slug" | "keyEnv" | "scope"
+  >();
   const [search, setSearch] = React.useState("");
   // the label the list is narrowed to, as `key=value`; "" is no filter
   const [labelFilter, setLabelFilter] = React.useState("");
@@ -235,10 +241,12 @@ export default function Providers() {
     apiBase: (p) => p.api_base,
     slug: (p) => p.slug,
     keyEnv: (p) => p.api_key_env ?? "",
+    // org-wide rows first, then by the project's name
+    scope: (p) => (p.project_id ? orgScopeText(t, orgScope, { project_id: p.project_id }) : ""),
   });
   const filtering = !!q || !!labelFilter;
 
-  const GRID = "1fr 1.1fr 2fr 1fr 1fr 108px";
+  const GRID = "1fr 1.1fr 1.7fr 1fr 1fr 1fr 108px";
 
   return (
     <PageBody>
@@ -315,6 +323,12 @@ export default function Providers() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
+          <SortLabel
+            label={t("pages.providers.colScope")}
+            col="scope"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
           <ListActionsHeader />
         </ListHeader>
         <ListLoadingRow read={providers}>
@@ -344,6 +358,9 @@ export default function Providers() {
             </ListCell>
             <ListCell className="truncate font-mono text-xs text-muted-foreground">
               {provider.api_key_env || "—"}
+            </ListCell>
+            <ListCell className="grid">
+              <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />
             </ListCell>
             <ListCell className="flex items-center justify-end gap-1.5">
               <GatedButton
@@ -427,6 +444,7 @@ export default function Providers() {
         onOpenChange={(open) => !open && setSheet(null)}
         orgId={scope.orgId ?? null}
         provider={sheet?.provider ?? null}
+        defaultProjectId={scope.projectId}
         onDone={invalidate}
       />
 

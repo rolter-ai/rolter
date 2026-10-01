@@ -12,6 +12,20 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "sso": {
+      "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
+      "errors": {
+        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
+        "state_expired": "This sign-in took too long or was already used. Start it again.",
+        "sso_disabled": "Single sign-on is turned off for this organization.",
+        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
+        "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
+      },
+      "provider": "Identity provider: {{name}}"
+    },
     "errors": {
       "invalidCredentials": "That email and password do not match an account here.",
       "passwordLoginDisabled": "Password sign-in is turned off for this organization. Use single sign-on below.",
@@ -57,6 +71,7 @@
     }
   },
   "common": {
+    "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
     "clearSearch": "Clear search",
     "close": "Close",
@@ -192,6 +207,7 @@
       "dashboardTrafficShare": "the traffic share",
       "dashboardByModel": "requests by model",
       "dashboardRecent": "recent requests",
+      "savedViews": "your saved views",
       "requestLogs": "request logs",
       "routes": "routes",
       "routeTargets": "this route's targets",
@@ -240,7 +256,8 @@
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
       "projectSettings": "project settings",
-      "preferences": "your preferences"
+      "preferences": "your preferences",
+      "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -321,7 +338,9 @@
       "upstreamAria": "Target {{n}} upstream model",
       "weightAria": "Target {{n}} weight",
       "removeAria": "Remove target {{n}}",
-      "upstreamPlaceholder": "same as model name"
+      "upstreamPlaceholder": "same as model name",
+      "scopeNote_one": "{{count}} provider scoped to another project is not offered here.",
+      "scopeNote_other": "{{count}} providers scoped to other projects are not offered here."
     },
     "lock": {
       "lockAll": "Lock all",
@@ -386,7 +405,7 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below. This narrows the route only: a provider stays reachable as provider-slug/model by every key of the organization unless the provider itself is scoped to a project, which you do on its own sheet under Providers.",
       "public": "Whole organization",
       "project": "This project",
       "restricted": "Restricted",
@@ -523,7 +542,6 @@
       "noRequestsInWindow": "No requests in this window",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
-      "last24h": "Last 24h",
       "live": "Live",
       "feed": {
         "loading": "Loading",
@@ -553,7 +571,7 @@
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
       },
-      "spendChartAria": "Spend over the last 24 hours",
+      "spendChartAria": "Spend, {{window}}",
       "noAnalytics": {
         "title": "Traffic and spend need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
@@ -652,7 +670,8 @@
         "onlyMember": "only member",
         "more_one": "and {{count}} more",
         "more_other": "and {{count}} more"
-      }
+      },
+      "colScope": "Scope"
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -1254,7 +1273,26 @@
         },
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
-        "namePlaceholder": "high error rate"
+        "namePlaceholder": "high error rate",
+        "fieldComparison": "Comparison",
+        "comparison": {
+          "above": "Above or equal",
+          "below": "Below or equal"
+        },
+        "thresholdInclusive": "The threshold is inclusive: the rule fires when the value equals it.",
+        "trafficStoppedHelp": "This rule fires when no requests arrive in the window, so it alerts when traffic stops.",
+        "fieldNoData": "When there is no data",
+        "noData": {
+          "ignore": "Keep current state",
+          "fire": "Fire",
+          "ok": "Resolve"
+        },
+        "noDataHint": "What the rule does when the window holds no requests to measure.",
+        "reading": {
+          "above": "above {{value}}",
+          "below": "below {{value}}"
+        },
+        "noDataReading": "No data"
       },
       "signals": {
         "error_rate": {
@@ -2236,10 +2274,9 @@
         "body": "People signing in through it lose that route immediately. Its registration, client secret and group mappings stay, so turning it back on restores sign-in.",
         "confirm": "Take out of service"
       },
-      "lockout": {
-        "title": "Members would be locked out of sign-in",
-        "body": "Password sign-in is off and {{name}} is the only enabled provider, so no member could sign in. Superadmins are exempt from the password setting, so only they could still get in, and they could turn password sign-in back on from this screen.",
-        "noPassword": "Accounts created through a provider have no password. Turning password sign-in back on does not restore them; a superadmin has to set one."
+      "lastMethod": {
+        "reason": "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off, so no member could sign in. Enable password sign-in or another provider first.",
+        "refused": "Another change left no other way to sign in, so the control plane refused this one. Enable password sign-in or another provider first."
       },
       "clearSecret": {
         "title": "Remove the stored client secret for {{name}}?",
@@ -2336,11 +2373,19 @@
         "actor": "Actor",
         "action": "Action",
         "target": "Target",
-        "detail": "Detail"
+        "detail": "Detail",
+        "org": "Org"
       },
       "unknownTarget": "unknown",
       "hideDetails": "hide",
-      "showDetails": "show"
+      "showDetails": "show",
+      "scopeAria": "Audit log scope",
+      "scopes": {
+        "org": "This organization",
+        "deployment": "Whole deployment"
+      },
+      "noOrg": "No org",
+      "unknownAddress": "Unknown address"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -2495,7 +2540,8 @@
       "emptyTitle": "Nothing logged yet",
       "emptyBody": "Every request the gateway serves is recorded here with its model, latency, tokens and cost.",
       "noMatchTitle": "No requests match these filters",
-      "noMatchBody": "Nothing in the last 24 hours matched the filters you selected.",
+      "noMatchBody": "Nothing in the selected time window matched the filters you selected.",
+      "window": "Time window",
       "businessUnit": "Business unit",
       "customer": "Customer",
       "filterBusinessUnits": "Filter business units",
@@ -2592,7 +2638,7 @@
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
       },
       "emptyTitle": "No MCP tool calls yet",
-      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy.",
+      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
       "noMatchBody": "Nothing in this window matched the status and transport you selected.",
       "statusFilterAria": "Filter by status",
@@ -2616,6 +2662,10 @@
       "arguments": "Arguments",
       "result": "Result",
       "closeDetails": "Close MCP log details",
+      "argumentsAndResult": "Arguments and result",
+      "payloadWithheld": "The arguments and result were captured for this call, but they are hidden for your role: on this project, tool arguments and results are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
+      "notFoundTitle": "This call is not available",
+      "notFoundBody": "It no longer exists, or it belongs to an organization, team or project you do not hold a role in.",
       "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
     },
     "providerGroups": {
@@ -2633,7 +2683,8 @@
         "name": "Name",
         "strategy": "Strategy",
         "address": "Address",
-        "members": "Members"
+        "members": "Members",
+        "scope": "Scope"
       },
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
@@ -2974,7 +3025,7 @@
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
-      "baseUrlHint": "The address clients point their SDK at. Left empty, the dashboard’s snippets go through its own /gw proxy, which is fine for trying rolter out but sends every call through the control plane; for production, set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so snippets shown to other roles keep the /gw proxy.",
+      "baseUrlHint": "The address clients point their SDK at. Until you save one, the dashboard shows no snippet for external clients: its own /gw proxy needs a dashboard session, so it is not an address they can use. Set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so other roles are asked to have a superadmin save it.",
       "publicBaseUrl": "Public base URL",
       "forwarded": "Forwarded request headers",
       "forwardedHint": "Inbound client headers passed through to the upstream provider, comma or newline separated. Everything not listed is dropped at the gateway.",
@@ -3004,13 +3055,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "dashboardAuth": "Password protect the dashboard",
-      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
-      "credentialRef": "Credential reference",
-      "managedSecret": "Managed secret",
-      "secretConfigured": "configured — enter to replace",
-      "secretPlaceholder": "Enter a secret to store",
-      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
       "enforceVk": "Enforce Virtual Keys on Inference",
       "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
@@ -3052,10 +3096,6 @@
         "virtualKeys": {
           "label": "Virtual keys are no longer enforced on inference",
           "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
-        "dashboardAuth": {
-          "label": "The dashboard is no longer password protected",
-          "effect": "The dashboard stops requiring its credential to open."
         },
         "bypassRoute": {
           "label": "Auth bypass route added:",
@@ -3342,7 +3382,8 @@
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
       "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
-      "apiKeyUnchanged": "unchanged"
+      "apiKeyUnchanged": "unchanged",
+      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead."
     },
     "title": {
       "add": "Add provider",
@@ -3452,7 +3493,7 @@
     },
     "dashboard": {
       "title": "Dashboard",
-      "subtitle": "Traffic, spend, latency, and error rate over the last 24 hours, plus the latest requests."
+      "subtitle": "Traffic, spend, latency, and error rate over the window you pick (the last 24 hours by default), plus the latest requests."
     },
     "logs": {
       "title": "LLM Logs",
@@ -3876,6 +3917,30 @@
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
       }
+    },
+    "profile": {
+      "title": "Profile",
+      "subtitle": "The name other people see beside your account, and a line on what to ask you about.",
+      "name": "Display name",
+      "nameHint": "Shown in place of your email. Leave it empty to go by your email.",
+      "namePlaceholder": "Ada Lovelace",
+      "managed": "Your name is managed by your identity provider",
+      "bio": "Bio",
+      "bioPlaceholder": "Who to ask about what",
+      "bioHint": "{{count}} of {{max}} characters",
+      "save": "Save profile",
+      "saved": "Profile saved",
+      "saveFailed": "Could not save your profile.",
+      "problem": {
+        "name": {
+          "blank": "The name cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A display name is at most {{max}} characters."
+        },
+        "bio": {
+          "blank": "The bio cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A bio is at most {{max}} characters."
+        }
+      }
     }
   },
   "keyMint": {
@@ -3937,6 +4002,51 @@
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
   },
+  "savedViews": {
+    "open": "Saved views",
+    "title": "Saved views",
+    "surface": {
+      "llm_logs": "LLM Logs",
+      "dashboard": "Dashboard"
+    },
+    "save": {
+      "label": "Save the current filters as",
+      "hint": "Only you can see your saved views, on any browser you sign in from.",
+      "placeholder": "Errors on gpt-4o this week",
+      "action": "Save view"
+    },
+    "saved": "{{name}} saved",
+    "list": "Your saved views",
+    "apply": "Apply",
+    "applyAria": "Apply {{name}}",
+    "renameAria": "Rename {{name}}",
+    "renameField": "New name for {{name}}",
+    "deleteAria": "Delete view {{name}}",
+    "empty": {
+      "title": "No saved views yet",
+      "description": "Pick the filters you keep coming back to, then save them under a name to apply them again in one click.",
+      "action": "Name a view"
+    },
+    "notice": "Applied without: {{dropped}}.",
+    "dismissNotice": "Dismiss",
+    "dropped": {
+      "key_one": "{{count}} key",
+      "key_other": "{{count}} keys",
+      "business_unit_one": "{{count}} business unit",
+      "business_unit_other": "{{count}} business units",
+      "customer_one": "{{count}} customer",
+      "customer_other": "{{count}} customers"
+    },
+    "errors": {
+      "conflict": "A view with this name already exists, or you have reached the limit of 50 views for this screen.",
+      "failed": "The view could not be saved."
+    },
+    "confirm": {
+      "deleteTitle": "Delete the view {{name}}?",
+      "deleteBody": "The saved filters are removed from your account. The filters on screen stay as they are.",
+      "deleteConfirm": "Delete view"
+    }
+  },
   "toast": {
     "region": "Notifications",
     "dismiss": "Dismiss notification",
@@ -3997,7 +4107,9 @@
       "weight": "Weight",
       "relativeWeight": "Relative weight",
       "remove": "Remove member",
-      "upstreamModelPlaceholder": "passthrough"
+      "upstreamModelPlaceholder": "passthrough",
+      "outOfScopeProject": "{{name}} is scoped to a different project, so this group cannot use it. Pick another provider or remove the row.",
+      "outOfScopeOrg": "{{name}} is scoped to a project, and an organization-wide group would expose it to every project. Pick another provider, or scope the group to that project."
     }
   },
   "paramsEditor": {
@@ -4042,7 +4154,7 @@
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
-      "realtime": "Guardrails, the PII sanitizer and plugins do not run on /v1/realtime session events: a session meets budgets and rate limits and its usage is recorded, but what it carries reaches the provider without a content check",
+      "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },
@@ -4072,5 +4184,13 @@
       "reasonAdmin": "Admin has full control within that scope: providers, routes, virtual keys, members and budgets.",
       "reasonOrg": "The whole organization is every team and project in it, not one of them."
     }
+  },
+  "projectScope": {
+    "label": "Scope",
+    "hint": "Whole organization lets every project use it. Pick a project to keep it to that project's keys.",
+    "hintOwnProject": "You can scope it to a project of your own. Making it organization-wide takes an organization admin.",
+    "hintLocked": "Moving it to another project, or making it organization-wide, takes an organization admin.",
+    "orgWide": "Organization-wide",
+    "badge": "Project: {{project}}"
   }
 }

@@ -45,9 +45,9 @@ same PR.
   duplicate.
 - Finish the whole issue. If part of it is blocked by another issue, implement
   everything else and state plainly what you left and why.
-- Leave `ui/` to the dashboard station. When a backend change needs a screen
-  change, do not edit `ui/`; list the files and fields it touches in your
-  report so a `station:mac` child issue can be filed.
+- Leave `ui/` to the rolter-ui agent unless the parent asks otherwise. When a
+  backend change needs a screen change, list the files and fields it touches
+  in your report so the parent can plan the dashboard half.
 
 # Code standards
 

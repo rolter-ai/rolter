@@ -28,9 +28,6 @@ const BASE: SecuritySettingsDto = {
   allowed_headers: ["x-request-id"],
   required_headers: { "x-tenant": "acme" },
   auth_bypass_routes: ["/v1/models"],
-  dashboard_auth_enabled: true,
-  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
-  dashboard_secret_configured: true,
   updated_at: "2026-08-01T09:00:00Z",
 };
 
@@ -83,8 +80,6 @@ const BASE_BODY = {
   allowed_headers: ["x-request-id"],
   required_headers: { "x-tenant": "acme" },
   auth_bypass_routes: ["/v1/models"],
-  dashboard_auth_enabled: true,
-  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
 };
 
 const puts = (api: { calls: { method: string }[] }) =>
@@ -104,7 +99,9 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByText("Enforce Virtual Keys on Inference")).toBeVisible(),
+    );
   },
 };
 
@@ -227,7 +224,9 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByText("Enforce Virtual Keys on Inference")).toBeVisible(),
+    );
     await expectNoHorizontalOverflow();
   },
 };
@@ -241,7 +240,9 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByText("Enforce Virtual Keys on Inference")).toBeVisible(),
+    );
     await expectNoHorizontalOverflow();
   },
 };
@@ -252,9 +253,6 @@ const fresh = securityApi({
   allowed_headers: [],
   required_headers: {},
   auth_bypass_routes: [],
-  dashboard_auth_enabled: false,
-  dashboard_credential_ref: null,
-  dashboard_secret_configured: false,
   updated_at: "2026-08-01T09:00:00Z",
 });
 
@@ -558,8 +556,6 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
     await expect(rows[1]).toHaveTextContent("Auth bypass route added:");
     await expect(within(rows[1]).getByText("/v1/ping")).toBeInTheDocument();
     await expect(rows[1]).toHaveTextContent("no budget or per-key rate limit applies to it");
-    // the dashboard is still protected, so it is not on the list
-    await expect(dialogElement).not.toHaveTextContent("password protected");
     await expect(puts(loosen)).toHaveLength(0);
     expectNoUxEvent("form_submit", "security-loosen");
 
@@ -574,48 +570,6 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
     await expectUxEvent("save_confirmed", "security-loosen");
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
-  },
-};
-
-const dashboardOff = securityApi();
-
-/**
- * Only what opens is listed: the dashboard's own switch, alone, is one row and
- * the singular title, with nothing about keys or routes in it.
- */
-export const DashboardProtectionOffIsListedOnItsOwn: Story = {
-  render: () => (
-    <Harness fetchStub={dashboardOff.stub}>
-      <Security />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("switch", { name: "Password protect the dashboard" }),
-    );
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
-
-    const dialogElement = await confirmation();
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const dialog = within(dialogElement);
-    await expect(
-      dialog.getByRole("heading", { name: "Save a change that loosens security?" }),
-    ).toBeInTheDocument();
-    const rows = await dialog.findAllByRole("listitem");
-    await expect(rows).toHaveLength(1);
-    await expect(rows[0]).toHaveTextContent("The dashboard is no longer password protected");
-    await expect(rows[0]).toHaveTextContent(
-      "The dashboard stops requiring its credential to open.",
-    );
-    await expect(dialogElement).not.toHaveTextContent("Virtual keys");
-    await expect(dialogElement).not.toHaveTextContent("bypass route");
-
-    await confirmDestructive("Save a change that loosens security?", "Save changes");
-    await expect(await dashboardOff.expectSentBody("PUT", SETTINGS)).toEqual({
-      ...BASE_BODY,
-      dashboard_auth_enabled: false,
-    });
   },
 };
 
@@ -655,7 +609,7 @@ export const CancelledLooseningSendsNothing: Story = {
 };
 
 const refused = securityApi(BASE, undefined, () =>
-  json({ error: { message: "dashboard authentication requires a credential" } }, 422),
+  json({ error: { message: "security settings could not be saved" } }, 422),
 );
 
 /**
@@ -682,10 +636,10 @@ export const RefusedLooseningKeepsTheDialogOpen: Story = {
 
     await waitFor(() =>
       expect(within(dialogElement).getByRole("alert")).toHaveTextContent(
-        "dashboard authentication requires a credential",
+        "security settings could not be saved",
       ),
     );
-    await expectToast(canvasElement, /dashboard authentication requires a credential/, "error");
+    await expectToast(canvasElement, /security settings could not be saved/, "error");
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
   },

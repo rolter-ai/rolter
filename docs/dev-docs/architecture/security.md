@@ -412,18 +412,17 @@ anonymous are one list, `PUBLIC_ROUTES` in
 `crates/rolter-control/src/public_routes.rs`, each with a reason that says what
 the route reveals and why that is acceptable. Today:
 
-| Route                                                                   | Why it is open                                                                                      |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below)          |
-| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                                       |
-| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                         |
-| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                                   |
-| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                                       |
-| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                                       |
-| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                                    |
-| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes                  |
-| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`                      |
-| `GET\|POST\|PUT\|PATCH\|DELETE /gw/{path}`                              | the Playground and the status pill reach the gateway through it; the gateway checks the virtual key |
+| Route                                                                   | Why it is open                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below) |
+| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                              |
+| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                |
+| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                          |
+| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                              |
+| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                              |
+| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                           |
+| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes         |
+| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`             |
 
 Routes with their own non-session credential (the `/internal/*` token, the
 SCIM bearer) are not on the list: anonymously they answer `401`, and the guard requires exactly that.
@@ -459,13 +458,29 @@ can name the database host and port to anyone; it now answers `unavailable` and
 logs the detail. The `/gw` proxy's `502` body echoed the reqwest error, which
 names the gateway's internal address; it now says `gateway unreachable` and logs.
 
-**Left as is, on purpose.** `/gw/*` stays anonymous because the gateway is what
-authenticates it (and the status pill polls the gateway's `/readyz` without a
-key). That is only as safe as the gateway being no more reachable than the
-control plane's port; if a gateway is deliberately kept off the internet while
-the control plane is not, the proxy widens its exposure. Moving it behind a
-session needs a way to carry both the session and the virtual key, which is a
-design change rather than a guard.
+**The `/gw` proxy takes a session (#2463).** It used to stay anonymous on the
+argument that the gateway authenticates every call, which is only true while the
+gateway is as reachable as the control plane's port. A gateway kept private
+while the control plane is public would still answer anyone through `/gw`
+(`fake-llm`, a keyless route), so the proxy now takes `AnySession`: open mode
+and the admin token pass, and with a database a live session of any role does.
+
+The session rides in `Authorization: Bearer`, which is also where a client puts
+the virtual key, so the key has its own carrier:
+
+- the **virtual key** goes in `x-rolter-gateway-key` and is forwarded to the
+  gateway as `Authorization: Bearer <key>`;
+- the inbound `Authorization` (the session) and `Cookie` are never forwarded;
+- a browser cannot set headers on a WebSocket, so a realtime upgrade may carry
+  the session as a `rolter_session` query parameter, removed before the request
+  goes upstream. The key keeps riding as `api_key` there. A query string can end
+  up in an access log, so treat that session like any URL-borne credential;
+- the status pill's `/gw/readyz` needs no exemption: the header is only drawn
+  inside the signed-in app, so the call is made with a session.
+
+Clients that call `/gw` without the dashboard (a snippet built on the proxy
+because no gateway base URL is saved) must therefore send both credentials;
+production clients should use the gateway's own address.
 
 ## Who reads the request log (#1820)
 
