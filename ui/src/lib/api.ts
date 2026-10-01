@@ -2252,6 +2252,37 @@ export interface MeMembership extends MembershipRow {
 export interface MeResponse {
   user: UserRow;
   memberships: MeMembership[];
+  /**
+   * A SCIM directory owns `user.display_name`, so a change to it answers 409.
+   * The bio stays editable. Absent from a control plane older than #1823.
+   */
+  display_name_managed?: boolean;
+}
+
+/** longest display name, in characters (`users_display_name_shape`) */
+export const MAX_DISPLAY_NAME_LEN = 80;
+/** longest bio, in characters (`users_bio_shape`) */
+export const MAX_BIO_LEN = 500;
+
+/**
+ * `PATCH /me/profile` body. Send only the fields being changed: an omitted
+ * field is left alone, `null` clears one, and whitespace-only is a 400.
+ */
+export interface ProfileUpdate {
+  display_name?: string | null;
+  bio?: string | null;
+}
+
+/** what `PATCH /me/profile` answers: the profile as stored, trimmed */
+export interface ProfileResult {
+  display_name: string | null;
+  bio: string | null;
+  display_name_managed: boolean;
+}
+
+/** Set the signed-in account's own display name and bio (#1823). */
+export function updateMyProfile(body: ProfileUpdate): Promise<ProfileResult> {
+  return sendJson<ProfileResult>("PATCH", "/api/v1/me/profile", body);
 }
 
 /**
@@ -2454,6 +2485,10 @@ export type MembershipScopeType = (typeof MEMBERSHIP_SCOPE_TYPES)[number];
 export interface UserRow {
   id: string;
   email: string;
+  /** what the account goes by; null until set (or provisioned by an IdP) */
+  display_name?: string | null;
+  /** a line on who to ask about what; null until set */
+  bio?: string | null;
   is_superadmin: boolean;
   /** set when the account is deactivated (login blocked); null when active */
   deactivated_at?: string | null;

@@ -239,7 +239,8 @@
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
-      "projectSettings": "project settings"
+      "projectSettings": "project settings",
+      "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -3839,6 +3840,30 @@
         "enabled": "Two-factor authentication is on",
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
+      }
+    },
+    "profile": {
+      "title": "Profile",
+      "subtitle": "The name other people see beside your account, and a line on what to ask you about.",
+      "name": "Display name",
+      "nameHint": "Shown in place of your email. Leave it empty to go by your email.",
+      "namePlaceholder": "Ada Lovelace",
+      "managed": "Your name is managed by your identity provider",
+      "bio": "Bio",
+      "bioPlaceholder": "Who to ask about what",
+      "bioHint": "{{count}} of {{max}} characters",
+      "save": "Save profile",
+      "saved": "Profile saved",
+      "saveFailed": "Could not save your profile.",
+      "problem": {
+        "name": {
+          "blank": "The name cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A display name is at most {{max}} characters."
+        },
+        "bio": {
+          "blank": "The bio cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A bio is at most {{max}} characters."
+        }
       }
     }
   },
