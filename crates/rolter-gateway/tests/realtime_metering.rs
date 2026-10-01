@@ -974,20 +974,30 @@ async fn sigterm_closes_live_sessions_after_their_meters_flush() {
     let redis = redis_url();
     let org = unique("org-sigterm");
     let (upstream, _) = realtime_upstream(true).await;
-    let port = {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
+    let relay = match &redis {
+        Some(url) => Some(SlowRedis::start(url).await),
+        None => None,
     };
-    let gw: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let pepper = "realtime-sigterm-pepper";
+    // the port is read off a listener that is dropped before the gateway
+    // binds it, so a parallel test can take it first; the gateway then exits
+    // at once, and that attempt is retried on a fresh port (#2509)
+    let mut attempt = 0;
+    let (mut child, gw, dir) = loop {
+        attempt += 1;
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let gw: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let pepper = "realtime-sigterm-pepper";
 
-    let dir = std::env::temp_dir().join(format!("rolter-realtime-drain-{port}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join("rolter.toml");
-    let mut file = std::fs::File::create(&config_path).unwrap();
-    write!(
-        file,
-        r#"
+        let dir = std::env::temp_dir().join(format!("rolter-realtime-drain-{port}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("rolter.toml");
+        let mut file = std::fs::File::create(&config_path).unwrap();
+        write!(
+            file,
+            r#"
 [server]
 host = "127.0.0.1"
 port = {port}
@@ -1023,43 +1033,56 @@ period = "monthly"
 key_hash = "{hash}"
 id = "key-{org}"
 org_id = "{org}"
-"#,
-        hash = rolter_auth::hash_key(pepper, KEY),
-    )
-    .unwrap();
-    drop(file);
+    "#,
+            hash = rolter_auth::hash_key(pepper, KEY),
+        )
+        .unwrap();
+        drop(file);
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rolter-gateway"));
-    command
-        .arg("--config")
-        .arg(&config_path)
-        // nothing inherited from the caller's shell may point this gateway at
-        // a control plane or another store
-        .env_remove("ROLTER_SNAPSHOT_URL")
-        .env_remove("ROLTER_REDIS_URL")
-        .env_remove("CLICKHOUSE_URL")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let relay = match &redis {
-        Some(url) => Some(SlowRedis::start(url).await),
-        None => None,
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rolter-gateway"));
+        command
+            .arg("--config")
+            .arg(&config_path)
+            // nothing inherited from the caller's shell may point this gateway at
+            // a control plane or another store
+            .env_remove("ROLTER_SNAPSHOT_URL")
+            .env_remove("ROLTER_REDIS_URL")
+            .env_remove("CLICKHOUSE_URL")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                std::fs::File::create(dir.join("stderr.log")).unwrap(),
+            ));
+        if let Some(relay) = &relay {
+            command.arg("--redis-url").arg(&relay.url);
+        }
+        let mut child = command.spawn().unwrap();
+        let mut serving = false;
+        let mut exited = None;
+        for _ in 0..600 {
+            if let Ok(Some(status)) = child.try_wait() {
+                exited = Some(status);
+                break;
+            }
+            if reqwest::get(format!("http://{gw}/healthz")).await.is_ok() {
+                serving = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // a healthz answer only counts if it was ours: a process that lost the
+        // port exits, and whoever took it may answer in the meantime
+        if serving && matches!(child.try_wait(), Ok(None)) {
+            break (child, gw, dir);
+        }
+        let log = std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default();
+        assert!(
+            attempt < 5 && (serving || exited.is_some()),
+            "gateway did not serve on {gw} after {attempt} attempts (exit {exited:?}): {log}"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     };
-    if let Some(relay) = &relay {
-        command.arg("--redis-url").arg(&relay.url);
-    }
-    let mut child = command.spawn().unwrap();
-    let mut serving = false;
-    for _ in 0..600 {
-        if let Ok(Some(status)) = child.try_wait() {
-            panic!("gateway exited before serving: {status}");
-        }
-        if reqwest::get(format!("http://{gw}/healthz")).await.is_ok() {
-            serving = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(serving, "gateway never became reachable on {gw}");
 
     let mut client = open(gw, KEY).await;
     run_turn(&mut client).await;
