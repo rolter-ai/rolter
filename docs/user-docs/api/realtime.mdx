@@ -7,10 +7,11 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
 <Warning>
   **Experimental.** `/v1/realtime` carries the `realtime`
   [stability marker](/api/stability) and may change shape in a minor release.
-  Budgets, rate limits and usage recording apply to a session, but guardrails,
-  PII redaction and plugins do not run on its events yet, so content a
-  guardrail would stop on `/v1/chat/completions` reaches the provider
-  unchecked ([#1880](https://github.com/rolter-ai/rolter/issues/1880)).
+  Budgets, rate limits, usage recording, guardrails, the guardrail webhook and
+  `pre_upstream` plugins apply to a session's text events. The PII sanitizer
+  and `pre_route` / `post_response` plugins do not run on them yet, and
+  function-call arguments are not scanned
+  ([#2489](https://github.com/rolter-ai/rolter/issues/2489)).
 </Warning>
 
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
