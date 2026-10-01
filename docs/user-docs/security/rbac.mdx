@@ -146,6 +146,8 @@ Sign-ins, failed sign-ins, lockouts, second-factor changes, break-glass resets a
 
 Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered belong to no organization's audit log. A superadmin reads them, together with every other row, through the deployment-wide `GET /api/v1/audit-log`. It takes the same query parameters as the per-organization read (`limit`, `actor`, `action`, `target_type`, `start_at`, `end_at`, `cursor`, `direction`, `include_total`) and answers with the same page shape, newest first, each page carrying the `next_cursor` for the one after it. Everyone else, organization admins included, gets `403`. The `deployment_audit_log:read` capability in `GET /api/v1/rbac/matrix` is superadmin-only.
 
+In the dashboard, a superadmin sees a scope switch on **Governance → Audit Logs**: **Whole deployment** reads that endpoint with the same filters and paging as the organization view. Rows with no organization are marked **No org**, and a sign-in attempt against an unregistered address shows **Unknown address** as its actor. Nobody else is offered the switch.
+
 ## Ask the server what a role can do
 
 Rolter publishes its own permission table, so you never have to keep a copy in sync with the deployment:

@@ -2891,7 +2891,7 @@ export interface AuditLogQuery {
   include_total?: boolean;
 }
 
-export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
+function auditLogQueryString(query: AuditLogQuery): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== "") {
@@ -2899,7 +2899,17 @@ export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Pro
     }
   }
   const qs = params.toString();
-  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`);
+  return qs ? `?${qs}` : "";
+}
+
+export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
+  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${auditLogQueryString(query)}`);
+}
+
+// every audit row in the deployment, org-less account events included;
+// superadmin-only (`deployment_audit_log:read`), a 403 for anyone else
+export function fetchDeploymentAuditLogPage(query: AuditLogQuery = {}): Promise<AuditLogPage> {
+  return getJson<AuditLogPage>(`/api/v1/audit-log${auditLogQueryString(query)}`);
 }
 
 // ---------------------------------------------------------------------------

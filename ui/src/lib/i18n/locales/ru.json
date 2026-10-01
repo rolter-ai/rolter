@@ -2462,11 +2462,19 @@
         "actor": "Автор",
         "action": "Действие",
         "target": "Объект",
-        "detail": "Детали"
+        "detail": "Детали",
+        "org": "Организация"
       },
       "unknownTarget": "неизвестно",
       "hideDetails": "скрыть",
-      "showDetails": "показать"
+      "showDetails": "показать",
+      "scopeAria": "Охват журнала аудита",
+      "scopes": {
+        "org": "Эта организация",
+        "deployment": "Всё развёртывание"
+      },
+      "noOrg": "Без организации",
+      "unknownAddress": "Неизвестный адрес"
     },
     "complexityRouter": {
       "emptyTitle": "Нет маршрутов, которым можно задать политику",
