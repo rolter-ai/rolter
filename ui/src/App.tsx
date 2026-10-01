@@ -418,7 +418,9 @@ function Shell() {
   const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
   const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
-  const initials = (email.trim()[0] ?? "?").toUpperCase();
+  // the name the account goes by, else its email (#2434)
+  const shownName = user?.display_name?.trim() || email;
+  const initials = (shownName.trim()[0] ?? "?").toUpperCase();
 
   return (
     // the open-mode warning spans the full width above the shell rather than
@@ -503,7 +505,7 @@ function Shell() {
           version={`v${version}`}
           update={update}
           user={{
-            name: email,
+            name: shownName,
             role,
             initials,
             onClick: handleSignOut,
@@ -515,7 +517,10 @@ function Shell() {
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">{email}</p>
+                  <p className="truncate text-xs font-medium text-foreground">{shownName}</p>
+                  {shownName !== email && (
+                    <p className="truncate text-[0.6875rem] text-muted-foreground">{email}</p>
+                  )}
                   <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
                 </div>
               </div>

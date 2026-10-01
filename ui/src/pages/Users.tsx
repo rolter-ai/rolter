@@ -180,7 +180,7 @@ export default function Users() {
     const active = !u.deactivated_at;
     if (statusTab === "active" && !active) return false;
     if (statusTab === "deactivated" && active) return false;
-    return !q || u.email.toLowerCase().includes(q);
+    return !q || u.email.toLowerCase().includes(q) || !!u.display_name?.toLowerCase().includes(q);
   });
 
   // no counts until the list is held: a tab reading "All 0" while the read is
@@ -273,7 +273,7 @@ export default function Users() {
         {rows.map((user) => {
           const active = !user.deactivated_at;
           const grants = byUser.get(user.id) ?? [];
-          const initials = user.email.slice(0, 2).toUpperCase();
+          const initials = (user.display_name || user.email).slice(0, 2).toUpperCase();
           return (
             <ListRow
               key={user.id}
@@ -291,13 +291,28 @@ export default function Users() {
                 </span>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className="truncate font-mono text-sm">{user.email}</span>
+                    {/* the name leads when the account has one, with the email
+                        beneath it; without one the email stays the headline (#2434) */}
+                    {user.display_name ? (
+                      <span className="truncate text-sm">{user.display_name}</span>
+                    ) : (
+                      <span className="truncate font-mono text-sm">{user.email}</span>
+                    )}
                     {user.is_superadmin && (
                       <Badge tone="neutral" className="flex-none">
                         {t("pages.users.superBadge")}
                       </Badge>
                     )}
                   </div>
+                  {user.display_name && (
+                    <p className="truncate font-mono text-xs text-muted-foreground">{user.email}</p>
+                  )}
+                  {/* the bio says who to ask about what, so others can read it (V2.1) */}
+                  {user.bio && (
+                    <p className="truncate text-xs text-muted-foreground" title={user.bio}>
+                      {user.bio}
+                    </p>
+                  )}
                 </div>
               </ListCell>
               <ListCell className="min-w-0">
