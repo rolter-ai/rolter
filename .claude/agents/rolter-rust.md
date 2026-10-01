@@ -133,6 +133,11 @@ cargo test -p rolter-control -p rolter-store --features postgres
   if `cargo hack` is installed.
 - Markdown, JSON and YAML outside `ui/` go through `just fmt-docs-check`
   (prettier with the root config); never run prettier with ad-hoc flags.
+- The `typos` spellchecker runs over every file in `static checks`. Run it
+  on what you changed: `git diff --name-only origin/master...HEAD | xargs
+  uvx typos --config .github/config/typos.toml`. It prefers `unparsable`
+  over `unparseable`; pin a genuine test-fixture spelling in that config
+  rather than renaming code.
 - `cargo nextest` may not be installed; plain `cargo test` is fine.
   `rolter-control` CRUD/SSO/SCIM tests only compile under `--features postgres`,
   so both feature sets must pass.
