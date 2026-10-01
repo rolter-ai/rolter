@@ -858,6 +858,15 @@ fn error_json(status: StatusCode, message: &str) -> Response {
     crate::error::ApiError::new(status, message).into_response()
 }
 
+/// The 401 for a missing, unknown, disabled or expired virtual key. OpenAI
+/// answers all of those with code `invalid_api_key` (only the message differs),
+/// and SDKs branch on it; the realtime close sends the same code (#1881).
+fn invalid_api_key_json(message: &str) -> Response {
+    crate::error::ApiError::new(StatusCode::UNAUTHORIZED, message)
+        .with_code("invalid_api_key")
+        .into_response()
+}
+
 /// Tenant identity forwarded to a guardrail webhook or plugin as metadata.
 /// Shared by both call sites so the envelope always carries the same shape.
 fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
@@ -1093,7 +1102,7 @@ pub(crate) fn authenticate(
             .unwrap_or(snap.security.virtual_key_required || state.managed_auth);
         if required {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            return Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE));
+            return Err(invalid_api_key_json(MISSING_KEY_MESSAGE));
         }
         return Ok(None);
     }
@@ -1109,16 +1118,13 @@ pub(crate) fn authenticate(
                 // which of the two happened
                 Some(_) | None => {
                     state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                    Err(error_json(
-                        StatusCode::UNAUTHORIZED,
-                        &invalid_key_message(&key),
-                    ))
+                    Err(invalid_api_key_json(&invalid_key_message(&key)))
                 }
             }
         }
         None => {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE))
+            Err(invalid_api_key_json(MISSING_KEY_MESSAGE))
         }
     }
 }

@@ -4555,6 +4555,8 @@ async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
         .await
         .unwrap();
     assert_eq!(closed.status(), 401);
+    let body: serde_json::Value = closed.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_api_key");
 
     // and the same deployment with the toggle off answers — so the test is
     // measuring the toggle, not the absence of keys
@@ -4631,6 +4633,9 @@ async fn an_expired_virtual_key_is_refused_at_the_gateway() {
     let expired = call("sk-rolter-expired").await;
     assert_eq!(expired.status(), 401);
     let body = expired.text().await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["error"]["code"], "invalid_api_key", "{body}");
+    assert_eq!(parsed["error"]["type"], "authentication_error", "{body}");
     // the rejection must not leak which key it was or when it lapsed
     assert!(!body.contains("yesterday"), "{body}");
 
@@ -5318,4 +5323,48 @@ async fn response_lifecycle_reauthorizes_pinned_addresses() {
         1,
         "a refused call reached upstream"
     );
+}
+
+#[tokio::test]
+async fn every_invalid_key_401_carries_the_openai_invalid_api_key_code() {
+    // #2385: OpenAI SDKs branch on `code`, and the realtime close already sends
+    // `invalid_api_key` (#1881), so the HTTP 401 must agree for each cause
+    let config = GatewayConfig {
+        virtual_keys: vec![
+            VirtualKeyConfig {
+                key: "sk-rolter-live".to_string(),
+                ..Default::default()
+            },
+            VirtualKeyConfig {
+                key: "sk-rolter-off".to_string(),
+                disabled: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let gw = serve_gateway(&config).await;
+    let client = reqwest::Client::new();
+    let body = json!({"model": "fake-llm", "messages": [{"role":"user","content":"hi"}]});
+
+    for (path, key) in [
+        ("/v1/chat/completions", None),
+        ("/v1/chat/completions", Some("sk-rolter-unknown")),
+        ("/v1/chat/completions", Some("sk-rolter-off")),
+        ("/v1/messages", Some("sk-rolter-unknown")),
+        ("/v1/messages", None),
+    ] {
+        let mut req = client.post(format!("http://{gw}{path}")).json(&body);
+        if let Some(key) = key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await.unwrap();
+        assert_eq!(resp.status(), 401, "{path} {key:?}");
+        let parsed: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(parsed["error"]["code"], "invalid_api_key", "{path} {key:?}");
+        assert_eq!(
+            parsed["error"]["type"], "authentication_error",
+            "{path} {key:?}"
+        );
+    }
 }
