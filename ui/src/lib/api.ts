@@ -2213,6 +2213,31 @@ export function confirmSignInEnrolment(
   });
 }
 
+/** what `POST /auth/sso/exchange` answers: the login body plus the roles the sign-in granted */
+export interface SsoExchangeResponse extends LoginResponse {
+  granted_roles: unknown[];
+}
+
+/**
+ * Redeem the one-time code a browser SSO sign-in ends with
+ * (`/login?sso_code=…`) for a session.
+ *
+ * Sent with no `Authorization` header on purpose, and not through `sendJson`,
+ * which attaches whatever token is stored: the caller is mid sign-in, and a
+ * stale token must not ride along. The code is single use, so a caller must
+ * not retry it. A spent, expired or unknown code is a `400` with
+ * `code == "invalid_exchange_code"`.
+ */
+export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+  const res = await fetch("/auth/sso/exchange", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as SsoExchangeResponse;
+}
+
 /** what the login screen may offer; see crates/rolter-control/src/auth_policy.rs */
 export interface AuthMethods {
   /** render the email + password form */

@@ -12,6 +12,20 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "sso": {
+      "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
+      "errors": {
+        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
+        "state_expired": "This sign-in took too long or was already used. Start it again.",
+        "sso_disabled": "Single sign-on is turned off for this organization.",
+        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
+        "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
+      },
+      "provider": "Identity provider: {{name}}"
+    },
     "errors": {
       "invalidCredentials": "That email and password do not match an account here.",
       "passwordLoginDisabled": "Password sign-in is turned off for this organization. Use single sign-on below.",
