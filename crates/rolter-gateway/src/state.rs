@@ -827,6 +827,10 @@ pub struct AppState {
     /// time; swapped on reload so hostname/rebinding enforcement re-tunes
     /// without rebuilding pooled clients (#656)
     pub egress: rolter_proxy::egress_resolver::SharedEgressPolicy,
+    /// client for the URLs an operator writes that are not a provider's
+    /// `api_base` (guardrail webhook, pii sanitizer, plugins, status pages),
+    /// bound to the same live policy so a reload re-tunes it too
+    pub side_client: crate::egress_client::EgressClient,
     pub forwarder: Arc<Forwarder>,
     /// bounded worker queues keyed by provider; queue settings come from the
     /// live snapshot so a hot reload takes effect for subsequent requests
@@ -994,8 +998,11 @@ impl AppState {
         forwarder.set_compatibility(&config.compatibility);
         forwarder.set_client_policy(&config.client);
         forwarder.set_model_defaults(&config.model_defaults);
+        health_events.set_provider_orgs(&config.providers);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
-        let cache_telemetry = crate::cache_telemetry::CacheTelemetry::new(metrics.clone());
+        let side_client = crate::egress_client::EgressClient::new(egress.clone());
+        let cache_telemetry =
+            crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
         cache_telemetry.configure(&config.providers);
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build_with_telemetry(
@@ -1007,6 +1014,7 @@ impl AppState {
             managed_auth: false,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
+            side_client,
             forwarder,
             provider_queues,
             metrics,
@@ -1065,6 +1073,7 @@ impl AppState {
         // effect on the next connect without rebuilding a single client
         self.egress.store(Arc::new(config.egress.clone()));
         self.cache_telemetry.configure(&config.providers);
+        self.health_events.set_provider_orgs(&config.providers);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
             config,
             &self.loads,

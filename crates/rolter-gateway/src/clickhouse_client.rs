@@ -76,6 +76,7 @@ mod tests {
             ts: chrono::Utc::now(),
             target_id: "t".into(),
             provider: "p".into(),
+            org_id: String::new(),
             source: HealthSource::Probe,
             outcome: HealthOutcome::Ok,
             status_code: Some(200),

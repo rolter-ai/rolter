@@ -40,6 +40,7 @@ use crate::handlers::{
     authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
     rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
+use crate::realtime_guard::{ClientVerdict, ContentPolicy, Frame};
 use crate::realtime_metering::{Closure, SessionEnd, SessionMeter, TurnTracker};
 use crate::state::{AppState, Snapshot};
 
@@ -153,6 +154,20 @@ pub async fn realtime(
         return denial.into_response();
     }
 
+    // the sanitizer cannot run on a realtime socket (#2489), so a deployment
+    // that made it a hard requirement must not get a session that silently
+    // skips it. fail-open keeps its availability-over-enforcement contract and
+    // is admitted. refused before any budget, rate-limit or upstream side effect
+    if sanitizer_blocks_realtime(&snap.pii_sanitizer) {
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "this deployment requires the PII sanitizer (failure_mode = fail_closed), which \
+             cannot be applied to a realtime session; use a non-realtime endpoint",
+        )
+        .with_code("sanitizer_unsupported_on_realtime")
+        .into_response();
+    }
+
     // the policy an HTTP request meets, on the same scope chain (#1396). a
     // session opens only while every budget it draws on has room left, and
     // only for a model this deployment is willing to serve unpriced
@@ -219,6 +234,16 @@ pub async fn realtime(
         .unwrap_or_default()
         .to_string();
     crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
+    // resolved before `scope` moves into the meter, and pinned for the session
+    let trace_id = crate::trace::request_trace_id(&headers);
+    let policy = ContentPolicy::for_session(
+        &snap,
+        entry,
+        &scope,
+        &query.model,
+        &trace_id,
+        &state.side_client,
+    );
     let meter = SessionMeter {
         state: state.clone(),
         scope,
@@ -228,7 +253,7 @@ pub async fn realtime(
         target: selected.target.clone(),
         variant: selected.variant.clone(),
         request_id,
-        trace_id: crate::trace::request_trace_id(&headers),
+        trace_id,
         key_digest: virtual_key
             .as_ref()
             .and_then(|_| crate::handlers::presented_key_digest(&snap, &headers)),
@@ -243,7 +268,7 @@ pub async fn realtime(
     let tracked = state.realtime_sessions.tasks.token();
     ws.on_upgrade(move |socket| async move {
         let _tracked = tracked;
-        relay(socket, selected, meter).await;
+        relay(socket, selected, meter, policy).await;
     })
     .into_response()
 }
@@ -473,7 +498,12 @@ fn realtime_request(
     Ok(request)
 }
 
-async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter) {
+async fn relay(
+    socket: WebSocket,
+    session: SelectedSession,
+    meter: SessionMeter,
+    mut policy: Option<ContentPolicy>,
+) {
     let SelectedSession {
         upstream,
         _load,
@@ -569,6 +599,35 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
             message = client_receiver.next() => match message {
                 Some(Ok(message)) => {
                     let close = matches!(message, Message::Close(_));
+                    let message = match (policy.as_mut(), message) {
+                        (Some(policy), Message::Text(text)) => {
+                            match policy.client_event(&state.metrics, text.as_str()).await {
+                                ClientVerdict::Pass => Message::Text(text),
+                                ClientVerdict::Replace(frame) => Message::Text(frame.into()),
+                                ClientVerdict::Reject(event) => {
+                                    if client_sender.send(Message::Text(event.into())).await.is_err() {
+                                        break;
+                                    }
+                                    idle_deadline = (idle_timeout != 0).then(|| tokio::time::Instant::now() + Duration::from_secs(idle_timeout));
+                                    continue;
+                                }
+                            }
+                        }
+                        // not part of the protocol, and an upstream that read
+                        // JSON out of one would skip the checks above
+                        (Some(_), Message::Binary(_)) => {
+                            let event = error_event(
+                                StatusCode::BAD_REQUEST,
+                                "guardrail_blocked",
+                                "binary frames are not accepted while content policy applies",
+                            );
+                            if client_sender.send(Message::Text(event.into())).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        (_, message) => message,
+                    };
                     if upstream_sender.send(to_upstream(message)).await.is_err() {
                         end = SessionEnd::upstream_failed();
                         break;
@@ -585,7 +644,24 @@ async fn relay(socket: WebSocket, session: SelectedSession, meter: SessionMeter)
                         UpstreamMessage::Text(text) => turns.observe(text.as_str()),
                         _ => None,
                     };
-                    let delivered = client_sender.send(to_client(message)).await.is_ok();
+                    let mut message = message;
+                    let mut deliver = true;
+                    if let (Some(policy), UpstreamMessage::Text(text)) = (policy.as_mut(), &message) {
+                        let outcome = policy.server_event(&state.metrics, text.as_str());
+                        if let Some(notice) = outcome.notice {
+                            let _ = client_sender.send(Message::Text(notice.into())).await;
+                        }
+                        if let Some(cancel) = outcome.cancel {
+                            let _ = upstream_sender.send(UpstreamMessage::Text(cancel.into())).await;
+                        }
+                        match outcome.frame {
+                            Frame::Pass => {}
+                            Frame::Replace(frame) => message = UpstreamMessage::Text(frame.into()),
+                            // withheld, but the turn it belongs to still counts
+                            Frame::Drop => deliver = false,
+                        }
+                    }
+                    let delivered = !deliver || client_sender.send(to_client(message)).await.is_ok();
                     // the upstream billed a finished turn whether or not the
                     // client read its last event
                     if let Some(turn) = turn {
@@ -626,7 +702,7 @@ fn budget_error_event(message: &str) -> String {
 }
 
 /// A Realtime `error` event wrapping the HTTP refusal's own error object.
-fn error_event(status: StatusCode, code: &'static str, message: &str) -> String {
+pub(crate) fn error_event(status: StatusCode, code: &'static str, message: &str) -> String {
     let mut event = crate::error::ApiError::new(status, message)
         .with_code(code)
         .body();
@@ -672,6 +748,13 @@ fn to_client(message: UpstreamMessage) -> Message {
         UpstreamMessage::Close(_) => Message::Close(None),
         UpstreamMessage::Frame(_) => Message::Close(None),
     }
+}
+
+/// Whether the PII sanitizer is enabled and fail-closed, the one setting under
+/// which skipping it on realtime must refuse the session. The sanitizer config
+/// is deployment-wide, so there is no per-tenant or per-route scope to consult.
+fn sanitizer_blocks_realtime(config: &rolter_core::PiiSanitizerConfig) -> bool {
+    config.enabled && config.failure_mode == rolter_core::FailureMode::FailClosed
 }
 
 fn api_error(status: StatusCode, message: &str) -> Response {

@@ -14,6 +14,7 @@ use rolter_core::{KvEventsConfig, LmCacheConfig, ProviderConfig};
 use serde::Deserialize;
 use zeromq::{Socket, SocketRecv, SubSocket};
 
+use crate::egress_client::EgressClient;
 use crate::metrics::Metrics;
 
 #[derive(Clone)]
@@ -26,6 +27,43 @@ struct Inner {
     lmcache: DashMap<String, Arc<LmCacheTarget>>,
     started: DashMap<String, ()>,
     metrics: Arc<Metrics>,
+    egress: EgressClient,
+}
+
+/// Whether the live policy permits subscribing to `endpoint`.
+///
+/// An IP literal is classified directly. A hostname is resolved here and the
+/// answer filtered, which catches a name that points at a denied address; the
+/// zmq transport resolves the name again when it connects, so a rebind in
+/// between is not covered, unlike the http clients whose resolver filters the
+/// very lookup the connection uses.
+async fn kv_endpoint_permitted(
+    policy: &rolter_proxy::egress_resolver::SharedEgressPolicy,
+    endpoint: &str,
+) -> bool {
+    let policy = policy.load_full();
+    if let Some(reason) = policy.url_deny_reason(endpoint) {
+        tracing::warn!(reason, "kv-event subscription refused by the egress policy");
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let (Some(host), Some(port)) = (url.host_str().map(str::to_string), url.port()) else {
+        return false;
+    };
+    let lookup = tokio::net::lookup_host((host.as_str(), port)).await;
+    match lookup {
+        Ok(addrs) => match policy.filter_resolved(&host, addrs.collect()) {
+            Ok(_) => true,
+            Err(_) => {
+                tracing::warn!(%host, "kv-event subscription refused by the egress policy");
+                false
+            }
+        },
+        // an unresolvable name is the transport's failure to report
+        Err(_) => true,
+    }
 }
 
 struct KvTarget {
@@ -62,13 +100,14 @@ fn default_true() -> bool {
 }
 
 impl CacheTelemetry {
-    pub fn new(metrics: Arc<Metrics>) -> Self {
+    pub fn new(metrics: Arc<Metrics>, egress: EgressClient) -> Self {
         Self {
             inner: Arc::new(Inner {
                 kv: DashMap::new(),
                 lmcache: DashMap::new(),
                 started: DashMap::new(),
                 metrics,
+                egress,
             }),
         }
     }
@@ -102,11 +141,18 @@ impl CacheTelemetry {
         tokio::spawn(async move {
             loop {
                 let mut socket = SubSocket::new();
-                let connected = socket.connect(&config.endpoint).await;
-                let subscribed = if connected.is_ok() {
-                    socket.subscribe(&config.topic).await
+                // checked before every (re)connect, so a tightened policy or a
+                // name that has since rebound stops the stream. the zmq
+                // transport resolves the name itself, so this is the closest
+                // available point to the connect
+                let permitted =
+                    kv_endpoint_permitted(telemetry.inner.egress.policy(), &config.endpoint).await;
+                let subscribed = if !permitted {
+                    Err(())
+                } else if socket.connect(&config.endpoint).await.is_ok() {
+                    socket.subscribe(&config.topic).await.map_err(|_| ())
                 } else {
-                    connected
+                    Err(())
                 };
                 if subscribed.is_err() {
                     telemetry
@@ -186,11 +232,17 @@ impl CacheTelemetry {
         });
         self.inner.lmcache.insert(provider, target.clone());
         let metrics = self.inner.metrics.clone();
+        let egress = self.inner.egress.clone();
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
             let interval = Duration::from_secs(config.refresh_secs);
             loop {
-                match client.get(&config.endpoint).send().await {
+                // checked on every refresh against the live policy
+                let request = egress.get(&config.endpoint);
+                let sent = match request {
+                    Some(request) => request.send().await.map_err(|_| ()),
+                    None => Err(()),
+                };
+                match sent {
                     Ok(response) if response.status().is_success() => {
                         match response.json::<LmCacheSignal>().await {
                             Ok(signal) if signal.occupancy.is_finite() => {
@@ -616,7 +668,8 @@ mod tests {
     #[test]
     fn route_sources_cover_fresh_stale_missing_and_unavailable_targets() {
         let metrics = Arc::new(Metrics::default());
-        let telemetry = CacheTelemetry::new(metrics.clone());
+        let telemetry =
+            CacheTelemetry::new(metrics.clone(), crate::egress_client::testing::permissive());
         let fresh_kv = Arc::new(target(10));
         apply_vllm_payload(
             &fresh_kv,
@@ -716,7 +769,7 @@ mod tests {
         let provider: ProviderConfig = serde_json::from_value(serde_json::json!({
             "name": "cache-node",
             "kind": "openai_compatible",
-            "api_base": "http://cache-node:8000",
+            "api_base": "https://cache-node:8000",
             "kv_events": {
                 "endpoint": "invalid://endpoint",
                 "topic": "kv-events",
@@ -731,7 +784,8 @@ mod tests {
         }))
         .unwrap();
         let metrics = Arc::new(Metrics::default());
-        let telemetry = CacheTelemetry::new(metrics.clone());
+        let telemetry =
+            CacheTelemetry::new(metrics.clone(), crate::egress_client::testing::permissive());
         telemetry.configure(std::slice::from_ref(&provider));
         telemetry.configure(&[provider]);
 
@@ -751,5 +805,47 @@ mod tests {
             Some(vec![0.0])
         );
         server.abort();
+    }
+
+    /// #2383: both telemetry endpoints go through the egress policy, a name
+    /// that resolves to a denied address is never polled, and a metadata
+    /// literal is never subscribed to.
+    #[tokio::test]
+    async fn a_denied_telemetry_endpoint_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let provider: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "cache-node",
+            "kind": "openai_compatible",
+            "api_base": "https://cache-node:8000",
+            "kv_events": {
+                "endpoint": "tcp://169.254.169.254:5557",
+                "topic": "kv-events",
+                "max_blocks": 10,
+                "stale_secs": 30
+            },
+            "lmcache": {
+                "endpoint": listener.url("/signal"),
+                "refresh_secs": 60,
+                "stale_secs": 30
+            }
+        }))
+        .unwrap();
+        let metrics = Arc::new(Metrics::default());
+        let telemetry = CacheTelemetry::new(
+            metrics.clone(),
+            EgressClient::new(crate::egress_client::testing::deny_loopback()),
+        );
+        telemetry.configure(&[provider]);
+        for _ in 0..100 {
+            if metrics.lmcache_refresh_failures_total.load(Relaxed) > 0
+                && metrics.kv_event_stream_failures_total.load(Relaxed) > 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(metrics.lmcache_refresh_failures_total.load(Relaxed) >= 1);
+        assert!(metrics.kv_event_stream_failures_total.load(Relaxed) >= 1);
+        assert_eq!(listener.accepted(), 0);
     }
 }

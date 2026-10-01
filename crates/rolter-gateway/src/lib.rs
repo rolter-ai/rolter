@@ -30,6 +30,7 @@ mod cancel;
 mod clickhouse_client;
 #[doc(hidden)]
 pub mod cooldowns;
+mod egress_client;
 mod error;
 mod fake_llm;
 mod genai;
@@ -53,6 +54,7 @@ mod prompt_templates;
 mod queue;
 mod rate_limits;
 mod realtime;
+mod realtime_guard;
 mod realtime_metering;
 mod redis_conn;
 mod response_registry;

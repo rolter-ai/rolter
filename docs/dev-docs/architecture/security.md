@@ -230,6 +230,50 @@ One caveat applies to every connect-time check: when `HTTP_PROXY` or
 name, not the egress resolver, so the check covers only direct connections.
 Enforce the policy on the proxy itself in that deployment.
 
+### Every path, and where it is checked (#2383)
+
+Each operator-written URL is checked when it is saved and again before it is
+sent. A denied provider URL in a snapshot is pruned per row in
+`GatewayConfig::sanitize_for_snapshot` with a problem line (shown by
+`/api/v1/config/problems`), while `validate()` stays strict for file configs.
+
+A denied guardrail webhook, PII sanitizer or plugin URL is **not** pruned or
+switched off: dropping a fail-closed control would make it silently fail open.
+The snapshot keeps it, records the problem, and `validate_snapshot()` (used by
+the control plane and the gateway watcher) does not repeat the check. At
+request time the `EgressClient` refuses the call, which is an ordinary call
+failure, so the block's own `failure_mode` decides: fail-closed refuses the
+request, fail-open lets it through. Each has a gateway test.
+
+| URL                                                                          | Save time                                               | Request time                                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| provider `api_base`, egress proxy                                            | `require_allowed_egress` (400); `provider_problems`     | `rolter-proxy` `EgressResolver` on every upstream client                          |
+| provider `status_page_url`                                                   | `provider_problems` (file config; provider row dropped) | `gateway::egress_client::EgressClient` (literal check and resolver, no redirects) |
+| provider `lmcache.endpoint`                                                  | `provider_problems`                                     | `EgressClient` on every refresh                                                   |
+| provider `kv_events.endpoint`                                                | `provider_problems`                                     | `kv_endpoint_permitted` before each connect (see the gap below)                   |
+| MCP server URL, MCP OAuth URLs                                               | `validate`; `require_allowed_egress`                    | `rolter-control` `egress_client::builder`                                         |
+| alert channel and connector endpoints                                        | `require_allowed_egress`-style check in each module     | `egress_client::builder` plus `url_deny_reason`                                   |
+| SSO issuer; discovery `authorization_endpoint`, `token_endpoint`, `jwks_uri` | `require_allowed_egress` on create and update           | `sso::idp_client` (`egress_client::builder`) and `check_idp_url` on every fetch   |
+| guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)    | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
+
+The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
+same live policy handle as the upstream forwarder, so a reload re-tunes it. It
+carries two checks because neither covers the other: the resolver sees what DNS
+returned for a name, but `reqwest` never resolves an IP literal, so the literal
+check (`url_deny_reason`) runs on each request.
+
+Gaps that remain:
+
+- **`kv_events` rebinding.** The subscription is ZeroMQ, not HTTP, so there is
+  no resolver to install. The endpoint is checked, and a hostname is resolved
+  and filtered, before each connect, but the transport resolves again itself,
+  so a rebind in the gap between the two is not caught.
+- **Process-level URLs.** The datastore, snapshot and similar URLs a process
+  is started with are written by whoever runs it, not by a tenant or an admin
+  surface, and are not checked.
+
 ## Control-plane input validation
 
 Every control-plane mutation body is decoded through a `SafeJson` extractor
@@ -479,32 +523,42 @@ Two details carry the design:
   string, so naming another org's project beside one's own org reads nothing
   back.
 
-A captured body is joined to its log row on `(request_id, ts)`, never on the
-id alone. The gateway keeps whatever `x-request-id` the caller sent, so two
-tenants' requests can share an id; an id-only join let a caller log a bodiless
-request under an id seen on another project's rows and read that project's
-prompt through their own row, which the mask passed because it judges the row,
-not the body. `PayloadLog` copies its log row's `ts` through the same
-serializer, so the pair names one request.
+A captured body is joined to its log row on `log_id`, never on the caller's id.
+The gateway keeps whatever `x-request-id` the caller sent, so two tenants'
+requests can share an id; an id-only join let a caller log a bodiless request
+under an id seen on another project's rows and read that project's prompt
+through their own row, which the mask passed because it judges the row, not the
+body. `log_id` is a UUID the gateway mints per request when it queues the row
+and writes to both `request_logs` and `request_payloads`, so the caller can
+neither choose nor observe it, and a client that sends one constant id no
+longer collides with itself (#1937). The caller's `x-request-id` stays in
+`request_id` for lookup and search. The join key also carries the row's
+`org_id` and `project_id`, which the gateway copies onto the payload row, so a
+body cannot meet a row of another project even if a key were somehow reused.
 
-The pair is not a perfect key. Two requests that share an `x-request-id` and
-were logged in the same millisecond (`ts` is `DateTime64(3)`) still get one
-body between them, which takes a client sending predictable or constant ids.
-Keying the join on something the caller cannot choose is #1937. The pair also
-drops bodies written by gateways from v0.1.0 or earlier, which let ClickHouse
-stamp the log row and the payload row separately: after the control plane is
-upgraded those bodies stop showing until payload retention removes them. The
-user docs' upgrade page says to upgrade gateways first for that reason.
+A row that has a `log_id` never falls back to a weaker join. Only a row written
+before migration `012_request_log_key.sql`, where `log_id` is empty, joins on
+`(request_id, ts)` as before, so old bodies stay visible until retention
+removes them; that fallback keeps the same-millisecond limit for those rows and
+disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
+earlier, which let ClickHouse stamp the log row and the payload row separately,
+never joined on `ts` and still do not: after the control plane is upgraded those
+bodies stop showing until payload retention removes them. The user docs'
+upgrade page says to upgrade gateways first for that reason.
 
 Two limits are known and tracked:
 
-- **Provider health matches by name.** `provider_health_events` carries the
-  provider's display name and no org, and names are unique per org only. A
-  name that another org used and then deleted brings its history (uptime,
-  latency, error kinds, `target_id`) to whichever org creates it next, until
-  the 90-day TTL drops it. Provider names are unique across the deployment,
-  so two orgs never hold one at the same time. Recording the org in the rows
-  is #1908.
+- **Provider health rows written before `clickhouse/013_provider_health_org.sql`
+  have no org.** `provider_health_events.org_id` is the provider's org (#1908),
+  and `PROVIDER_VISIBLE` matches `(org_id, provider)` rather than the bare name,
+  so a name another org used and deleted no longer brings its history to the
+  next org that creates it. A row with an empty `org_id` matches no restricted
+  caller: that is every config-file provider, and, on upgrade, every row
+  written before the migration. Those rows are visible only to the admin token
+  and superadmins until the 90-day TTL drops them, so a tenant's health
+  history starts empty at the upgrade. The gateway stamps the org in
+  `HealthEventSink::emit` from the live provider list, which a config reload
+  swaps.
 - **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
   no store has no sessions, so the admin token is the only credential these
   routes accept, and the dashboard's e-mail-only sign-in cannot present it. The
