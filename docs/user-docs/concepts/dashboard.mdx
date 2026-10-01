@@ -47,6 +47,8 @@ Without ClickHouse the Dashboard has no traffic to count. It shows one note in p
 
 "Last 24 hours" means the 24 hours before each read, not before you opened the page. The Dashboard reads again on its own, so a tab left open for an afternoon still reports a single day, and so does the refresh button in the header.
 
+The window picker above the cards switches the figures and charts to another [reporting window](/observability/logs-and-cost#time-windows), kept in the address as `window=7d`. **Saved views** next to it saves the window under a name and applies it again later; see [Saved views](/observability/logs-and-cost#saved-views). **Recent requests** always lists the latest requests, whatever window is picked.
+
 Under the figures, the traffic share and the requests-by-model bars rank models by request count, busiest first, and colour them from the same sequence, so a model is one colour in both cards. The bars show the six busiest models; the traffic share shows those six and rolls the rest into one _Other_ slice. The caption under the share's total agrees with it, in the plural forms of the dashboard's language.
 
 **Recent requests** lists the eight latest requests with their time, model, status and latency. The 24-hour window crosses midnight, so a request from another day shows its date under the clock; one from today shows the clock alone. Each row opens that request in [LLM Logs](/observability/logs-and-cost). On a phone the four columns share the card's width without scrolling.

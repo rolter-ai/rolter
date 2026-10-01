@@ -2440,3 +2440,121 @@ export const TheLookupFitsAtMobileInRussian: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+// the sheet portals onto the body
+const screen = () => within(document.body);
+
+const KEY_ID = "22222222-2222-4222-8222-222222222222";
+const GONE_CUSTOMER = "44444444-4444-4444-8444-444444444444";
+const SAVED_VIEW = {
+  id: "11111111-1111-4111-8111-111111111111",
+  surface: "llm_logs",
+  name: "Platform errors",
+  // the stored set still names a customer the account can no longer read
+  filters: {
+    window: "7d",
+    status: "error",
+    model: "internal-llama",
+    key: KEY_ID,
+    business_unit: ["unit-1"],
+    customer: ["cust-1", GONE_CUSTOMER],
+  },
+  effective_filters: {
+    window: "7d",
+    status: "error",
+    model: "internal-llama",
+    key: KEY_ID,
+    business_unit: ["unit-1"],
+    customer: ["cust-1"],
+  },
+  unavailable: [{ filter: "customer", id: GONE_CUSTOMER }],
+  created_at: "2026-09-01T09:00:00Z",
+  updated_at: "2026-09-01T09:00:00Z",
+};
+
+const withSavedView = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") return json([SAVED_VIEW]);
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * #2452: applying a saved view writes its `effective_filters` into the address,
+ * so the screen reads them like any link, and the id it could not apply is
+ * counted, not named. The log is then read with the view's window, key and
+ * attribution, and with no cursor or request id.
+ */
+export const ApplyingASavedViewSetsTheAddress: Story = {
+  parameters: { address: "/logs?request_id=req-ok&unpriced=true" },
+  render: () => (
+    <Harness fetchStub={withSavedView.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(await screen().findByRole("button", { name: "Apply Platform errors" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("status")).toBe("error"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("window")).toBe("7d");
+    await expect(address.get("model")).toBe("internal-llama");
+    await expect(address.get("key")).toBe(KEY_ID);
+    await expect(address.get("business_unit")).toBe("unit-1");
+    await expect(address.get("customer")).toBe("cust-1");
+    // the lookup would have masked the filters, so it is gone; the unpriced
+    // flag is not part of a view and stays
+    await expect(address.has("request_id")).toBe(false);
+    await expect(address.get("unpriced")).toBe("true");
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      "Applied without: 1 customer.",
+    );
+    await waitFor(() => {
+      const sent = lastLogQuery(withSavedView);
+      expect(sent.get("key")).toBe(KEY_ID);
+      expect(sent.get("customer")).toBe("cust-1");
+      expect(sent.get("status")).toBe("error");
+      expect(sent.has("request_id")).toBe(false);
+      const span = Date.now() - Date.parse(sent.get("since") ?? "");
+      expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
+    });
+  },
+};
+
+const savingFromLogs = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") {
+      return init?.method === "POST" ? json(SAVED_VIEW, 201) : json([]);
+    }
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * Saving keeps the filters applied now: an `all` status and empty values are
+ * left out, and neither the lookup id, the cursor nor the limit is sent.
+ */
+export const SavingKeepsOnlyTheAppliedFilters: Story = {
+  parameters: { address: "/logs?status=error&model=gpt-4o&window=30d&trace_id=abc" },
+  render: () => (
+    <Harness fetchStub={savingFromLogs.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    const sheet = within(await screen().findByRole("dialog", { name: "Saved views" }));
+    await userEvent.type(await sheet.findByLabelText("Save the current filters as"), "Mine");
+    await userEvent.click(sheet.getByRole("button", { name: "Save view" }));
+    const body = await savingFromLogs.expectSentBody<{ filters: Record<string, unknown> }>(
+      "POST",
+      "/api/v1/me/saved-views",
+    );
+    await expect(body.filters).toEqual({ window: "30d", status: "error", model: "gpt-4o" });
+  },
+};

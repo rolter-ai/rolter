@@ -192,6 +192,7 @@
       "dashboardTrafficShare": "the traffic share",
       "dashboardByModel": "requests by model",
       "dashboardRecent": "recent requests",
+      "savedViews": "your saved views",
       "requestLogs": "request logs",
       "routes": "routes",
       "routeTargets": "this route's targets",
@@ -521,7 +522,6 @@
       "noRequestsInWindow": "No requests in this window",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
-      "last24h": "Last 24h",
       "live": "Live",
       "feed": {
         "loading": "Loading",
@@ -551,7 +551,7 @@
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
       },
-      "spendChartAria": "Spend over the last 24 hours",
+      "spendChartAria": "Spend, {{window}}",
       "noAnalytics": {
         "title": "Traffic and spend need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
@@ -2493,7 +2493,8 @@
       "emptyTitle": "Nothing logged yet",
       "emptyBody": "Every request the gateway serves is recorded here with its model, latency, tokens and cost.",
       "noMatchTitle": "No requests match these filters",
-      "noMatchBody": "Nothing in the last 24 hours matched the filters you selected.",
+      "noMatchBody": "Nothing in the selected time window matched the filters you selected.",
+      "window": "Time window",
       "businessUnit": "Business unit",
       "customer": "Customer",
       "filterBusinessUnits": "Filter business units",
@@ -3420,7 +3421,7 @@
     },
     "dashboard": {
       "title": "Dashboard",
-      "subtitle": "Traffic, spend, latency, and error rate over the last 24 hours, plus the latest requests."
+      "subtitle": "Traffic, spend, latency, and error rate over the window you pick (the last 24 hours by default), plus the latest requests."
     },
     "logs": {
       "title": "LLM Logs",
@@ -3900,6 +3901,51 @@
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+  },
+  "savedViews": {
+    "open": "Saved views",
+    "title": "Saved views",
+    "surface": {
+      "llm_logs": "LLM Logs",
+      "dashboard": "Dashboard"
+    },
+    "save": {
+      "label": "Save the current filters as",
+      "hint": "Only you can see your saved views, on any browser you sign in from.",
+      "placeholder": "Errors on gpt-4o this week",
+      "action": "Save view"
+    },
+    "saved": "{{name}} saved",
+    "list": "Your saved views",
+    "apply": "Apply",
+    "applyAria": "Apply {{name}}",
+    "renameAria": "Rename {{name}}",
+    "renameField": "New name for {{name}}",
+    "deleteAria": "Delete view {{name}}",
+    "empty": {
+      "title": "No saved views yet",
+      "description": "Pick the filters you keep coming back to, then save them under a name to apply them again in one click.",
+      "action": "Name a view"
+    },
+    "notice": "Applied without: {{dropped}}.",
+    "dismissNotice": "Dismiss",
+    "dropped": {
+      "key_one": "{{count}} key",
+      "key_other": "{{count}} keys",
+      "business_unit_one": "{{count}} business unit",
+      "business_unit_other": "{{count}} business units",
+      "customer_one": "{{count}} customer",
+      "customer_other": "{{count}} customers"
+    },
+    "errors": {
+      "conflict": "A view with this name already exists, or you have reached the limit of 50 views for this screen.",
+      "failed": "The view could not be saved."
+    },
+    "confirm": {
+      "deleteTitle": "Delete the view {{name}}?",
+      "deleteBody": "The saved filters are removed from your account. The filters on screen stay as they are.",
+      "deleteConfirm": "Delete view"
+    }
   },
   "toast": {
     "region": "Notifications",
