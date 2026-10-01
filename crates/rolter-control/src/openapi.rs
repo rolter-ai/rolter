@@ -556,15 +556,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config",
                 "getConfig",
                 "The assembled gateway configuration, with every secret redacted",
-            )
-            // deliberately open: `redact_config_for_dashboard` strips it first
-            .public(),
+            ),
             Op::get(
                 "/api/v1/config/problems",
                 "getConfigProblems",
                 "Configuration problems detected in the assembled config",
-            )
-            .public(),
+            ),
             Op::get(
                 "/api/v1/config/export",
                 "exportConfig",
@@ -574,15 +571,13 @@ fn operations() -> Vec<Op> {
                 "/api/v1/currency",
                 "getCurrency",
                 "Supported currencies and their conversion rates",
-            )
-            .public(),
+            ),
             Op::get(
                 "/api/v1/provider-kinds",
                 "getProviderKinds",
                 "Provider kinds this build can talk to",
-            )
-            .public(),
-            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog").public(),
+            ),
+            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
             Op::get(
                 "/api/v1/stability",
                 "getStability",
@@ -652,7 +647,9 @@ fn operations() -> Vec<Op> {
                 "/api/v1/auth/logout",
                 "logout",
                 "Revoke the current session",
-            ),
+            )
+            // idempotent: a missing or already-dead token is a quiet `204`
+            .public(),
             Op::get(
                 "/api/v1/auth/me",
                 "authMe",
@@ -2100,27 +2097,32 @@ fn operations() -> Vec<Op> {
                 "/gw/{path}",
                 "proxyGet",
                 "Reverse-proxy a GET to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::post(
                 "/gw/{path}",
                 "proxyPost",
                 "Reverse-proxy a POST to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::put(
                 "/gw/{path}",
                 "proxyPut",
                 "Reverse-proxy a PUT to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::patch(
                 "/gw/{path}",
                 "proxyPatch",
                 "Reverse-proxy a PATCH to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::delete(
                 "/gw/{path}",
                 "proxyDelete",
                 "Reverse-proxy a DELETE to the gateway data plane",
             )
+            .public()
             .ok(Payload::Open),
         ],
     ));

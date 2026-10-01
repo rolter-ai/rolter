@@ -86,6 +86,9 @@ mod openapi;
 #[cfg(feature = "postgres")]
 mod plugins;
 mod proxy;
+// a record for the guard tests; no request path reads it
+#[cfg(test)]
+mod public_routes;
 #[cfg(feature = "postgres")]
 mod public_url;
 #[cfg(feature = "postgres")]
@@ -102,6 +105,7 @@ mod scim_groups;
 mod security;
 #[cfg(feature = "postgres")]
 pub mod seed;
+mod session_guard;
 #[cfg(feature = "postgres")]
 mod sso;
 #[cfg(feature = "postgres")]
@@ -1000,15 +1004,20 @@ async fn readyz(State(state): State<ControlState>) -> Response {
                             json!(format!("{} pending", pending.len())),
                         );
                     }
-                    Err(err) => {
+                    Err(error) => {
                         ready = false;
-                        checks.insert("migrations".into(), json!(err.to_string()));
+                        // the driver's message can name the database host and
+                        // port, and this probe answers anyone (#1840); the
+                        // operator reads the detail in the log instead
+                        tracing::warn!(%error, "readiness: could not read the migration table");
+                        checks.insert("migrations".into(), json!("unavailable"));
                     }
                 }
             }
-            Ok(Err(err)) => {
+            Ok(Err(error)) => {
                 ready = false;
-                checks.insert("database".into(), json!(err.to_string()));
+                tracing::warn!(%error, "readiness: the database did not hand out a connection");
+                checks.insert("database".into(), json!("unavailable"));
                 checks.insert("migrations".into(), json!("unknown"));
             }
             Err(_) => {
@@ -1863,12 +1872,15 @@ async fn build_store(
     Ok((Arc::new(InMemoryConfigStore::new(config)), None))
 }
 
-async fn list_roles() -> Json<Value> {
+async fn list_roles(_: session_guard::AnySession) -> Json<Value> {
     let roles = [Role::Admin, Role::Member, Role::Viewer];
     Json(serde_json::to_value(roles).unwrap_or_default())
 }
 
-async fn get_config(State(state): State<ControlState>) -> Json<GatewayConfig> {
+async fn get_config(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Json<GatewayConfig> {
     let mut config = state.store.load().await.unwrap_or_default();
     redact_config_for_dashboard(&mut config);
     Json(config)
@@ -1876,8 +1888,8 @@ async fn get_config(State(state): State<ControlState>) -> Json<GatewayConfig> {
 
 /// Strip everything a caller of the dashboard's config view must not learn.
 ///
-/// This endpoint sits on the open router, so it answers without a session or
-/// the admin token. It used to blank only the provider credentials, and shipped
+/// This endpoint needs a session (any role), the admin token, or open mode
+/// (#1840); before that it answered anyone. It used to blank only the provider credentials, and shipped
 /// the rest of the snapshot as-is: the plaintext of every `[[virtual_keys]]`
 /// entry from `rolter.toml`, every live MCP OAuth access token, the peppered
 /// digests of the database keys, and any userinfo embedded in the ClickHouse
@@ -1916,7 +1928,7 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     config.mcp_servers.clear();
     // which org owns a row is the gateway's business (#1844). the rows
     // themselves, every org's providers, routes and groups, are still listed:
-    // whether this anonymous document may describe that topology at all is #1840
+    // the document itself is now session-gated (#1840)
     for provider in &mut config.providers {
         provider.tenancy = None;
     }
@@ -1960,7 +1972,7 @@ struct ProviderKindInfo {
 ///
 /// Derived from `ProviderKind::ALL` rather than re-listed, so a kind added to
 /// core shows up here without a second edit.
-async fn get_provider_kinds() -> Json<Vec<ProviderKindInfo>> {
+async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKindInfo>> {
     Json(
         rolter_core::ProviderKind::ALL
             .iter()
@@ -1998,10 +2010,12 @@ struct CurrencySettings {
 
 /// The currency table the dashboard drives its chooser from.
 ///
-/// Unauthenticated alongside `/api/v1/config` and `/api/v1/roles`: an operator's
-/// rate table is deployment configuration the pricing screens already display,
-/// not a credential.
-async fn get_currency(State(state): State<ControlState>) -> Json<CurrencySettings> {
+/// Needs a session like `/api/v1/config`: an operator's rate table is
+/// deployment configuration, not something an anonymous caller should read.
+async fn get_currency(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Json<CurrencySettings> {
     let codes = state.currency.codes();
     // report rates under the same normalized spelling as `codes`, so the
     // dashboard can look one up by the code it was handed
@@ -2033,9 +2047,12 @@ async fn get_currency(State(state): State<ControlState>) -> Json<CurrencySetting
 /// until someone wondered why a change never took effect. This is the same
 /// computation the snapshot runs, so the two cannot report different things.
 ///
-/// Unguarded, alongside [`get_config`]: it carries no credentials, only the
-/// names and reasons an operator needs to fix their own config.
-async fn get_config_problems(State(state): State<ControlState>) -> Json<Value> {
+/// Session-gated like [`get_config`] (#1840): it carries no credentials, but
+/// the names and reasons it lists are the deployment's topology.
+async fn get_config_problems(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Json<Value> {
     let mut config = state.store.load().await.unwrap_or_default();
     let mut problems = config.sanitize_for_snapshot();
     // structural problems never reach a gateway at all — the snapshot refuses
@@ -3438,6 +3455,94 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(echoed, "hello gateway");
+    }
+
+    /// the dashboard's config view names every provider, `api_base` and route,
+    /// which is topology even with the credentials gone (#1840)
+    #[tokio::test]
+    async fn the_config_view_needs_a_credential_once_the_control_plane_is_not_open() {
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "internal-vllm".to_string(),
+            kind: rolter_core::ProviderKind::Openai,
+            api_base: "http://10.1.2.3:8000".to_string(),
+            ..Default::default()
+        });
+        let state = ControlState {
+            store: Arc::new(InMemoryConfigStore::new(config)),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+
+        for path in [
+            "/api/v1/config",
+            "/api/v1/config/problems",
+            "/api/v1/currency",
+            "/api/v1/provider-kinds",
+            "/api/v1/roles",
+        ] {
+            let url = format!("http://{addr}{path}");
+            let anonymous = client.get(&url).send().await.unwrap();
+            assert_eq!(
+                anonymous.status(),
+                401,
+                "{path} answered an anonymous caller"
+            );
+            let body = anonymous.text().await.unwrap();
+            assert!(
+                !body.contains("10.1.2.3") && !body.contains("internal-vllm"),
+                "{path} leaked topology in its refusal: {body}"
+            );
+
+            let wrong = client
+                .get(&url)
+                .bearer_auth("not-the-token")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(wrong.status(), 401, "{path} accepted a wrong token");
+
+            let admin = client
+                .get(&url)
+                .bearer_auth("admin-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(admin.status(), 200, "{path} refused the admin token");
+        }
+    }
+
+    /// a deployment with no admin token is open by declaration, so its
+    /// dashboard keeps reading the config view without a login
+    #[tokio::test]
+    async fn the_config_view_stays_readable_in_open_mode() {
+        let addr = serve(build_app_with(state_with_token(None), true)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    /// the proxy's error body answers callers with no session, so it must not
+    /// name the address it failed to reach (#1840)
+    #[tokio::test]
+    async fn the_gateway_proxy_does_not_echo_the_gateway_address() {
+        let state = ControlState {
+            gateway_url: Arc::new("http://127.0.0.1:1".to_string()),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/gw/v1/models"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("127.0.0.1"), "address leaked: {body}");
     }
 
     #[tokio::test]
