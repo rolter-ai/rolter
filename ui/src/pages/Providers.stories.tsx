@@ -909,3 +909,37 @@ export const DeleteUsageHandlesManyAndLongNames: Story = {
     await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
   },
 };
+
+/**
+ * A provider scoped to a project says so (#1919). The name comes from the org's
+ * project list, and an org-wide row says it is org-wide rather than leaving the
+ * cell empty, so the column reads as a statement about every row.
+ */
+export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Project: Gateway")).toBeVisible();
+    await expect(canvas.getByText("Organization-wide")).toBeVisible();
+    await expect(canvas.getByRole("columnheader", { name: /Scope/ })).toBeVisible();
+    // the badge sits in the scoped provider's own row
+    const row = canvas.getAllByText("openai-prod")[0].closest('[role="row"]') as HTMLElement;
+    await expect(within(row).getByText("Project: Gateway")).toBeVisible();
+    await expectListTable(canvasElement, "Model Providers");
+  },
+};

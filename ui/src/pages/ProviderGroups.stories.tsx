@@ -377,3 +377,31 @@ export const LabelPanel: Story = {
     await expect(panel.queryByRole("button", { name: "Remove tier=observed-frontier" })).toBeNull();
   },
 };
+
+/** A group scoped to a project says so, and an org-wide one says it is org-wide (#1919). */
+export const ShowsWhichProjectEachGroupIsScopedTo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/provider-groups",
+          () => [
+            { ...GROUPS[0], project_id: "project-1" },
+            { ...GROUPS[0], id: "g-2", name: "shared", slug: "shared", project_id: null },
+          ],
+        ],
+        ["/providers", () => []],
+      ])}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Project: Gateway")).toBeVisible();
+    await expect(canvas.getByText("Organization-wide")).toBeVisible();
+    const row = canvas.getByText("frontier").closest('[role="row"]') as HTMLElement;
+    await expect(within(row).getByText("Project: Gateway")).toBeVisible();
+    await expectListTable(canvasElement, "Provider Groups");
+  },
+};

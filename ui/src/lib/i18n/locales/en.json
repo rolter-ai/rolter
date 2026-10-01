@@ -320,7 +320,9 @@
       "upstreamAria": "Target {{n}} upstream model",
       "weightAria": "Target {{n}} weight",
       "removeAria": "Remove target {{n}}",
-      "upstreamPlaceholder": "same as model name"
+      "upstreamPlaceholder": "same as model name",
+      "scopeNote_one": "{{count}} provider scoped to another project is not offered here.",
+      "scopeNote_other": "{{count}} providers scoped to other projects are not offered here."
     },
     "lock": {
       "lockAll": "Lock all",
@@ -385,7 +387,7 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below. This narrows the route only: a provider stays reachable as provider-slug/model by every key of the organization unless the provider itself is scoped to a project, which you do on its own sheet under Providers.",
       "public": "Whole organization",
       "project": "This project",
       "restricted": "Restricted",
@@ -650,7 +652,8 @@
         "onlyMember": "only member",
         "more_one": "and {{count}} more",
         "more_other": "and {{count}} more"
-      }
+      },
+      "colScope": "Scope"
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -2650,7 +2653,8 @@
         "name": "Name",
         "strategy": "Strategy",
         "address": "Address",
-        "members": "Members"
+        "members": "Members",
+        "scope": "Scope"
       },
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
@@ -3329,7 +3333,8 @@
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
       "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
-      "apiKeyUnchanged": "unchanged"
+      "apiKeyUnchanged": "unchanged",
+      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead."
     },
     "title": {
       "add": "Add provider",
@@ -3980,7 +3985,9 @@
       "weight": "Weight",
       "relativeWeight": "Relative weight",
       "remove": "Remove member",
-      "upstreamModelPlaceholder": "passthrough"
+      "upstreamModelPlaceholder": "passthrough",
+      "outOfScopeProject": "{{name}} is scoped to a different project, so this group cannot use it. Pick another provider or remove the row.",
+      "outOfScopeOrg": "{{name}} is scoped to a project, and an organization-wide group would expose it to every project. Pick another provider, or scope the group to that project."
     }
   },
   "paramsEditor": {
@@ -4055,5 +4062,13 @@
       "reasonAdmin": "Admin has full control within that scope: providers, routes, virtual keys, members and budgets.",
       "reasonOrg": "The whole organization is every team and project in it, not one of them."
     }
+  },
+  "projectScope": {
+    "label": "Scope",
+    "hint": "Whole organization lets every project use it. Pick a project to keep it to that project's keys.",
+    "hintOwnProject": "You can scope it to a project of your own. Making it organization-wide takes an organization admin.",
+    "hintLocked": "Moving it to another project, or making it organization-wide, takes an organization admin.",
+    "orgWide": "Organization-wide",
+    "badge": "Project: {{project}}"
   }
 }
