@@ -2875,6 +2875,69 @@ export interface MyUsageRow {
   errors: number | string;
 }
 
+/** the screens a saved filter preset can belong to (#1825) */
+export type SavedViewSurface = "llm_logs" | "dashboard";
+
+/**
+ * The filter set a preset holds. Keys mirror the query parameters the screen
+ * sends; the control plane refuses any it does not allow-list for the surface.
+ */
+export interface SavedViewFilters {
+  window?: string;
+  status?: string;
+  model?: string;
+  key?: string;
+  business_unit?: string[];
+  customer?: string[];
+  bucket?: string;
+}
+
+/** a filter entry the caller can no longer read, so it was left out of `effective_filters` */
+export interface SavedViewUnavailable {
+  filter: "key" | "business_unit" | "customer";
+  id: string;
+}
+
+export interface SavedView {
+  id: string;
+  surface: SavedViewSurface;
+  name: string;
+  /** as stored; never apply this one */
+  filters: SavedViewFilters;
+  /** `filters` without what `unavailable` names: what to apply */
+  effective_filters: SavedViewFilters;
+  unavailable: SavedViewUnavailable[];
+  created_at: string;
+  updated_at: string;
+}
+
+const SAVED_VIEWS = "/api/v1/me/saved-views";
+
+/** the caller's presets for one screen, oldest first */
+export function fetchSavedViews(surface: SavedViewSurface): Promise<SavedView[]> {
+  return getJson<SavedView[]>(`${SAVED_VIEWS}?surface=${surface}`);
+}
+
+export function createSavedView(input: {
+  surface: SavedViewSurface;
+  name: string;
+  filters: SavedViewFilters;
+}): Promise<SavedView> {
+  return sendJson<SavedView>("POST", SAVED_VIEWS, input);
+}
+
+/** a `filters` value replaces the whole stored set */
+export function updateSavedView(
+  id: string,
+  patch: { name?: string; filters?: SavedViewFilters },
+): Promise<SavedView> {
+  return sendJson<SavedView>("PATCH", `${SAVED_VIEWS}/${id}`, patch);
+}
+
+export function deleteSavedView(id: string): Promise<void> {
+  return sendJson<void>("DELETE", `${SAVED_VIEWS}/${id}`);
+}
+
 export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
   return getJson<OwnedKeyRow[]>("/api/v1/me/virtual-keys");
 }

@@ -52,7 +52,7 @@ say clearly enough that it is read-only.
 
 ## V5 — keep my own view
 
-| #    | step                                                | where | expect                                               | status                               |
-| ---- | --------------------------------------------------- | ----- | ---------------------------------------------------- | ------------------------------------ |
-| V5.1 | save "errors on gpt-4o this week" as a named filter | —     | one click back to it on any browser                  | backend done (#1825), screen pending |
-| V5.2 | the saved filter is mine alone                      | —     | nobody else sees it; it never widens what I can read | backend done (#1825), screen pending |
+| #    | step                                                | where                                           | expect                                                                                                    | status                  |
+| ---- | --------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------- |
+| V5.1 | save "errors on gpt-4o this week" as a named filter | **LLM Logs** or **Dashboard** → **Saved views** | one click back to it on any browser                                                                       | verified (#1825, #2452) |
+| V5.2 | the saved filter is mine alone                      | **LLM Logs** or **Dashboard** → **Saved views** | nobody else sees it; it never widens what I can read; an id it can no longer read is left out and counted | verified (#1825, #2452) |
