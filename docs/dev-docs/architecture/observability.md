@@ -761,7 +761,7 @@ A valid bound is forwarded byte for byte, so it means what it always meant. The 
 
 ## Provider health events
 
-- Every health signal is written to **ClickHouse** (`provider_health_events`): `target_id`, `provider`, `source`, `outcome`, `status_code`, `latency_ms`, `error_kind`, and `ts`.
+- Every health signal is written to **ClickHouse** (`provider_health_events`): `target_id`, `provider`, `org_id` (the provider's org, empty for a config-file provider), `source`, `outcome`, `status_code`, `latency_ms`, `error_kind`, and `ts`.
 - **`ts` is the instant the observation was made**, stamped by the emitter, not by the batch writer: a `passive` event carries the `ts` of the request it was derived from, and a `probe` or `status_page` event carries the moment that poll completed. As with `request_logs`, gateways older than #1210 left this to `default now64(3)` and so recorded the flush time, which collapsed a whole sweep onto one millisecond and skewed the uptime/MTTR buckets below.
 - `source` distinguishes where the observation came from: `passive` (real traffic completing through the request funnel), `probe` (active liveness sweeps), and the opt-in `llm_call` / `status_page` sources.
 - `outcome` is `ok` / `error` / `timeout`; `error_kind` gives a coarse label (`rate_limited`, `upstream_error`, `connect_error`, `timeout`).

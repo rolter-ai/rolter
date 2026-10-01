@@ -91,7 +91,7 @@ hot path. Schema lives in [`clickhouse/`](../../clickhouse/), applied by the
 container's init directory:
 
 - `request_logs` — one row per proxied request, with cost and token counts.
-- `provider_health_events` — per-target health observations from every signal.
+- `provider_health_events` — per-target health observations from every signal, each carrying the owning provider's `org_id` (empty for a config-file provider or a row from before `013_provider_health_org.sql`).
 - `mcp_tool_call_logs` — MCP tool invocations.
 
 Every one of these tables declares `ts DateTime64(3) default now64(3)`, but that

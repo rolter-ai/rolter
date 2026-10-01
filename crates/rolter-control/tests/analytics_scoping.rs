@@ -782,10 +782,14 @@ async fn provider_health_answers_only_the_providers_of_orgs_the_caller_reads() {
             .to_string()
     };
     let mut events = Vec::new();
-    for provider in [&acme_provider, &umbrella_provider] {
+    for (provider, org) in [
+        (&acme_provider, acme.org),
+        (&umbrella_provider, umbrella.org),
+    ] {
         for (ago_ms, outcome) in [(6000, "ok"), (4000, "error"), (2000, "ok")] {
             events.push(json!({
                 "ts": at(ago_ms), "target_id": provider, "provider": provider,
+                "org_id": org.to_string(),
                 "source": "probe", "outcome": outcome, "latency_ms": 10,
             }));
         }
@@ -820,6 +824,123 @@ async fn provider_health_answers_only_the_providers_of_orgs_the_caller_reads() {
             "{route} as an acme project admin"
         );
     }
+}
+
+/// The `target_id`s among `targets` that a health route answers `token` with.
+async fn health_targets(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    route: &str,
+    token: &str,
+    targets: &[&str],
+) -> Vec<String> {
+    let response = client
+        .get(format!("http://{addr}/api/v1/health/{route}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "health/{route}");
+    let body: Value = response.json().await.unwrap();
+    let mut seen: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["target_id"].as_str())
+        .filter(|target| targets.contains(target))
+        .map(str::to_string)
+        .collect();
+    seen.sort();
+    seen.dedup();
+    seen
+}
+
+/// Names are unique per org only, so a name an org deleted and another org
+/// created again must not carry the first org's history into the second (#1908).
+#[tokio::test]
+async fn a_recreated_provider_name_does_not_inherit_another_orgs_health_history() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let org_a = seed_tenant(&pool, "recreate-a").await;
+    let org_b = seed_tenant(&pool, "recreate-b").await;
+
+    let suffix = &Uuid::new_v4().simple().to_string()[..12];
+    let shared_name = format!("hp-shared-{suffix}");
+    // org a owned the name and deleted it; org b created it afterwards
+    seed_provider(&pool, org_a.org, &shared_name).await;
+    sqlx::query("delete from providers where org_id = $1 and name = $2")
+        .bind(org_a.org)
+        .bind(&shared_name)
+        .execute(&pool)
+        .await
+        .unwrap();
+    seed_provider(&pool, org_b.org, &shared_name).await;
+
+    let target_a = format!("hp-old-a-{suffix}");
+    let target_b = format!("hp-new-b-{suffix}");
+    let target_unowned = format!("hp-none-{suffix}");
+    let at = |ago_ms: i64| {
+        (chrono::Utc::now() - chrono::Duration::milliseconds(ago_ms))
+            .format("%Y-%m-%d %H:%M:%S%.3f")
+            .to_string()
+    };
+    let mut events = Vec::new();
+    // an empty org is a config-file provider, or a row from before the column
+    for (target, org) in [
+        (&target_a, org_a.org.to_string()),
+        (&target_b, org_b.org.to_string()),
+        (&target_unowned, String::new()),
+    ] {
+        for (ago_ms, outcome) in [(6000, "ok"), (4000, "error"), (2000, "ok")] {
+            events.push(json!({
+                "ts": at(ago_ms), "target_id": target, "provider": shared_name,
+                "org_id": org, "source": "passive", "outcome": outcome, "latency_ms": 10,
+            }));
+        }
+    }
+    insert_rows(&http, &ch, "provider_health_events", &events).await;
+    let targets = [
+        target_a.as_str(),
+        target_b.as_str(),
+        target_unowned.as_str(),
+    ];
+
+    let viewer_b = seed_user(&pool, Some(org_b.org), None, None, "viewer").await;
+    let viewer_a = seed_user(&pool, Some(org_a.org), None, None, "viewer").await;
+    for route in ["uptime", "mttr", "timeline"] {
+        assert_eq!(
+            health_targets(&http, addr, route, &viewer_b, &targets).await,
+            vec![target_b.clone()],
+            "{route}: org b must see only its own rows for the recreated name"
+        );
+        // the old org keeps its own history, and nobody's viewer sees the unowned rows
+        assert_eq!(
+            health_targets(&http, addr, route, &viewer_a, &targets).await,
+            vec![target_a.clone()],
+            "{route}: org a keeps its history"
+        );
+    }
+    // the unrestricted callers still see every row
+    assert_eq!(
+        health_targets(&http, addr, "timeline", ADMIN_TOKEN, &targets).await,
+        {
+            let mut all = vec![target_a, target_b, target_unowned];
+            all.sort();
+            all
+        },
+    );
 }
 
 /// Bodies are keyed on the gateway's own `log_id`, which no caller chooses, so

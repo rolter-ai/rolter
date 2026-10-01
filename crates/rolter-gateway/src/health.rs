@@ -546,6 +546,7 @@ fn probe_health_event(
         ts: chrono::Utc::now(),
         target_id: provider.to_string(),
         provider: provider.to_string(),
+        org_id: String::new(),
         source,
         outcome: health_outcome,
         status_code: status,

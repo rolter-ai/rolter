@@ -1409,21 +1409,6 @@ impl ProviderRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
     }
 
-    /// The names of every provider in any of `org_ids`: what the gateway writes
-    /// into `provider_health_events.provider`, which carries no org of its own,
-    /// so this is how a health rollup is narrowed to the orgs a caller may read
-    /// (#1820).
-    pub async fn names_in_orgs(&self, org_ids: &[Uuid]) -> Result<Vec<String>> {
-        if org_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        sqlx::query_scalar("select name from providers where org_id = any($1)")
-            .bind(org_ids)
-            .fetch_all(self.0)
-            .await
-            .map_err(store_err)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
