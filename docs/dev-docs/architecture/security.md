@@ -6,6 +6,7 @@
 - In the **bootstrap file**, prefer `api_key_env` over inline `api_key` so secrets stay in the environment, not on disk.
 - **Virtual keys** are stored as hashes with a short display prefix; the raw key is shown once at creation.
 - Secrets are never logged. The gateway redacts auth headers from traces.
+- **Logs never carry datastore credentials (#2406).** A Redis, ClickHouse, snapshot or Postgres URL can hold a password as userinfo (`redis://:pw@host`) or in a query parameter (`?password=`). Every startup line that names one, and every error that quotes one, goes through `rolter_core::redact` (`crates/rolter-core/src/redact.rs`): `redact_url` keeps scheme, host, port and path and prints userinfo and credential-named query values as `***`, `redact_urls_in_text` does the same for URLs inside an error string, and a URL that does not parse prints as `<invalid url>` rather than being echoed. Use it for any new log line or error that embeds a URL.
 
 ## Transport
 

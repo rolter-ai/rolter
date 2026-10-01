@@ -532,6 +532,13 @@ struct ControlState {
 
 /// Run the control plane to completion. The caller owns argument parsing and
 /// telemetry initialization.
+/// Log that a datastore endpoint is in use. Every startup line that names a
+/// redis or clickhouse url goes through here so the password in it cannot reach
+/// the log (#2406).
+fn log_endpoint(what: &str, url: &str) {
+    tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
+}
+
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let bootstrap = match &args.config {
         // `load` warns about every key in the file rolter does not read
@@ -549,7 +556,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let redis = match &args.redis_url {
         Some(url) => match redis::Client::open(url.as_str()) {
             Ok(client) => {
-                tracing::info!(%url, "publishing config bumps to redis");
+                log_endpoint("publishing config bumps to redis", url);
                 Some(client)
             }
             Err(err) => {
@@ -561,7 +568,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
 
     let clickhouse = args.clickhouse_url.as_deref().map(|url| {
-        tracing::info!(%url, "usage/cost analytics enabled");
+        log_endpoint("usage/cost analytics enabled", url);
         analytics::ClickHouseClient::new(url)
     });
 
@@ -2373,6 +2380,61 @@ mod pool_config_tests {
                 "error should name the offending variable, got: {err}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_log_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!("{}={value:?} ", field.name()));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+
+    #[test]
+    fn startup_lines_keep_the_redis_and_clickhouse_passwords_out() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_endpoint(
+                "publishing config bumps to redis",
+                "redis://:r3dispw@cache:6379/0",
+            );
+            super::log_endpoint(
+                "usage/cost analytics enabled",
+                "http://default:chpw@ch:8123/?password=chpw2",
+            );
+        });
+        let seen = captured.0.lock().join("\n");
+        for secret in ["r3dispw", "chpw"] {
+            assert!(!seen.contains(secret), "{secret} leaked:\n{seen}");
+        }
+        assert!(seen.contains("cache:6379"), "{seen}");
+        assert!(seen.contains("ch:8123"), "{seen}");
     }
 }
 

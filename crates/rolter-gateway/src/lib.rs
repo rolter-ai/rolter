@@ -188,14 +188,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             )
             .await
             {
-                tracing::info!(%url, "inheriting the control plane's log destination");
+                log_endpoint("inheriting the control plane's log destination", &url);
                 config.logging.clickhouse_url = Some(url);
             }
         }
     }
 
     if let Some(url) = &config.logging.clickhouse_url {
-        tracing::info!(%url, "clickhouse request logging enabled");
+        log_endpoint("clickhouse request logging enabled", url);
     } else if args.snapshot_url.is_some() {
         // an empty analytics screen and a quiet deployment look identical, so
         // say which one this is while the operator is still reading the log
@@ -262,7 +262,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(snapshot_url) = args.snapshot_url {
         let telemetry_snapshot_url = snapshot_url.clone();
         let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
-        tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
+        tracing::info!(snapshot_url = %rolter_core::redact::redact_url(&snapshot_url), poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
         // both the cluster inventory and the adaptive-routing scoreboard are
         // keyed on this node's id, and a node that cannot name itself is
         // dropped by the control plane; say so here rather than leaving two
@@ -492,5 +492,59 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
         _ = terminate => tracing::info!("received SIGTERM, draining"),
+    }
+}
+
+/// Log that a datastore endpoint is in use, with the credentials in its url
+/// masked (#2406). Every startup line that names one goes through here.
+fn log_endpoint(what: &str, url: &str) {
+    tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
+}
+
+#[cfg(test)]
+mod startup_log_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!("{}={value:?} ", field.name()));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+
+    #[test]
+    fn startup_lines_keep_the_clickhouse_password_out() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_endpoint(
+                "clickhouse request logging enabled",
+                "http://default:chpw@ch:8123/?password=chpw2",
+            );
+        });
+        let seen = captured.0.lock().join("\n");
+        assert!(!seen.contains("chpw"), "password leaked:\n{seen}");
+        assert!(seen.contains("ch:8123"), "{seen}");
     }
 }
