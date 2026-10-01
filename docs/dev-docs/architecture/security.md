@@ -470,13 +470,17 @@ user docs' upgrade page says to upgrade gateways first for that reason.
 
 Two limits are known and tracked:
 
-- **Provider health matches by name.** `provider_health_events` carries the
-  provider's display name and no org, and names are unique per org only. A
-  name that another org used and then deleted brings its history (uptime,
-  latency, error kinds, `target_id`) to whichever org creates it next, until
-  the 90-day TTL drops it. Provider names are unique across the deployment,
-  so two orgs never hold one at the same time. Recording the org in the rows
-  is #1908.
+- **Provider health rows written before `clickhouse/013_provider_health_org.sql`
+  have no org.** `provider_health_events.org_id` is the provider's org (#1908),
+  and `PROVIDER_VISIBLE` matches `(org_id, provider)` rather than the bare name,
+  so a name another org used and deleted no longer brings its history to the
+  next org that creates it. A row with an empty `org_id` matches no restricted
+  caller: that is every config-file provider, and, on upgrade, every row
+  written before the migration. Those rows are visible only to the admin token
+  and superadmins until the 90-day TTL drops them, so a tenant's health
+  history starts empty at the upgrade. The gateway stamps the org in
+  `HealthEventSink::emit` from the live provider list, which a config reload
+  swaps.
 - **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
   no store has no sessions, so the admin token is the only credential these
   routes accept, and the dashboard's e-mail-only sign-in cannot present it. The

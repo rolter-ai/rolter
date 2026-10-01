@@ -27,12 +27,15 @@
 //!   bodies to its viewers as well. Anyone else gets the row with both bodies
 //!   blanked and `payload_withheld` set, so the dashboard can say why they are
 //!   missing instead of claiming payload capture is off.
-//! * **Provider health** — those rows name a provider and carry no org, so a
-//!   user sees the providers of the orgs where they may read providers. The
-//!   match is by name, and names are unique per org only: a name another org
-//!   used before (deleted, then created again here) brings its history along
-//!   until the rows expire. Writing the provider's org into the rows closes
-//!   that (#1908).
+//! * **Provider health** — each row carries the org that owned the provider
+//!   when the gateway wrote it, and a user sees the rows of the orgs where they
+//!   may read provider health. The org is part of the match because provider
+//!   names are unique per org only: a name another org used before (deleted,
+//!   then created again here) must not bring its history along (#1908). A row
+//!   with no org — a provider from the gateway's own config file, or a row
+//!   written before the column existed — is visible only to the first group,
+//!   so on upgrade the older rows drop out of a tenant's view until they age
+//!   out of the 90-day ttl.
 //!
 //! # Why a filter rather than a guard
 //!
@@ -78,8 +81,8 @@ pub(crate) struct AnalyticsAccess {
     /// the ranks the `analytics` and `request_payload` floors require
     read_rank: i8,
     payload_rank: i8,
-    /// provider names whose health rows the caller may read
-    providers: Vec<String>,
+    /// orgs whose provider-health rows the caller may read
+    health_orgs: Vec<String>,
     /// the signed-in user's own id, empty for everyone else. Only the MCP log
     /// reads it: a user always sees the tool calls made under their own OAuth
     /// sessions, whatever tenancy the row carries (#1831)
@@ -144,9 +147,12 @@ pub(crate) const PAYLOAD_VISIBLE: &str = concat!(
     " >= {read_rank:Int8} and has({viewer_payload_projects:Array(String)}, project_id)))"
 );
 
-/// Whether the caller may see a `provider_health_events` row.
+/// Whether the caller may see a `provider_health_events` row: the row's org is
+/// one whose provider health they read. Matching the org rather than the bare
+/// provider name keeps a name another org used before out of view, and a row
+/// with no org matches nothing, so it stays with the unrestricted callers.
 pub(crate) const PROVIDER_VISIBLE: &str =
-    "({unrestricted:UInt8} = 1 or has({providers:Array(String)}, provider))";
+    "({unrestricted:UInt8} = 1 or (org_id != '' and has({health_org_ids:Array(String)}, org_id)))";
 
 impl AnalyticsAccess {
     /// No filter: the admin token, a superadmin, and open mode.
@@ -191,8 +197,8 @@ impl AnalyticsAccess {
         ));
         params.push(param("read_rank", self.read_rank.to_string()));
         params.push(param("payload_rank", self.payload_rank.to_string()));
-        let providers: Vec<&str> = self.providers.iter().map(String::as_str).collect();
-        params.push(param("providers", string_array(&providers)));
+        let health_orgs: Vec<&str> = self.health_orgs.iter().map(String::as_str).collect();
+        params.push(param("health_org_ids", string_array(&health_orgs)));
         params.push(param("caller_id", self.caller_id.clone()));
         params
     }
@@ -325,9 +331,7 @@ mod scoped {
     use std::collections::HashMap;
 
     use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
-    use rolter_store::postgres::repo::{
-        AccessProfileRepo, MembershipRepo, ProjectRepo, ProviderRepo,
-    };
+    use rolter_store::postgres::repo::{AccessProfileRepo, MembershipRepo, ProjectRepo};
     use uuid::Uuid;
 
     use super::{AnalyticsAccess, NO_RANK};
@@ -458,7 +462,7 @@ mod scoped {
             viewer_payload_projects: Vec::new(),
             read_rank,
             payload_rank,
-            providers: Vec::new(),
+            health_orgs: Vec::new(),
             caller_id: String::new(),
         }
     }
@@ -547,9 +551,8 @@ mod scoped {
             .collect();
         access.viewer_payload_projects.sort();
         let health = health_orgs(&memberships, &grants, floor(cap!("provider_health", Read)));
-        access.providers = ProviderRepo(pool).names_in_orgs(&health).await?;
-        access.providers.sort();
-        access.providers.dedup();
+        // `health_orgs` returns the ids sorted and deduplicated
+        access.health_orgs = health.iter().map(Uuid::to_string).collect();
         Ok(access)
     }
 }
@@ -557,6 +560,15 @@ mod scoped {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_health_matches_the_rows_org_and_never_the_bare_name() {
+        // a name another org used before must not match, and a row with no org
+        // (config file, or written before the column) matches no restricted caller
+        assert!(PROVIDER_VISIBLE.contains("org_id != ''"));
+        assert!(PROVIDER_VISIBLE.contains("has({health_org_ids:Array(String)}, org_id)"));
+        assert!(!PROVIDER_VISIBLE.contains("provider)"));
+    }
 
     #[test]
     fn an_unrestricted_caller_binds_the_flag_and_empty_sets() {
@@ -571,7 +583,7 @@ mod tests {
         assert_eq!(get("member_org_ids"), Some("[]"));
         assert_eq!(get("member_org_ranks"), Some("[]"));
         assert_eq!(get("viewer_payload_projects"), Some("[]"));
-        assert_eq!(get("providers"), Some("[]"));
+        assert_eq!(get("health_org_ids"), Some("[]"));
     }
 
     #[test]
