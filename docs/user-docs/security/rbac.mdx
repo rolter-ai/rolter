@@ -169,6 +169,10 @@ A resource's sub-resources sit at the same bar as the resource itself. A route's
 
 **Roles & Permissions** renders `GET /api/v1/rbac/matrix` directly, so the grid on screen is the deployment's own rule set rather than a copy of it. One row per resource, grouped by the scope the resource lives under (deployment-wide, organization, team, project); one column per role, with the built-in three first and your org's custom roles after them, ordered by the base role each extends.
 
+Every signed-in role can open **Roles & Permissions**, since the matrix describes what roles can do rather than anyone's data. Your organization's custom roles appear on it for anyone holding a role in that organization.
+
+Budgets and rate limits follow the scope chain: anyone holding a role on a project, a viewer included, can read the budgets and rate limits set on that project, on its team and on its organization, the caps that throttle their own keys. Another project's or team's are not shown, and creating, changing or deleting a cap stays an admin's of the scope it is set on.
+
 Each cell carries four chips, one each for read, create, update and delete in that order, and each chip says one of five things:
 
 | Chip                             | Means                                                                                                                                                                        |

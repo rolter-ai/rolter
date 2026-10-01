@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { SCREENS } from "@/App";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { NAV, leafKeys } from "@/lib/nav";
+import { NAV, leafKeys, visibleNav } from "@/lib/nav";
 
 // the nav and the route table are two lists of the same thing, and until #1201
 // nothing held them to each other: `App` looked a key up in a `BUILT` set and
@@ -22,6 +22,13 @@ describe("nav", () => {
   test("no screen is unreachable from the nav", () => {
     const leaves = new Set(leafKeys());
     expect(Object.keys(SCREENS).filter((k) => !leaves.has(k))).toEqual([]);
+  });
+
+  // the role matrix describes what roles can do, not anyone's data, so no
+  // capability may hide it (#2527): a project viewer reads it like anyone
+  test("Roles & Permissions stays in the rail when nothing is readable", () => {
+    const rail = visibleNav(() => false).flatMap((d) => d.children ?? [d]);
+    expect(rail.map((d) => d.key)).toContain("rbac");
   });
 
   // a duplicate key would make the sets compare equal while `<Routes>` mounted
