@@ -43,6 +43,8 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
+import { RowCapabilityScope } from "@/lib/can";
+import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -363,33 +365,35 @@ export default function Providers() {
               <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />
             </ListCell>
             <ListCell className="flex items-center justify-end gap-1.5">
-              <GatedButton
-                gate="provider:update"
-                control="provider-edit"
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("pages.providers.editOne", { name: provider.name })}
-                onClick={() => setSheet({ mode: "edit", provider })}
-              >
-                {t("pages.providers.edit")}
-              </GatedButton>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("labels.labelsOf", { name: provider.name })}
-                onClick={() => setLabelling(provider)}
-              >
-                <Tag className="h-3.5 w-3.5" />
-              </Button>
-              <DeleteIconButton
-                gate="provider:delete"
-                control="provider-delete"
-                label={t("pages.providers.deleteOne", { name: provider.name })}
-                title={t("pages.providers.deleteTitle")}
-                onClick={() => setDeleteTarget(provider)}
-              />
+              <RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
+                <GatedButton
+                  gate="provider:update"
+                  control="provider-edit"
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.providers.editOne", { name: provider.name })}
+                  onClick={() => setSheet({ mode: "edit", provider })}
+                >
+                  {t("pages.providers.edit")}
+                </GatedButton>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("labels.labelsOf", { name: provider.name })}
+                  onClick={() => setLabelling(provider)}
+                >
+                  <Tag className="h-3.5 w-3.5" />
+                </Button>
+                <DeleteIconButton
+                  gate="provider:delete"
+                  control="provider-delete"
+                  label={t("pages.providers.deleteOne", { name: provider.name })}
+                  title={t("pages.providers.deleteTitle")}
+                  onClick={() => setDeleteTarget(provider)}
+                />
+              </RowCapabilityScope>
             </ListCell>
           </ListRow>
         ))}
