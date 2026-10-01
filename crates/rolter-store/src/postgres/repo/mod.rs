@@ -381,6 +381,48 @@ impl ProjectRepo<'_> {
             .ok_or_else(|| Error::NotFound(format!("project {id}")))
     }
 
+    /// Whether `project_id` belongs to `org_id`, through its team.
+    pub async fn in_org(&self, project_id: Uuid, org_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from projects p join teams t on t.id = p.team_id
+                            where p.id = $1 and t.org_id = $2)",
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The providers and groups scoped to any of `project_ids` (#1919), named
+    /// for the refusal. Deleting a project that still holds one would either
+    /// widen it to the whole org or destroy it, so the delete is refused.
+    pub async fn scoped_resources(&self, project_ids: &[Uuid]) -> Result<Vec<String>> {
+        let providers: Vec<String> = sqlx::query_scalar(
+            "select name from providers where project_id = any($1) order by name",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select slug from provider_groups where project_id = any($1) order by slug",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(providers
+            .into_iter()
+            .map(|name| format!("provider '{name}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     /// The owning team of each of `ids`, in one query.
     ///
     /// Replaces a per-id [`Self::get`] on the authorization path, where the
@@ -1276,9 +1318,77 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Names of the providers in `provider_ids` that are scoped to a project
+    /// other than `owner`: the ones a route of project `owner`, or a group
+    /// scoped to it, may not use (#1919). `owner` is `None` for an org-wide
+    /// group, which may hold no scoped provider at all. An org-wide provider
+    /// is never listed, so every project can use it.
+    pub async fn scoped_outside(
+        &self,
+        provider_ids: &[Uuid],
+        owner: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        sqlx::query_scalar(
+            "select name from providers
+             where id = any($1) and project_id is not null
+               and project_id is distinct from $2
+             order by name",
+        )
+        .bind(provider_ids)
+        .bind(owner)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// What would stop using `provider_id` if it were scoped to `scope`: the
+    /// routes of other projects that target it and the groups not scoped to
+    /// `scope` that hold it, each named for the error that refuses the change.
+    /// Empty for `None`, since org-wide is reachable from everywhere.
+    pub async fn dependents_outside(
+        &self,
+        provider_id: Uuid,
+        scope: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        let Some(scope) = scope else {
+            return Ok(Vec::new());
+        };
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1 and r.project_id <> $2
+             order by r.model",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1 and g.project_id is distinct from $2
+             order by g.slug",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(routes
+            .into_iter()
+            .map(|model| format!("route '{model}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -1289,7 +1399,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -1325,11 +1435,12 @@ impl ProviderRepo<'_> {
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
         egress_proxies: &[String],
+        project_id: Option<Uuid>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -1339,6 +1450,7 @@ impl ProviderRepo<'_> {
         .bind(api_key_env)
         .bind(egress_proxy)
         .bind(serde_json::json!(egress_proxies))
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -1359,6 +1471,7 @@ impl ProviderRepo<'_> {
         api_key_env: Option<Option<&str>>,
         egress_proxy: Option<Option<&str>>,
         egress_proxies: Option<&[String]>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
@@ -1367,9 +1480,10 @@ impl ProviderRepo<'_> {
                  api_base = coalesce($4, api_base),
                  api_key_env = case when $5 then $6 else api_key_env end,
                  egress_proxy = case when $7 then $8 else egress_proxy end,
-                 egress_proxies = case when $9 then $10 else egress_proxies end
+                 egress_proxies = case when $9 then $10 else egress_proxies end,
+                 project_id = case when $11 then $12 else project_id end
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -1381,6 +1495,8 @@ impl ProviderRepo<'_> {
         .bind(egress_proxy.flatten())
         .bind(egress_proxies.is_some())
         .bind(egress_proxies.map(|v| serde_json::json!(v)))
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -4461,7 +4577,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -4472,7 +4588,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where id = $1",
         )
         .bind(id)
@@ -4488,16 +4604,18 @@ impl ProviderGroupRepo<'_> {
         name: &str,
         slug: &str,
         strategy: &str,
+        project_id: Option<Uuid>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "insert into provider_groups (org_id, name, slug, strategy)
-             values ($1, $2, $3, $4)
-             returning id, org_id, name, slug, strategy, created_at",
+            "insert into provider_groups (org_id, name, slug, strategy, project_id)
+             values ($1, $2, $3, $4, $5)
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -4511,19 +4629,23 @@ impl ProviderGroupRepo<'_> {
         name: Option<&str>,
         slug: Option<&str>,
         strategy: Option<&str>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
             "update provider_groups set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
-                 strategy = coalesce($4, strategy)
+                 strategy = coalesce($4, strategy),
+                 project_id = case when $5 then $6 else project_id end
              where id = $1
-             returning id, org_id, name, slug, strategy, created_at",
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -5075,6 +5197,7 @@ mod tests {
                 Some("OPENAI_API_KEY"),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();

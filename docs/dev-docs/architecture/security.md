@@ -465,8 +465,9 @@ with a `409` that does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
-narrow a route to its own project (`project_only`), which narrows that route
-but not the `slug/model` address of the provider behind it (#1919).
+narrow a route to its own project (`project_only`), and scope a provider or
+group to one project, which keeps its `slug/model` address and every route
+behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);

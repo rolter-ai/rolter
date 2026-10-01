@@ -156,6 +156,9 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
     pub egress_proxies: sqlx::types::Json<Vec<String>>,
+    /// the project the provider is scoped to; `None` is org-wide. Only keys
+    /// minted in that project may reach it (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -198,6 +201,8 @@ pub struct ProviderGroup {
     pub slug: String,
     /// one of the balancing-strategy keys (`round_robin`, `weighted`, …)
     pub strategy: String,
+    /// the project the group is scoped to; `None` is org-wide (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

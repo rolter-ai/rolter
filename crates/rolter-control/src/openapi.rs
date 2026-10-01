@@ -2555,6 +2555,7 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
                 "created_at": timestamp
             }
         },
@@ -2569,7 +2570,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": {"type": ["string", "null"], "description": "sealed with the KEK before storage; never returned"},
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": string_list
+                "egress_proxies": string_list,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the provider to one project of the org; omit for an org-wide provider. Needs the provider create capability at that project (an environment-variable credential needs it at the org)"}
             },
             "additionalProperties": false
         },
@@ -2584,7 +2586,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": nullable_string,
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}}
+                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}},
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the provider to it, null to make it org-wide. Refused with 409 while a route or group of another project uses the provider"}
             },
             "additionalProperties": false
         },
@@ -2594,7 +2597,9 @@ fn provider_schemas(p: &Prim) -> Value {
             "required": ["id", "org_id", "name", "slug", "strategy", "created_at"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string, "slug": string,
-                "strategy": string, "created_at": timestamp
+                "strategy": string,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the group is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
+                "created_at": timestamp
             }
         },
         "ProviderGroupMember": {
@@ -2636,7 +2641,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "name": string,
                 "slug": nullable_string,
                 "strategy": {"type": "string", "default": "round_robin"},
-                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}}
+                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}},
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the group to one project of the org; omit for an org-wide group. A scoped group may hold that project's providers and org-wide ones; an org-wide group only org-wide ones (409 otherwise)"}
             },
             "additionalProperties": false
         },
@@ -2651,7 +2657,8 @@ fn provider_schemas(p: &Prim) -> Value {
                     "type": ["array", "null"],
                     "description": "when present, replaces the entire membership",
                     "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}
-                }
+                },
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the group to it, null to make it org-wide"}
             },
             "additionalProperties": false
         }
