@@ -662,13 +662,25 @@ mod tests {
         )
     }
 
-    /// An address nothing listens on: bound once to learn a free port, then
-    /// released, so a connection attempt is refused at once.
-    async fn closed_url() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        format!("redis://{addr}")
+    /// An address nothing listens on, plus the socket that reserves it. The
+    /// socket is bound but never listens, so a connect is refused at once, and
+    /// holding it keeps the port out of the ephemeral pool: a port that was
+    /// released instead could be handed to a parallel test and start accepting. Bind the guard
+    /// (`let (_guard, url)`) for the whole test, never `let _`
+    async fn closed_url() -> (tokio::net::TcpSocket, String) {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = socket.local_addr().unwrap();
+        (socket, format!("redis://{addr}"))
+    }
+
+    #[tokio::test]
+    async fn a_bound_but_unlistened_port_refuses_connections() {
+        // documents the mechanism the dead-port helpers rely on
+        let (_guard, url) = closed_url().await;
+        let addr = url.strip_prefix("redis://").unwrap();
+        let err = tokio::net::TcpStream::connect(addr).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused);
     }
 
     #[test]
@@ -713,8 +725,9 @@ mod tests {
     /// into one connection attempt rather than one per request.
     #[tokio::test]
     async fn an_outage_fails_open_with_one_attempt_per_backoff_window() {
+        let (_guard, url) = closed_url().await;
         let redis = ReconnectingRedis::with_policy(
-            &closed_url().await,
+            &url,
             "test",
             ReconnectPolicy {
                 initial_backoff: Duration::from_secs(60),
@@ -742,7 +755,8 @@ mod tests {
     /// failure widens the window.
     #[tokio::test]
     async fn a_closed_window_allows_exactly_one_more_attempt() {
-        let redis = ReconnectingRedis::with_policy(&closed_url().await, "test", fast()).unwrap();
+        let (_guard, url) = closed_url().await;
+        let redis = ReconnectingRedis::with_policy(&url, "test", fast()).unwrap();
         assert!(redis.get().await.is_none());
         assert_eq!(redis.attempts(), 1);
         tokio::time::sleep(Duration::from_millis(60)).await;

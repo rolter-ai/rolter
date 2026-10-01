@@ -1,9 +1,9 @@
 //! Global security-policy API for the gateway ingress and dashboard.
 //!
-//! Dashboard credentials are write-only: a managed secret is sealed with the
-//! deployment KEK before persistence, while external secret-manager references
-//! are retained as opaque strings. Neither form is placed in audit details or
-//! gateway snapshots.
+//! There is no shared dashboard password: the dashboard is protected by
+//! per-user sessions (#2356). A client that still sends the retired
+//! `dashboard_*` fields is not rejected; the request struct ignores unknown
+//! fields, so they are dropped.
 
 use axum::extract::State;
 use axum::http::header::HeaderName;
@@ -46,10 +46,6 @@ struct UpdateSecuritySettings {
     required_headers: std::collections::HashMap<String, String>,
     #[serde(default)]
     auth_bypass_routes: Vec<String>,
-    dashboard_auth_enabled: bool,
-    dashboard_credential_ref: Option<String>,
-    /// write-only secret; it is encrypted before it reaches Postgres
-    managed_dashboard_secret: Option<String>,
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -119,34 +115,7 @@ fn validate_settings(body: &UpdateSecuritySettings) -> ApiResult<()> {
     for route in &body.auth_bypass_routes {
         validate_bypass_route(route)?;
     }
-    if body.dashboard_auth_enabled
-        && body
-            .dashboard_credential_ref
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
-        && body
-            .managed_dashboard_secret
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
-    {
-        return Err(invalid(
-            "dashboard authentication requires dashboard_credential_ref or managed_dashboard_secret",
-        ));
-    }
     Ok(())
-}
-
-fn seal_dashboard_secret(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
-    use rolter_store::postgres::crypto::{Kek, KEK_ENV};
-    if secret.trim().is_empty() {
-        return Err(invalid("managed_dashboard_secret must not be empty"));
-    }
-    let Some(kek) = Kek::from_env() else {
-        return Err(invalid(format!(
-            "storing dashboard credentials requires the {KEK_ENV} environment variable"
-        )));
-    };
-    Ok(kek.encrypt(secret)?)
 }
 
 async fn update_security_settings(
@@ -156,14 +125,6 @@ async fn update_security_settings(
 ) -> ApiResult<Json<SecuritySettings>> {
     authorize_superadmin(&principal, superadmin_cap!("security_settings", Update))?;
     validate_settings(&body)?;
-    let dashboard_secret = body
-        .managed_dashboard_secret
-        .as_deref()
-        .map(seal_dashboard_secret)
-        .transpose()?;
-    let dashboard_secret = dashboard_secret
-        .as_ref()
-        .map(|(ciphertext, nonce)| (ciphertext.as_slice(), nonce.as_slice()));
     let row = SecuritySettingsRepo(pool(&state))
         .update(
             // #1162: `allow_direct_provider_keys` is gone from this call.
@@ -176,9 +137,6 @@ async fn update_security_settings(
             &body.allowed_headers,
             serde_json::to_value(&body.required_headers).map_err(|err| invalid(err.to_string()))?,
             &body.auth_bypass_routes,
-            body.dashboard_auth_enabled,
-            body.dashboard_credential_ref.as_deref(),
-            dashboard_secret,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -202,8 +160,6 @@ async fn update_security_settings(
                 "origin_count": row.allowed_origins.len(),
                 "required_header_count": body.required_headers.len(),
                 "bypass_route_count": row.auth_bypass_routes.len(),
-                "dashboard_auth_enabled": row.dashboard_auth_enabled,
-                "managed_dashboard_secret_configured": row.dashboard_secret_configured,
             })),
         )
         .await
@@ -232,6 +188,18 @@ mod tests {
     }
 
     #[test]
+    fn the_retired_dashboard_fields_are_ignored_not_rejected() {
+        let body: UpdateSecuritySettings = serde_json::from_value(serde_json::json!({
+            "virtual_key_required": true,
+            "dashboard_auth_enabled": true,
+            "dashboard_credential_ref": "X",
+            "managed_dashboard_secret": "hunter2",
+        }))
+        .expect("old clients must still parse");
+        assert!(validate_settings(&body).is_ok());
+    }
+
+    #[test]
     fn rejects_multiline_required_header_value() {
         let body = UpdateSecuritySettings {
             virtual_key_required: false,
@@ -241,9 +209,6 @@ mod tests {
                 .into_iter()
                 .collect(),
             auth_bypass_routes: Vec::new(),
-            dashboard_auth_enabled: false,
-            dashboard_credential_ref: None,
-            managed_dashboard_secret: None,
         };
         assert!(validate_settings(&body).is_err());
     }

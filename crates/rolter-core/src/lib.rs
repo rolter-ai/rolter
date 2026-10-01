@@ -23,6 +23,7 @@ pub mod pii_sanitizer;
 pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
+pub mod redact;
 pub mod slug;
 pub mod stability;
 pub mod telemetry;

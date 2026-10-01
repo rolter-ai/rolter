@@ -180,6 +180,8 @@ struct ProviderRow {
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
     egress_proxies: serde_json::Value,
+    /// the project the provider is scoped to, `None` for org-wide (#1919)
+    project_id: Option<Uuid>,
     /// sealed runtime credential from `provider_keys`, when one is stored
     ciphertext: Option<Vec<u8>>,
     nonce: Option<Vec<u8>>,
@@ -261,9 +263,12 @@ impl ProviderRow {
             _ => None,
         };
         Ok(ProviderConfig {
+            // for a provider `project_id` is the scope, not a home project: set,
+            // it serves only that project's keys
+            project_scoped: row.project_id.is_some(),
             tenancy: Some(Tenancy {
                 org_id: row.org_id.to_string(),
-                project_id: None,
+                project_id: row.project_id.map(|id| id.to_string()),
             }),
             name: row.name,
             slug: Some(row.slug),
@@ -318,6 +323,7 @@ struct ProviderGroupRow {
     name: String,
     slug: String,
     strategy: String,
+    project_id: Option<Uuid>,
 }
 
 #[derive(FromRow)]
@@ -475,7 +481,7 @@ impl PostgresConfigStore {
     async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
-                    p.egress_proxies, pk.ciphertext, pk.nonce
+                    p.egress_proxies, p.project_id, pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id
              order by p.name",
@@ -775,7 +781,7 @@ impl PostgresConfigStore {
     /// forwards the requested model as-is.
     async fn load_provider_groups(&self) -> Result<Vec<ProviderGroupConfig>> {
         let group_rows: Vec<ProviderGroupRow> = sqlx::query_as(
-            "select id, org_id, name, slug, strategy from provider_groups order by name",
+            "select id, org_id, name, slug, strategy, project_id from provider_groups order by name",
         )
         .fetch_all(&self.pool)
         .await
@@ -820,9 +826,10 @@ impl PostgresConfigStore {
                     slug: Some(g.slug),
                     strategy,
                     members,
+                    project_scoped: g.project_id.is_some(),
                     tenancy: Some(Tenancy {
                         org_id: g.org_id.to_string(),
-                        project_id: None,
+                        project_id: g.project_id.map(|id| id.to_string()),
                     }),
                 })
             })
@@ -2421,6 +2428,120 @@ mod tests {
             v2,
             "custom roles decide control-plane authorization only"
         );
+    }
+
+    /// #1919: a provider or group scoped to a project reaches the gateway
+    /// through the snapshot, so a change of scope must bump `config_version`;
+    /// the scope can only name a project of the row's own org; and the project
+    /// cannot be deleted from under it, while deleting the whole org still works.
+    #[tokio::test]
+    async fn project_scope_bumps_the_version_stays_in_its_org_and_blocks_project_delete() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = |slug: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let org: Uuid = sqlx::query_scalar(
+                    "insert into orgs (name, slug) values ($1, $1) returning id",
+                )
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let team: Uuid = sqlx::query_scalar(
+                    "insert into teams (org_id, name) values ($1, 'core') returning id",
+                )
+                .bind(org)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let project: Uuid = sqlx::query_scalar(
+                    "insert into projects (team_id, name) values ($1, 'app') returning id",
+                )
+                .bind(team)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                (org, project)
+            }
+        };
+        let (org_a, project_a) = org("scope-a").await;
+        let (_org_b, project_b) = org("scope-b").await;
+        let provider: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base)
+             values ($1, 'edge', 'edge', 'openai_compatible', 'http://127.0.0.1:9')
+             returning id",
+        )
+        .bind(org_a)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let group: Uuid = sqlx::query_scalar(
+            "insert into provider_groups (org_id, name, slug) values ($1, 'pool', 'pool')
+             returning id",
+        )
+        .bind(org_a)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // rows that predate the column are org-wide
+        let scope: Option<Uuid> = sqlx::query_scalar("select project_id from providers")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(scope, None);
+
+        for (table, id) in [("providers", provider), ("provider_groups", group)] {
+            let before = current_version(&pool).await.unwrap();
+            sqlx::query(&format!("update {table} set project_id = $1 where id = $2"))
+                .bind(project_a)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(
+                current_version(&pool).await.unwrap() > before,
+                "scoping a row in {table} did not bump config_version"
+            );
+            // another org's project is refused by the database itself
+            let crossed = sqlx::query(&format!("update {table} set project_id = $1 where id = $2"))
+                .bind(project_b)
+                .bind(id)
+                .execute(&pool)
+                .await;
+            assert!(crossed.is_err(), "{table} accepted another org's project");
+        }
+
+        // restricting the delete is what stops a project's private credential
+        // from widening to org-wide or vanishing with it
+        let deleted = sqlx::query("delete from projects where id = $1")
+            .bind(project_a)
+            .execute(&pool)
+            .await;
+        assert!(deleted.is_err(), "a project was deleted under its provider");
+        // and the loader hands the scope to the gateway
+        let store = PostgresConfigStore::with_kek(pool.clone(), None);
+        let config = store.load().await.unwrap();
+        let loaded = &config.providers[0];
+        assert_eq!(
+            loaded
+                .tenancy
+                .as_ref()
+                .and_then(|t| t.project_id.as_deref()),
+            Some(project_a.to_string().as_str())
+        );
+        assert!(loaded.project_scoped);
+
+        // deleting the org cascades to both and must not trip over the check
+        sqlx::query("delete from orgs where id = $1")
+            .bind(org_a)
+            .execute(&pool)
+            .await
+            .expect("deleting an org with project-scoped providers");
     }
 
     #[tokio::test]

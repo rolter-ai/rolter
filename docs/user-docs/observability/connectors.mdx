@@ -118,9 +118,11 @@ card, and an edit leaves it as it found it.
 The secret field is write-only and starts blank. Left blank, the stored secret is kept; typing one
 replaces it. A stored secret cannot be removed yet, in the sheet or through the API: an empty
 `managed_auth_secret` is refused, so a connector that has to lose its credential is deleted and
-added again. Unlike an alert channel, a connector keeps its stored secret when you point it at
-another scheme, host or port, so the sheet says under the field that the secret would be sent to
-the new endpoint. Type that endpoint's own secret to replace it.
+added again. As with an alert channel, a secret belongs to the endpoint's origin: pointing the
+connector at another scheme, host or port without typing a new secret drops the stored one, so it is
+never sent to the new endpoint. Type that endpoint's own secret to replace it. An edit that stays on
+the same origin, such as another path, keeps the secret. The audit entry records that the secret was
+dropped, never the endpoint or the secret.
 
 A save keeps the health the last test recorded, and after a new endpoint or secret that describes
 the old one. The confirmation says so: run **Test delivery** on the card.
@@ -133,7 +135,8 @@ entry; responses carry only `auth_secret_configured`, a boolean. Storing one
 requires the KEK environment variable to be set.
 
 Editing a connector without resending the secret leaves the stored one in
-place, so changing a sampling rate cannot silently drop the credential. The
+place, so changing a sampling rate cannot silently drop the credential, unless
+the endpoint moves to another scheme, host or port, which drops it. The
 secret is the only field that works this way: `PUT /api/v1/connectors/{id}`
 replaces the whole row, so an update that leaves out `auth_secret_ref` clears
 it. The dashboard sends it back as stored.

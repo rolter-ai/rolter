@@ -156,6 +156,9 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
     pub egress_proxies: sqlx::types::Json<Vec<String>>,
+    /// the project the provider is scoped to; `None` is org-wide. Only keys
+    /// minted in that project may reach it (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -198,6 +201,8 @@ pub struct ProviderGroup {
     pub slug: String,
     /// one of the balancing-strategy keys (`round_robin`, `weighted`, …)
     pub strategy: String,
+    /// the project the group is scoped to; `None` is org-wide (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -886,8 +891,8 @@ pub struct AuditLogEntry {
     pub at: DateTime<Utc>,
 }
 
-/// Global control-plane security settings. Managed dashboard credentials are
-/// encrypted separately and intentionally never appear on this DTO.
+/// Global control-plane security settings. The retired dashboard-password
+/// columns still exist in the table but are not part of this DTO (#2356).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecuritySettings {
     pub virtual_key_required: bool,
@@ -895,9 +900,6 @@ pub struct SecuritySettings {
     pub allowed_headers: Vec<String>,
     pub required_headers: serde_json::Value,
     pub auth_bypass_routes: Vec<String>,
-    pub dashboard_auth_enabled: bool,
-    pub dashboard_credential_ref: Option<String>,
-    pub dashboard_secret_configured: bool,
     pub updated_at: DateTime<Utc>,
 }
 

@@ -836,6 +836,7 @@ async fn a_bootstrap_slug_is_refused_to_every_database_row() {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         });
     let app = rolter_control::test_app_with_bootstrap(db.pool().clone(), &bootstrap)
         .await
@@ -12227,12 +12228,185 @@ async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     );
 }
 
+/// a sink that records the raw head of every request it receives and answers 200
+async fn serve_capturing_sink() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// #2403: a connector's stored secret belongs to the endpoint's origin.
+#[tokio::test]
+async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new_one() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (old_sink, _) = serve_capturing_sink().await;
+    let (new_sink, seen) = serve_capturing_sink().await;
+    let old_secret = random_password();
+    let new_secret = random_password();
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": format!("http://{old_sink}/v1/logs"),
+            "enabled": true,
+            "sampling_rate": 1.0,
+            "managed_auth_secret": old_secret,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["auth_secret_configured"], true);
+    let put = |endpoint: String, secret: Option<String>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        async move {
+            let mut body = json!({
+                "name": "Sink",
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret.into();
+            }
+            let response = client
+                .put(url)
+                .bearer_auth("sekrit")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let columns = || async {
+        sqlx::query_as::<_, (bool, bool)>(
+            "select auth_ciphertext is not null, auth_nonce is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let audit_detail = || async {
+        sqlx::query_scalar::<_, Value>(
+            "select detail from audit_log where action = 'connector.update' \
+             order by at desc limit 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // another path on the same origin keeps it
+    let body = put(format!("http://{old_sink}/other"), None).await;
+    assert_eq!(body["auth_secret_configured"], true);
+    assert_eq!(columns().await, (true, true));
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // another origin with a new secret stores the new one
+    let body = put(
+        format!("http://{new_sink}/v1/logs"),
+        Some(new_secret.clone()),
+    )
+    .await;
+    assert_eq!(body["auth_secret_configured"], true);
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(config.contains(&new_secret), "the new secret is rendered");
+    assert!(!config.contains(&old_secret), "the old secret is rendered");
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // back to the first origin without one: dropped, columns and all
+    let body = put(format!("http://{old_sink}/v1/logs"), None).await;
+    assert_eq!(body["auth_secret_configured"], false);
+    assert_eq!(columns().await, (false, false));
+    let detail = audit_detail().await;
+    assert_eq!(detail["secret_cleared"], true);
+    assert!(!detail.to_string().contains(&old_sink.to_string()));
+
+    // another origin: the probe and the collector config carry no token
+    put(format!("http://{new_sink}/v1/logs"), None).await;
+    let tested = client
+        .post(format!("{base}/api/v1/connectors/{id}/test"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tested.status(), 200);
+    let requests = seen.lock().unwrap().clone();
+    let probe = requests.last().expect("the sink received the probe");
+    assert!(
+        !probe.to_ascii_lowercase().contains("authorization"),
+        "the probe carried an authorization header"
+    );
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config.contains("Bearer"),
+        "the config carries a bearer header"
+    );
+}
+
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
-/// snapshot *and* that the dashboard credential material does not.
+/// snapshot *and* that the retired dashboard password fields are gone (#2356).
 #[tokio::test]
-async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
+async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password() {
     skip_without_db!();
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
@@ -12279,9 +12453,27 @@ async fn security_policy_reaches_the_snapshot_without_the_dashboard_secret() {
         .await
         .unwrap();
     assert_eq!(saved["virtual_key_required"], true, "{saved}");
-    // the write-only column is reported as configured, never returned
-    assert_eq!(saved["dashboard_secret_configured"], true);
-    assert!(saved.get("managed_dashboard_secret").is_none());
+    // the dashboard password was removed because nothing enforced it (#2356):
+    // an old client's fields are ignored, and none of them comes back
+    for field in [
+        "dashboard_auth_enabled",
+        "dashboard_credential_ref",
+        "dashboard_secret_configured",
+        "managed_dashboard_secret",
+    ] {
+        assert!(saved.get(field).is_none(), "{field} in {saved}");
+    }
+    let read: Value = client
+        .get(format!("{base}/api/v1/security-settings"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(read.get("dashboard_auth_enabled").is_none(), "{read}");
+    assert!(read.get("dashboard_secret_configured").is_none(), "{read}");
     // and the toggle that controlled nothing is gone from the surface (#1162)
     assert!(saved.get("allow_direct_provider_keys").is_none());
 
@@ -15903,6 +16095,496 @@ async fn a_saved_view_reports_the_filters_the_user_can_no_longer_read() {
         .unwrap();
     assert_eq!(kept["unavailable"], json!([]));
     assert_eq!(kept["effective_filters"], json!({"key": kept_key}));
+}
+
+/// A provider or group may be scoped to one project of its org, and the control
+/// plane refuses every write that would let another project reach it through a
+/// route or a group (#1919). Existing providers stay org-wide.
+#[tokio::test]
+async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_groups() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let put = |url: String, body: Value| send(reqwest::Method::PUT, url, body);
+
+    let make_org = |slug: &'static str| {
+        let (base, post) = (base.clone(), post);
+        async move {
+            let (_, org) = post(
+                format!("{base}/api/v1/orgs"),
+                json!({"name": slug, "slug": slug}),
+            )
+            .await;
+            let org_id = org["id"].as_str().unwrap().to_string();
+            let (_, team) = post(
+                format!("{base}/api/v1/orgs/{org_id}/teams"),
+                json!({"name": "core"}),
+            )
+            .await;
+            let team_id = team["id"].as_str().unwrap().to_string();
+            let mut projects = Vec::new();
+            for name in ["one", "two"] {
+                let (_, project) = post(
+                    format!("{base}/api/v1/teams/{team_id}/projects"),
+                    json!({"name": name}),
+                )
+                .await;
+                projects.push(project["id"].as_str().unwrap().to_string());
+            }
+            (org_id, team_id, projects)
+        }
+    };
+    let (org, team, projects) = make_org("scoped-a").await;
+    let (p1, p2) = (projects[0].clone(), projects[1].clone());
+    let (_, _, other_projects) = make_org("scoped-b").await;
+    let foreign_project = other_projects[0].clone();
+
+    let provider = |name: &'static str, project: Option<&str>| {
+        let mut body = json!({"name": name, "kind": "openai_compatible",
+                              "api_base": "http://127.0.0.1:9"});
+        if let Some(project) = project {
+            body["project_id"] = json!(project);
+        }
+        post(format!("{base}/api/v1/orgs/{org}/providers"), body)
+    };
+
+    // existing behaviour is the default: no project, org-wide
+    let (status, shared) = provider("shared", None).await;
+    assert_eq!(status, 200, "{shared}");
+    assert!(shared["project_id"].is_null(), "{shared}");
+    let (status, private) = provider("private-one", Some(&p1)).await;
+    assert_eq!(status, 200, "{private}");
+    assert_eq!(private["project_id"], p1.as_str());
+    let (shared_id, private_id) = (
+        shared["id"].as_str().unwrap().to_string(),
+        private["id"].as_str().unwrap().to_string(),
+    );
+
+    // a project of another org, or none at all, cannot scope a provider
+    let (status, body) = provider("foreign", Some(&foreign_project)).await;
+    assert_eq!(status, 400, "cross-org project: {body}");
+    let (status, body) = provider("ghost", Some(&uuid::Uuid::new_v4().to_string())).await;
+    assert_eq!(status, 400, "unknown project: {body}");
+
+    // routes: a project's own providers and org-wide ones, never another project's
+    let route_in = |project: String, model: &'static str| {
+        let (base, post) = (base.clone(), post);
+        async move {
+            let (status, route) = post(
+                format!("{base}/api/v1/projects/{project}/routes"),
+                json!({"model": model, "strategy": "round_robin"}),
+            )
+            .await;
+            assert_eq!(status, 200, "{route}");
+            route["id"].as_str().unwrap().to_string()
+        }
+    };
+    let (r1, r2) = (
+        route_in(p1.clone(), "route-one").await,
+        route_in(p2.clone(), "route-two").await,
+    );
+    let target = |route: &str, provider_id: &str| {
+        post(
+            format!("{base}/api/v1/routes/{route}/targets"),
+            json!({"provider_id": provider_id, "weight": 1}),
+        )
+    };
+    let (status, body) = target(&r2, &private_id).await;
+    assert_eq!(
+        status, 409,
+        "another project's route took a scoped provider: {body}"
+    );
+    assert!(body.to_string().contains("private-one"), "{body}");
+    assert_eq!(target(&r1, &private_id).await.0, 200);
+    assert_eq!(target(&r1, &shared_id).await.0, 200, "org-wide fallback");
+    assert_eq!(target(&r2, &shared_id).await.0, 200, "org-wide option");
+
+    // groups: a scoped one holds its own project's providers and org-wide ones,
+    // an org-wide one holds only org-wide providers
+    let group = |name: &'static str, project: Option<&str>, members: &[&str]| {
+        let mut body = json!({
+            "name": name, "strategy": "round_robin",
+            "members": members.iter().map(|id| json!({"provider_id": id})).collect::<Vec<_>>(),
+        });
+        if let Some(project) = project {
+            body["project_id"] = json!(project);
+        }
+        post(format!("{base}/api/v1/orgs/{org}/provider-groups"), body)
+    };
+    let (status, body) = group("wide-private", None, &[&private_id]).await;
+    assert_eq!(status, 409, "org-wide group held a scoped provider: {body}");
+    let (status, body) = group("two-private", Some(&p2), &[&private_id]).await;
+    assert_eq!(
+        status, 409,
+        "another project's group held a scoped provider: {body}"
+    );
+    let (status, body) = group("foreign-group", Some(&foreign_project), &[]).await;
+    assert_eq!(status, 400, "cross-org group scope: {body}");
+    let (status, own) = group("own-pool", Some(&p1), &[&private_id, &shared_id]).await;
+    assert_eq!(status, 200, "{own}");
+    assert_eq!(own["project_id"], p1.as_str());
+    let own_id = own["id"].as_str().unwrap().to_string();
+    let (status, wide) = group("wide-pool", None, &[&shared_id]).await;
+    assert_eq!(status, 200, "{wide}");
+    assert!(wide["project_id"].is_null(), "{wide}");
+    let wide_id = wide["id"].as_str().unwrap().to_string();
+
+    // edits are checked against the group as it will be
+    let (status, body) = put(
+        format!("{base}/api/v1/provider-groups/{wide_id}"),
+        json!({"members": [{"provider_id": private_id}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "member swap: {body}");
+    let (status, body) = put(
+        format!("{base}/api/v1/provider-groups/{own_id}"),
+        json!({"project_id": p2}),
+    )
+    .await;
+    assert_eq!(status, 409, "moving a group away from its provider: {body}");
+    let (status, body) = put(
+        format!("{base}/api/v1/provider-groups/{own_id}"),
+        json!({"project_id": null}),
+    )
+    .await;
+    assert_eq!(
+        status, 409,
+        "widening a group over a scoped provider: {body}"
+    );
+
+    // scoping an org-wide provider is refused while another project uses it
+    let (status, body) = put(
+        format!("{base}/api/v1/providers/{shared_id}"),
+        json!({"project_id": p1}),
+    )
+    .await;
+    assert_eq!(status, 409, "scoped away from route-two: {body}");
+    assert!(body.to_string().contains("route-two"), "{body}");
+
+    // a project that still owns a provider cannot be deleted out from under it
+    let resp = client
+        .delete(format!("{base}/api/v1/projects/{p1}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 409);
+    let resp = client
+        .delete(format!("{base}/api/v1/teams/{team}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 409);
+
+    // the database refuses a scope outside the row's org even around the API
+    let crossed = sqlx::query("update providers set project_id = $1 where id = $2")
+        .bind(uuid::Uuid::parse_str(&foreign_project).unwrap())
+        .bind(uuid::Uuid::parse_str(&shared_id).unwrap())
+        .execute(&pool)
+        .await;
+    assert!(
+        crossed.is_err(),
+        "a provider was scoped to another org's project"
+    );
+
+    // the gateway's snapshot carries the scope
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let config = &snapshot["config"];
+    let named = |list: &str, key: &str, name: &str| -> Value {
+        config[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row[key] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} missing from {list}: {config}"))
+    };
+    let snapped = named("providers", "name", "private-one");
+    assert_eq!(snapped["tenancy"]["project_id"], p1.as_str());
+    assert_eq!(snapped["project_scoped"], true);
+    assert!(named("providers", "name", "shared")["tenancy"]["project_id"].is_null());
+    assert_eq!(
+        named("provider_groups", "name", "own-pool")["tenancy"]["project_id"],
+        p1.as_str()
+    );
+
+    // a row written around the API (SQL, a seed) is pruned from the snapshot
+    // rather than failing it: route-two keeps its org-wide target only
+    sqlx::query("insert into route_targets (route_id, provider_id) values ($1, $2)")
+        .bind(uuid::Uuid::parse_str(&r2).unwrap())
+        .bind(uuid::Uuid::parse_str(&private_id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let config = &snapshot["config"];
+    assert!(config.is_object(), "snapshot refused: {snapshot}");
+    let route_two = config["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["model"] == "route-two")
+        .unwrap();
+    let providers: Vec<&str> = route_two["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|target| target["provider"].as_str().unwrap())
+        .collect();
+    assert_eq!(providers, ["shared"], "{route_two}");
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        problems.to_string().contains("route 'route-two'"),
+        "the pruned target was not reported: {problems}"
+    );
+}
+
+/// A project's members see the providers and groups of their project plus the
+/// org-wide ones, never another project's; a project admin may create and
+/// delete their own project's, but widening to the org, another project, or
+/// naming an environment variable is an org admin's call (#1919).
+#[tokio::test]
+async fn members_list_their_projects_providers_and_project_admins_scope_their_own() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("scoped".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut projects = Vec::new();
+    for name in ["one", "two"] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into projects (team_id, name) values ($1, $2) returning id")
+                .bind(team)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        projects.push(id);
+    }
+    let (p1, p2) = (projects[0], projects[1]);
+    for (name, project) in [
+        ("shared", None),
+        ("priv-one", Some(p1)),
+        ("priv-two", Some(p2)),
+    ] {
+        let provider: uuid::Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base, project_id)
+             values ($1, $2, $2, 'openai_compatible', 'http://127.0.0.1:9', $3) returning id",
+        )
+        .bind(org)
+        .bind(name)
+        .bind(project)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into provider_groups (org_id, name, slug, project_id)
+             values ($1, $2, $2, $3)",
+        )
+        .bind(org)
+        .bind(format!("grp-{name}"))
+        .bind(project)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let _ = provider;
+    }
+
+    let one_admin = seed_user(&pool, "one-admin@acme.test", false).await;
+    seed_membership(&pool, one_admin, None, None, Some(p1), "admin").await;
+    let two_member = seed_user(&pool, "two@acme.test", false).await;
+    seed_membership(&pool, two_member, None, None, Some(p2), "member").await;
+    let org_admin = seed_user(&pool, "owner@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(org), None, None, "admin").await;
+    let stranger = seed_user(&pool, "stranger@elsewhere.test", false).await;
+    let one = seed_session(&pool, one_admin, "scoped_one").await;
+    let two = seed_session(&pool, two_member, "scoped_two").await;
+    let owner = seed_session(&pool, org_admin, "scoped_owner").await;
+    let nobody = seed_session(&pool, stranger, "scoped_nobody").await;
+
+    let names = |rows: &Value, key: &str| -> Vec<String> {
+        let mut names: Vec<String> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row[key].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    let get = |path: String, token: &str| {
+        let (client, base, token) = (client.clone(), base.clone(), token.to_string());
+        async move {
+            let resp = client
+                .get(format!("{base}{path}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+
+    for (token, providers, groups) in [
+        (
+            &one,
+            vec!["priv-one", "shared"],
+            vec!["grp-priv-one", "grp-shared"],
+        ),
+        (
+            &two,
+            vec!["priv-two", "shared"],
+            vec!["grp-priv-two", "grp-shared"],
+        ),
+        (
+            &owner,
+            vec!["priv-one", "priv-two", "shared"],
+            vec!["grp-priv-one", "grp-priv-two", "grp-shared"],
+        ),
+    ] {
+        let (status, rows) = get(format!("/api/v1/orgs/{org}/providers"), token).await;
+        assert_eq!(status, 200, "{rows}");
+        assert_eq!(names(&rows, "name"), providers);
+        let (status, rows) = get(format!("/api/v1/orgs/{org}/provider-groups"), token).await;
+        assert_eq!(status, 200, "{rows}");
+        assert_eq!(names(&rows, "name"), groups);
+    }
+    assert_eq!(
+        get(format!("/api/v1/orgs/{org}/providers"), &nobody)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        get(format!("/api/v1/orgs/{org}/provider-groups"), &nobody)
+            .await
+            .0,
+        403
+    );
+
+    let create = |token: &str, body: Value| {
+        let (client, base, token) = (client.clone(), base.clone(), token.to_string());
+        async move {
+            let resp = client
+                .post(format!("{base}/api/v1/orgs/{org}/providers"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let new = |name: &str, project: Option<uuid::Uuid>| {
+        let mut body = json!({"name": name, "kind": "openai_compatible",
+                              "api_base": "http://127.0.0.1:9"});
+        if let Some(project) = project {
+            body["project_id"] = json!(project);
+        }
+        body
+    };
+    // a project admin creates and removes their own project's providers
+    let (status, created) = create(&one, new("mine", Some(p1))).await;
+    assert_eq!(status, 200, "{created}");
+    // but not another project's, an org-wide one, or one that reads an env var
+    assert_eq!(create(&one, new("theirs", Some(p2))).await.0, 403);
+    assert_eq!(create(&one, new("wide", None)).await.0, 403);
+    let mut env = new("env-reader", Some(p1));
+    env["api_key_env"] = json!("OPENAI_API_KEY");
+    assert_eq!(create(&one, env.clone()).await.0, 403);
+    assert_eq!(create(&owner, env).await.0, 200);
+    // a project member below admin creates nothing
+    assert_eq!(create(&two, new("member-made", Some(p2))).await.0, 403);
+    // and widening a scoped provider to the org is the org admin's
+    let id = created["id"].as_str().unwrap();
+    let widen = |token: &str| {
+        let (client, base, token, id) = (
+            client.clone(),
+            base.clone(),
+            token.to_string(),
+            id.to_string(),
+        );
+        async move {
+            client
+                .put(format!("{base}/api/v1/providers/{id}"))
+                .bearer_auth(token)
+                .json(&json!({"project_id": null}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    assert_eq!(widen(&one).await, 403);
+    assert_eq!(widen(&owner).await, 200);
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{id}"))
+        .bearer_auth(&one)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "an org-wide provider is the org admin's"
+    );
 }
 
 // ---------------------------------------------------------------------------

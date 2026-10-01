@@ -575,15 +575,12 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config",
                 "getConfig",
                 "The assembled gateway configuration, with every secret redacted",
-            )
-            // deliberately open: `redact_config_for_dashboard` strips it first
-            .public(),
+            ),
             Op::get(
                 "/api/v1/config/problems",
                 "getConfigProblems",
                 "Configuration problems detected in the assembled config",
-            )
-            .public(),
+            ),
             Op::get(
                 "/api/v1/config/export",
                 "exportConfig",
@@ -593,15 +590,13 @@ fn operations() -> Vec<Op> {
                 "/api/v1/currency",
                 "getCurrency",
                 "Supported currencies and their conversion rates",
-            )
-            .public(),
+            ),
             Op::get(
                 "/api/v1/provider-kinds",
                 "getProviderKinds",
                 "Provider kinds this build can talk to",
-            )
-            .public(),
-            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog").public(),
+            ),
+            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
             Op::get(
                 "/api/v1/stability",
                 "getStability",
@@ -671,7 +666,9 @@ fn operations() -> Vec<Op> {
                 "/api/v1/auth/logout",
                 "logout",
                 "Revoke the current session",
-            ),
+            )
+            // idempotent: a missing or already-dead token is a quiet `204`
+            .public(),
             Op::get(
                 "/api/v1/auth/me",
                 "authMe",
@@ -2121,27 +2118,32 @@ fn operations() -> Vec<Op> {
                 "/gw/{path}",
                 "proxyGet",
                 "Reverse-proxy a GET to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::post(
                 "/gw/{path}",
                 "proxyPost",
                 "Reverse-proxy a POST to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::put(
                 "/gw/{path}",
                 "proxyPut",
                 "Reverse-proxy a PUT to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::patch(
                 "/gw/{path}",
                 "proxyPatch",
                 "Reverse-proxy a PATCH to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::delete(
                 "/gw/{path}",
                 "proxyDelete",
                 "Reverse-proxy a DELETE to the gateway data plane",
             )
+            .public()
             .ok(Payload::Open),
         ],
     ));
@@ -2576,6 +2578,7 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
                 "created_at": timestamp
             }
         },
@@ -2590,7 +2593,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": {"type": ["string", "null"], "description": "sealed with the KEK before storage; never returned"},
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": string_list
+                "egress_proxies": string_list,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the provider to one project of the org; omit for an org-wide provider. Needs the provider create capability at that project (an environment-variable credential needs it at the org)"}
             },
             "additionalProperties": false
         },
@@ -2605,7 +2609,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": nullable_string,
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}}
+                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}},
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the provider to it, null to make it org-wide. Refused with 409 while a route or group of another project uses the provider"}
             },
             "additionalProperties": false
         },
@@ -2615,7 +2620,9 @@ fn provider_schemas(p: &Prim) -> Value {
             "required": ["id", "org_id", "name", "slug", "strategy", "created_at"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string, "slug": string,
-                "strategy": string, "created_at": timestamp
+                "strategy": string,
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the group is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
+                "created_at": timestamp
             }
         },
         "ProviderGroupMember": {
@@ -2657,7 +2664,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "name": string,
                 "slug": nullable_string,
                 "strategy": {"type": "string", "default": "round_robin"},
-                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}}
+                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}},
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the group to one project of the org; omit for an org-wide group. A scoped group may hold that project's providers and org-wide ones; an org-wide group only org-wide ones (409 otherwise)"}
             },
             "additionalProperties": false
         },
@@ -2672,7 +2680,8 @@ fn provider_schemas(p: &Prim) -> Value {
                     "type": ["array", "null"],
                     "description": "when present, replaces the entire membership",
                     "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}
-                }
+                },
+                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the group to it, null to make it org-wide"}
             },
             "additionalProperties": false
         }
