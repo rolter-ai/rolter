@@ -12227,6 +12227,179 @@ async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     );
 }
 
+/// a sink that records the raw head of every request it receives and answers 200
+async fn serve_capturing_sink() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// #2403: a connector's stored secret belongs to the endpoint's origin.
+#[tokio::test]
+async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new_one() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (old_sink, _) = serve_capturing_sink().await;
+    let (new_sink, seen) = serve_capturing_sink().await;
+    let old_secret = random_password();
+    let new_secret = random_password();
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": format!("http://{old_sink}/v1/logs"),
+            "enabled": true,
+            "sampling_rate": 1.0,
+            "managed_auth_secret": old_secret,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["auth_secret_configured"], true);
+    let put = |endpoint: String, secret: Option<String>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        async move {
+            let mut body = json!({
+                "name": "Sink",
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret.into();
+            }
+            let response = client
+                .put(url)
+                .bearer_auth("sekrit")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let columns = || async {
+        sqlx::query_as::<_, (bool, bool)>(
+            "select auth_ciphertext is not null, auth_nonce is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let audit_detail = || async {
+        sqlx::query_scalar::<_, Value>(
+            "select detail from audit_log where action = 'connector.update' \
+             order by at desc limit 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // another path on the same origin keeps it
+    let body = put(format!("http://{old_sink}/other"), None).await;
+    assert_eq!(body["auth_secret_configured"], true);
+    assert_eq!(columns().await, (true, true));
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // another origin with a new secret stores the new one
+    let body = put(
+        format!("http://{new_sink}/v1/logs"),
+        Some(new_secret.clone()),
+    )
+    .await;
+    assert_eq!(body["auth_secret_configured"], true);
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(config.contains(&new_secret), "the new secret is rendered");
+    assert!(!config.contains(&old_secret), "the old secret is rendered");
+    assert_eq!(audit_detail().await["secret_cleared"], false);
+
+    // back to the first origin without one: dropped, columns and all
+    let body = put(format!("http://{old_sink}/v1/logs"), None).await;
+    assert_eq!(body["auth_secret_configured"], false);
+    assert_eq!(columns().await, (false, false));
+    let detail = audit_detail().await;
+    assert_eq!(detail["secret_cleared"], true);
+    assert!(!detail.to_string().contains(&old_sink.to_string()));
+
+    // another origin: the probe and the collector config carry no token
+    put(format!("http://{new_sink}/v1/logs"), None).await;
+    let tested = client
+        .post(format!("{base}/api/v1/connectors/{id}/test"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tested.status(), 200);
+    let requests = seen.lock().unwrap().clone();
+    let probe = requests.last().expect("the sink received the probe");
+    assert!(
+        !probe.to_ascii_lowercase().contains("authorization"),
+        "the probe carried an authorization header"
+    );
+    let config = client
+        .get(format!("{base}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        !config.contains("Bearer"),
+        "the config carries a bearer header"
+    );
+}
+
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
