@@ -12813,14 +12813,12 @@ async fn example_key_snapshot(admin_token: Option<String>) -> (Vec<String>, Vec<
         .iter()
         .map(|k| k["key"].as_str().unwrap_or_default().to_string())
         .collect();
-    let problems: Value = client
-        .get(format!("http://{addr}/api/v1/config/problems"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // the problems view needs a session once a token is set (#1840)
+    let mut request = client.get(format!("http://{addr}/api/v1/config/problems"));
+    if let Some(token) = &admin_token {
+        request = request.bearer_auth(token);
+    }
+    let problems: Value = request.send().await.unwrap().json().await.unwrap();
     let problems = problems["problems"]
         .as_array()
         .expect("problems array")
