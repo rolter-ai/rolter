@@ -35,6 +35,19 @@ async fn serve(app: Router) -> SocketAddr {
 /// A Realtime upstream that answers each `response.create` with one text
 /// delta per entry of `deltas`, then `response.done` carrying the joined text.
 async fn upstream(deltas: Vec<&'static str>) -> (SocketAddr, Received) {
+    scripted_upstream(deltas, None).await
+}
+
+/// Like [`upstream`], but the model answers with one function call whose
+/// arguments are `arguments`.
+async fn tool_upstream(arguments: &'static str) -> (SocketAddr, Received) {
+    scripted_upstream(Vec::new(), Some(arguments)).await
+}
+
+async fn scripted_upstream(
+    deltas: Vec<&'static str>,
+    arguments: Option<&'static str>,
+) -> (SocketAddr, Received) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let received: Received = Default::default();
@@ -65,6 +78,30 @@ async fn upstream(deltas: Vec<&'static str>) -> (SocketAddr, Received) {
                     let id = format!("resp_{turn}");
                     let mut frames = vec![json!({"type": "response.created",
                         "response": {"id": id, "status": "in_progress"}})];
+                    if let Some(arguments) = arguments {
+                        let item = json!({"id": "call_item", "type": "function_call",
+                            "name": "run", "call_id": "call_1", "arguments": arguments});
+                        frames.push(json!({"type": "response.function_call_arguments.delta",
+                            "response_id": id, "item_id": "call_item", "delta": "{"}));
+                        frames.push(json!({"type": "response.function_call_arguments.done",
+                            "response_id": id, "item_id": "call_item", "call_id": "call_1",
+                            "name": "run", "arguments": arguments}));
+                        frames.push(json!({"type": "response.output_item.done",
+                            "response_id": id, "item": item}));
+                        frames.push(json!({"type": "response.done", "response": {
+                            "id": id, "status": "completed", "output": [item],
+                            "usage": {"total_tokens": 1, "input_tokens": 1, "output_tokens": 0}}}));
+                        for frame in frames {
+                            if socket
+                                .send(Message::Text(frame.to_string().into()))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        continue;
+                    }
                     for delta in &deltas {
                         frames.push(json!({"type": "response.output_text.delta",
                             "response_id": id, "item_id": "item_1", "delta": delta}));
@@ -378,4 +415,84 @@ async fn the_guardrail_webhook_is_consulted_for_client_events() {
     let seen = upstream_saw(&received, 1).await;
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0]["item"]["content"][0]["text"], "hello");
+}
+
+#[tokio::test]
+async fn blocked_function_call_arguments_are_withheld_and_the_response_cancelled() {
+    let (up, received) = tool_upstream(r#"{"cmd": "rm SECRET-9"}"#).await;
+    let config = config(
+        up,
+        json!([rule("secret", "post_call", "block", "SECRET-\\d+")]),
+    );
+    let mut client = open(&config).await;
+
+    send(&mut client, json!({"type": "response.create"})).await;
+    let turn = read_turn(&mut client).await;
+    let wire = turn.iter().map(Value::to_string).collect::<String>();
+    assert!(
+        !wire.contains("SECRET-9"),
+        "the arguments reached the client: {wire}"
+    );
+    assert_eq!(
+        types(&turn),
+        [
+            "response.created",
+            "response.function_call_arguments.delta",
+            "error",
+            "response.output_item.done",
+            "response.done"
+        ]
+    );
+    assert_eq!(turn[2]["error"]["code"], "guardrail_blocked");
+    // a client that runs the call finds nothing to run
+    assert_eq!(turn[3]["item"]["arguments"], "");
+    assert_eq!(turn[4]["response"]["output"][0]["arguments"], "");
+
+    let seen = upstream_saw(&received, 2).await;
+    assert_eq!(seen[1]["type"], "response.cancel", "{seen:?}");
+    assert_eq!(seen[1]["response_id"], "resp_1");
+}
+
+#[tokio::test]
+async fn clean_function_call_arguments_pass_through_unchanged() {
+    let (up, _) = tool_upstream(r#"{"city": "Oslo"}"#).await;
+    let config = config(
+        up,
+        json!([rule("secret", "post_call", "block", "SECRET-\\d+")]),
+    );
+    let mut client = open(&config).await;
+
+    send(&mut client, json!({"type": "response.create"})).await;
+    let turn = read_turn(&mut client).await;
+    assert_eq!(
+        types(&turn),
+        [
+            "response.created",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+            "response.output_item.done",
+            "response.done"
+        ]
+    );
+    assert_eq!(turn[2]["arguments"], r#"{"city": "Oslo"}"#);
+    assert_eq!(turn[3]["item"]["arguments"], r#"{"city": "Oslo"}"#);
+}
+
+#[tokio::test]
+async fn redacted_function_call_arguments_are_rewritten() {
+    let (up, _) = tool_upstream(r#"{"token": "CODE-77"}"#).await;
+    let config = config(
+        up,
+        json!([rule("code", "post_call", "redact", "CODE-\\d+")]),
+    );
+    let mut client = open(&config).await;
+
+    send(&mut client, json!({"type": "response.create"})).await;
+    let turn = read_turn(&mut client).await;
+    let wire = turn.iter().map(Value::to_string).collect::<String>();
+    assert!(!wire.contains("CODE-77"), "{wire}");
+    assert!(turn[2]["arguments"]
+        .as_str()
+        .unwrap()
+        .starts_with(r#"{"token": ""#));
 }
