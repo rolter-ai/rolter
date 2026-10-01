@@ -452,7 +452,6 @@ These are tracked rather than silently missing:
   `realtime` still carries its [stability marker](../development/stability-markers.md):
   its note names the gaps that remain (the PII sanitizer, which fails closed
   but does not run, and `pre_route` / `post_response` plugins), and the dashboard's translated notes follow it.
-- A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).
 - Input-audio transcription runs a second model whose usage arrives on

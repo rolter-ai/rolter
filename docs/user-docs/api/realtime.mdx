@@ -148,10 +148,6 @@ moment, the rows and charges still queued are lost after those 5 seconds.
   refused while a policy applies. See
   [Content policy](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/architecture/realtime-metering.md#content-policy-on-a-bidirectional-stream-1880)
   for the detail.
-- **A revoked key does not end a live session.** Disabling or deleting a key
-  stops new sessions at once, but one already open runs until it ends or hits
-  `max_session_secs`
-  ([#1881](https://github.com/rolter-ai/rolter/issues/1881)).
 - **Audio and text tokens share one price.** A model price has one input and
   one output rate, so set them to the blend you expect
   ([#1882](https://github.com/rolter-ai/rolter/issues/1882)). Input-audio
