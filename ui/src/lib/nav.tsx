@@ -36,6 +36,7 @@ import {
   Split,
   TrendingUp,
   UserCheck,
+  UserCog,
   Users,
   Wallet,
   WalletCards,
@@ -162,6 +163,8 @@ export const NAV: NavDef[] = [
       { key: "security", icon: <Shield />, resource: "security_settings" },
       // the account's own keys and profile: self-service, so no role gates it
       { key: "api-keys", icon: <KeyRound /> },
+      // the account's own language, default scope, Playground model and zone
+      { key: "preferences", icon: <UserCog /> },
       { key: "performance", icon: <TrendingUp />, resource: "runtime_policy" },
       { key: "feature-flags", icon: <Flag />, resource: "feature_flags" },
     ],

@@ -214,7 +214,6 @@ priorities live on the issues.
 | #1815 | the provider queue serialises every provider to one in-flight request                  | P5, D3 — any concurrent traffic                |
 | #1822 | self-service account area (epic)                                                       | E10, V2, V3, V5                                |
 | #1823 | display name and bio, editable by the account itself                                   | V2, E10                                        |
-| #1824 | preferences and defaults stored server-side                                            | V3, E10                                        |
 | #1825 | saved filter presets on LLM Logs and the Dashboard                                     | V5, F2                                         |
 | #1831 | members cannot read their own MCP tool-call logs                                       | E6                                             |
 | #1841 | a deprovisioned person's own virtual keys keep working                                 | T6, S2                                         |

@@ -100,9 +100,9 @@ The debugging loop, in the order an engineer should be able to walk it.
 
 ## E10 — make the dashboard mine
 
-| #     | step                                        | where                                                      | expect                                         | status                                                                   |
-| ----- | ------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------ |
-| E10.1 | set a display name and a short bio          | —                                                          | other people see the name instead of an e-mail | gap — #1823                                                              |
-| E10.2 | language, default project, Playground model | the language picker; the scope switcher                    | remembered — but in this browser only          | partial — #1824 (backend done: `/api/v1/me/preferences`; screen pending) |
-| E10.3 | save "my errors this week" as a view        | —                                                          | a named filter on LLM Logs                     | gap — #1825                                                              |
-| E10.4 | protect the account with a second factor    | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes                        | verified                                                                 |
+| #     | step                                        | where                                                               | expect                                                                                                             | status       |
+| ----- | ------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------ |
+| E10.1 | set a display name and a short bio          | —                                                                   | other people see the name instead of an e-mail                                                                     | gap — #1823  |
+| E10.2 | language, default project, Playground model | **Settings → Preferences**; the language picker; the scope switcher | kept on the server, so a new browser opens on the same language, scope and model — and on the same chart time zone | done (#2448) |
+| E10.3 | save "my errors this week" as a view        | —                                                                   | a named filter on LLM Logs                                                                                         | gap — #1825  |
+| E10.4 | protect the account with a second factor    | **Settings → My Virtual Keys → Two-factor authentication**          | TOTP and recovery codes                                                                                            | verified     |
