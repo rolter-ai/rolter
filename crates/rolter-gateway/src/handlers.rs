@@ -185,8 +185,13 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // can group by it. sorted + deduped for a stable listing, and filtered by
     // the same key allow-list
     let key_org = vk.as_ref().map_or("", |vk| vk.org_id.as_str());
-    let admitted =
-        |tenancy: Option<&rolter_core::Tenancy>| rolter_core::Tenancy::admits(tenancy, key_org);
+    let key_project = vk.as_ref().map_or("", |vk| vk.project_id.as_str());
+    // a provider or group is admitted on its org plus its optional project
+    // scope: one scoped to another project is neither addressable nor listed
+    // (#1919)
+    let admitted_scoped = |tenancy: Option<&rolter_core::Tenancy>| {
+        rolter_core::Tenancy::admits_scoped(tenancy, key_org, key_project)
+    };
     // another org's providers are neither addressable nor listed (#1844)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
@@ -194,7 +199,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .filter(|(_, name)| {
             snap.providers
                 .get(name.as_str())
-                .is_none_or(|provider| admitted(provider.tenancy.as_ref()))
+                .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
         })
         .map(|(slug, name)| (name.as_str(), slug.as_str()))
         .collect();
@@ -203,7 +208,10 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         std::collections::HashMap::new();
     for entry in snap.routes.values() {
         let route = &entry.route;
-        if !admitted(route.tenancy.as_ref()) {
+        // the whole tenancy gate, not the org alone: a route narrowed to
+        // another project, or reaching a provider scoped to one, names models
+        // this key may not learn from the listing (#1919)
+        if !entry.in_tenancy_of(vk.as_ref()) {
             continue;
         }
         let targets = route
@@ -256,7 +264,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut grouped: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
     for (slug, group) in &snap.groups_by_slug {
-        if !admitted(group.tenancy.as_ref()) {
+        if !admitted_scoped(group.tenancy.as_ref()) {
             continue;
         }
         for member in &group.members {
@@ -858,6 +866,15 @@ fn error_json(status: StatusCode, message: &str) -> Response {
     crate::error::ApiError::new(status, message).into_response()
 }
 
+/// The 401 for a missing, unknown, disabled or expired virtual key. OpenAI
+/// answers all of those with code `invalid_api_key` (only the message differs),
+/// and SDKs branch on it; the realtime close sends the same code (#1881).
+fn invalid_api_key_json(message: &str) -> Response {
+    crate::error::ApiError::new(StatusCode::UNAUTHORIZED, message)
+        .with_code("invalid_api_key")
+        .into_response()
+}
+
 /// Tenant identity forwarded to a guardrail webhook or plugin as metadata.
 /// Shared by both call sites so the envelope always carries the same shape.
 fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
@@ -1093,7 +1110,7 @@ pub(crate) fn authenticate(
             .unwrap_or(snap.security.virtual_key_required || state.managed_auth);
         if required {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            return Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE));
+            return Err(invalid_api_key_json(MISSING_KEY_MESSAGE));
         }
         return Ok(None);
     }
@@ -1109,16 +1126,13 @@ pub(crate) fn authenticate(
                 // which of the two happened
                 Some(_) | None => {
                     state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                    Err(error_json(
-                        StatusCode::UNAUTHORIZED,
-                        &invalid_key_message(&key),
-                    ))
+                    Err(invalid_api_key_json(&invalid_key_message(&key)))
                 }
             }
         }
         None => {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE))
+            Err(invalid_api_key_json(MISSING_KEY_MESSAGE))
         }
     }
 }
@@ -4671,6 +4685,7 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: None,
+                ..Default::default()
             });
         let state = AppState::new(&config);
         state
@@ -4962,6 +4977,7 @@ mod tests {
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(1))],
@@ -4973,6 +4989,7 @@ mod tests {
         );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(9))],
@@ -4984,6 +5001,7 @@ mod tests {
         );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: Vec::new(),
@@ -5031,6 +5049,7 @@ mod tests {
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(cache_aware)],
@@ -5123,6 +5142,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5176,6 +5196,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5218,6 +5239,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5263,6 +5285,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5306,6 +5329,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5363,6 +5387,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5463,6 +5488,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1]).into(),
             variant_balancers: Vec::new(),
@@ -5516,6 +5542,7 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
+            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5663,6 +5690,7 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: owned_by("org-a", None),
+                ..Default::default()
             });
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
         for address in ["edge/gpt-4o", "pool/gpt-4o"] {
@@ -5714,6 +5742,7 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: owned_by("org-b", None),
+                ..Default::default()
             });
         // org-a squats org-b's addresses and the builtin with named routes
         for model in ["edge/gpt-4o", "pool/gpt-4o", fake_llm::MODEL_NAME] {

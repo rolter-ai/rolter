@@ -852,6 +852,17 @@ pub struct ProviderConfig {
     /// from the gateway's own config file (see [`Tenancy`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenancy: Option<Tenancy>,
+    /// scope the provider to one project: only keys minted in that project may
+    /// reach it, through a route or through `provider-slug/model`. Unset (the
+    /// default) keeps it org-wide, usable by every project of the org.
+    ///
+    /// In a file this means "the project the file is imported into" (see
+    /// `rolter-seed --import`); a file has no project names of its own. The
+    /// store is authoritative at runtime, where the scope is
+    /// `tenancy.project_id`, so a gateway reading a file directly ignores the
+    /// flag: its keys carry no project to compare against.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub project_scoped: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1114,7 +1125,7 @@ pub enum BalancingStrategy {
 /// requested model name). The `slug` shares the provider slug namespace, so a
 /// left segment resolves to at most one of {provider, group} — providers win a
 /// tie deterministically.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProviderGroupConfig {
     /// display name
     pub name: String,
@@ -1132,6 +1143,13 @@ pub struct ProviderGroupConfig {
     /// gateway's own config file (see [`Tenancy`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenancy: Option<Tenancy>,
+    /// scope the group to one project, exactly as [`ProviderConfig::project_scoped`]
+    /// does for a provider. A project-scoped group may hold that project's
+    /// providers and org-wide ones; an org-wide group may hold only org-wide
+    /// providers, since a member scoped to a project would otherwise be
+    /// reachable by every project through the group.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub project_scoped: bool,
 }
 
 /// One member of a [`ProviderGroupConfig`]: a provider plus optional upstream
@@ -1260,6 +1278,24 @@ impl Tenancy {
         match tenancy {
             None => true,
             Some(owner) => key_org.is_empty() || owner.org_id == key_org,
+        }
+    }
+
+    /// Whether a key minted in `key_project` of `key_org` may use a provider or
+    /// provider group owned by `tenancy`.
+    ///
+    /// [`admits`](Self::admits) for the org, plus the optional project scope: a
+    /// provider or group whose `project_id` is set serves only that project, and
+    /// a key with an org but no project is refused too. Unset means org-wide.
+    /// Only for providers and groups: on a route `project_id` names the
+    /// route's own project and narrows nothing unless `project_only` is set.
+    pub fn admits_scoped(tenancy: Option<&Tenancy>, key_org: &str, key_project: &str) -> bool {
+        if !Self::admits(tenancy, key_org) {
+            return false;
+        }
+        match tenancy.and_then(|t| t.project_id.as_deref()) {
+            Some(scope) => key_org.is_empty() || scope == key_project,
+            None => true,
         }
     }
 }
@@ -1499,6 +1535,11 @@ impl ParamPolicy {
     }
 }
 
+/// The example virtual key that ships in `rolter.example.toml`, the image's
+/// baked config and `easy-up`. It is public, allows every model and is for
+/// local development only.
+pub const PUBLIC_EXAMPLE_KEY: &str = "sk-rolter-dev";
+
 /// A virtual api key that clients present to the gateway.
 ///
 /// `Default` is a nameless, unscoped, non-expiring key with an empty secret —
@@ -1532,6 +1573,11 @@ pub struct VirtualKeyConfig {
 }
 
 impl VirtualKeyConfig {
+    /// Whether this is the example key every rolter checkout publishes.
+    pub fn is_public_example_key(&self) -> bool {
+        self.key == PUBLIC_EXAMPLE_KEY
+    }
+
     /// Whether the key may authenticate at `now`: not disabled and not expired.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
@@ -3029,6 +3075,23 @@ impl GatewayConfig {
         self.providers.iter().find(|p| p.name == name)
     }
 
+    /// Drop the public example key from a file config. Callers decide *when*:
+    /// only a deployment that is not in open mode has any business refusing it,
+    /// since `easy-up` serves it on purpose. Returns a problem line when a key
+    /// was dropped.
+    pub fn prune_public_example_key(&mut self) -> Option<String> {
+        let before = self.virtual_keys.len();
+        self.virtual_keys.retain(|k| !k.is_public_example_key());
+        (self.virtual_keys.len() != before).then(|| {
+            format!(
+                "virtual key '{PUBLIC_EXAMPLE_KEY}' omitted from the snapshot: it is the public \
+                 example key from the bundled rolter.example.toml and allows every model, so a \
+                 deployment with auth enforced must not hand it to gateways. Remove the \
+                 [[virtual_keys]] entry from the control plane's config file"
+            )
+        })
+    }
+
     /// Validate internal consistency and surface every problem at once so an
     /// operator can fix a whole config in one pass rather than one error per
     /// restart. Checks: unique/non-empty provider names, well-formed provider
@@ -3089,6 +3152,8 @@ impl GatewayConfig {
                 ));
             }
         }
+
+        self.prune_cross_project_targets(&mut warnings);
 
         let provider_names: std::collections::HashSet<&str> = self
             .providers
@@ -3175,6 +3240,79 @@ impl GatewayConfig {
             }
         }
         warnings
+    }
+
+    /// Drop each route target and group member that reaches a provider scoped
+    /// to a project other than its owner's, saying why in `warnings` (#1919).
+    ///
+    /// The control plane refuses to write such a row, so one only exists when
+    /// it came from SQL, a seed or a scope narrowed around existing rows. It
+    /// must not be served, because the provider would then be reachable from
+    /// outside its project through the route or group. It is also not a reason
+    /// to withhold the whole snapshot, so only the offending target goes: a
+    /// route left with no servable target is dropped by the pass that follows,
+    /// and a group left with no member never resolves (#926 / #2306 / #2279).
+    ///
+    /// A route's owner is its project; a group's owner is its own scope, and an
+    /// org-wide group owns no project, so it may not hold a scoped provider. A
+    /// route or group from a file carries no tenancy, which is org-wide too.
+    fn prune_cross_project_targets(&mut self, warnings: &mut Vec<String>) {
+        let scoped: HashMap<&str, &str> = self
+            .providers
+            .iter()
+            .filter_map(|p| {
+                let scope = p.tenancy.as_ref()?.project_id.as_deref()?;
+                Some((p.name.as_str(), scope))
+            })
+            .collect();
+        if scoped.is_empty() {
+            return;
+        }
+        let foreign = |provider: &str, owner: Option<&str>| {
+            scoped
+                .get(provider)
+                .is_some_and(|scope| owner != Some(*scope))
+        };
+        for route in &mut self.routes {
+            let owner = route.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let model = route.model.clone();
+            let mut prune = |targets: &mut Vec<Target>, place: String| {
+                targets.retain(|t| {
+                    let keep = !foreign(&t.provider, owner.as_deref());
+                    if !keep {
+                        warnings.push(format!(
+                            "{place} target '{}' omitted from the snapshot: the provider is \
+                             scoped to a project other than the route's",
+                            t.provider
+                        ));
+                    }
+                    keep
+                });
+            };
+            prune(&mut route.targets, format!("route '{model}'"));
+            for variant in &mut route.variants {
+                let place = format!("route '{model}' variant '{}'", variant.name);
+                prune(&mut variant.targets, place);
+            }
+        }
+        for group in &mut self.provider_groups {
+            let owner = group.tenancy.as_ref().and_then(|t| t.project_id.clone());
+            let slug = group
+                .slug
+                .clone()
+                .unwrap_or_else(|| crate::slug::slugify(&group.name));
+            group.members.retain(|m| {
+                let keep = !foreign(&m.provider, owner.as_deref());
+                if !keep {
+                    warnings.push(format!(
+                        "provider group '{slug}' member '{}' omitted from the snapshot: the \
+                         provider is scoped to a project other than the group's",
+                        m.provider
+                    ));
+                }
+                keep
+            });
+        }
     }
 
     /// Drop each prompt template that fails validation on its own, saying why
@@ -5971,6 +6109,156 @@ mod tests {
         assert_eq!(cfg.routes.len(), 2);
         let problems = cfg.validate().unwrap_err();
         assert!(problems.iter().any(|p| p.contains("duplicate route model")));
+    }
+
+    fn scoped_provider(name: &str, org: &str, project: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            name: name.to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_base: "https://example.com".to_string(),
+            tenancy: Some(Tenancy {
+                org_id: org.to_string(),
+                project_id: project.map(str::to_string),
+            }),
+            project_scoped: project.is_some(),
+            ..Default::default()
+        }
+    }
+
+    fn route_in(model: &str, project: &str, providers: &[&str]) -> ModelRoute {
+        ModelRoute {
+            model: model.to_string(),
+            strategy: BalancingStrategy::default(),
+            targets: providers
+                .iter()
+                .map(|provider| Target {
+                    provider: provider.to_string(),
+                    model: None,
+                    weight: 1,
+                })
+                .collect(),
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            variants: Vec::new(),
+            cache: None,
+            tenancy: Some(Tenancy {
+                org_id: "org-1".to_string(),
+                project_id: Some(project.to_string()),
+            }),
+        }
+    }
+
+    // #1919: the control plane refuses a target on a provider scoped to another
+    // project, so one that exists came from SQL or a seed. only that target is
+    // pruned, not the snapshot, and the route survives on what it may still use
+    #[test]
+    fn sanitize_prunes_a_target_on_a_provider_scoped_to_another_project() {
+        let mut cfg = GatewayConfig {
+            providers: vec![
+                scoped_provider("p1-private", "org-1", Some("proj-1")),
+                scoped_provider("shared", "org-1", None),
+            ],
+            routes: vec![
+                // its own project's provider plus an org-wide one: untouched
+                route_in("ok", "proj-1", &["p1-private", "shared"]),
+                // another project's provider: that target goes, the fallback stays
+                route_in("crossed", "proj-2", &["p1-private", "shared"]),
+                // nothing left to serve: dropped by the existing pass
+                route_in("only-foreign", "proj-2", &["p1-private"]),
+            ],
+            ..Default::default()
+        };
+        let warnings = cfg.sanitize_for_snapshot();
+        let targets = |model: &str| -> Option<Vec<String>> {
+            cfg.routes
+                .iter()
+                .find(|r| r.model == model)
+                .map(|r| r.targets.iter().map(|t| t.provider.clone()).collect())
+        };
+        assert_eq!(targets("ok").unwrap(), ["p1-private", "shared"]);
+        assert_eq!(targets("crossed").unwrap(), ["shared"]);
+        assert!(targets("only-foreign").is_none(), "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'crossed'") && w.contains("'p1-private'")),
+            "{warnings:?}"
+        );
+        // the snapshot itself is still valid
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn sanitize_prunes_a_group_member_scoped_to_a_project_the_group_is_not() {
+        let member = |provider: &str| GroupMember {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let group = |slug: &str, project: Option<&str>| ProviderGroupConfig {
+            name: slug.to_string(),
+            slug: Some(slug.to_string()),
+            members: vec![member("p1-private"), member("shared")],
+            tenancy: Some(Tenancy {
+                org_id: "org-1".to_string(),
+                project_id: project.map(str::to_string),
+            }),
+            project_scoped: project.is_some(),
+            ..Default::default()
+        };
+        let mut cfg = GatewayConfig {
+            providers: vec![
+                scoped_provider("p1-private", "org-1", Some("proj-1")),
+                scoped_provider("shared", "org-1", None),
+            ],
+            provider_groups: vec![
+                group("own", Some("proj-1")),
+                group("other", Some("proj-2")),
+                // an org-wide group would hand the private provider to every project
+                group("wide", None),
+            ],
+            ..Default::default()
+        };
+        let warnings = cfg.sanitize_for_snapshot();
+        let members = |slug: &str| -> Vec<String> {
+            cfg.provider_groups
+                .iter()
+                .find(|g| g.slug.as_deref() == Some(slug))
+                .unwrap()
+                .members
+                .iter()
+                .map(|m| m.provider.clone())
+                .collect()
+        };
+        assert_eq!(members("own"), ["p1-private", "shared"]);
+        assert_eq!(members("other"), ["shared"]);
+        assert_eq!(members("wide"), ["shared"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_scoped_provider_admits_only_keys_of_its_project() {
+        let owned = |project: Option<&str>| {
+            Some(Tenancy {
+                org_id: "org-1".to_string(),
+                project_id: project.map(str::to_string),
+            })
+        };
+        let scoped = owned(Some("proj-1"));
+        assert!(Tenancy::admits_scoped(scoped.as_ref(), "org-1", "proj-1"));
+        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-1", "proj-2"));
+        // an org with no project is not the project
+        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-1", ""));
+        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-2", "proj-1"));
+        // the operator's own key carries no org and is not narrowed
+        assert!(Tenancy::admits_scoped(scoped.as_ref(), "", ""));
+        // org-wide: every project of the org, nobody outside it
+        let wide = owned(None);
+        assert!(Tenancy::admits_scoped(wide.as_ref(), "org-1", "proj-2"));
+        assert!(Tenancy::admits_scoped(wide.as_ref(), "org-1", ""));
+        assert!(!Tenancy::admits_scoped(wide.as_ref(), "org-2", "proj-2"));
+        assert!(Tenancy::admits_scoped(None, "org-2", "proj-2"));
     }
 
     // #634: a provider api_base pointed at instance metadata turns the gateway

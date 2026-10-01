@@ -35,6 +35,13 @@ pub struct RouteEntry {
     /// which guardrail rules apply on this route, resolved once here so the
     /// request path never re-derives it from names (#590)
     pub guardrails: rolter_core::guardrails::RuleSelection,
+    /// the project whose keys alone may use this route because a provider behind
+    /// it is scoped to that project (#1919); `None` when every provider it
+    /// reaches is org-wide. Separate from the route's own `project_only` flag:
+    /// that one is an admin's choice about the route, this one follows the
+    /// provider's, so a route in an org-wide catalogue still cannot hand a
+    /// project's private credential to another project's key
+    pub project_scope: Option<String>,
 }
 
 impl RouteEntry {
@@ -59,6 +66,15 @@ impl RouteEntry {
                 if !key.org_id.is_empty() && key.project_id != project {
                     return false;
                 }
+            }
+        }
+        // a provider or group scoped to a project serves that project's keys
+        // only, whether the key names it with `slug/model` or reaches it
+        // through a route. a key with an org but no project is refused too; a
+        // key from the gateway's own config file is the operator's
+        if let (Some(key), Some(scope)) = (key, self.project_scope.as_deref()) {
+            if !key.org_id.is_empty() && key.project_id != scope {
+                return false;
             }
         }
         true
@@ -475,9 +491,15 @@ impl Snapshot {
                     build_with_stats(route.strategy, &w, &s)
                 })
                 .collect();
+            let project_scope = route
+                .targets
+                .iter()
+                .chain(route.variants.iter().flat_map(|v| v.targets.iter()))
+                .find_map(|t| providers.get(&t.provider).and_then(provider_scope));
             routes.insert(
                 route.model.clone(),
                 RouteEntry {
+                    project_scope,
                     guardrails: compiled_guardrails.resolve_selection(&route.advanced.guardrails),
                     route: route.clone(),
                     balancer,
@@ -634,9 +656,12 @@ impl Snapshot {
                 .providers
                 .get(provider_name)
                 .and_then(|provider| provider.tenancy.clone());
+            // nor does its project scope, which `tenancy.project_id` carries for
+            // a provider: the synthetic route is narrowed to that project
+            let scope = self.providers.get(provider_name).and_then(provider_scope);
             // a single target has nothing to balance between, so a per-request
             // balancer is fine here
-            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy));
+            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy, scope));
         }
         if let Some(group) = self.groups_by_slug.get(slug) {
             // one target per member; each rewrites to its own upstream model
@@ -653,6 +678,19 @@ impl Snapshot {
             if targets.is_empty() {
                 return None;
             }
+            // a group's scope is its own; failing that, a scoped member still
+            // narrows it, so an org-wide group a row edit left holding one
+            // cannot hand that provider to another project
+            let scope = group
+                .tenancy
+                .as_ref()
+                .and_then(|t| t.project_id.clone())
+                .or_else(|| {
+                    group
+                        .members
+                        .iter()
+                        .find_map(|m| self.providers.get(&m.provider).and_then(provider_scope))
+                });
             // the group's own balancer, so the rotation advances across
             // requests instead of restarting on each one (#1655)
             return Some(self.synthetic_route(
@@ -661,6 +699,7 @@ impl Snapshot {
                 targets,
                 self.group_balancers.get(slug).cloned(),
                 group.tenancy.clone(),
+                scope,
             ));
         }
         None
@@ -680,6 +719,7 @@ impl Snapshot {
         targets: Vec<Target>,
         balancer: Option<Arc<dyn LoadBalancer>>,
         tenancy: Option<rolter_core::Tenancy>,
+        project_scope: Option<String>,
     ) -> RouteEntry {
         let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
@@ -702,6 +742,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
+            project_scope,
             route,
             balancer,
             variant_balancers: Vec::new(),
@@ -710,6 +751,12 @@ impl Snapshot {
             guardrails: Default::default(),
         }
     }
+}
+
+/// The project a provider is scoped to, if any. For a provider the tenancy's
+/// `project_id` is the scope, where on a route it is the route's own project.
+fn provider_scope(provider: &rolter_core::ProviderConfig) -> Option<String> {
+    provider.tenancy.as_ref()?.project_id.clone()
 }
 
 /// Re-denominate a price into `base`, or `None` when the pair has no rate.
@@ -1490,6 +1537,7 @@ mod tests {
                 },
             ],
             tenancy: None,
+            ..Default::default()
         });
         // a group whose slug collides with a provider slug is dropped
         config.provider_groups.push(ProviderGroupConfig {
@@ -1502,6 +1550,7 @@ mod tests {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         });
         // an empty group never routes
         config.provider_groups.push(ProviderGroupConfig {
@@ -1510,6 +1559,7 @@ mod tests {
             strategy: Default::default(),
             members: Vec::new(),
             tenancy: None,
+            ..Default::default()
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1559,6 +1609,7 @@ mod tests {
             strategy,
             members,
             tenancy: None,
+            ..Default::default()
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1638,6 +1689,7 @@ mod tests {
                     })
                     .collect(),
                 tenancy: None,
+                ..Default::default()
             });
         }
         let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());

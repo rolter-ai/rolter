@@ -68,6 +68,8 @@ The readiness endpoint answers a different question: can _this_ instance serve t
     | `migrations` | Every migration embedded in this binary is applied to the database |
     | `kek` | `ROLTER_KEK` parses when it is set (reported `not configured` when unset, which is not a failure) |
 
+    A check that fails reports `unavailable` rather than the database driver's error, since this endpoint answers without authentication. The detail is in the control plane's log.
+
     Redis and ClickHouse are **not** checked. The control plane serves configuration without either, so their absence is degraded, not unready — removing every control pod from the Service because analytics is down would be a strictly worse outage.
 
   </Tab>

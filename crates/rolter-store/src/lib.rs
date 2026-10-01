@@ -310,6 +310,7 @@ mod tests {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         }
     }
 

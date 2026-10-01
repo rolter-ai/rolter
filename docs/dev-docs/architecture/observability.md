@@ -588,9 +588,11 @@ connectors, not on all rows (#2364): none at all and all switched off are two
 different empty states, and neither fetches a document. A card's edit sheet (#2101)
 sends one `PUT` to the connector's id and carries the fields it has no control for
 (`enabled`, `auth_secret_ref`) back as found, since the update replaces the whole
-row. The update handler keeps a stored `managed_auth_secret` when the body omits it,
-refuses an empty one, so the secret cannot be cleared, and does not drop it when the
-endpoint moves to another origin the way an alert channel does. `sampling_rate` becomes a `probabilistic_sampler`
+row. The update handler keeps a stored `managed_auth_secret` when the body omits it
+and refuses an empty one, but, as `update_channel` does for an alert channel, clears
+the ciphertext and nonce together when the endpoint moves to another scheme, host or
+port and the body brings no new secret (#2403); the audit entry carries
+`secret_cleared`, never the endpoint. `sampling_rate` becomes a `probabilistic_sampler`
 processor scoped to that connector's own pipeline, since sampling is now the
 collector's decision, applied independently per destination rather than once
 for the whole deployment. A managed secret (`managed_auth_secret`) is decrypted
@@ -734,6 +736,14 @@ goes to the log as `alert signal query failed`.
 - Writes are **async and batched off the hot path** so logging never adds request latency.
 - The dashboard queries ClickHouse for usage, spend, latency percentiles and error rates, sliced by org/team/project/key/model.
 - **Who reads it** is decided per row: every analytics and health query binds the caller's tenancy, and captured bodies are masked below the `request_payload` floor (member, or viewer on a project that allows it). See [Who reads the request log](security.md#who-reads-the-request-log-1820).
+
+### ClickHouse call timeouts (#1951)
+
+Every ClickHouse call the control plane makes goes through one `reqwest` client built in `crates/rolter-control/src/analytics.rs`, with a 3s connect timeout and a 15s whole-request timeout. That covers the analytics, health, MCP-log and `/api/v1/me/usage` reads, the alert signal reads, and the MCP and UX-event ingest inserts. Without a bound, a ClickHouse that accepted the connection and stopped answering held the dashboard request (or the alert pass) open indefinitely. The gateway's client has the same connect bound (#2373).
+
+- **Why 15s.** Above what an interactive read over the indexed window needs, short enough that the operator sees an error rather than a spinner, and under the 30s `QUERY_TIMEOUT` the alert evaluator keeps as an outer backstop. The log-retention `alter table` statements run under their own 60s bound, since an admin triggers them and they are not an interactive read.
+- **How it surfaces.** A read answers `502` with the curated `analytics query failed` message and `analytics_query_failed` code, never driver text. An ingest insert goes through `ingest_failure::insert_failed`, the same path as any other insert failure. The alert evaluator records the rule as `error` with `last_error = "analytics query timed out"` and keeps the last value it read.
+- **No credentials in logs.** Transport errors drop their URL (`reqwest::Error::without_url`) before they are logged or stored, because `CLICKHOUSE_URL` may carry userinfo.
 
 ### Time bounds on the read API
 

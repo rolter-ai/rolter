@@ -11,10 +11,11 @@
 name: rolter
 
 # the image all three rolter services run. `CARGO_FEATURES=postgres` builds the
-# control plane with its postgres-backed store, CRUD API and migrations. the
-# Dockerfile defaults to no features, and an image built that way ignores
-# ROLTER_DATABASE_URL, keeps everything in memory and has none of the dashboard's
-# create, edit and delete screens, however healthy the postgres beside it is
+# control plane with its postgres-backed store, CRUD API and migrations. it is
+# also the Dockerfile default now; it is spelled out here so this file keeps
+# working if that default ever changes, since an image built without it ignores
+# ROLTER_DATABASE_URL and keeps everything in memory, however healthy the
+# postgres beside it is
 x-rolter-build: &rolter-build
   context: ..
   dockerfile: docker/Dockerfile

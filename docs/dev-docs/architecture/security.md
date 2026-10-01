@@ -205,17 +205,30 @@ address produces. The resolver reads the policy from a live handle, so a hot
 reload re-tunes enforcement without discarding pooled connections.
 
 The control plane enforces the policy at connect time too. Its own requests to
-operator-supplied URLs (the connector test probe, alert channel delivery, and
-MCP OAuth discovery and token exchange) check the stored URL when it is saved
+operator-supplied URLs (the provider and connector test probes, alert channel
+delivery, and MCP OAuth discovery and token exchange) check the stored URL when it is saved
 and again before each request, and every one of them is sent through the client
 built by `crates/rolter-control/src/egress_client.rs`. That builder installs a
 resolver that drops the addresses `EgressPolicy::filter_resolved` denies, the
 same function the gateway's `EgressResolver` calls, so the two planes cannot
 disagree about an address. It also refuses redirects, so a `3xx` cannot hand a
-request to a host the check never saw; the connector probe used to send through
-the shared `ControlState::http` client, which follows up to ten. The client is
+request to a host the check never saw; the provider and connector probes used to
+send through the shared `ControlState::http` client, which follows up to ten and
+classifies only IP literals. The client is
 built per request from the deployment's policy rather than pooled, since these
-calls are rare.
+calls are rare. The provider probe has never used a provider's `egress_proxy`,
+and still sends direct.
+
+Two paths intentionally keep the plain `ControlState::http` client: the `/gw/*`
+reverse proxy, and the ClickHouse client in `analytics.rs`. Both target an
+address the operator configured for the deployment (the gateway address and the
+ClickHouse URL), not a per-row URL a tenant can write, so there is no
+attacker-chosen destination to classify.
+
+One caveat applies to every connect-time check: when `HTTP_PROXY` or
+`HTTPS_PROXY` is configured for outbound traffic, the proxy resolves the target
+name, not the egress resolver, so the check covers only direct connections.
+Enforce the policy on the proxy itself in that deployment.
 
 ## Control-plane input validation
 
@@ -303,9 +316,11 @@ to the co-hosted control plane. The bind is a flag on that command, not an
 image-wide variable, so a `rolter-gateway` or `rolter-control` run from the
 image keeps its own default.
 
-## What the open config view strips (#1938)
+## What the dashboard's config view strips (#1938, #1840)
 
-`GET /api/v1/config` answers without a session, for the dashboard's config
+`GET /api/v1/config` answers a signed-in caller of any role (or the admin
+token, or anyone in open mode) and nobody else; see [The public route
+allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
 screen. It serializes the same `GatewayConfig` the store loads for the gateway's
 `/internal/snapshot`, and on a Postgres store holding `ROLTER_KEK` that load has
 already unsealed every sealed secret. So `redact_config_for_dashboard`
@@ -325,13 +340,94 @@ document leaves the control plane:
 
 `dashboard_config_carries_no_secrets` seeds one of each and fails if any
 survives, so a new secret-bearing field belongs in that test as well as in the
-function. Whether the redacted topology may stay public at all is #1840.
+function. The topology that survives redaction (provider names, `api_base`
+hosts and ports, routes, groups, problem strings) is why the document is behind
+a session at all.
+
+## The public route allowlist (#1840)
+
+`GET /api/v1/config` and `GET /api/v1/config/problems` used to sit on the open
+router. Redaction removed every credential, but the document still named each
+provider, the internal hostname and port in its `api_base`, every route and
+group, and `/config/problems` repeated those names in prose. Anyone who could
+reach the control plane's port could map the deployment's upstreams.
+
+**Decision.** Both endpoints, and the three other static reads that had no
+reason to be anonymous (`/api/v1/currency`, `/api/v1/provider-kinds`,
+`/api/v1/roles`), require a session of any role. They take the `AnySession`
+extractor (`crates/rolter-control/src/session_guard.rs`), which resolves a
+caller exactly as the analytics routes do: open mode passes everyone, the admin
+token passes, and with a database a live session of any role passes. Without a
+database the admin token is the only credential that exists. An anonymous
+caller gets `401`, and the refusal body names nothing.
+
+The router has no blanket auth layer: a handler is protected only because it
+takes an extractor. A route added without one is open and nothing says so,
+which is how the config view stayed open. So the routes that are _meant_ to be
+anonymous are one list, `PUBLIC_ROUTES` in
+`crates/rolter-control/src/public_routes.rs`, each with a reason that says what
+the route reveals and why that is acceptable. Today:
+
+| Route                                                                   | Why it is open                                                                                      |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below)          |
+| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                                       |
+| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                         |
+| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                                   |
+| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                                       |
+| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                                       |
+| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                                    |
+| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes                  |
+| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`                      |
+| `GET\|POST\|PUT\|PATCH\|DELETE /gw/{path}`                              | the Playground and the status pill reach the gateway through it; the gateway checks the virtual key |
+
+Routes with their own non-session credential (the `/internal/*` token, the
+SCIM bearer) are not on the list: anonymously they answer `401`, and the guard requires exactly that.
+
+**How the guard works.** Three tests in `public_routes.rs`:
+
+- `no_route_answers_an_anonymous_caller_unless_it_is_allowlisted` builds the
+  real router with an admin token set (so it is not open mode), takes every
+  `(method, path)` from the served OpenAPI document, which
+  `every_registered_route_is_documented` already pins to the `.route(...)` calls
+  in the source, and sends each one with no credentials. Anything not `401` must
+  be in `PUBLIC_ROUTES`, and the failure names the route. It also fails on an
+  allowlist entry whose route answers `404`, so the list cannot outlive a
+  route. It runs without a database (a lazy pool that never connects) in both
+  feature sets; the default build skips routes that need a database, the
+  `postgres` build covers them all.
+- `openapi_public_marking_matches_the_allowlist` requires `Op::public()` in
+  `openapi.rs` (rendered as `security: []`) and `PUBLIC_ROUTES` to agree in both
+  directions.
+- `the_allowlist_is_sorted_unique_and_explained` rejects duplicates and an
+  empty-looking reason.
+
+The database-backed `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller`
+in `tests/control_integration.rs` (#1820) is the same idea over real sessions
+for GETs and stays as a second layer.
+
+To open a route deliberately: add it to `PUBLIC_ROUTES` with a reason, and mark
+the operation `.public()` in `openapi.rs`. To close one: take `AnySession`,
+`Principal` or `CurrentUser` in the handler, and drop both.
+
+**Trimmed with it.** `/readyz` answered the sqlx error text on failure, which
+can name the database host and port to anyone; it now answers `unavailable` and
+logs the detail. The `/gw` proxy's `502` body echoed the reqwest error, which
+names the gateway's internal address; it now says `gateway unreachable` and logs.
+
+**Left as is, on purpose.** `/gw/*` stays anonymous because the gateway is what
+authenticates it (and the status pill polls the gateway's `/readyz` without a
+key). That is only as safe as the gateway being no more reachable than the
+control plane's port; if a gateway is deliberately kept off the internet while
+the control plane is not, the proxy widens its exposure. Moving it behind a
+session needs a way to carry both the session and the virtual key, which is a
+design change rather than a guard.
 
 ## Who reads the request log (#1820)
 
 `/api/v1/analytics/*` (the request log, usage, spend and attribution rollups)
 and `/api/v1/health/*` (provider uptime, MTTR, the failure timeline) are merged
-onto the part of the router that also serves the probes and `/api/v1/config`,
+onto the part of the router that also serves the probes,
 and until #1820 that made them open: neither resolved a principal, so a caller
 with no credentials read every tenant's request logs — captured prompt and
 completion bodies included — on a deployment whose CRUD API was enforcing RBAC.
@@ -411,8 +507,8 @@ What keeps this from regressing is
 `crates/rolter-control/tests/control_integration.rs`: it walks the served
 `/openapi.json` with no credentials and a forged bearer and requires a `401`
 from every GET the document does not mark public. The routes that are open by
-design (`/api/v1/ping`, `/roles`, `/provider-kinds`, `/currency`, `/config`,
-`/config/problems`) are marked `.public()` in `openapi.rs` for that reason, and
+design are listed in `PUBLIC_ROUTES` (see above) and marked `.public()` in
+`openapi.rs`, and
 `crates/rolter-control/tests/analytics_scoping.rs` pins the row and body rules
 against a real ClickHouse.
 
@@ -481,8 +577,9 @@ with a `409` that does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
-narrow a route to its own project (`project_only`), which narrows that route
-but not the `slug/model` address of the provider behind it (#1919).
+narrow a route to its own project (`project_only`), and scope a provider or
+group to one project, which keeps its `slug/model` address and every route
+behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
