@@ -29,9 +29,10 @@ use rolter_store::postgres::models::{
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
-    BusinessUnitRepo, CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
-    PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
-    RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
+    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo,
+    VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -229,6 +230,9 @@ pub(crate) enum ApiError {
     Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
+    /// a 409 a client can branch on: `code` is part of the API and never
+    /// renamed, `message` is for the person reading it
+    CodedConflict { code: &'static str, message: String },
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -256,6 +260,10 @@ impl IntoResponse for ApiError {
             Self::TooManyAttempts(remaining) => Some(*remaining),
             _ => None,
         };
+        let code = match &self {
+            Self::CodedConflict { code, .. } => Some(*code),
+            _ => None,
+        };
         let (status, message) = match self {
             Self::Core(err) => match &err {
                 Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
@@ -271,7 +279,9 @@ impl IntoResponse for ApiError {
                 }
             },
             Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
+            Self::Conflict(message) | Self::CodedConflict { message, .. } => {
+                (StatusCode::CONFLICT, message)
+            }
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
                 "missing or invalid credentials".to_string(),
@@ -285,11 +295,11 @@ impl IntoResponse for ApiError {
                 "too many rejected attempts; try again later".to_string(),
             ),
         };
-        let mut response = (
-            status,
-            Json(serde_json::json!({"error": {"message": message}})),
-        )
-            .into_response();
+        let mut error = serde_json::json!({"message": message});
+        if let Some(code) = code {
+            error["code"] = code.into();
+        }
+        let mut response = (status, Json(serde_json::json!({ "error": error }))).into_response();
         // say what the lock reads, so a client waits rather than polling. rounded
         // up, so a sub-second remainder never renders as `0`
         if let Some(retry_after) = retry_after {
@@ -2513,19 +2523,8 @@ async fn test_provider(
     }
 
     let (url, headers) = rolter_core::probe_request(parsed_kind, &api_base, "/");
-    let mut req = state
-        .http
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(10));
-    for (k, v) in headers {
-        req = req.header(k, v);
-    }
-    if let Some(secret) = &secret {
-        req = req.bearer_auth(secret);
-    }
-
     let started = std::time::Instant::now();
-    let outcome = req.send().await;
+    let outcome = send_provider_probe(&state.egress, &url, headers, secret.as_deref()).await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     let result = match outcome {
@@ -2563,6 +2562,32 @@ async fn test_provider(
     };
 
     Ok(Json(result))
+}
+
+/// Send the probe request through the connect-time egress client.
+///
+/// Not `ControlState::http`: that client classifies only IP literals and
+/// follows redirects, so a name that resolves to link-local, or an upstream
+/// answering `302 Location: http://169.254.169.254/`, would reach a denied
+/// address. The probe has never used the provider's `egress_proxy`, and still
+/// does not, so there is no proxy path to keep.
+async fn send_provider_probe(
+    egress: &std::sync::Arc<rolter_core::EgressPolicy>,
+    url: &str,
+    headers: impl IntoIterator<Item = (String, String)>,
+    secret: Option<&str>,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let client = crate::egress_client::builder(egress)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let mut req = client.get(url);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Some(secret) = secret {
+        req = req.bearer_auth(secret);
+    }
+    req.send().await
 }
 
 async fn list_providers(
@@ -5198,6 +5223,20 @@ struct UpdateUser {
     deactivated: Option<bool>,
 }
 
+/// stable code of the 409 for a write that would leave the deployment with no
+/// active superadmin account (#2344)
+pub(crate) const LAST_SUPERADMIN: &str = "last_superadmin";
+
+/// the refusal for a write that would leave no active superadmin. the admin
+/// token is not an account, so it never counts as the one that remains
+pub(crate) fn last_superadmin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_SUPERADMIN,
+        message: "this is the last active superadmin; make another account superadmin first"
+            .to_string(),
+    }
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -5230,19 +5269,25 @@ async fn update_user(
         }
     }
 
-    let mut user = UserRepo(pool)
-        .update(
+    // one transaction under the superadmin lock, so the guard and the write
+    // cannot be split by a concurrent demotion (#2344)
+    let user = match UserRepo(pool)
+        .update_account(
             id,
             email.as_deref(),
             password_hash.as_deref(),
             body.is_superadmin,
+            body.deactivated,
         )
-        .await?;
+        .await?
+    {
+        LockoutGuard::Done(user) => user,
+        LockoutGuard::WouldLockOut => return Err(last_superadmin()),
+    };
 
     let mut sessions_revoked = 0;
     let mut detail = serde_json::json!({"email": user.email, "deactivated": body.deactivated});
     if let Some(deactivated) = body.deactivated {
-        user = UserRepo(pool).set_deactivated(id, deactivated).await?;
         if deactivated {
             // cut existing access immediately, not just at token expiry
             sessions_revoked = SessionRepo(pool).delete_for_user_except(id, None).await?;
@@ -5296,7 +5341,9 @@ async fn delete_user(
         .into_iter()
         .filter_map(|(_membership, org, _team)| org)
         .collect();
-    UserRepo(pool(&state)).delete(id).await?;
+    if UserRepo(pool(&state)).delete(id).await? == LockoutGuard::WouldLockOut {
+        return Err(last_superadmin());
+    }
     let detail = serde_json::json!({"personal_keys": personal_keys});
     // an account that belonged to no org still gets its row, with none
     let scopes: Vec<Option<Uuid>> = if orgs.is_empty() {
@@ -6000,5 +6047,55 @@ mod error_body_tests {
             .as_str()
             .unwrap()
             .contains("team 42"));
+    }
+}
+
+#[cfg(test)]
+mod probe_egress_tests {
+    use super::*;
+
+    /// #2392: a name that resolves only to a denied address is never dialled.
+    #[tokio::test]
+    async fn a_provider_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let outcome = send_provider_probe(
+            &crate::egress_client::testing::deny_loopback(),
+            &listener.url("/v1/models"),
+            Vec::new(),
+            None,
+        )
+        .await;
+        assert!(outcome.is_err_and(|e| e.is_connect()));
+        assert_eq!(listener.accepted(), 0);
+    }
+
+    /// #2392: an upstream that passes the check cannot bounce the probe on.
+    #[tokio::test]
+    async fn a_redirect_from_the_provider_is_not_followed() {
+        let target = crate::egress_client::testing::Counter::start().await;
+        let location = format!("http://127.0.0.1:{}/", target.port);
+        let app = axum::Router::new().fallback(move || {
+            let location = location.clone();
+            async move {
+                (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, location)],
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let base = format!(
+            "http://{}/v1/models",
+            listener.local_addr().expect("an address")
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let response = send_provider_probe(&Default::default(), &base, Vec::new(), None)
+            .await
+            .expect("the upstream answers");
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(target.accepted(), 0);
     }
 }
