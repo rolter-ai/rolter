@@ -3002,13 +3002,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "dashboardAuth": "Password protect the dashboard",
-      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
-      "credentialRef": "Credential reference",
-      "managedSecret": "Managed secret",
-      "secretConfigured": "configured — enter to replace",
-      "secretPlaceholder": "Enter a secret to store",
-      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
       "enforceVk": "Enforce Virtual Keys on Inference",
       "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
@@ -3050,10 +3043,6 @@
         "virtualKeys": {
           "label": "Virtual keys are no longer enforced on inference",
           "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
-        "dashboardAuth": {
-          "label": "The dashboard is no longer password protected",
-          "effect": "The dashboard stops requiring its credential to open."
         },
         "bypassRoute": {
           "label": "Auth bypass route added:",
