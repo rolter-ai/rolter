@@ -86,9 +86,10 @@ async fn forward(
 }
 
 fn bad_gateway(err: &dyn std::fmt::Display) -> Response {
+    tracing::warn!(error = %err, "control plane request failed");
     (
         StatusCode::BAD_GATEWAY,
-        Json(json!({"error": {"message": format!("control plane unreachable: {err}")}})),
+        Json(json!({"error": {"message": "control plane unreachable"}})),
     )
         .into_response()
 }
@@ -162,5 +163,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 502);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["message"], "control plane unreachable");
     }
 }
