@@ -29,12 +29,12 @@ screen and one filter.
 
 ## F2 — make the numbers trustworthy
 
-| #    | step                                                | where                                                                                  | expect                                                                         | status                                      |
-| ---- | --------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------- |
-| F2.1 | find traffic that counted as free                   | **Dashboard** unpriced share, **LLM Logs** unpriced label and **Unpriced only** filter | every model with no price row named                                            | verified                                    |
-| F2.2 | price it                                            | **Models → Pricing Overrides**                                                         | refused for an org admin: the price catalog is deployment-wide, a superadmin's | verified (by design); ask the platform team |
-| F2.3 | decide what unpriced traffic does to a budget       | the budget's unpriced policy                                                           | count it as zero, or refuse it                                                 | works                                       |
-| F2.4 | keep a standing view of "spend by unit, this month" | —                                                                                      | a saved filter preset                                                          | gap — #1825                                 |
+| #    | step                                                | where                                                                                  | expect                                                                         | status                                                 |
+| ---- | --------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| F2.1 | find traffic that counted as free                   | **Dashboard** unpriced share, **LLM Logs** unpriced label and **Unpriced only** filter | every model with no price row named                                            | verified                                               |
+| F2.2 | price it                                            | **Models → Pricing Overrides**                                                         | refused for an org admin: the price catalog is deployment-wide, a superadmin's | verified (by design); ask the platform team            |
+| F2.3 | decide what unpriced traffic does to a budget       | the budget's unpriced policy                                                           | count it as zero, or refuse it                                                 | works                                                  |
+| F2.4 | keep a standing view of "spend by unit, this month" | **Dashboard → Saved views**                                                            | a saved filter preset                                                          | works — #1825, #2451 (the Dashboard's **Saved views**) |
 
 ## F3 — set limits
 
