@@ -36,6 +36,12 @@ export interface ComboboxProps {
   placeholder?: string;
   /** offer an × that resets the selection — for an optional field */
   clearable?: boolean;
+  /**
+   * accept a value that is not in `options`: the typed text is offered as a
+   * last row, and a `value` outside the list reads as itself — for a field
+   * whose addresses are open-ended, like `group-slug/model`
+   */
+  allowCustom?: boolean;
   disabled?: boolean;
   /**
    * control height. `default` matches Input; `sm` is the compact toolbar
@@ -197,6 +203,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     onChange,
     placeholder,
     clearable = false,
+    allowCustom = false,
     disabled = false,
     size = "default",
     id,
@@ -231,11 +238,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
   const listbox = React.useRef<HTMLDivElement>(null);
   React.useImperativeHandle(ref, () => input.current as HTMLInputElement);
 
-  const selected = options.find((o) => o.value === value);
-  const filtered = React.useMemo(
-    () => (query ? options.filter((o) => matches(o, query)) : options),
-    [options, query],
-  );
+  const selected =
+    options.find((o) => o.value === value) ??
+    (allowCustom && value ? { value, label: value } : undefined);
+  const filtered = React.useMemo(() => {
+    const found = query ? options.filter((o) => matches(o, query)) : options;
+    const typed = query?.trim();
+    if (!allowCustom || !typed || options.some((o) => o.value === typed)) return found;
+    return [...found, { value: typed, label: t("common.combobox.use", { value: typed }) }];
+  }, [options, query, allowCustom, t]);
   const sections = React.useMemo(() => layout(filtered), [filtered]);
   const enabled = React.useMemo(
     () => filtered.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0),

@@ -117,6 +117,7 @@
       "placeholder": "Select…",
       "options": "Options",
       "clear": "Clear selection",
+      "use": "Use “{{value}}”",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
@@ -3226,7 +3227,9 @@
         "title": "Model",
         "desc": "Used when a request arrives without a model. Leave this empty to keep rejecting such requests instead of silently picking one for the caller.",
         "defaultModel": "Default model",
-        "defaultModelHint": "A routed model or group-slug/model address"
+        "defaultModelHint": "A routed model or group-slug/model address",
+        "placeholder": "Leave empty to reject requests that arrive without a model",
+        "modelsUnavailable": "Couldn’t load the list of models. You can still type an address."
       },
       "timeoutsNote": "Upstream timeouts and the retry budget are deployment-wide and live under <0>Settings › Performance Tuning</0>.",
       "providerDefault": "provider default",
