@@ -1165,6 +1165,33 @@ await expect(within(canvasElement).getByRole("button")).toBeDisabled();
 One thing the check deliberately does not see, and which a reviewer still has
 to: a data query more than one statement after the sheet opened.
 
+#### Text inside a `CodeBlock` is a container assertion
+
+`CodeBlock` paints its value as one text node and swaps it for token and line
+spans once the lazy highlight chunk resolves
+([#2644](https://github.com/rolter-ai/rolter/issues/2644)). So a
+`getByText(/"model": "gpt-4o"/)` or `findByText("curl https://…")` aimed at code
+passes only while it wins the race against that chunk: afterwards the key, the
+colon and the value sit in separate spans and no single element carries the
+string. The same story is green locally, where the chunk is cached, and red in
+CI. Only `language="text"` and values past `HIGHLIGHT_CHAR_LIMIT` never
+highlight.
+
+Assert on the container's text instead, and let it retry:
+
+```ts
+const body = within(drawer).getByRole("region", { name: /^Request — / });
+await waitFor(() => expect(body).toHaveTextContent(/"model": "gpt-4o"/));
+```
+
+`CodeBlock` names its scroll region from `label`, so the region is the handle.
+`toHaveTextContent` reads `textContent`, which is the same before and after
+highlighting; the `waitFor` is for the data behind the block, not the chunk. A
+matcher function over `textContent` is the alternative when a query is wanted.
+`check:waits` cannot see this: whether a string lives inside a `CodeBlock`
+depends on the page, not on the line, and a heuristic over the argument would
+flag prose as often as code. A reviewer still has to.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
