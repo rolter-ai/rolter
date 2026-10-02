@@ -43,8 +43,12 @@ test("virtual key mint → reveal → revoke", async ({ page }) => {
   // revoke — trash opens a confirm dialog, confirm removes the row
   await revoke.click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText(t("pages.virtualKeys.deleteTitle"))).toBeVisible();
-  await dialog.getByRole("button", { name: t("common.delete"), exact: true }).click();
+  await expect(
+    dialog.getByText(t("pages.virtualKeys.confirm.deleteTitle", { name }), { exact: true }),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: t("pages.virtualKeys.confirm.deleteConfirm"), exact: true })
+    .click();
 
   await expect(revoke).toHaveCount(0);
 });
