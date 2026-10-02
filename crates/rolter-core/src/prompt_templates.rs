@@ -71,10 +71,12 @@ pub enum DecoratorPosition {
 pub struct TemplateVariable {
     /// variable name; `[A-Za-z_][A-Za-z0-9_]*`
     pub name: String,
-    /// the caller must supply this variable; mutually exclusive with `default`
+    /// the caller must supply this variable, whether or not a decorator
+    /// references it; mutually exclusive with `default`
     #[serde(default)]
     pub required: bool,
-    /// value used when the caller omits this variable
+    /// value used when the caller omits this variable; an optional variable
+    /// with no default renders as the empty string
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
 }
@@ -362,7 +364,7 @@ pub struct RenderedMessage {
 pub enum RenderError {
     /// the caller supplied a variable the template does not declare
     UnknownVariable { template: String, name: String },
-    /// a required variable was not supplied and has no default
+    /// a variable declared `required` was not supplied
     MissingVariable { template: String, name: String },
     /// a supplied variable value exceeded [`MAX_VARIABLE_LEN`]
     VariableTooLong { template: String, name: String },
@@ -497,13 +499,23 @@ impl CompiledTemplates {
         let mut rendered = Vec::new();
         for template in active {
             for var in &template.variables {
-                if let Some(value) = caller_vars.get(&var.name) {
-                    if value.len() > MAX_VARIABLE_LEN {
+                match caller_vars.get(&var.name) {
+                    Some(value) if value.len() > MAX_VARIABLE_LEN => {
                         return Err(RenderError::VariableTooLong {
                             template: template.id.clone(),
                             name: var.name.clone(),
                         });
                     }
+                    Some(_) => {}
+                    // the declared flag decides, whether or not a decorator
+                    // references the variable (#2280)
+                    None if var.required => {
+                        return Err(RenderError::MissingVariable {
+                            template: template.id.clone(),
+                            name: var.name.clone(),
+                        });
+                    }
+                    None => {}
                 }
             }
             for decorator in &template.decorators {
@@ -536,7 +548,10 @@ impl CompiledTemplates {
 }
 
 /// Resolve one variable for a template: a caller value wins, else the declared
-/// default, else a `MissingVariable` error when required (or undeclared).
+/// default, else the empty string for an optional variable. A required variable
+/// the caller omitted was already refused before rendering, so the only
+/// `MissingVariable` left here is a placeholder the template never declared,
+/// which [`PromptTemplatesConfig::validate`] keeps out of any snapshot.
 fn resolve_variable<'a>(
     template: &'a CompiledTemplate,
     name: &str,
@@ -545,10 +560,9 @@ fn resolve_variable<'a>(
     if let Some(value) = caller_vars.get(name) {
         return Ok(value.as_str());
     }
-    let declared = template.variables.iter().find(|v| v.name == name);
-    match declared.and_then(|v| v.default.as_deref()) {
-        Some(default) => Ok(default),
-        None => Err(RenderError::MissingVariable {
+    match template.variables.iter().find(|v| v.name == name) {
+        Some(declared) if !declared.required => Ok(declared.default.as_deref().unwrap_or("")),
+        _ => Err(RenderError::MissingVariable {
             template: template.id.clone(),
             name: name.to_string(),
         }),
@@ -764,6 +778,64 @@ mod tests {
                 name: "company".to_string(),
             }
         );
+    }
+
+    // the flag decides the refusal, not whether a decorator happens to use it:
+    // a template can require a value the caller must send even before any
+    // decorator renders it (#2280)
+    #[test]
+    fn required_variable_no_decorator_references_is_still_enforced() {
+        let ct = compiled(vec![template(
+            "t",
+            1,
+            &[],
+            vec![var("tenant", true, None)],
+            vec![decorator(
+                DecoratorRole::System,
+                DecoratorPosition::Prepend,
+                "no placeholders",
+            )],
+        )]);
+        let mut report = TemplateReport::default();
+        let err = ct.render("any", &vars(&[]), &mut report).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::MissingVariable {
+                template: "t".to_string(),
+                name: "tenant".to_string(),
+            }
+        );
+        assert!(report.applied.is_empty());
+
+        let out = ct
+            .render("any", &vars(&[("tenant", "acme")]), &mut report)
+            .unwrap();
+        assert_eq!(out[0].content, "no placeholders");
+    }
+
+    // an optional variable is one the caller may leave out, so leaving it out
+    // without a default renders it empty rather than calling it required (#2280)
+    #[test]
+    fn optional_variable_without_default_renders_empty() {
+        let ct = compiled(vec![template(
+            "t",
+            1,
+            &[],
+            vec![var("ticket", false, None)],
+            vec![decorator(
+                DecoratorRole::System,
+                DecoratorPosition::Prepend,
+                "Ticket [{{ticket}}]",
+            )],
+        )]);
+        let mut report = TemplateReport::default();
+        let out = ct.render("any", &vars(&[]), &mut report).unwrap();
+        assert_eq!(out[0].content, "Ticket []");
+
+        let out = ct
+            .render("any", &vars(&[("ticket", "T-7")]), &mut report)
+            .unwrap();
+        assert_eq!(out[0].content, "Ticket [T-7]");
     }
 
     #[test]
