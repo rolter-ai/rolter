@@ -472,7 +472,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         autoComplete="off"
         spellCheck={false}
         disabled={disabled}
-        title={title}
+        title={title ?? (!open ? selected?.label : undefined)}
         value={text}
         placeholder={(open && selected?.label) || placeholder || t("common.combobox.placeholder")}
         aria-label={ariaLabel}
@@ -492,7 +492,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
           else show();
         }}
         className={cn(
-          "flex w-full rounded-md border border-input bg-[color:var(--surface-subtle)] px-3 py-1 transition-colors",
+          "flex w-full truncate text-ellipsis rounded-md border border-input bg-[color:var(--surface-subtle)] px-3 py-1 transition-colors",
           "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           "disabled:cursor-not-allowed disabled:opacity-50",
           size === "sm" ? "h-8 text-xs" : "h-9 text-sm",
