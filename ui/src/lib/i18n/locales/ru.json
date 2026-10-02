@@ -475,7 +475,7 @@
     "plugins": "Плагины",
     "alerting": "Оповещения",
     "alerting-channels": "Каналы",
-    "alerting-rules": "Правила",
+    "alerting-rules": "Правила оповещений",
     "alerting-history": "История",
     "governance": "Управление доступом",
     "virtual-keys": "Виртуальные ключи",
@@ -489,7 +489,7 @@
     "access-profiles": "Профили доступа",
     "audit-logs": "Журнал аудита",
     "guardrails": "Ограничители",
-    "guardrail-rules": "Правила",
+    "guardrail-rules": "Правила ограничителей",
     "guardrail-providers": "Провайдеры",
     "cluster": "Конфигурация кластера",
     "adaptive-routing": "Адаптивная маршрутизация",
@@ -3774,7 +3774,7 @@
       "subtitle": "Вебхуки, на которые методом POST отправляются смены состояния оповещений."
     },
     "alerting-rules": {
-      "title": "Правила",
+      "title": "Правила оповещений",
       "subtitle": "Пороговые правила по сигналам шлюза, проверяются каждую минуту."
     },
     "alerting-history": {

@@ -463,7 +463,7 @@
     "plugins": "Plugins",
     "alerting": "Alerting",
     "alerting-channels": "Channels",
-    "alerting-rules": "Rules",
+    "alerting-rules": "Alert Rules",
     "alerting-history": "History",
     "governance": "Governance",
     "virtual-keys": "Virtual Keys",
@@ -477,7 +477,7 @@
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
     "guardrails": "Guardrails",
-    "guardrail-rules": "Rules",
+    "guardrail-rules": "Guardrail Rules",
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
@@ -3590,7 +3590,7 @@
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
-      "title": "Rules",
+      "title": "Alert Rules",
       "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {

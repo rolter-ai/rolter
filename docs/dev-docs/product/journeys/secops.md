@@ -54,10 +54,10 @@ trail or should leave a row in it.
 
 ## S4 — inspection in the request path
 
-| #    | step                                                   | where                  | expect                                                                               | status   |
-| ---- | ------------------------------------------------------ | ---------------------- | ------------------------------------------------------------------------------------ | -------- |
-| S4.1 | block a known-bad pattern before it reaches a provider | **Guardrails → Rules** | the request refused with `guardrail_blocked: <rule>`; the rejected text never stored | verified |
-| S4.2 | hand content to an external de-identification service  | the PII sanitizer      | the provider sees the substituted text; optionally reversed on the way back          | works    |
+| #    | step                                                   | where                            | expect                                                                               | status   |
+| ---- | ------------------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ | -------- |
+| S4.1 | block a known-bad pattern before it reaches a provider | **Guardrails → Guardrail Rules** | the request refused with `guardrail_blocked: <rule>`; the rejected text never stored | verified |
+| S4.2 | hand content to an external de-identification service  | the PII sanitizer                | the provider sees the substituted text; optionally reversed on the way back          | works    |
 
 ## S5 — keys and recovery
 
