@@ -72,7 +72,9 @@ impl RuleBody {
     // borrow their repo input from here rather than restating the field list
     fn as_input(&self) -> GuardrailRuleInput<'_> {
         GuardrailRuleInput {
-            name: &self.name,
+            // stored trimmed: route overrides are compared against the trimmed
+            // name at runtime, so a padded name would never match its override
+            name: self.name.trim(),
             enabled: self.enabled,
             source_type: &self.source_type,
             builtin: self.builtin.as_deref(),
