@@ -538,7 +538,7 @@ function ConnectButton({ server }: { server: McpServerRow }) {
       onClick={() => connect.mutate()}
     >
       {connect.isPending ? (
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+        <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
       ) : (
         <Link2 className="mr-2 h-4 w-4" aria-hidden />
       )}
@@ -1412,7 +1412,7 @@ export function McpLibrary() {
                   onClick={() => install.mutate(item)}
                 >
                   {install.isPending && install.variables?.slug === item.slug && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                   )}
                   {item.installed ? t("pages.mcpLibrary.installed") : t("pages.mcpLibrary.install")}
                 </Button>
@@ -1543,7 +1543,7 @@ export function ToolGroups() {
                   onClick={() => startDelete(group)}
                 >
                   {remove.isPending && remove.variables === group.id && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                   )}
                   {t("common.delete")}
                 </GatedButton>

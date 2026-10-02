@@ -566,7 +566,7 @@ function SessionKeyBar({
             disabled={!projectId || mint.isPending}
             onClick={() => mint.mutate()}
           >
-            {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {mint.isPending && <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />}
             {/* nothing to renew until rolter has minted one: a pasted key is
                 replaced, not renewed */}
             {state.key && state.minted ? t("playground.key.renew") : t("playground.key.mint")}
@@ -1054,7 +1054,11 @@ function ChatColumn({
           disabled={busy}
           aria-label={t("pages.playground.sendTo", { model: who })}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {busy ? (
+            <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
         </GatewayButton>
       </div>
     </div>
@@ -1266,7 +1270,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           </Button>
           <GatewayButton size="sm" onClick={run} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}{" "}
@@ -1354,7 +1358,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           />
           <GatewayButton size="sm" onClick={gen} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <ImageIcon className="h-3.5 w-3.5" />
             )}{" "}
@@ -1475,7 +1479,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               />
               <GatewayButton size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                 ) : (
                   <Mic className="h-3.5 w-3.5" />
                 )}{" "}
@@ -1515,7 +1519,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               disabled={busy}
             >
               {busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
               ) : (
                 <Upload className="h-3.5 w-3.5" />
               )}{" "}

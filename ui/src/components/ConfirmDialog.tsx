@@ -175,7 +175,7 @@ export function ConfirmDialog({
           disabled={busy || confirmDisabled}
           onClick={confirm}
         >
-          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {busy && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {confirmLabel}
         </Button>
       </DialogFooter>

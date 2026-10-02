@@ -369,7 +369,7 @@ export default function Users() {
                   onClick={() => (active ? setDeactivateTarget(user) : reactivate.mutate(user))}
                 >
                   {reactivate.isPending && reactivate.variables?.id === user.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                   ) : active ? (
                     <UserX className="h-3.5 w-3.5" />
                   ) : (
