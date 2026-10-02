@@ -393,6 +393,21 @@ export const ClearsSelection: Story = {
   },
 };
 
+// keyboard path: Backspace (or Delete) with nothing typed removes the selection
+export const ClearsFromTheKeyboard: Story = {
+  render: () => <Controlled initial="weighted" clearable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Strategy" });
+    await userEvent.tab();
+    await expect(input).toHaveFocus();
+    await userEvent.keyboard("{Backspace}");
+    await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+    await expect(input).toHaveValue("");
+    await expect(input).toHaveFocus();
+  },
+};
+
 function InSheet() {
   const [open, setOpen] = React.useState(true);
   const [value, setValue] = React.useState("round_robin");
