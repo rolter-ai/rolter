@@ -3060,7 +3060,6 @@ export function fetchDeploymentAuditLogPage(query: AuditLogQuery = {}): Promise<
 // security settings (superadmin-only global gateway policy)
 
 export interface SecuritySettingsDto {
-  virtual_key_required: boolean;
   allowed_origins: string[];
   allowed_headers: string[];
   required_headers: Record<string, string>;
@@ -3069,7 +3068,6 @@ export interface SecuritySettingsDto {
 }
 
 export interface UpdateSecuritySettingsInput {
-  virtual_key_required: boolean;
   allowed_origins: string[];
   allowed_headers: string[];
   required_headers: Record<string, string>;
