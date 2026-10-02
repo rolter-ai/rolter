@@ -99,7 +99,22 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No audit entries yet/);
-    await expect(canvas.queryByRole("button", { name: /Clear search/i })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: /Clear (search|filters)/i }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// a narrowed window that matches nothing is a filter answer, and its button
+// says what it clears: every filter, not only a search (#2294)
+export const NoMatch: Story = {
+  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("radio", { name: "Last 24h" }));
+    await expectEmptyState(canvasElement, /No entries match these filters/);
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expectEmptyState(canvasElement, /No audit entries yet/);
   },
 };
 
