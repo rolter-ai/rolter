@@ -1676,6 +1676,72 @@ export const HistoryDetailIsReadInFullInRussianOnAPhone: Story = {
   },
 };
 
+// --- #2428: the rule name is read in full too ---------------------------------
+
+const LONG_RULE = "production openai error rate";
+const LONG_RULE_RU = "производственная доля ошибок openai за пять минут";
+const LONG_RULE_ONE_TOKEN = "production-openai-chat-completions-error-rate-over-five-minutes";
+
+const longRuleRoutes = (name: string) =>
+  routes([
+    [
+      "/alert-notifications",
+      () => [
+        {
+          id: "note-long-rule",
+          rule_id: "rule-long",
+          channel_id: "chan-1",
+          state: "firing",
+          delivery_status: "delivered",
+          detail: "HTTP 200",
+          sent_at: "2026-08-11T12:00:00Z",
+        } satisfies AlertNotificationRow,
+      ],
+    ],
+    ["/alert-channels", () => CHANNELS],
+    ["/alert-rules", () => [{ ...RULES[0], id: "rule-long", name }]],
+  ]);
+
+async function expectRuleInFull(canvasElement: HTMLElement, tableName: string, name: string) {
+  const table = await within(canvasElement).findByRole("table", { name: tableName });
+  const [header] = within(table).getAllByRole("row");
+  const floor = header.getBoundingClientRect().width;
+  const cell = await within(table).findByText((_, el) => el?.textContent === name);
+  await expect(cell).toHaveAttribute("role", "cell");
+  await expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth);
+  await expect(getComputedStyle(cell).textOverflow).not.toBe("ellipsis");
+  // the rule is a middle column: bring it into the table's frame like a reader scrolling to it
+  cell.scrollIntoView({ inline: "center", block: "nearest" });
+  const text = document.createRange();
+  text.selectNodeContents(cell);
+  await expectInFrame(text, table);
+  await expect(cell.parentElement!.getBoundingClientRect().width).toBe(floor);
+}
+
+const ruleStory = (
+  view: typeof atWide | typeof atMobile,
+  locale: "en" | "ru",
+  name: string,
+): Story => ({
+  ...view,
+  globals: { ...view.globals, locale },
+  render: () => (
+    <Harness fetchStub={longRuleRoutes(name)}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const title = locale === "ru" ? ru.screens["alerting-history"].title : "Alert History";
+    await expectRuleInFull(canvasElement, title, name);
+  },
+});
+
+export const HistoryRuleNameIsReadInFullOnADesktop = ruleStory(atWide, "en", LONG_RULE);
+export const HistoryRuleNameIsReadInFullOnAPhone = ruleStory(atMobile, "en", LONG_RULE);
+export const HistoryOneTokenRuleNameBreaksOnAPhone = ruleStory(atMobile, "en", LONG_RULE_ONE_TOKEN);
+export const HistoryRuleNameIsReadInFullInRussianOnADesktop = ruleStory(atWide, "ru", LONG_RULE_RU);
+export const HistoryRuleNameIsReadInFullInRussianOnAPhone = ruleStory(atMobile, "ru", LONG_RULE_RU);
+
 // --- a control plane that answers with a 5xx: LoadError offers a retry --------
 
 /**
