@@ -80,6 +80,7 @@ import { useCan, useCapabilities } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { classifyLoadError } from "@/lib/load-error";
 import { afterRevoke, grantScope, higherRole, membershipScope, sameScope } from "@/lib/role-grants";
+import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -1178,10 +1179,6 @@ function AddRoleDialog({
 interface GrantTarget {
   grant: MembershipRow;
   user: UserRow;
-}
-
-function roleLabel(t: TFunction, role: string): string {
-  return t(`shell.roles.${role}`, { defaultValue: role });
 }
 
 /**
