@@ -73,6 +73,7 @@
   "common": {
     "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
+    "chartPoint": "Time",
     "clearSearch": "Clear search",
     "close": "Close",
     "copied": "Copied",

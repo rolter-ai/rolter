@@ -12,13 +12,23 @@ export interface Toast {
   title: string;
   /** optional second line — the control plane's own message on a failure */
   detail?: string;
+  /**
+   * milliseconds the card stays up while nobody is reading it, or `null` for
+   * until it is dismissed by hand. The `Toaster` runs the clock, so it can stop
+   * it while the pointer or focus is on the card (#2005, WCAG 2.2.1)
+   */
+  duration: number | null;
 }
 
 export interface ToastInput {
   tone?: ToastTone;
   title: string;
   detail?: string;
-  /** milliseconds before auto-dismiss; errors default to staying longer */
+  /**
+   * milliseconds before auto-dismiss. A success or an info lasts a few seconds;
+   * an error stays until dismissed, since it carries the control plane's message
+   * and has to be read, so only a caller that says otherwise gives it a clock
+   */
   duration?: number;
 }
 
@@ -30,41 +40,24 @@ interface ToastApi {
 
 const ToastContext = React.createContext<ToastApi | null>(null);
 
-// dismiss timings: a success is glanced at, a failure has to be read
-const SUCCESS_MS = 4000;
-const ERROR_MS = 8000;
+// a success is glanced at; a failure has no timer at all (see `ToastInput`)
+export const SUCCESS_MS = 4000;
 // how many stay on screen at once; older ones drop off first
 const MAX_VISIBLE = 4;
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = React.useState<Toast[]>([]);
   const counter = React.useRef(0);
-  const timers = React.useRef(new Map<number, ReturnType<typeof setTimeout>>());
 
   const dismiss = React.useCallback((id: number) => {
-    const timer = timers.current.get(id);
-    if (timer) clearTimeout(timer);
-    timers.current.delete(id);
     setToasts((all) => all.filter((t) => t.id !== id));
   }, []);
 
-  const push = React.useCallback(
-    ({ tone = "info", title, detail, duration }: ToastInput) => {
-      const id = ++counter.current;
-      setToasts((all) => [...all, { id, tone, title, detail }].slice(-MAX_VISIBLE));
-      const ms = duration ?? (tone === "error" ? ERROR_MS : SUCCESS_MS);
-      timers.current.set(
-        id,
-        setTimeout(() => dismiss(id), ms),
-      );
-      return id;
-    },
-    [dismiss],
-  );
-
-  React.useEffect(() => {
-    const pending = timers.current;
-    return () => pending.forEach((timer) => clearTimeout(timer));
+  const push = React.useCallback(({ tone = "info", title, detail, duration }: ToastInput) => {
+    const id = ++counter.current;
+    const ms = duration ?? (tone === "error" ? null : SUCCESS_MS);
+    setToasts((all) => [...all, { id, tone, title, detail, duration: ms }].slice(-MAX_VISIBLE));
+    return id;
   }, []);
 
   const api = React.useMemo(() => ({ toasts, push, dismiss }), [toasts, push, dismiss]);

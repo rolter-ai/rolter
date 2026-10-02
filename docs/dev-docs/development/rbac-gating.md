@@ -233,6 +233,32 @@ which also suppresses the native tooltip, so a refused button re-enables pointer
 events through an inline style. `disabled` still swallows the click; the
 `RefusedSwallowsTheClick` story asserts exactly that.
 
+### The reason is reachable without a pointer
+
+A disabled element takes no focus, so a reason held only in the `title` reached
+the mouse and nothing else (#2005). Every gated control (`GatedButton`,
+`GatedSwitch`, `GatedCombobox`, `DeleteIconButton`, `RowIconButton`) therefore
+sits in `RefusalWrap` (`ui/src/components/ui/refusal-wrap.tsx`). While the
+control is refused the wrapper is a focusable `role="group"`, named by the
+control it wraps (`aria-labelledby`) and described by the reason
+(`aria-describedby`, pointing at visually hidden text beside it), so Tab stops on
+it and a screen reader reads "Add provider, group, Requires the Admin role". The
+control stays a real `disabled`, and the `title` stays for the mouse. While the
+control is allowed the wrapper is `display: contents`, as before. A new gated
+primitive wraps itself in `RefusalWrap` rather than hand-rolling a second one.
+
+## Counts, toasts and charts (#2005)
+
+Three other things only some users used to get, fixed in the shared primitives:
+
+- `ListSummary` renders a polite live region (`role="status"`) from the first
+  paint, even while empty, so the count a search or filter changes is announced.
+- Toasts are paused while the pointer or focus is on the card (WCAG 2.2.1), and
+  an error has no timer at all: it stays until dismissed. A caller may still pass
+  a `duration`.
+- A `LineChart` given a `label` carries a visually hidden table of the values it
+  plots, captioned with that label.
+
 ## One query, per scope
 
 `CapabilityProvider` sits above the shell in `App.tsx` — above, because the rail

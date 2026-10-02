@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
 import { useRefusedClick } from "@/lib/ux-react";
@@ -291,8 +292,20 @@ export function ListSummary<T>({
   children: (data: T) => React.ReactNode;
 }) {
   const content = data === undefined ? fallback : children(data);
-  if (content === undefined || content === null) return null;
-  return <span className={cn("text-sm text-muted-foreground", className)}>{content}</span>;
+  const shown = content !== undefined && content !== null;
+  // a polite live region, rendered from the first paint even while it is empty:
+  // a region that appears with its text already in it is not announced, so the
+  // count a search or filter changes would be heard by no one (#2005, WCAG 4.1.3)
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic
+      className={shown ? cn("text-sm text-muted-foreground", className) : "contents"}
+    >
+      {shown ? content : null}
+    </span>
+  );
 }
 
 // card grids use `[grid-template-columns:repeat(auto-fill,minmax(min(Npx,100%),1fr))]`:
@@ -405,9 +418,12 @@ export function RowIconButton({
 }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
   return (
-    <span className="contents" {...refusal}>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
       <button
+        id={id}
         type="button"
         disabled={disabled || denied}
         title={denied ? reason : title}
@@ -421,6 +437,6 @@ export function RowIconButton({
         )}
         {...props}
       />
-    </span>
+    </RefusalWrap>
   );
 }

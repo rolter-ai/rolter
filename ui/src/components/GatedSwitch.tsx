@@ -1,3 +1,6 @@
+import * as React from "react";
+
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { Switch, type SwitchProps } from "@/components/ui/switch";
 import { useGate, type Capability } from "@/lib/can";
 import { useRefusedClick } from "@/lib/ux-react";
@@ -26,9 +29,11 @@ export function GatedSwitch({
 }: SwitchProps & { gate: Capability; control: string }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
   return (
-    <span className="contents" {...refusal}>
-      <Switch {...props} disabled={disabled || denied} title={denied ? reason : title} />
-    </span>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
+      <Switch {...props} id={id} disabled={disabled || denied} title={denied ? reason : title} />
+    </RefusalWrap>
   );
 }
