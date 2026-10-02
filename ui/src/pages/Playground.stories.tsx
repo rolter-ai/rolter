@@ -381,54 +381,45 @@ export const MintingShowsProgress: Story = {
 };
 
 /**
- * A project with no routes cannot mint: an empty model list on a virtual key
- * means *every* model, so the control plane refuses rather than handing out the
- * widest key in the system (#2061).
+ * A project with no routes yet still mints, so the first Getting started call
+ * works on a fresh deployment (#2300). An empty model list on a virtual key
+ * means *every* model, so the control plane scopes this one to the built-in
+ * `fake-llm` alone, and the gateway answers it with no provider or route.
  *
- * That refusal is a precondition, not a failure: the band says the project
- * needs a route and links the screen that makes one, instead of an unknown
- * error with the server's line and a retry that can never succeed. The paste
- * field opens, since pasting is the other way on, and Send waits for a key.
+ * The key works, so Send is live and the paste field stays shut. The band says
+ * what the key cannot reach yet and links the screen that widens it, instead
+ * of the refusal #2061 drew when the mint answered `400`.
  */
 const routeless = recording(
-  deployment(async () =>
-    json(
-      {
-        error: {
-          message:
-            "config error: this project has no routes, so there is nothing a playground key could address",
-        },
-      },
-      400,
-    ),
-  ),
+  deployment(async () => json({ ...minted(), models: ["fake-llm"] }), undefined, undefined, {
+    routes: [],
+    gateway: () => json({ data: [{ id: "fake-llm", object: "model", owned_by: "rolter" }] }),
+    chat: () => completion("Lorem ipsum from the built-in."),
+  }),
 );
 
-export const RoutelessProjectIsRefused: Story = {
+export const RoutelessProjectReachesTheBuiltin: Story = {
   render: () => <Screen fetchStub={routeless.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/This project has no routes yet/);
     const link = canvas.getByRole("link", { name: "Open Routing Rules" });
     await expect(link).toHaveAttribute("href", "/routing-rules");
+    await expect(canvas.getByText("Active")).toBeVisible();
 
-    // not the unknown-failure alert, and no retry of a refusal a retry cannot
-    // clear
+    // a working key, not a failure: no alert, and nothing to paste instead
     await expect(canvas.queryByRole("alert")).toBeNull();
-    await expect(canvas.queryByRole("button", { name: "Try again" })).toBeNull();
-    await expect(canvas.queryByText(/nothing a playground key could address/)).toBeNull();
-    // one message: nothing about a minted key that does not exist
+    await expect(canvas.queryByLabelText("Virtual key")).toBeNull();
+    // one message: the routeless line replaces the generic minted-key one
     await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
-
-    // the paste field is open without being asked for
-    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
-    // one automatic attempt, then it is the operator's call
     await expect(mintsIn(routeless.calls)).toBe(1);
-    await waitFor(() => {
-      const send = canvas.getByRole("button", { name: SEND });
-      expect(send).toBeDisabled();
-      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
-    });
+
+    // and the first call goes out to the built-in and is answered
+    const composer = await canvas.findByRole("textbox", { name: "Message to fake-llm" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Lorem ipsum from the built-in.");
+    await expect(chatsIn(routeless.calls).map((c) => c.model)).toEqual(["fake-llm"]);
   },
 };
 

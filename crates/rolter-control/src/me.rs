@@ -626,10 +626,12 @@ pub(crate) const PLAYGROUND_PURPOSE: &str = "playground";
 /// from the routes configured in the project the caller is minting against,
 /// and the TTL is fixed.
 ///
-/// An empty `models` list on a virtual key means *every* model, so a project
-/// with no routes cannot produce a playground key: minting one would hand out
-/// the widest key in the system to mean "nothing to address". That is a 400,
-/// not an empty list.
+/// An empty `models` list on a virtual key means *every* model, so the list is
+/// never left empty. A project with no routes yet gets a key scoped to the
+/// built-in `fake-llm` alone (#2300): that is the one model a fresh deployment
+/// can answer, and it is what the first step of Getting started sends, so the
+/// Playground works before any provider or route exists without the key
+/// reaching anything else.
 async fn mint_playground_key(
     current: CurrentUser,
     State(state): State<ControlState>,
@@ -642,16 +644,17 @@ async fn mint_playground_key(
     // by hand, so it cannot be the thing that lets a viewer create credentials
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
-    let models: Vec<String> = RouteRepo(pool(&state))
+    let mut models: Vec<String> = RouteRepo(pool(&state))
         .list(project_id)
         .await?
         .into_iter()
         .map(|route| route.model)
         .collect();
     if models.is_empty() {
-        return Err(bad_request(
-            "this project has no routes, so there is nothing a playground key could address",
-        ));
+        // an empty list would be the widest key in the system, and a managed
+        // gateway refuses a keyless call even for the builtin, so a routeless
+        // project is scoped to exactly the model it can already be answered by
+        models.push(rolter_core::FAKE_LLM_MODEL.to_string());
     }
 
     let expires_at = Utc::now() + chrono::Duration::minutes(PLAYGROUND_KEY_TTL_MINUTES);

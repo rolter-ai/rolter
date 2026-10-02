@@ -410,8 +410,13 @@ the things a body would carry are the reasons this endpoint exists:
   scopes cannot be a key that "cannot address a model the user could not already
   address", because the client can ask for everything. The list is computed here
   from the routes configured in the project being minted against, and written
-  out explicitly — an empty `models` array means _every_ model, so a project with
-  no routes is a `400` rather than a key with the widest possible reach.
+  out explicitly — an empty `models` array means _every_ model. A project with
+  no routes yet gets `models = ["fake-llm"]` instead (#2300): the built-in is
+  the one model a fresh deployment can answer, and a managed gateway refuses a
+  keyless call even for it (`authenticate` in
+  `crates/rolter-gateway/src/handlers.rs` checks the key before the builtin is
+  resolved), so this key is what lets the first Getting started call work
+  before any provider or route exists, without reaching anything else.
 - **Lifetime.** `expires_in_days` has a floor of one day. A playground key lives
   `PLAYGROUND_KEY_TTL_MINUTES` (30) and the dashboard asks for a fresh one, so a
   credential does not outlive the tab holding it.
@@ -423,14 +428,15 @@ reach, which makes it a snapshot of what the caller could reach rather than a
 standing grant.
 
 The dashboard calls this once per project as the Playground opens, and once
-more per **Mint key** / **Renew key** — never in a loop, since a refusal (a
-routeless project answers `400`, no session answers `401`) is a state the
-operator has to act on rather than one a retry can clear. The automatic call
-waits for `my_virtual_key:create` from `/api/v1/rbac/effective` and is not made
-on an explicit refusal, so a viewer is not sent into a `403` on arrival. The
-endpoint takes no body, so `400` is the one client error it gives, and the
-Playground reads that status as "this project routes nothing": it explains the
-precondition, links Routing Rules and offers no retry (#2061). With no key and
+more per **Mint key** / **Renew key** — never in a loop, since a refusal (no
+session answers `401`) is a state the operator has to act on rather than one a
+retry can clear. The automatic call waits for `my_virtual_key:create` from
+`/api/v1/rbac/effective` and is not made on an explicit refusal, so a viewer is
+not sent into a `403` on arrival. A minted key whose `models` is exactly
+`["fake-llm"]` is the routeless project's: the Playground keeps Send live, says
+the key reaches the built-in only and links Routing Rules, since a route added
+later is outside that key's reach until **Renew key** mints a wider one
+(#2061, #2300). With no key and
 no mint due, the Playground asks `GET /gw/v1/models` once without a key; a
 gateway no control plane manages, holding no keys, answers it, and the screen
 then sends without a key rather than holding back its Send buttons. Both the Virtual Keys screen and the account's

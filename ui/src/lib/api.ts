@@ -2980,8 +2980,8 @@ export const PLAYGROUND_PURPOSE = "playground";
  * Takes no input on purpose: the server scopes the key to the routes the
  * project actually has and fixes its lifetime at half an hour, so the browser
  * cannot ask for a wider or longer-lived key than the one it is handed. A
- * project with no routes answers 400 rather than minting a key that reaches
- * every model.
+ * project with no routes yet gets a key that reaches the built-in `fake-llm`
+ * alone, never an empty list, which would reach every model (#2300).
  */
 export function mintPlaygroundKey(projectId: string): Promise<MintedKey> {
   return sendJson<MintedKey>("POST", `/api/v1/me/projects/${projectId}/playground-key`);

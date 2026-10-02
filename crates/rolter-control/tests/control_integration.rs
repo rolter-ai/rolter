@@ -1189,7 +1189,7 @@ async fn a_superadmin_without_membership_mints_personal_and_playground_keys() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    // a playground key is scoped to the project's routes, so it needs one
+    // a playground key is scoped to the project's routes
     sqlx::query(
         "insert into routes (project_id, model, strategy) values ($1, 'gpt-4o', 'round_robin')",
     )
@@ -8536,10 +8536,11 @@ async fn playground_key_is_scoped_by_the_server() {
     .await;
     let token = login["token"].as_str().unwrap().to_string();
 
-    // a project with no routes has nothing to address, and an empty `models`
-    // list on a virtual key means *every* model — so this must refuse rather
-    // than mint the widest key in the system
-    let empty = client
+    // a project with no routes yet still mints, so the first Getting started
+    // call works on a fresh deployment (#2300). an empty `models` list on a
+    // virtual key means *every* model, so the key is scoped to the builtin
+    // `fake-llm` alone rather than left empty
+    let routeless = client
         .post(format!(
             "{base}/api/v1/me/projects/{project_id}/playground-key"
         ))
@@ -8547,11 +8548,15 @@ async fn playground_key_is_scoped_by_the_server() {
         .send()
         .await
         .unwrap();
+    assert_eq!(routeless.status(), 200, "a routeless project mints a key");
+    let routeless: Value = routeless.json().await.unwrap();
     assert_eq!(
-        empty.status(),
-        400,
-        "a routeless project must not mint a key"
+        routeless["models"],
+        json!(["fake-llm"]),
+        "a routeless project's key reaches the builtin and nothing else"
     );
+    assert_eq!(routeless["purpose"], "playground");
+    let routeless_id = routeless["id"].as_str().unwrap().to_string();
 
     post(
         &client,
@@ -8612,8 +8617,9 @@ async fn playground_key_is_scoped_by_the_server() {
         .await
         .unwrap();
     let listed = keys.as_array().unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["purpose"], "playground");
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|k| k["purpose"] == "playground"));
+    let minted_id = minted["id"].as_str().unwrap();
 
     // a route added after the key was minted is out of its reach: the list was
     // resolved once, at mint time, which is what makes the key a snapshot of
@@ -8633,16 +8639,24 @@ async fn playground_key_is_scoped_by_the_server() {
         .json()
         .await
         .unwrap();
-    let still: Vec<&str> = keys.as_array().unwrap()[0]["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m.as_str().unwrap())
-        .collect();
-    assert!(
-        !still.contains(&"o3-mini"),
-        "a key must not widen itself as routes appear: {still:?}"
-    );
+    for id in [minted_id, routeless_id.as_str()] {
+        let key = keys
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["id"] == id)
+            .expect("the minted key is listed");
+        let still: Vec<&str> = key["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
+        assert!(
+            !still.contains(&"o3-mini"),
+            "a key must not widen itself as routes appear: {still:?}"
+        );
+    }
 
     // a session is required: the endpoint mints a credential, so it is never
     // reachable without one
