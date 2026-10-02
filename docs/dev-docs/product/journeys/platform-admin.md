@@ -201,14 +201,14 @@ many places, and does traffic need spreading?**
 
 ## A5 — spend and budgets
 
-| #    | step                                                    | where                                                                | expect                                                         | status                      |
-| ---- | ------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
-| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`   | `cost_usd` on every row; nothing counts as free by accident    | works                       |
-| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)         | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
-| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)     | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
-| A5.4 | cap throughput                                          | **Add rate limit**                                                   | HTTP 429 with `Retry-After`                                    | verified                    |
-| A5.5 | hear about it before the cap                            | —                                                                    | a warning at a threshold                                       | gap — #337                  |
-| A5.6 | alert on spend velocity                                 | **Alerting → Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
+| #    | step                                                    | where                                                                      | expect                                                         | status                      |
+| ---- | ------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
+| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`         | `cost_usd` on every row; nothing counts as free by accident    | works                       |
+| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)               | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
+| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)           | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
+| A5.4 | cap throughput                                          | **Add rate limit**                                                         | HTTP 429 with `Retry-After`                                    | verified                    |
+| A5.5 | hear about it before the cap                            | —                                                                          | a warning at a threshold                                       | gap — #337                  |
+| A5.6 | alert on spend velocity                                 | **Alerting → Alert Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
 
 ## A6 and A7 — run it, and keep it safe
 

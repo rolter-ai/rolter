@@ -51,9 +51,7 @@ describe("nav", () => {
   // two leaves with one label are told apart only by the group they sit under,
   // which the collapsed rail, the palette and a screen reader do not say: the
   // observability "Dashboard" and the adaptive routing one were both
-  // "Dashboard" (#1994). the one pair left is tracked in #2430; the exception
-  // goes when that lands, and no other pair joins it
-  const TOLERATED = [["alerting-rules", "guardrail-rules"]];
+  // "Dashboard" (#1994), and the alerting and guardrail "Rules" (#2430)
 
   for (const [name, catalog] of [
     ["en", en],
@@ -66,7 +64,7 @@ describe("nav", () => {
         byLabel.set(labels[key], [...(byLabel.get(labels[key]) ?? []), key]);
       }
       const shared = [...byLabel.values()].filter((keys) => keys.length > 1);
-      expect(shared).toEqual(TOLERATED);
+      expect(shared).toEqual([]);
     });
   }
 });
