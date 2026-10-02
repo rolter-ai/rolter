@@ -54,6 +54,7 @@ import {
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -486,7 +487,11 @@ function MintKeyDialog({
       // the lead is ours and translated; the control plane's own words follow as
       // the detail, since the server answers in English whatever the locale
       errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
-      errorDetail={mint.isError ? errorDetail(mint.error) : undefined}
+      errorDetail={
+        mint.isError
+          ? (describeError(mint.error, t).detail ?? describeError(mint.error, t).message)
+          : undefined
+      }
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}
