@@ -133,7 +133,9 @@ export function CodeBlock({
           density === "compact" ? "p-2.5 text-[0.6875rem]" : "p-3 text-xs",
           wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
           lineNumbers && "rl-code--numbered",
-          copy && "pr-10",
+          // the button floats over the scroll region, so a long first line
+          // would run under it; clear a row for it instead (#2226)
+          copy && "pr-10 pt-10",
         )}
       >
         <code className={`language-${language}`}>

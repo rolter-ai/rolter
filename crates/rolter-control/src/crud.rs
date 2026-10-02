@@ -3831,7 +3831,7 @@ async fn set_route_complexity(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    Json(value): Json<serde_json::Value>,
+    SafeJson(value): SafeJson<serde_json::Value>,
 ) -> ApiResult<Json<Route>> {
     let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
     let policy: rolter_balancer::complexity::ComplexityPolicy = serde_json::from_value(value)

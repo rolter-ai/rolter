@@ -463,7 +463,7 @@
     "plugins": "Plugins",
     "alerting": "Alerting",
     "alerting-channels": "Channels",
-    "alerting-rules": "Rules",
+    "alerting-rules": "Alert Rules",
     "alerting-history": "History",
     "governance": "Governance",
     "virtual-keys": "Virtual Keys",
@@ -477,7 +477,7 @@
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
     "guardrails": "Guardrails",
-    "guardrail-rules": "Rules",
+    "guardrail-rules": "Guardrail Rules",
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
@@ -3057,8 +3057,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "enforceVk": "Enforce Virtual Keys on Inference",
-      "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
       "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
       "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
@@ -3095,10 +3093,6 @@
         "body_one": "This save loosens security in the way listed below.",
         "body_other": "This save loosens security in {{count}} ways, listed below.",
         "confirm": "Save changes",
-        "virtualKeys": {
-          "label": "Virtual keys are no longer enforced on inference",
-          "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
         "bypassRoute": {
           "label": "Auth bypass route added:",
           "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
@@ -3590,7 +3584,7 @@
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
-      "title": "Rules",
+      "title": "Alert Rules",
       "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {

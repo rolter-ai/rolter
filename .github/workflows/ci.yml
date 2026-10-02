@@ -64,9 +64,9 @@ jobs:
   # cargo doc, cargo-deny, gitleaks, actionlint, ui, storybook, smoke, +
   # informational
   # checks). the release paths do not re-run it: release-plz.yml's
-  # `release-gate` waits for `ci-ok` on this workflow's push run, and
-  # release.yml's `verify-external-checks` requires `ci-ok` on the tagged sha,
-  # so nothing publishes a commit this gate has not passed. only the one-shot
+  # `release-gate` and release.yml's `verify-external-checks` both wait for
+  # `ci-ok` on this workflow's push run for the commit they publish, so nothing
+  # publishes a commit this gate has not passed. only the one-shot
   # publish-bootstrap.yml still calls quality.yml directly.
   quality:
     # a title-only edit reruns ci-ok only; the heavy gate already ran
@@ -99,7 +99,7 @@ jobs:
   # two, and three jobs spent most of their time on setup. the shared leg still
   # uploads one sarif per language under its old `/language:<name>` category,
   # so code scanning keeps the same four configurations. the leg name has no
-  # comma because release.yml splits its required-check list on commas
+  # comma because release.yml splits its required-job list on commas
   codeql:
     name: codeql (${{ matrix.leg }})
     # scoped to `pull_request` for the same reason `quality` is: no other event

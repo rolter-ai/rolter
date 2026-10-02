@@ -12358,6 +12358,37 @@ async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
     assert!(!body.contains("disabled.example.com"), "{body}");
 }
 
+/// #1968: connector bodies go through `SafeJson` like every other handler.
+#[tokio::test]
+async fn a_connector_name_with_a_nul_byte_is_rejected() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let resp = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "bad\u{0}name",
+            "kind": "otlp_http",
+            "endpoint": "https://collector.example.com/v1/logs",
+            "enabled": true,
+            "sampling_rate": 1.0,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"].is_string(), "{body}");
+}
+
 #[tokio::test]
 async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     skip_without_db!();
@@ -12604,7 +12635,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(before["config"]["security"]["virtual_key_required"], false);
+    assert!(before["config"]["security"]["virtual_key_required"].is_null());
     assert!(before["config"]["security"]["required_headers"].is_null());
     assert!(before["config"]["security"]["auth_bypass_routes"].is_null());
 
@@ -12626,7 +12657,10 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(saved["virtual_key_required"], true, "{saved}");
+    // an old client still sends the retired virtual-key switch (#2357): the
+    // save goes through, and the field neither comes back nor reaches a gateway
+    assert!(saved["auth_bypass_routes"].is_array(), "{saved}");
+    assert!(saved.get("virtual_key_required").is_none(), "{saved}");
     // the dashboard password was removed because nothing enforced it (#2356):
     // an old client's fields are ignored, and none of them comes back
     for field in [
@@ -12648,6 +12682,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .unwrap();
     assert!(read.get("dashboard_auth_enabled").is_none(), "{read}");
     assert!(read.get("dashboard_secret_configured").is_none(), "{read}");
+    assert!(read.get("virtual_key_required").is_none(), "{read}");
     // and the toggle that controlled nothing is gone from the surface (#1162)
     assert!(saved.get("allow_direct_provider_keys").is_none());
 
@@ -12661,7 +12696,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .await
         .unwrap();
     let security = &after["config"]["security"];
-    assert_eq!(security["virtual_key_required"], true);
+    assert!(security.get("virtual_key_required").is_none(), "{security}");
     // header names are lowercased on the way through, because that is how the
     // gateway looks them up
     assert_eq!(security["required_headers"]["x-mesh-id"], "edge-42");

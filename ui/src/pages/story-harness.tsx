@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
+import { MemoryRouter, useInRouterContext } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -102,9 +103,12 @@ export function routes(table: [string, () => unknown][], status = 200): FetchStu
 export function Harness({
   fetchStub,
   role,
+  route,
   children,
 }: {
   fetchStub: FetchStub;
+  /** the router's starting path, when a story asserts where a link went */
+  route?: string;
   /**
    * Answer `GET /api/v1/rbac/effective` as this role and mount the screen
    * under a `CapabilityProvider` (#1183).
@@ -141,7 +145,15 @@ export function Harness({
   ) : (
     children
   );
-  return <QueryClientProvider client={client}>{body}</QueryClientProvider>;
+  // screens link with the router's Link, which throws outside one; a story that
+  // brings its own router keeps it
+  const inRouter = useInRouterContext();
+  const routed = inRouter ? (
+    body
+  ) : (
+    <MemoryRouter initialEntries={route ? [route] : undefined}>{body}</MemoryRouter>
+  );
+  return <QueryClientProvider client={client}>{routed}</QueryClientProvider>;
 }
 
 /**

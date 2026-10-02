@@ -4254,7 +4254,7 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
 impl SecuritySettingsRepo<'_> {
     pub async fn get(&self) -> Result<SecuritySettings> {
         sqlx::query_as(
-            "select virtual_key_required, allowed_origins, allowed_headers, \
+            "select allowed_origins, allowed_headers, \
                     required_headers, auth_bypass_routes, updated_at \
              from security_settings where id = true",
         )
@@ -4268,10 +4268,11 @@ impl SecuritySettingsRepo<'_> {
     /// direct-provider-key passthrough, so the column never controlled
     /// anything and is no longer offered by the API (#1162). The dashboard
     /// password columns are likewise left untouched (#2356): they stay in the
-    /// table, unread and unwritten, because migrations are append-only.
+    /// table, unread and unwritten, because migrations are append-only. So is
+    /// `virtual_key_required` (#2357): no gateway decision ever read it, since
+    /// every gateway that received it was managed and already closed.
     pub async fn update(
         &self,
-        virtual_key_required: bool,
         allowed_origins: &[String],
         allowed_headers: &[String],
         required_headers: serde_json::Value,
@@ -4279,14 +4280,13 @@ impl SecuritySettingsRepo<'_> {
     ) -> Result<SecuritySettings> {
         sqlx::query_as(
             "update security_settings set \
-                virtual_key_required = $1, allowed_origins = $2, \
-                allowed_headers = $3, required_headers = $4, auth_bypass_routes = $5, \
+                allowed_origins = $1, \
+                allowed_headers = $2, required_headers = $3, auth_bypass_routes = $4, \
                 allow_direct_provider_keys = false, updated_at = now() \
              where id = true \
-             returning virtual_key_required, allowed_origins, allowed_headers, \
+             returning allowed_origins, allowed_headers, \
                        required_headers, auth_bypass_routes, updated_at",
         )
-        .bind(virtual_key_required)
         .bind(allowed_origins)
         .bind(allowed_headers)
         .bind(required_headers)

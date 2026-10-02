@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, userEvent, within } from "storybook/test";
 
+import { contrastRatio } from "@/lib/contrast";
+
 import { SwitchRow } from "./switch-row";
 
 const meta = {
@@ -100,5 +102,24 @@ export const DisabledIgnoresClicks: Story = {
     await expect(control).toBeDisabled();
     await userEvent.click(control, { pointerEventsCheck: 0 });
     await expect(canvas.getByText("streaming: true")).toBeVisible();
+  },
+};
+
+/**
+ * An off switch sits on `--surface-subtle`, the row's own tone. The track must
+ * clear 3:1 against the row or the row shows a floating dot (#2365).
+ */
+export const OffTrackIsVisibleOnTheRow: Story = {
+  render: () => <Controlled />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sw = canvas.getByRole("switch", { name: "Streaming" });
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+    const row = sw.closest("div.rounded-md") as HTMLElement;
+    const ratio = contrastRatio(
+      getComputedStyle(sw).backgroundColor,
+      getComputedStyle(row).backgroundColor,
+    );
+    await expect(ratio).toBeGreaterThanOrEqual(3);
   },
 };

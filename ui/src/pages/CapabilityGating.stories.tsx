@@ -42,7 +42,6 @@ import { UxScreenProvider } from "@/lib/ux-react";
 // is the admin token's alone.
 
 const SECURITY: SecuritySettingsDto = {
-  virtual_key_required: true,
   allowed_origins: ["https://app.example.com"],
   allowed_headers: ["x-request-id"],
   required_headers: {},
@@ -285,9 +284,7 @@ export const SecurityAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() =>
-      expect(canvas.getByText("Enforce Virtual Keys on Inference")).toBeVisible(),
-    );
+    await waitFor(() => expect(canvas.getByText("Allowed Origins")).toBeVisible());
   },
 };
 

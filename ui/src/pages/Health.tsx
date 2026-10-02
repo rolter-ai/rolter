@@ -6,7 +6,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import {
   fetchHealthTimeline,
   fetchMttr,
@@ -385,12 +385,7 @@ export default function Health() {
           title={t("pages.health.emptyTitle")}
           description={t("pages.health.emptyBody")}
           actions={
-            <a
-              href="/playground"
-              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {t("pages.health.emptyAction")}
-            </a>
+            <EmptyStateLink to="/playground">{t("pages.health.emptyAction")}</EmptyStateLink>
           }
         />
       )}

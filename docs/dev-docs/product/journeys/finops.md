@@ -46,10 +46,10 @@ screen and one filter.
 
 ## F4 — be told
 
-| #    | step                               | where                                 | expect                                         | status      |
-| ---- | ---------------------------------- | ------------------------------------- | ---------------------------------------------- | ----------- |
-| F4.1 | a warning at 80% of a budget       | —                                     | a notification before the 402                  | gap — #337  |
-| F4.2 | an alert when spend velocity jumps | **Alerting → Rules** `spend_velocity` | refused below superadmin; deployment-wide only | gap — #1829 |
+| #    | step                               | where                                       | expect                                         | status      |
+| ---- | ---------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------- |
+| F4.1 | a warning at 80% of a budget       | —                                           | a notification before the 402                  | gap — #337  |
+| F4.2 | an alert when spend velocity jumps | **Alerting → Alert Rules** `spend_velocity` | refused below superadmin; deployment-wide only | gap — #1829 |
 
 ## F5 — month-end
 

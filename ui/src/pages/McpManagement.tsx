@@ -1624,7 +1624,7 @@ function ToolGroupDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.tool-groups.dialog.lead")}</DialogDescription>
       </DialogHeader>
-      <div className="grid gap-4 py-4">
+      <DialogBody className="grid gap-4 py-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name">
             <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
@@ -1679,7 +1679,7 @@ function ToolGroupDialog({
             {error.message}
           </p>
         )}
-      </div>
+      </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
