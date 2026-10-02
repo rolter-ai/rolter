@@ -658,7 +658,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             tokio::spawn(async move { sample_pool_acquire(pool, metrics).await });
         }
     }
-    let http = reqwest::Client::new();
+    let http = proxy::gateway_client();
 
     // the throttle shares redis with config pub/sub when there is one, so every
     // replica counts against the same budget. without redis it is process-local
