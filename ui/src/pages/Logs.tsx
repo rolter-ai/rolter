@@ -15,7 +15,6 @@ import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
-import { CopyButton } from "@/components/CopyButton";
 import {
   FilterCheckList,
   FilterPanel,
@@ -29,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
+import { CopyableText } from "@/components/ui/copyable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
@@ -1381,19 +1381,8 @@ function DetailId({
       <dt className="text-muted-foreground">{label}</dt>
       {/* wrapped rather than truncated: an id is compared by eye against the
           one a client quoted, and a cut-off one cannot be */}
-      <dd className="flex min-w-0 items-start gap-0.5">
-        {value ? (
-          <>
-            <code className="min-w-0 font-mono text-foreground [overflow-wrap:anywhere]">
-              {value}
-            </code>
-            {/* lifted by the difference between the 24px button and the 16px
-                line, so its icon sits on the id's first line */}
-            <CopyButton value={value} label={copyLabel} className="-mt-1 h-6 flex-none px-1" />
-          </>
-        ) : (
-          absent
-        )}
+      <dd className="min-w-0">
+        {value ? <CopyableText variant="inline" value={value} copyLabel={copyLabel} /> : absent}
       </dd>
     </>
   );

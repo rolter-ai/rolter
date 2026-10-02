@@ -101,6 +101,9 @@
         "request": "First request"
       }
     },
+    "publicUrl": {
+      "unset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which only a caller on the control plane's own host can reach. Set <code>ROLTER_PUBLIC_URL</code> to an address the caller can reach and restart the control plane before you copy this one."
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -1386,7 +1389,6 @@
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
-        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "allOffTitle": "Every connector is switched off",
@@ -2714,8 +2716,7 @@
       "baseUrl": {
         "label": "SCIM base URL",
         "copy": "Copy SCIM base URL",
-        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
-        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org."
       },
       "mappings": {
         "title": "Group mappings",
