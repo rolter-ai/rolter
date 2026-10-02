@@ -299,13 +299,6 @@ weight = 1
 # one project. a scoped group may hold that project's providers and org-wide
 # ones; an org-wide group may hold only org-wide providers.
 
-# --- client header handling and public base URL ---
-# [client]
-# public_base_url = "https://gateway.example.com" # shown in connection snippets
-# forwarded_headers = ["x-custom-trace", "x-user-id"] # forwarded verbatim upstream
-# injected_headers = { "x-gateway-env" = "production" } # injected upstream
-# request_id_header = "x-request-id" # correlation id header
-
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
 

@@ -337,36 +337,6 @@ model = "gpt-4o"
 
 ---
 
-### \[client\]
-
-The `[client]` section configures header forwarding and injection on the upstream leg, plus the base URL advertised to clients in dashboard connection snippets.
-
-<ParamField path="public_base_url" type="string">
-  Base URL shown to clients in dashboard code snippets (e.g. `https://gateway.example.com`). Advisory only — the gateway never reads it for routing decisions.
-</ParamField>
-
-<ParamField path="forwarded_headers" default="[]" type="list">
-  Inbound client headers forwarded verbatim to the upstream provider (lowercased names).
-</ParamField>
-
-<ParamField path="injected_headers" default="{}" type="table">
-  Static headers injected into every upstream request (lowercased names). Secrets must remain in provider credentials rather than this configuration.
-</ParamField>
-
-<ParamField path="request_id_header" default="x-request-id" type="string">
-  Header carrying the client-supplied correlation ID.
-</ParamField>
-
-```toml
-[client]
-public_base_url = "https://gateway.example.com"
-forwarded_headers = ["x-custom-trace", "x-user-id"]
-injected_headers = { "x-gateway-env" = "production" }
-request_id_header = "x-request-id"
-```
-
----
-
 ### \[\[virtual_keys\]\]
 
 Virtual keys are the bearer tokens clients present to the gateway. Remove the entire `[[virtual_keys]]` section to run in open (unauthenticated) mode, which is suitable only for local development.
