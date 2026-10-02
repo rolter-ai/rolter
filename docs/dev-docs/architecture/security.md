@@ -362,6 +362,8 @@ image keeps its own default.
 
 ## What the dashboard's config view strips (#1938, #1840)
 
+A store that cannot be read is a `500` with the redacted `{"error": {"message": "internal server error"}}` body on both `GET /api/v1/config` and `GET /api/v1/config/problems` (#2248), never an empty default configuration: the dashboard shows its load error rather than a deployment with no providers.
+
 `GET /api/v1/config` answers a signed-in caller of any role (or the admin
 token, or anyone in open mode) and nobody else; see [The public route
 allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
