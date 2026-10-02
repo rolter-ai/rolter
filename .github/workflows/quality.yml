@@ -715,6 +715,15 @@ jobs:
         id: session-urls-fixture
         if: ${{ !cancelled() }}
         run: bash scripts/test-agent-session-urls.sh
+      # ci-ok's `edited` fast path waits on and reads other ci runs through the
+      # api, so its shell only ever runs on a pull request whose title or body
+      # was edited. this runs scripts/assert-gate-ran.sh against a fake gh and
+      # clock: a gate that passes or fails while the edit waits, one that never
+      # finishes, concurrent edits, and a flaking api (#2391, #1328)
+      - name: ci-ok fast path against a fake gh
+        id: fast-path-fixture
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-assert-gate-ran.sh
 
       # ── storage: migrations are append-only ───────────────────────────────
       # sqlx checksums every applied migration, so editing a shipped file breaks
@@ -944,6 +953,7 @@ jobs:
           OUTCOME_HELM: ${{ steps.helm.outcome }}
           OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
+          OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
@@ -1017,6 +1027,8 @@ jobs:
             "bash scripts/check-agent-session-urls.sh --commit-range origin/master..HEAD"
           row "no agent session urls (commits)" "pr body lookups against a fake gh" "${OUTCOME_SESSION_URLS_FIXTURE}" yes \
             "prek run agent-session-urls --all-files"
+          row "ci-ok fast path" "ci-ok fast path against a fake gh" "${OUTCOME_FAST_PATH_FIXTURE}" yes \
+            "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
