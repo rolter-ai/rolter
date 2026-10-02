@@ -2453,8 +2453,8 @@
       "rateLimitsEmptyBody": "A rate limit caps requests and tokens per minute for the selected scope, so one client cannot starve the rest.",
       "rateLimitsEmptyTitle": "No rate limits for this scope",
       "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
-      "scopeHint": "The {{type}} this cap applies to",
-      "scopeIdHint": "Paste the {{type}} id — a uuid, since none are available to pick",
+      "scopeHint": "This cap applies to: {{type}}",
+      "scopeIdHint": "Paste the id ({{type}}) — a uuid, since none are available to pick",
       "scopeTypes": {
         "org": "Organization",
         "team": "Team",
