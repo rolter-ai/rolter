@@ -1772,6 +1772,65 @@ export const RequiringASecondFactorConfirmsFirst: Story = {
   },
 };
 
+/** Sets the injected docs base for one story and restores it afterwards. */
+function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
+}
+
+/** Opens the "require a second factor" confirmation and returns the dialog. */
+async function openMfaConfirm(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await pickOption(await canvas.findByLabelText("Second factor"), "Required for everyone");
+  await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+  const dialog = await within(document.body).findByRole("dialog");
+  await waitFor(() => expect(dialog).toBeVisible());
+  return dialog;
+}
+
+/** The break-glass line links into the docs through the configured host (#2262). */
+export const MfaConfirmLinksTheBreakGlassDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
+  render: () => (
+    <Harness fetchStub={mfaSave.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openMfaConfirm(canvasElement);
+    await expect(
+      within(dialog).getByRole("link", { name: /Break-glass procedure/ }),
+    ).toHaveAttribute(
+      "href",
+      "https://docs.example.com/security/two-factor-authentication#break-glass-a-lost-device",
+    );
+  },
+};
+
+/** No docs host: the command in the copy stands alone and no link is drawn. */
+export const MfaConfirmHasNoLinkWithoutADocsHost: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => (
+    <Harness fetchStub={mfaSave.stub}>
+      <Toasted>
+        <SingleSignOn />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openMfaConfirm(canvasElement);
+    await expect(within(dialog).getByText(/rolter mfa reset/)).toBeVisible();
+    await expect(within(dialog).queryByRole("link", { name: /Break-glass procedure/ })).toBeNull();
+  },
+};
+
 /** One grant of `role` to `user`, at the org or at a team inside it. */
 const grant = (
   id: string,
