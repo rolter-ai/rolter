@@ -712,7 +712,7 @@ function AlertRulesScreen() {
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   {evaluate.isPending && evaluate.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                   ) : (
                     <Play className="h-3.5 w-3.5" />
                   )}
