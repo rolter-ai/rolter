@@ -2956,7 +2956,19 @@
         "apiBase": "API base",
         "model": "Model",
         "strategy": "Strategy",
-        "targets": "Targets"
+        "targets": "Targets",
+        "virtualKeys": "Virtual keys (from the config file)",
+        "allowedModels": "Allowed models",
+        "allModels": "all models",
+        "weight": "weight {{value}}",
+        "upstreamModel": "model {{model}}",
+        "noTargets": "no targets",
+        "emptyProvidersTitle": "No providers configured",
+        "emptyProvidersBody": "Add a provider so the gateway has an upstream to call.",
+        "addProvider": "Go to Providers",
+        "emptyRoutesTitle": "No routes configured",
+        "emptyRoutesBody": "Add a routing rule to expose a model name through the gateway.",
+        "addRoute": "Go to Routing Rules"
       }
     },
     "mcpSettings": {
