@@ -553,7 +553,7 @@ rolter emits traces and metrics via **OpenTelemetry OTLP** (gRPC/HTTP), so any O
 
 Recommended topology: rolter → **OpenTelemetry Collector** → fan-out to the chosen backends. The collector also scrapes the upstream engines' `/metrics` and rolter's `/metrics`, keeping vendor specifics out of rolter. Configure via env, e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME=rolter-gateway`.
 
-[`infra/otel/collector.yaml`](../../infra/otel/collector.yaml) is a ready-to-run
+[`infra/otel/collector.yaml`](../../../infra/otel/collector.yaml) is a ready-to-run
 local collector example: it accepts OTLP/gRPC and OTLP/HTTP, scrapes the
 compose gateway's Prometheus endpoint, exposes collected metrics on `:8889`,
 and prints telemetry via the `debug` exporter. It intentionally has no external

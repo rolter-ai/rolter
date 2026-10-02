@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../clickhouse/001_logs.sql).
+PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../../crates/rolter-store/migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../../clickhouse/001_logs.sql).
 
 ## Tenancy
 
@@ -87,7 +87,7 @@ Neither carries a `bump_config_version()` trigger, and neither may grow one: the
 
 PostgreSQL holds configuration; ClickHouse holds the high-volume append-only
 streams, all partitioned by day with a 90-day TTL and written in batches off the
-hot path. Schema lives in [`clickhouse/`](../../clickhouse/), applied by the
+hot path. Schema lives in [`clickhouse/`](../../../clickhouse/), applied by the
 container's init directory:
 
 - `request_logs` — one row per proxied request, with cost and token counts.

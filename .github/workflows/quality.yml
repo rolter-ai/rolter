@@ -742,6 +742,14 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
+      # ── docs: dev-docs relative links resolve ─────────────────────────────
+      # mdBook only checks links inside the book, so a `../../` that should
+      # have been `../../../` pointed at nothing and nothing failed. see #1926.
+      - name: dev-docs links
+        id: dev-docs-links
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-dev-docs-links.py
+
       # ── spelling: docs / comments / identifiers ───────────────────────────
       # false positives are pinned in .github/config/typos.toml with an
       # explaining comment each.
@@ -955,6 +963,7 @@ jobs:
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_DEV_DOCS_LINKS: ${{ steps.dev-docs-links.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
           OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
@@ -1031,6 +1040,8 @@ jobs:
             "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
+          row "dev-docs links" "dev-docs links" "${OUTCOME_DEV_DOCS_LINKS}" yes \
+            "prek run dev-docs-links --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
           row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
           row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
