@@ -128,6 +128,9 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a provider delete answers while something still references it
+const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -147,8 +150,8 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
-    /// when this operation can answer `409` with a stable `error.code`, what
-    /// that refusal means
+    /// when this operation can answer `409`, what that refusal means, naming
+    /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
 }
 
@@ -967,7 +970,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/providers/{id}",
                 "deleteProvider",
                 "Delete an upstream provider",
-            ),
+            )
+            .conflict(PROVIDER_IN_USE_409),
             Op::post(
                 "/api/v1/providers/{id}/test",
                 "testProvider",

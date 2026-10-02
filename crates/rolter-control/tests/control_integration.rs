@@ -15053,6 +15053,191 @@ async fn provider_group_crud_advances_the_version_the_gateway_watches() {
     );
 }
 
+/// #2438: deleting a provider a route still targets answered a 500 carrying
+/// nothing but the store's foreign-key failure. It must refuse with a 409 that
+/// names the route, and leave the provider in place.
+#[tokio::test]
+async fn deleting_a_provider_a_route_targets_is_a_conflict_naming_the_route() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    let target = post(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}/targets"),
+        json!({"provider_id": provider_id, "weight": 1}),
+    )
+    .await;
+
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, 409, "{body}");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("route 'gpt-4o'"),
+        "the refusal does not name the route: {message}"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == provider_id)),
+        "the refused delete removed the provider: {listed}"
+    );
+
+    // once nothing references it the same delete goes through
+    let target_id = target["id"].as_str().expect("target id");
+    let resp = client
+        .delete(format!("{base}/api/v1/route-targets/{target_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204, "{}", resp.text().await.unwrap());
+}
+
+/// #2438: the same refusal for a provider a provider group still holds as a
+/// member, naming the group.
+#[tokio::test]
+async fn deleting_a_provider_a_group_holds_is_a_conflict_naming_the_group() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "vllm-a100-01", "kind": "openai", "api_base": "http://vllm.internal"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/provider-groups"),
+        json!({
+            "name": "Llama fleet",
+            "slug": "llama-fleet",
+            "members": [{"provider_id": provider_id, "weight": 1}],
+        }),
+    )
+    .await;
+
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, 409, "{body}");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("provider group 'llama-fleet'"),
+        "the refusal does not name the group: {message}"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == provider_id)),
+        "the refused delete removed the provider: {listed}"
+    );
+}
+
 /// A route's complexity policy reads at the same bar as the route it hangs off
 /// (#1666), and writes at the mutation bar as it always has.
 ///
