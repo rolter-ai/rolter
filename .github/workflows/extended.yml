@@ -69,8 +69,9 @@ jobs:
   # Cargo.toml so the job follows the declaration, and cargo runs it as
   # `cargo +<msrv>`: rust-toolchain.toml pins `stable` and outranks the rustup
   # default the toolchain action sets, so a plain `cargo check` here would test
-  # stable and never the msrv. it is red until #2026 settles the declared
-  # version against a lockfile that already needs 1.88
+  # stable and never the msrv. the floor is set by our own code as well as the
+  # lockfile: 1.91 is the first release with a stable `str::floor_char_boundary`,
+  # above the 1.88 that redis, tonic, icu and time declare (#2026)
   msrv:
     name: msrv build
     runs-on: ubuntu-latest
@@ -99,7 +100,12 @@ jobs:
       - name: cargo check (msrv)
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
-        run: cargo +"$MSRV" check --workspace --all-features
+        run: |
+          set -euo pipefail
+          # the log names the compiler that ran, so a stable run cannot pass for the msrv
+          rustc +"$MSRV" --version
+          cargo +"$MSRV" --version
+          cargo +"$MSRV" check --workspace --all-features
 
   # ── coverage on master ──────────────────────────────────────────────────────
   # the same run as quality.yml's `coverage (informational)`, which now runs on
