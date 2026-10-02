@@ -3,10 +3,12 @@
 # fake gh, curl, cargo and clock, and checks what they decided.
 #
 # scripts/wait-for-ci-gate.sh holds the crates.io publish until the ci.yml push
-# run on the commit has a green `ci-ok`; scripts/unpublished-crates.sh decides
-# whether there is anything to publish at all. both run only on a push to
-# master, and only a release push exercises the wait, so a regression would
-# show up as a release that publishes unverified or never publishes (#2025).
+# run on the commit has a green `ci-ok`, and release.yml's pypi and ghcr publish
+# until the commit a tag names is on master and its push run has a green `ci-ok`
+# and codeql (#2034); scripts/unpublished-crates.sh decides whether there is
+# anything to publish at all. they run only on a push to master or a release,
+# so a regression would show up as a release that publishes unverified or never
+# publishes (#2025).
 # this is the test. it runs as a step of quality.yml's `static checks` job and
 # as a prek hook.
 #
@@ -42,7 +44,8 @@ echo $(( $(cat "$FAKE/clock") + $1 )) >"$FAKE/clock"
 echo "$1" >>"$FAKE/slept"
 EOF
 
-# gh: answers the two GETs the wait makes. $FAKE/runs is a list of runs, each
+# gh: answers the three GETs the wait makes. the comparison with master answers
+# with the status in $FAKE/compare. $FAKE/runs is a list of runs, each
 # with `appears` and `finish` in seconds since the case started, so a run shows
 # up, runs and finishes as the fake clock moves. the fake applies none of the
 # query's filters, so a run from another event, branch or sha reaches the
@@ -58,6 +61,7 @@ fi
 path=$2
 echo "$path" >>"$FAKE/calls"
 case $path in
+  */compare/*...master\?*) call=compare ;;
   */actions/workflows/ci.yml/runs\?*) call=runs ;;
   */actions/runs/*/jobs\?*) call=jobs ;;
   *) echo "fake gh: unexpected path: $path" >&2; exit 2 ;;
@@ -75,6 +79,8 @@ case $fault in
 esac
 now=$(( $(cat "$FAKE/clock") - $(cat "$FAKE/start") ))
 case $call in
+  compare)
+    jq -cn --arg status "$(cat "$FAKE/compare")" '{status: $status, ahead_by: 0, behind_by: 0}' ;;
   runs)
     jq -c --argjson now "$now" '{workflow_runs: [.[] | select(.appears <= $now) | {
       id, head_sha, event, head_branch, created_at,
@@ -154,6 +160,8 @@ start_case() {
   echo 2000000 >"$case_dir/start"
   echo '[]' >"$case_dir/runs"
   echo '{}' >"$case_dir/jobs"
+  echo ahead >"$case_dir/compare"
+  required_jobs=""
   : >"$case_dir/faults"
   : >"$case_dir/slept"
   : >"$case_dir/calls"
@@ -177,8 +185,16 @@ add_run() {
 
 # set_jobs ID "name=conclusion ...": the jobs of run ID's latest attempt
 set_jobs() {
-  local id=$1 spec=$2 list='[]' pair
-  for pair in $spec; do
+  # shellcheck disable=SC2086 # one word per job is the point of this form
+  set_job_list "$1" $2
+}
+
+# set_job_list ID "name=conclusion" ...: the same, one argument per job, for
+# job names with spaces in them such as `codeql (rust)`
+set_job_list() {
+  local id=$1 list='[]' pair
+  shift
+  for pair in "$@"; do
     list=$(jq -c --arg n "${pair%%=*}" --arg c "${pair#*=}" '. + [{name: $n, conclusion: $c}]' <<<"$list")
   done
   jq -c --arg id "$id" --argjson list "$list" '.[$id] = $list' "$case_dir/jobs" >"$case_dir/jobs.new"
@@ -212,7 +228,7 @@ run_wait() {
   local rc=0 want=""
   : >"$case_dir/github_output"
   (cd "$case_dir" && run_env SHA="${1:-$sha}" GITHUB_OUTPUT="$case_dir/github_output" \
-    bash --noprofile --norc "$wait_script") >"$case_dir/out" 2>&1 || rc=$?
+    REQUIRED_JOBS="$required_jobs" bash --noprofile --norc "$wait_script") >"$case_dir/out" 2>&1 || rc=$?
   echo "$rc" >"$case_dir/rc"
   [ "$rc" -eq 0 ] && want="verified=true"
   check "GITHUB_OUTPUT" "$(cat "$case_dir/github_output")" "$want"
@@ -267,14 +283,137 @@ expect_output "ci-ok succeeded on ci.yml push run 1 for $sha"
 check "summary" "$(grep -c 'ci-ok succeeded' "$case_dir/summary")" 1
 finish_case
 
-start_case "the query names ci.yml push runs on master for this sha"
+start_case "the queries compare with master, then name ci.yml push runs on master for this sha"
 add_run 1 push master 0 0 success
 set_jobs 1 "ci-ok=success"
 run_wait
 expect_rc 0
-check "runs query" "$(sed -n 1p "$case_dir/calls")" \
+check "compare query" "$(sed -n 1p "$case_dir/calls")" \
+  "repos/rolter-ai/rolter/compare/$sha...master?per_page=1"
+check "runs query" "$(sed -n 2p "$case_dir/calls")" \
   "repos/rolter-ai/rolter/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&branch=master&per_page=100"
-check "jobs query" "$(sed -n 2p "$case_dir/calls")" "repos/rolter-ai/rolter/actions/runs/1/jobs?per_page=100"
+check "jobs query" "$(sed -n 3p "$case_dir/calls")" "repos/rolter-ai/rolter/actions/runs/1/jobs?per_page=100"
+check "calls" "$(wc -l <"$case_dir/calls" | tr -d ' ')" 3
+expect_output "$sha is on master (master is ahead of it)"
+finish_case
+
+# release.yml resolves whatever ref a dispatch names. a tag on a pull request
+# head points at a commit with a green run of its own, so the gate has to stop
+# on master membership before it looks at any run
+for status in behind diverged; do
+  start_case "a commit master is $status of is refused before any run is read"
+  echo "$status" >"$case_dir/compare"
+  add_run 1 push master 0 0 success
+  add_run 2 pull_request feature 0 0 success
+  set_jobs 1 "ci-ok=success"
+  set_jobs 2 "ci-ok=success"
+  run_wait
+  expect_rc 1
+  expect_slept 0
+  expect_output "$sha is not on master (compare $sha...master says '$status')"
+  check "calls" "$(wc -l <"$case_dir/calls" | tr -d ' ')" 1
+  check "summary" "$(grep -c 'is not on master' "$case_dir/summary")" 1
+  finish_case
+done
+
+start_case "master at the commit itself counts as on master"
+echo identical >"$case_dir/compare"
+add_run 1 push master 0 0 success
+set_jobs 1 "ci-ok=success"
+run_wait
+expect_rc 0
+expect_output "master is identical of it"
+finish_case
+
+start_case "a comparison with no status fails closed"
+echo "" >"$case_dir/compare"
+add_run 1 push master 0 0 success
+set_jobs 1 "ci-ok=success"
+run_wait
+expect_rc 1
+expect_output "says 'nothing'"
+finish_case
+
+start_case "a comparison that keeps failing fails closed"
+add_run 1 push master 0 0 success
+set_jobs 1 "ci-ok=success"
+printf 'compare bad-gateway\ncompare bad-gateway\ncompare bad-gateway\n' >"$case_dir/faults"
+run_wait
+expect_rc 1
+expect_output "compare/$sha...master?per_page=1 failed 3 times"
+expect_no_output "ci-ok succeeded"
+finish_case
+
+start_case "a comparison that is not json fails closed"
+add_run 1 push master 0 0 success
+set_jobs 1 "ci-ok=success"
+echo "compare not-json" >"$case_dir/faults"
+run_wait
+expect_rc 1
+expect_output "comparison of $sha with master was not the expected json"
+finish_case
+
+# ── the required-job list release.yml hands over ─────────────────────────────
+start_case "every codeql leg green passes"
+required_jobs="ci-ok,codeql (*)"
+add_run 1 push master 0 0 success
+set_job_list 1 "codeql (rust)=success" "codeql (actions-js-python)=success" "gate-ok=success" "ci-ok=success"
+run_wait
+expect_rc 0
+expect_output "codeql (*): 2 job(s) succeeded on ci.yml push run 1"
+finish_case
+
+start_case "one red codeql leg fails, and is named"
+required_jobs="ci-ok,codeql (*)"
+add_run 1 push master 0 0 success
+set_job_list 1 "codeql (rust)=success" "codeql (actions-js-python)=failure" "ci-ok=success"
+run_wait
+expect_rc 1
+expect_output "required job 'codeql (*)' on ci.yml run 1 did not succeed (codeql (actions-js-python)=failure)"
+finish_case
+
+start_case "a skipped codeql leg is not a green one"
+required_jobs="ci-ok,codeql (*)"
+add_run 1 push master 0 0 success
+set_job_list 1 "codeql (rust)=skipped" "ci-ok=success"
+run_wait
+expect_rc 1
+expect_output "codeql (rust)=skipped"
+finish_case
+
+start_case "a run with no codeql job fails closed"
+required_jobs="ci-ok,codeql (*)"
+add_run 1 push master 0 0 success
+set_jobs 1 "codeql=success codeql-extra=success ci-ok=success"
+run_wait
+expect_rc 1
+expect_output "has no job matching 'codeql (*)'"
+finish_case
+
+start_case "an exact name must match exactly"
+required_jobs=" gate-ok , "
+add_run 1 push master 0 0 success
+set_job_list 1 "gate-ok (rust)=success" "ci-ok=success"
+run_wait
+expect_rc 1
+expect_output "has no job matching 'gate-ok'"
+finish_case
+
+start_case "a list without ci-ok still requires ci-ok"
+required_jobs="codeql (*)"
+add_run 1 push master 0 0 failure
+set_job_list 1 "codeql (rust)=success" "ci-ok=failure"
+run_wait
+expect_rc 1
+expect_output "ci-ok on ci.yml run 1 concluded 'failure'"
+finish_case
+
+start_case "an entry with two wildcards is refused before any call"
+required_jobs="ci-ok,*codeql*"
+run_wait
+expect_rc 1
+expect_output "has more than one '*'"
+check "calls" "$(cat "$case_dir/calls")" ""
 finish_case
 
 start_case "a push run still going is waited out"
