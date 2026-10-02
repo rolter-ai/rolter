@@ -108,7 +108,11 @@ export const Loaded: Story = {
     await expect(canvas.queryByText("mcp_oauth_sessions")).toBeNull();
 
     await userEvent.click(canvas.getByText("cache"));
-    await expect(canvas.getByText(/"ttl_secs": 300/)).toBeVisible();
+    // the block highlights through a lazy chunk that splits the JSON into token
+    // spans, so read the region's text rather than a single text node
+    const region = await canvas.findByRole("region", { name: /^cache/ });
+    await expect(region).toBeVisible();
+    await waitFor(() => expect(region).toHaveTextContent(/"ttl_secs": 300/));
   },
 };
 
