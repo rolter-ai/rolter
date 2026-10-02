@@ -270,10 +270,12 @@ impl RouteGuardrails {
     /// Whether `rule` applies on this route. `enable` wins a conflict, so a
     /// route that names the same rule in both is explicitly opting in.
     fn allows(&self, rule: &str) -> bool {
-        if self.enable.iter().any(|name| name == rule) {
+        // entries are trimmed like the rule names they are matched against
+        let rule = rule.trim();
+        if self.enable.iter().any(|name| name.trim() == rule) {
             return true;
         }
-        !self.disable.iter().any(|name| name == rule)
+        !self.disable.iter().any(|name| name.trim() == rule)
     }
 
     /// Names referenced here that no configured rule defines.
@@ -281,7 +283,10 @@ impl RouteGuardrails {
         self.disable
             .iter()
             .chain(self.enable.iter())
-            .filter(|name| !configured.iter().any(|known| known == *name))
+            .filter(|name| {
+                let name = name.trim();
+                !configured.iter().any(|known| known.trim() == name)
+            })
             .cloned()
             .collect()
     }
@@ -816,6 +821,31 @@ mod tests {
             vec!["emial".to_string()]
         );
         assert!(route.unknown_rules(&["emial".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn route_override_ignores_surrounding_whitespace() {
+        let route = RouteGuardrails {
+            disable: vec!["pii ".to_string()],
+            enable: vec![" card".to_string()],
+        };
+        assert!(!route.allows("pii"));
+        assert!(!route.allows(" pii "));
+        assert!(route.allows("card"));
+        assert!(route
+            .unknown_rules(&["pii ".to_string(), "card".to_string()])
+            .is_empty());
+        assert!(route.unknown_rules(&["pii".to_string()]).len() == 1);
+    }
+
+    #[test]
+    fn padded_rule_is_disabled_by_padded_override() {
+        let g = compiled(vec![rule("pii ", BuiltinRule::Email, GuardAction::Redact)]);
+        let route = RouteGuardrails {
+            disable: vec!["pii ".to_string()],
+            enable: Vec::new(),
+        };
+        assert!(!g.resolve_selection(&route).is_unrestricted());
     }
 
     #[test]
