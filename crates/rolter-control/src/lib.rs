@@ -1942,9 +1942,12 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
         for key in &mut provider.api_keys {
             key.key = None;
         }
-        provider.egress_proxy = provider.egress_proxy.as_deref().map(strip_userinfo);
+        provider.egress_proxy = provider
+            .egress_proxy
+            .as_deref()
+            .map(rolter_core::redact::redact_url);
         for proxy in &mut provider.egress_proxies {
-            *proxy = strip_userinfo(proxy);
+            *proxy = rolter_core::redact::redact_url(proxy);
         }
     }
     for provider in &mut config.provider_defaults {
@@ -1978,20 +1981,11 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     for group in &mut config.provider_groups {
         group.tenancy = None;
     }
-    config.logging.clickhouse_url = config.logging.clickhouse_url.as_deref().map(strip_userinfo);
-}
-
-/// `scheme://user:pass@host/…` -> `scheme://host/…`; anything unparsable is
-/// returned untouched, since a URL the gateway could not use leaks nothing.
-fn strip_userinfo(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
-            let _ = parsed.set_username("");
-            let _ = parsed.set_password(None);
-            parsed.to_string()
-        }
-        _ => url.to_string(),
-    }
+    config.logging.clickhouse_url = config
+        .logging
+        .clickhouse_url
+        .as_deref()
+        .map(rolter_core::redact::redact_url);
 }
 
 /// What the dashboard needs to know about a provider kind to configure it.
@@ -2704,24 +2698,44 @@ mod tests {
         }
         assert_eq!(
             config.providers[0].egress_proxy.as_deref(),
-            Some("http://proxy.internal:3128/")
+            Some("http://***@proxy.internal:3128/")
         );
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
         assert!(config.mcp_servers.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
-            Some("http://clickhouse:8123/")
+            Some("http://***@clickhouse:8123/")
         );
     }
 
     #[test]
-    fn strip_userinfo_leaves_plain_urls_alone() {
+    fn config_view_url_redaction_masks_userinfo_query_and_unparsable() {
+        use rolter_core::redact::{redact_url, INVALID_URL_PLACEHOLDER};
         assert_eq!(
-            strip_userinfo("http://clickhouse:8123"),
+            redact_url("http://clickhouse:8123"),
             "http://clickhouse:8123"
         );
-        assert_eq!(strip_userinfo("not a url"), "not a url");
+        let masked = redact_url("http://u:hunter2@ch:8123/?password=hunter2&db=x");
+        assert!(!masked.contains("hunter2"), "{masked}");
+        assert!(masked.contains("db=x"), "{masked}");
+        let junk = redact_url("not a url hunter2");
+        assert!(!junk.contains("hunter2"), "{junk}");
+        assert_eq!(junk, INVALID_URL_PLACEHOLDER);
+    }
+
+    #[test]
+    fn config_view_masks_unparsable_and_query_secret_urls() {
+        let mut config = GatewayConfig::default();
+        config.logging.clickhouse_url = Some("http://ch:8123/?token=hunter2".into());
+        config.providers.push(rolter_core::config::ProviderConfig {
+            egress_proxy: Some("pa ss:hunter2@proxy".into()),
+            egress_proxies: vec!["http://p:hunter2@proxy:3128".into()],
+            ..Default::default()
+        });
+        redact_config_for_dashboard(&mut config);
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("hunter2"), "{json}");
     }
 
     /// A scratch `ui_dir`, removed when the guard drops. No `tempfile` in this
