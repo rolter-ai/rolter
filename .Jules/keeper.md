@@ -29,7 +29,7 @@
 **Learning:** Configuration fields on `ServerConfig` in `crates/rolter-core/src/config.rs` (such as `require_auth`) can quietly drift from `rolter.example.toml` if drift guards only check reference documentation (`config-file.mdx`).
 **Action:** Guard `ServerConfig` fields completeness in example config using `all_server_config_fields_are_in_example_toml` in `crates/rolter/tests/env_var_names.rs`.
 
-## 2026-10-02 - Pinned GitHub Action version comment mismatch for dtolnay/rust-toolchain
+## 2026-10-02 - Pinned GitHub Action SHA version comment mismatch for dtolnay/rust-toolchain
 
-**Learning:** Pinned GitHub Action SHAs with version comments (such as `dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1`) trigger `zizmor` `ref-version-mismatch` errors when the SHA points to a commit on `master` rather than the `v1` release tag.
-**Action:** Update the version comment to `# master` for `dtolnay/rust-toolchain` across workflow files and verify using `uvx zizmor`.
+**Learning:** Pinned GitHub Action SHAs (such as `dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1`) can drift over time when upstream tags move, causing `uvx zizmor` to emit `ref-version-mismatch` warnings and fail CI.
+**Action:** Update the pinned SHA for `dtolnay/rust-toolchain` to the full 40-character commit SHA `7e38f4b43b4db5c8dd498af069a4f6196df1d067` matching tag `v1` across workflow files and verify using `uvx zizmor`.
