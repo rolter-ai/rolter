@@ -219,11 +219,14 @@ function ModelSelect({
   value,
   onChange,
   className,
+  label,
 }: {
   models: ModelOption[];
   value: string;
   onChange: (v: string) => void;
   className?: string;
+  /** names the picker; a compare column passes its own so the pickers differ */
+  label?: string;
 }) {
   const { t } = useTranslation();
   const routesLabel = t("pages.playground.groupRoutes");
@@ -245,7 +248,7 @@ function ModelSelect({
       options={[...groups.values()].flat()}
       value={value}
       onChange={onChange}
-      aria-label={t("pages.playground.modelAria")}
+      aria-label={label ?? t("pages.playground.modelAria")}
       size="sm"
       className={className}
     />
@@ -831,6 +834,11 @@ function ChatColumn({
   // enough once two columns can hold the same one, so a compare view adds the
   // place; a lone column is just its model
   const who = position === null ? model : t("pages.playground.columnName", { model, n: position });
+  // a lone column keeps the plain names; a compare view names each after its column
+  const rawLabel =
+    position === null
+      ? t("playground.rawOutput")
+      : t("pages.playground.rawOutputFor", { model: who });
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   // rendered by default, because that is what a model reply is *for*; raw is
   // what an operator switches to when the question is what the model literally
@@ -905,7 +913,12 @@ function ChatColumn({
   return (
     <div className="relative flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
       <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] p-2">
-        <ModelSelect models={models} value={model} onChange={onModel} />
+        <ModelSelect
+          models={models}
+          value={model}
+          onChange={onModel}
+          label={position === null ? undefined : t("pages.playground.modelAriaFor", { model: who })}
+        />
         {/* the last thing sent, so the snippet reproduces a call that is known
             to work rather than whatever is half-typed in the composer */}
         <CopyAsCodeButton
@@ -921,8 +934,8 @@ function ChatColumn({
           className="h-8 w-8"
           aria-pressed={raw}
           onClick={() => setRaw((v) => !v)}
-          aria-label={t("playground.rawOutput")}
-          title={t("playground.rawOutput")}
+          aria-label={rawLabel}
+          title={rawLabel}
         >
           <Pilcrow className="h-3.5 w-3.5" />
         </Button>
@@ -1001,7 +1014,11 @@ function ChatColumn({
               <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               <button
                 onClick={() => setImage(null)}
-                aria-label={t("pages.playground.removeAttachment")}
+                aria-label={
+                  position === null
+                    ? t("pages.playground.removeAttachment")
+                    : t("pages.playground.removeAttachmentFor", { model: who })
+                }
                 className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
               >
                 <Trash2 className="h-3 w-3" />
@@ -1026,7 +1043,11 @@ function ChatColumn({
               variant="ghost"
               className="h-8 w-8"
               onClick={() => fileRef.current?.click()}
-              aria-label={t("pages.playground.attachImage")}
+              aria-label={
+                position === null
+                  ? t("pages.playground.attachImage")
+                  : t("pages.playground.attachImageFor", { model: who })
+              }
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -1044,7 +1065,7 @@ function ChatColumn({
             void send();
           }}
           placeholder={t("pages.playground.messagePlaceholder")}
-          aria-label={t("pages.playground.messageAria", { model })}
+          aria-label={t("pages.playground.messageAria", { model: who })}
           className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
         />
         <GatewayButton

@@ -1235,7 +1235,7 @@ export const RepeatedButtonsNameTheirColumn: Story = {
 
     // the same model twice is a fair comparison, and the names still tell the
     // columns apart
-    await userEvent.click(canvas.getAllByRole("combobox", { name: "Model" })[1]);
+    await userEvent.click(canvas.getAllByRole("combobox", { name: /^Model for / })[1]);
     await userEvent.click(
       within(canvas.getByRole("listbox")).getByRole("option", { name: "minicpm5-1b" }),
     );
@@ -1251,6 +1251,53 @@ export const RepeatedButtonsNameTheirColumn: Story = {
       expect(canvas.queryByRole("button", { name: /^Remove column / })).toBeNull(),
     );
     await canvas.findByRole("button", { name: "Send to minicpm5-1b" });
+  },
+};
+
+/**
+ * The rest of a column's repeated controls name their column too (#2425): the
+ * model picker, the raw-output toggle, Attach image, Remove attachment and the
+ * composer. Two columns on the same model still answer to four different names.
+ */
+export const OtherRepeatedControlsNameTheirColumn: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await readyComposer(canvas);
+    await userEvent.click(canvas.getByRole("switch", { name: en.pages.playground.multimodal }));
+    await userEvent.click(canvas.getByRole("button", { name: "Add model" }));
+    // put the second column on the first one's model
+    await userEvent.click(
+      await canvas.findByRole("combobox", { name: "Model for fake-llm, column 2" }),
+    );
+    await userEvent.click(
+      within(canvas.getByRole("listbox")).getByRole("option", { name: "minicpm5-1b" }),
+    );
+
+    for (const n of [1, 2]) {
+      const model = "minicpm5-1b";
+      await canvas.findByRole("combobox", { name: `Model for ${model}, column ${n}` });
+      await canvas.findByRole("button", { name: `Show raw text for ${model}, column ${n}` });
+      await canvas.findByRole("button", { name: `Attach image for ${model}, column ${n}` });
+      await canvas.findByRole("textbox", { name: `Message to ${model}, column ${n}` });
+    }
+    await expect(canvas.queryByRole("combobox", { name: "Model" })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Show raw text" })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Attach image" })).toBeNull();
+
+    const files = canvasElement.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    expect(files).toHaveLength(2);
+    for (const input of files) {
+      await userEvent.upload(input, new File(["x"], "pic.png", { type: "image/png" }));
+    }
+    await canvas.findByRole("button", { name: "Remove attachment for minicpm5-1b, column 1" });
+    await canvas.findByRole("button", { name: "Remove attachment for minicpm5-1b, column 2" });
+
+    expectDistinctNames(canvas.getAllByRole("combobox", { name: /^Model for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Show raw text for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Attach image for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Remove attachment for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("textbox", { name: /^Message to / }), 2);
   },
 };
 
