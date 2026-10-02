@@ -1006,11 +1006,9 @@ export const ASecretOfSpacesIsNotSent: Story = {
 
 const moves = editing();
 
-// unlike an alert channel, a connector keeps its stored secret when the
-// endpoint moves to another origin, so the sheet says the secret would go to the
-// new endpoint rather than promising it is dropped. the body is the proof: a
-// save with the field blank carries no secret, and the control plane keeps the
-// one it has
+// when the endpoint moves to another origin the control plane drops the stored
+// secret on save unless a new one is typed, and the sheet says so. the body is
+// the proof: a save with the field blank carries no secret
 export const SaysWhatBecomesOfTheSecretWhenTheEndpointMoves: Story = {
   render: () => <Harness fetchStub={moves.stub} />,
   play: async ({ canvasElement }) => {
