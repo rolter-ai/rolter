@@ -31,6 +31,7 @@ import {
   expectEmptyState,
   expectNoFalseEmpty,
   uxEvents,
+  withDocsBase,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -892,20 +893,6 @@ export const TheAllowListOffersTheProjectsRoutes: Story = {
     await expect(posted.models).toEqual(["gpt-4o", "legacy-davinci"]);
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /** The explainer carries a link into `security/which-key` when docs exist (#1164). */
 export const ExplainerLinksToTheDocs: Story = {

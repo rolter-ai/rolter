@@ -1032,3 +1032,18 @@ export async function expectUxEvent(action: UiEvent["action"], target?: string):
 export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
   expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
 }
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the linked and unlinked states cannot leak into each
+ * other.
+ */
+export function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
+}

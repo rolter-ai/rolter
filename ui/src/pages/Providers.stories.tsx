@@ -29,6 +29,7 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  withDocsBase,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -482,20 +483,6 @@ export const LabelsUnavailable: Story = {
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /**
  * Open the add-provider sheet, where the provider-key field explains which of

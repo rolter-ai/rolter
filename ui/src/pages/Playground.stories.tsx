@@ -18,6 +18,7 @@ import {
   StaleSession,
   type FetchStub,
   type StoryRole,
+  withDocsBase,
 } from "./story-harness";
 import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
 import en from "@/lib/i18n/locales/en.json";
@@ -1671,20 +1672,6 @@ export const Mobile: Story = {
     await expectNoHorizontalOverflow();
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /** The paste field's hint links into `security/which-key` when docs exist (#1164). */
 export const KeyHintLinksToTheDocs: Story = {
