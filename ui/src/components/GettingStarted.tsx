@@ -189,6 +189,9 @@ export function GettingStarted({ requests }: GettingStartedProps) {
   const scope = useScope();
   const can = useCan();
   const capabilities = useCapabilities();
+  // use-gate-allow: picks which sentence the no-project state shows; the
+  // creation itself is the scope switcher's own gated control
+  const { denied: projectCreateDenied } = useGate("project:create");
   const [dismissed, setDismissed] = React.useState(readDismissed);
 
   // an explicit "no" on every setup step. `undefined` is "not known yet" and
@@ -223,6 +226,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
     retry: false,
   });
 
+  const noProjectExists = !scope.isLoading && scope.projects.length === 0;
   const hasProvider = (providers.data?.length ?? 0) > 0;
   const hasTraffic = (requests ?? 0) > 0;
 
@@ -329,11 +333,23 @@ export function GettingStarted({ requests }: GettingStartedProps) {
           />
         ) : !scope.projectId ? (
           // nothing below can reflect real state without a project to read it
-          // from, and a checklist of four unknowns is worse than none
+          // from, and a checklist of four unknowns is worse than none. where
+          // no project exists at all there is nothing to pick, so say how one
+          // comes to exist instead of sending the operator to an empty list
           <EmptyState
             uxTarget="getting-started"
-            title={t("pages.gettingStarted.noScopeTitle")}
-            description={t("pages.gettingStarted.noScopeBody")}
+            title={t(
+              noProjectExists
+                ? "pages.gettingStarted.noProjectTitle"
+                : "pages.gettingStarted.noScopeTitle",
+            )}
+            description={t(
+              !noProjectExists
+                ? "pages.gettingStarted.noScopeBody"
+                : projectCreateDenied
+                  ? "pages.gettingStarted.noProjectDenied"
+                  : "pages.gettingStarted.noProjectBody",
+            )}
           />
         ) : (
           <div className="flex flex-col gap-5">
