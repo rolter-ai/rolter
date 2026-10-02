@@ -7,6 +7,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchFeatureFlags,
@@ -177,31 +178,30 @@ function FlagCard({
   const { t } = useTranslation();
   const unavailable = unavailableReason !== undefined;
   return (
-    <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{title}</span>
-          {unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-        {unavailable && (
-          <p className="mt-1.5 text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {unavailableReason}
-          </p>
-        )}
-        {unavailable && storedOn && (
-          <p className="mt-1.5 text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {t("pages.featureFlags.stillOn")}
-          </p>
-        )}
-      </div>
-      <Switch
-        checked={checked}
-        disabled={unavailable && !storedOn}
-        aria-label={title}
-        onCheckedChange={onChange}
-      />
-    </section>
+    <SettingsPanel
+      title={title}
+      description={desc}
+      badge={unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
+      action={
+        <Switch
+          checked={checked}
+          disabled={unavailable && !storedOn}
+          aria-label={title}
+          onCheckedChange={onChange}
+        />
+      }
+    >
+      {unavailable && (
+        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+          {unavailableReason}
+        </p>
+      )}
+      {unavailable && storedOn && (
+        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+          {t("pages.featureFlags.stillOn")}
+        </p>
+      )}
+    </SettingsPanel>
   );
 }
 

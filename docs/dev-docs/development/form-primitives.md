@@ -66,8 +66,11 @@ easy to lose when the shape is retyped in the next sheet:
   available_ rather than rendering an empty row.
 - `SwitchRow` names its switch after the row title. Handed a `gate`, it is
   refused the way `GatedSwitch` is and must name itself with `control` (#1820).
-- `SettingsPanel` groups its controls in a `<fieldset disabled>` rather than a
-  faded `<div>`. Fading a live div drags its labels and hints below 4.5:1 while
+- `SettingsPanel` titles itself with a real heading (`<h2>`, `headingLevel` for
+  a deeper panel), caps its description at `65ch`, and takes the switch that
+  governs it in `action`, outside the fieldset so a switched-off panel can be
+  switched back on. It groups its controls in a `<fieldset disabled>` rather
+  than a faded `<div>`, and never sets `opacity` (#2213). Fading a live div drags its labels and hints below 4.5:1 while
   telling assistive tech nothing (#1181), and a reader who tabs into a group
   that looks off should find it genuinely off.
 

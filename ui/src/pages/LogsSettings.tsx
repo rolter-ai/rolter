@@ -8,6 +8,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
@@ -172,14 +173,11 @@ function LogsSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.logsSettings.sampleRate")}</span>
-          <p id={sampleHintId} className="mt-1 text-sm text-muted-foreground">
-            {t("pages.logsSettings.sampleRateHint")}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      <SettingsPanel
+        title={t("pages.logsSettings.sampleRate")}
+        description={<span id={sampleHintId}>{t("pages.logsSettings.sampleRateHint")}</span>}
+      >
+        <div className="flex w-full flex-wrap items-center gap-2">
           <Input
             className="max-w-[120px]"
             inputMode="decimal"
@@ -193,29 +191,27 @@ function LogsSettingsScreen() {
           </span>
         </div>
         <SampledLogWarning id={sampleWarningId} percent={parsePercent(form.samplePercent)} />
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">{t("pages.logsSettings.capture")}</span>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.logsSettings.captureHint")}
-            </p>
-          </div>
+      <SettingsPanel
+        title={t("pages.logsSettings.capture")}
+        description={t("pages.logsSettings.captureHint")}
+        dimmed={!capture}
+        action={
           <Switch
             checked={form.captureEnabled}
             aria-label={t("pages.logsSettings.captureAria")}
             onCheckedChange={(v) => set({ captureEnabled: v })}
           />
-        </div>
+        }
+      >
         {/* what this switch actually does, said where it is thrown rather than
             three cards further down (#954). the numbers come from the live form
             state, so the summary reflects the edit in progress — including one
             that has not been saved yet */}
         <p
           role="note"
-          className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground"
+          className="w-full rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground"
         >
           {capture
             ? t("pages.logsSettings.captureOnSummary", {
@@ -227,14 +223,7 @@ function LogsSettingsScreen() {
               })
             : t("pages.logsSettings.captureOffSummary")}
         </p>
-        {/* a disabled fieldset rather than a dimmed div: the input inside
-            already carries `disabled`, and fading a live div drags its label and
-            hint below 4.5:1 while telling assistive tech nothing (#1181) */}
-        <fieldset
-          className="flex min-w-0 flex-col gap-1.5"
-          disabled={!capture}
-          style={{ opacity: capture ? 1 : 0.55 }}
-        >
+        <div className="flex min-w-0 flex-col gap-1.5">
           <label
             htmlFor="logs-max-bytes"
             className="text-xs font-medium text-[color:var(--text-secondary)]"
@@ -253,8 +242,8 @@ function LogsSettingsScreen() {
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
             {t("pages.logsSettings.maxBytesHint")}
           </span>
-        </fieldset>
-      </section>
+        </div>
+      </SettingsPanel>
 
       <ListCard
         title={t("pages.logsSettings.redacted")}
@@ -281,13 +270,10 @@ function LogsSettingsScreen() {
         onChange={(v) => set({ virtualKeyIds: v })}
       />
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.logsSettings.retention")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.logsSettings.retentionHint")}
-          </p>
-        </div>
+      <SettingsPanel
+        title={t("pages.logsSettings.retention")}
+        description={t("pages.logsSettings.retentionHint")}
+      >
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1.5">
             <label
@@ -322,7 +308,7 @@ function LogsSettingsScreen() {
             />
           </div>
         </div>
-      </section>
+      </SettingsPanel>
 
       {/* the deployment-level opt-out for the UX stream. before #1748 it was a
           toml-only key that a postgres-backed control plane never read */}
@@ -408,24 +394,16 @@ function ListCard({
   onChange: (v: string) => void;
 }) {
   return (
-    <fieldset
-      className="flex min-w-0 flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4"
-      disabled={disabled}
-      style={{ opacity: disabled ? 0.55 : 1 }}
-    >
-      <div>
-        <span className="text-sm font-medium">{title}</span>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
+    <SettingsPanel title={title} description={desc} dimmed={disabled}>
       <Textarea
-        className="min-h-[64px] font-mono text-xs"
+        className="min-h-[64px] w-full font-mono text-xs"
         value={value}
         disabled={disabled}
         aria-label={title}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
       />
-    </fieldset>
+    </SettingsPanel>
   );
 }
 
