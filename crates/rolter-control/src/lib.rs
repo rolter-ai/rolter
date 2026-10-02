@@ -1917,13 +1917,38 @@ async fn list_roles(_: session_guard::AnySession) -> Json<Value> {
     Json(serde_json::to_value(roles).unwrap_or_default())
 }
 
+/// Load the store for a dashboard read. A failure is a 500 in the usual error
+/// shape with the driver text logged, not echoed: it can name hosts or schemas.
+async fn load_for_read(state: &ControlState) -> Result<GatewayConfig, StoreReadError> {
+    state.store.load().await.map_err(|err| {
+        tracing::error!(%err, "failed to load config for a dashboard read");
+        StoreReadError
+    })
+}
+
+/// A store that could not be read, rendered as a 500 that says nothing a
+/// driver said.
+struct StoreReadError;
+
+impl IntoResponse for StoreReadError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": {"message": "internal server error"}})),
+        )
+            .into_response()
+    }
+}
+
 async fn get_config(
     _: session_guard::AnySession,
     State(state): State<ControlState>,
-) -> Json<GatewayConfig> {
-    let mut config = state.store.load().await.unwrap_or_default();
+) -> Result<Json<GatewayConfig>, StoreReadError> {
+    // a failed load is a 5xx, never an empty config: defaults would read as a
+    // deployment with no providers or routes. `ApiError` redacts driver text
+    let mut config = load_for_read(&state).await?;
     redact_config_for_dashboard(&mut config);
-    Json(config)
+    Ok(Json(config))
 }
 
 /// Strip everything a caller of the dashboard's config view must not learn.
@@ -2092,8 +2117,9 @@ async fn get_currency(
 async fn get_config_problems(
     _: session_guard::AnySession,
     State(state): State<ControlState>,
-) -> Json<Value> {
-    let mut config = state.store.load().await.unwrap_or_default();
+) -> Result<Json<Value>, StoreReadError> {
+    // an unreadable store must not render as "no problems"
+    let mut config = load_for_read(&state).await?;
     let mut problems = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
@@ -2107,7 +2133,7 @@ async fn get_config_problems(
         Ok(guessed) => problems.extend(guessed),
         Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
-    Json(json!({ "problems": problems }))
+    Ok(Json(json!({ "problems": problems })))
 }
 
 /// [`GatewayConfig::sanitize_for_snapshot`](rolter_core::GatewayConfig::sanitize_for_snapshot)
@@ -3358,6 +3384,21 @@ mod tests {
             Err(rolter_core::Error::Store(
                 "version query failed secret_db_details".into(),
             ))
+        }
+    }
+
+    #[tokio::test]
+    async fn config_reads_fail_on_a_store_error_instead_of_answering_defaults() {
+        let mut state = state_with_token(None);
+        state.store = Arc::new(FailingConfigStore);
+        let addr = serve(build_app_with_internal(state)).await;
+        for path in ["/api/v1/config", "/api/v1/config/problems"] {
+            let response = reqwest::get(format!("http://{addr}{path}")).await.unwrap();
+            assert_eq!(response.status(), 500, "{path}");
+            let body: Value = response.json().await.unwrap();
+            let message = body["error"]["message"].as_str().unwrap();
+            assert_eq!(message, "internal server error", "{path}");
+            assert!(!body.to_string().contains("secret_db_details"), "{body}");
         }
     }
 
