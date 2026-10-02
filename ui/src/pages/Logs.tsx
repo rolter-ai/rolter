@@ -61,7 +61,7 @@ import {
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 50;
 // how often the live feed asks for the newest page
@@ -381,16 +381,16 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   });
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
-  // both follow the log read, the one this screen exists for: `models` only
+  // readiness follows the log read, the one this screen exists for: `models` only
   // feeds the rail's model picker, so keying off it reported the screen ready
   // over a skeleton and missed a ClickHouse outage altogether (#2017). ready
   // means answered rather than not loading, because a retry parked in a hidden
   // tab is pending and not fetching and is still no answer. a deployment with no
-  // analytics store is an answer and a supported one, so it is neither pending
-  // nor an error state. the region is named like the empty state's, so the two
-  // pair up in the dead-states query
+  // analytics store is an answer and a supported one, so it is not pending, and
+  // it renders `AnalyticsUnavailable` rather than the `LoadError` that records
+  // the error state (#2444). that alert's region is named like the empty
+  // state's, so the two pair up in the dead-states query
   useScreenReady(!query.isPending);
-  useErrorState(query.isError && !isUnavailable(query.error), "request-logs");
 
   // the one row a lookup finds is what was asked for, so its drawer opens. it
   // opens once per lookup: a refetch, or closing the drawer, must not bring it
@@ -1020,6 +1020,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 error={query.error}
                 resource={t("errors.resources.requestLogs")}
                 onRetry={() => void query.refetch()}
+                target="request-logs"
               />
             </div>
           )}

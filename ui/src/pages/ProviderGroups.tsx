@@ -40,7 +40,7 @@ import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const GRID = "1.2fr 1fr 1.2fr 1fr 2fr 108px";
 
@@ -66,7 +66,6 @@ export default function ProviderGroups() {
 
   useScreenReady(!groups.isLoading);
 
-  useErrorState(!!groups.error, "provider-groups");
   const providers = useQuery({
     queryKey: ["providers", scope.orgId],
     queryFn: () => fetchProviders(scope.orgId as string),
@@ -139,6 +138,7 @@ export default function ProviderGroups() {
           error={groups.error}
           resource={t("errors.resources.providerGroups")}
           onRetry={() => groups.refetch()}
+          target="provider-groups"
         />
       )}
       {scopeBlocked && (

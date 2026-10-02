@@ -16,7 +16,7 @@ import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } fro
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // injected headers are edited as an ordered list rather than an object so a
 // half-typed name does not collide with an existing key while it is being typed
@@ -127,7 +127,6 @@ function ClientSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "client-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -183,6 +182,7 @@ function ClientSettingsScreen() {
           error={settings.error}
           resource={t("errors.resources.clientSettings")}
           onRetry={() => void settings.refetch()}
+          target="client-settings"
         />
       </div>
     );

@@ -108,7 +108,7 @@ import {
 } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
 const slugify = (value: string) =>
@@ -560,7 +560,6 @@ export function McpCatalog() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-servers");
 
   // which servers the signed-in account is connected to (#2166). both reads
   // are best-effort: a caller who may not list them sees the cards without
@@ -678,6 +677,7 @@ export function McpCatalog() {
           error={query.error}
           resource={t("errors.resources.mcpServers")}
           onRetry={() => void query.refetch()}
+          target="mcp-servers"
         />
       ) : !query.data?.length ? (
         <EmptyState
@@ -1348,7 +1348,6 @@ export function McpLibrary() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-library");
   const install = useMutation({
     mutationFn: (item: McpLibraryItem) =>
       createMcpServer(orgId as string, { ...item, enabled: true, source: "library" }),
@@ -1374,6 +1373,7 @@ export function McpLibrary() {
           error={query.error}
           resource={t("errors.resources.mcpLibrary")}
           onRetry={() => void query.refetch()}
+          target="mcp-library"
         />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
@@ -1438,7 +1438,6 @@ export function ToolGroups() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!groups.isLoading);
-  useErrorState(!!groups.error, "tool-groups");
   const servers = useQuery({
     queryKey: ["mcp-servers", orgId],
     queryFn: () => fetchMcpServers(orgId as string),
@@ -1492,6 +1491,7 @@ export function ToolGroups() {
           error={groups.error}
           resource={t("errors.resources.toolGroups")}
           onRetry={() => void groups.refetch()}
+          target="tool-groups"
         />
       ) : !groups.data?.length ? (
         <EmptyState
@@ -1716,7 +1716,6 @@ export function McpSettings() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-settings");
   if (!orgId)
     return (
       <PageBody>
@@ -1741,6 +1740,7 @@ export function McpSettings() {
           error={query.error}
           resource={t("errors.resources.mcpSettings")}
           onRetry={() => void query.refetch()}
+          target="mcp-settings"
         />
       </PageBody>
     );

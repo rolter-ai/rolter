@@ -16,7 +16,7 @@ import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // teams: card per team with member count, the
 // team-scoped budget (when one exists), and the team admin
@@ -40,7 +40,6 @@ export default function Teams() {
 
   useScreenReady(!teams.isLoading);
 
-  useErrorState(!!teams.error, "teams");
   const memberships = useQuery({
     queryKey: ["memberships", scope.orgId],
     queryFn: () => fetchMemberships(scope.orgId as string),
@@ -100,6 +99,7 @@ export default function Teams() {
           error={teams.error}
           resource={t("errors.resources.teams")}
           onRetry={() => void teams.refetch()}
+          target="teams"
         />
       )}
       {teams.isSuccess && teams.data.length === 0 && (

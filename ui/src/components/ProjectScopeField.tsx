@@ -105,6 +105,7 @@ export function ProjectScopeField({
           error={scope.error}
           resource={t("errors.resources.orgScope")}
           onRetry={scope.refetch}
+          target="project-scope"
         />
       )}
     </Field>

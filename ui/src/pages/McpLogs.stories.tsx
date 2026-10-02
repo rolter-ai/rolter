@@ -15,12 +15,17 @@ import {
   recording,
   routes,
   scoped,
+  expectNoUxEvent,
+  expectUxEvent,
+  recordUxEvents,
+  uxEvents,
 } from "./story-harness";
 import type { McpLogRow } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const call = (over: Partial<McpLogRow> = {}): McpLogRow => ({
   ts: "2026-08-06T10:00:00Z",
@@ -532,4 +537,54 @@ export const MyCallsForAViewer: Story = {
     </SignedIn>
   ),
   play: ({ canvasElement }) => expectMyCalls(canvasElement, asViewer),
+};
+
+/**
+ * Each failed read is one `error_state` under its own region (#2444): the call
+ * list's alert records `mcp-logs`, the region its empty state names, and the
+ * summary, which has no alert of its own, `mcp-log-summary`.
+ */
+export const EachFailedReadIsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="mcp-logs">
+      <Harness fetchStub={scoped(async () => json({ error: { message: "boom" } }, 500))}>
+        <McpLogs />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return MCP tool-call logs/i);
+    await expectUxEvent("error_state", "mcp-logs");
+    await expectUxEvent("error_state", "mcp-log-summary");
+    await expect(
+      uxEvents()
+        .filter((e) => e.action === "error_state")
+        .map((e) => e.target)
+        .sort(),
+    ).toEqual(["mcp-log-summary", "mcp-logs"]);
+  },
+};
+
+/** No analytics store is a supported deployment, stated calmly: it is not an error state. */
+export const NoAnalyticsStoreIsNotAnErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="mcp-logs">
+      <Harness
+        fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}
+      >
+        <McpLogs />
+      </Harness>
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    await expectUxEvent("time_to_interactive");
+    expectNoUxEvent("error_state");
+  },
 };

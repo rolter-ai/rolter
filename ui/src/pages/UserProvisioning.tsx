@@ -37,7 +37,7 @@ import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { usePublicUrl } from "@/lib/use-public-url";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TOKENS_QUERY_KEY = ["scim-tokens"];
 const MAPPINGS_QUERY_KEY = "scim-group-mappings";
@@ -126,6 +126,7 @@ function ScimBaseUrl({ hint, className }: { hint?: string; className?: string })
           error={publicUrl.error}
           resource={t("errors.resources.publicUrl")}
           onRetry={() => publicUrl.refetch()}
+          target="public-url"
         />
       ) : value ? (
         <CopyBox
@@ -224,8 +225,6 @@ export default function UserProvisioning() {
   // `tokens` is the query the user is actually waiting on for this screen
 
   useScreenReady(!tokens.isLoading);
-
-  useErrorState(!!tokens.error, "user-provisioning");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: [...TOKENS_QUERY_KEY, orgId] });
@@ -370,6 +369,7 @@ export default function UserProvisioning() {
           error={tokens.error}
           resource={t("errors.resources.provisioningTokens")}
           onRetry={() => tokens.refetch()}
+          target="provisioning-list"
         />
       )}
       {revoke.isError && (

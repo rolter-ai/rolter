@@ -61,7 +61,7 @@ import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
@@ -1205,7 +1205,6 @@ export default function SingleSignOn() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // the provider list is what the user is actually waiting on here
   useScreenReady(!providers.isLoading);
-  useErrorState(!!providers.error, "sso");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY, orgId] });
 
@@ -1323,6 +1322,7 @@ export default function SingleSignOn() {
           error={policy.error}
           resource={t("errors.resources.signInPolicy")}
           onRetry={() => policy.refetch()}
+          target="sign-in-policy"
         />
       )}
       {policy.data && orgId && (
@@ -1357,6 +1357,7 @@ export default function SingleSignOn() {
           error={providers.error}
           resource={t("errors.resources.ssoProviders")}
           onRetry={() => providers.refetch()}
+          target="sso-providers"
         />
       )}
 

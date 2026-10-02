@@ -604,6 +604,7 @@ function SessionKeyBar({
           error={mint.error}
           resource={t("errors.resources.playgroundKey")}
           onRetry={() => mint.mutate()}
+          target="playground-key"
         />
       )}
     </>

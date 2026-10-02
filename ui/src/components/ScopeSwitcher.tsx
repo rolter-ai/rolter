@@ -325,6 +325,7 @@ function ProjectSettingsDialog({
             error={settings.error}
             resource={t("errors.resources.projectSettings")}
             onRetry={() => settings.refetch()}
+            target="project-settings"
           />
         ) : settings.isPending ? (
           <FormSkeleton fields={1} />

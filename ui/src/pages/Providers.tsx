@@ -47,7 +47,7 @@ import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
 
@@ -125,6 +125,7 @@ function ProviderUsageNotice({
             void config.refetch();
             void groups.refetch();
           }}
+          target="provider-usage"
         />
       ) : unused ? (
         <p className="text-xs text-muted-foreground">{t("pages.providers.usage.none")}</p>
@@ -222,7 +223,6 @@ export default function Providers() {
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!providers.isLoading);
-  useErrorState(!!providers.error, "provider-list");
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // editing and deleting a provider are an admin's, the same as adding one
@@ -277,6 +277,7 @@ export default function Providers() {
           error={providers.error}
           resource={t("errors.resources.providers")}
           onRetry={() => providers.refetch()}
+          target="providers"
         />
       )}
       {scopeBlocked && (

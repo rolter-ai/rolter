@@ -34,7 +34,7 @@ import {
 } from "@/lib/api";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 type Stage = PluginInstanceRow["stage"];
 type FailureMode = PluginInstanceRow["failure_mode"];
@@ -115,7 +115,6 @@ export default function Plugins() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "plugins");
   const [editing, setEditing] = React.useState<PluginInstanceRow | null | undefined>();
   const invalidate = () => client.invalidateQueries({ queryKey: ["plugins", scope.orgId] });
   const toggle = useMutation({
@@ -181,6 +180,7 @@ export default function Plugins() {
           error={query.error}
           resource={t("errors.resources.plugins")}
           onRetry={() => void query.refetch()}
+          target="plugin-list"
         />
       ) : plugins.length === 0 ? (
         <EmptyState

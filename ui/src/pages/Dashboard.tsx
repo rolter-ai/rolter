@@ -40,7 +40,7 @@ import {
   type TimeWindow,
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
@@ -116,12 +116,15 @@ const failedEmpty = (q: UseQueryResult<unknown>) =>
 function CardRead<T>({
   read,
   resource,
+  target,
   skeleton,
   failed,
   children,
 }: {
   read: UseQueryResult<T>;
   resource: string;
+  /** the card's region on the `error_state` UX event its `LoadError` records */
+  target: string;
   skeleton: React.ReactNode;
   failed?: React.ReactNode;
   children: (data: T) => React.ReactNode;
@@ -132,7 +135,12 @@ function CardRead<T>({
     if (!read.isError) return null;
     return (
       failed ?? (
-        <LoadError error={read.error} resource={resource} onRetry={() => void read.refetch()} />
+        <LoadError
+          error={read.error}
+          resource={resource}
+          onRetry={() => void read.refetch()}
+          target={target}
+        />
       )
     );
   }
@@ -224,13 +232,9 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // one that answered, makes it a partial failure, where each failed card holds
   // its own alert
   const outage = reads.every(failedEmpty);
-  // one signal per error placeholder on screen: the screen-level alert while
-  // there is one, else the card that shows it
-  useErrorState(outage, "dashboard-analytics");
-  useErrorState(!outage && failedEmpty(summary), "dashboard");
-  useErrorState(!outage && failedEmpty(series), "dashboard-spend");
-  useErrorState(!outage && failedEmpty(byModel), "dashboard-traffic");
-  useErrorState(!outage && failedEmpty(recent), "dashboard-recent");
+  // one `error_state` per error placeholder on screen, which each `LoadError`
+  // records itself: the screen-level alert while there is one, else the card
+  // that shows it (#2444)
 
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
@@ -257,6 +261,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             error={summary.error}
             resource={t("errors.resources.analytics")}
             onRetry={() => reads.forEach((q) => void q.refetch())}
+            target="dashboard-analytics"
           />
         )}
       </PageBody>
@@ -299,6 +304,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <CardRead
           read={summary}
           resource={t("errors.resources.dashboardFigures")}
+          target="dashboard"
           // `Skeleton` is `aria-hidden`, so the four bare ones this used to
           // render were a loading state no screen reader could hear (#1605)
           skeleton={<StatGridSkeleton cards={4} />}
@@ -374,6 +380,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={series}
               resource={t("errors.resources.dashboardSpend")}
+              target="dashboard-spend"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={220} />
@@ -428,6 +435,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardTrafficShare")}
+              target="dashboard-traffic"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={180} />
@@ -474,6 +482,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
+              target="dashboard-by-model"
               skeleton={<BarsSkeleton />}
               // the traffic share reads this endpoint and holds the alert with its
               // retry, so this card says where the failure is and adds none
@@ -538,6 +547,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={recent}
               resource={t("errors.resources.dashboardRecent")}
+              target="dashboard-recent"
               skeleton={<ListSkeleton rows={4} />}
             >
               {(rows) =>

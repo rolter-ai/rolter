@@ -10,7 +10,7 @@ import { TableSkeleton } from "@/components/LoadingState";
 import { CodeBlock } from "@/components/ui/code-block";
 import { exportConfigToml, fetchConfig, type GatewayConfigDto } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const SECTION_TH =
   "border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2 text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
@@ -26,7 +26,6 @@ export default function Config() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `config` is the query the user is actually waiting on for this screen
   useScreenReady(!config.isLoading);
-  useErrorState(!!config.error, "config");
 
   const cfg = config.data;
   const summary = cfg
@@ -66,6 +65,7 @@ export default function Config() {
             error={config.error}
             resource={t("errors.resources.config")}
             onRetry={() => config.refetch()}
+            target="config"
           />
         )}
         {config.isLoading && <TableSkeleton rows={6} />}

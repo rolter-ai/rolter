@@ -18,7 +18,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { HEALTH_SLA as SLA } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /**
  * How far back "recently" reaches: the newest hourly bucket the timeline holds
@@ -328,7 +328,6 @@ export default function Health() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `uptime` is the query the user is actually waiting on for this screen
   useScreenReady(!uptime.isLoading);
-  useErrorState(!!uptime.error, "health");
   const mttr = useQuery({ queryKey: ["health-mttr"], queryFn: fetchMttr });
   const timeline = useQuery({
     queryKey: ["health-timeline"],
@@ -374,6 +373,7 @@ export default function Health() {
             mttr.refetch();
             timeline.refetch();
           }}
+          target="health-rollups"
         />
       )}
       {!isLoading && !error && groups.length === 0 && (

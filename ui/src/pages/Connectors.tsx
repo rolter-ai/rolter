@@ -51,7 +51,7 @@ import { movesOrigin } from "@/lib/origin";
 import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
 const statusTint = (hue: "success" | "danger" | "info") =>
@@ -114,6 +114,7 @@ function CollectorEndpoint() {
           error={publicUrl.error}
           resource={t("errors.resources.publicUrl")}
           onRetry={() => void publicUrl.refetch()}
+          target="public-url"
         />
       ) : value ? (
         <div className="flex items-center justify-between gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] py-1.5 pl-3 pr-1.5">
@@ -228,6 +229,7 @@ function CollectorConfigDialog({
                 error={config.error}
                 resource={t("errors.resources.collectorConfig")}
                 onRetry={() => void config.refetch()}
+                target="collector-config"
               />
             )}
             {config.data !== undefined && (
@@ -278,7 +280,6 @@ function ConnectorsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `connectors` is the query the user is actually waiting on for this screen
   useScreenReady(!connectors.isLoading);
-  useErrorState(!!connectors.error, "connectors");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["connectors"] });
 
   const toggle = useMutation({
@@ -390,6 +391,7 @@ function ConnectorsScreen() {
           error={connectors.error}
           resource={t("errors.resources.connectors")}
           onRetry={() => void connectors.refetch()}
+          target="connectors"
         />
       )}
       {/* the empty state offers the same create as the toolbar, which stays

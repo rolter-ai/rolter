@@ -326,6 +326,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
               void routes.refetch();
               void keys.refetch();
             }}
+            target="getting-started"
           />
         ) : !scope.projectId ? (
           // nothing below can reflect real state without a project to read it

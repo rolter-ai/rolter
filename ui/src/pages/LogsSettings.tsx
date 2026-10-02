@@ -15,7 +15,7 @@ import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } 
 import { useFormat } from "@/lib/i18n/format";
 import { sampleShare } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   samplePercent: string;
@@ -99,7 +99,6 @@ function LogsSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "logs-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const sampleHintId = React.useId();
@@ -158,6 +157,7 @@ function LogsSettingsScreen() {
           error={settings.error}
           resource={t("errors.resources.logsSettings")}
           onRetry={() => void settings.refetch()}
+          target="logs-settings"
         />
       </div>
     );

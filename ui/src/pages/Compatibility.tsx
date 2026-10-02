@@ -14,7 +14,7 @@ import {
   type CompatibilityPolicyDto,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   anthropicVersion: string;
@@ -62,7 +62,6 @@ function CompatibilityScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
-  useErrorState(!!policy.error, "compatibility");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -112,6 +111,7 @@ function CompatibilityScreen() {
           error={policy.error}
           resource={t("errors.resources.compatibilitySettings")}
           onRetry={() => void policy.refetch()}
+          target="compatibility"
         />
       </div>
     );

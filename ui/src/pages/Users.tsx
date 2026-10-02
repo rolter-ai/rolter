@@ -82,7 +82,7 @@ import { classifyLoadError } from "@/lib/load-error";
 import { afterRevoke, grantScope, higherRole, membershipScope, sameScope } from "@/lib/role-grants";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
 // current org, a team or a project and withdraw invitations still pending,
@@ -114,8 +114,6 @@ export default function Users() {
   // `users` is the query the user is actually waiting on for this screen
 
   useScreenReady(!users.isLoading);
-
-  useErrorState(!!users.error, "users");
 
   const memberships = useQuery({
     queryKey: ["memberships", orgId],
@@ -256,6 +254,7 @@ export default function Users() {
             users.refetch();
             memberships.refetch();
           }}
+          target="users"
         />
       )}
 
@@ -1660,7 +1659,6 @@ function PendingInvitations({
 
   const unreadable =
     invitations.error != null && classifyLoadError(invitations.error) === "forbidden";
-  useErrorState(invitations.error != null && !unreadable, "invitations");
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["invitations", orgId] });
 
@@ -1723,6 +1721,7 @@ function PendingInvitations({
           error={invitations.error}
           resource={t("errors.resources.invitations")}
           onRetry={() => invitations.refetch()}
+          target="invitations"
         />
       )}
 

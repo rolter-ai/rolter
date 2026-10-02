@@ -393,6 +393,7 @@ export const LoadErrorInTheStateRowFitsThePhone: Story = {
           <LoadError
             error={new Error("store unavailable")}
             resource="providers"
+            target="providers"
             onRetry={() => {}}
           />
         </ListStateRow>

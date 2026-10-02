@@ -77,7 +77,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const KEYS_QUERY_KEY = ["virtual-keys"];
 
@@ -159,7 +159,6 @@ export default function Keys() {
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!keys.isLoading);
-  useErrorState(!!keys.error, "virtual-key-list");
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
@@ -239,6 +238,7 @@ export default function Keys() {
           error={keys.error}
           resource={t("errors.resources.virtualKeys")}
           onRetry={() => keys.refetch()}
+          target="virtual-keys"
         />
       )}
       {scopeBlocked && (
