@@ -35,7 +35,7 @@ use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::repo::AuditLogRepo;
 
-use crate::crud::{pool, ApiError, ApiResult};
+use crate::crud::{pool, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -155,7 +155,7 @@ async fn list(
 async fn create(
     principal: Principal,
     State(state): State<ControlState>,
-    Json(input): Json<ConnectorInput>,
+    SafeJson(input): SafeJson<ConnectorInput>,
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Create))?;
     validate(&input, &state.egress)?;
@@ -185,7 +185,7 @@ async fn update(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    Json(input): Json<ConnectorInput>,
+    SafeJson(input): SafeJson<ConnectorInput>,
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Update))?;
     validate(&input, &state.egress)?;
