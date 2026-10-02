@@ -2929,7 +2929,7 @@
         "title": "Related settings",
         "featureFlags": {
           "title": "Feature flags",
-          "desc": "Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+          "desc": "Switch deployment-wide gateway subsystems on or off. Persisted and hot-reloaded — no restart."
         },
         "clientSettings": {
           "title": "Client settings",
@@ -3255,6 +3255,21 @@
       }
     },
     "featureFlags": {
+      "lastSaved": "Last saved {{when}}",
+      "neverSaved": "Not saved yet",
+      "changed": "Changed",
+      "confirm": {
+        "title": "Apply these flag changes?",
+        "body_one": "{{count}} switch changes for the whole deployment, every org. The gateway picks it up on its next config poll, with no restart.",
+        "body_other": "{{count}} switches change for the whole deployment, every org. The gateway picks them up on its next config poll, with no restart.",
+        "confirm": "Apply changes",
+        "on": "turned on",
+        "off": "turned off",
+        "offConsequence": {
+          "guardrails": "Every pre- and post-call guardrail rule stops running for every org.",
+          "circuit_breaker": "Failing targets stay in rotation instead of being tripped out of the pool."
+        }
+      },
       "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
@@ -3707,7 +3722,7 @@
     },
     "feature-flags": {
       "title": "Feature Flags",
-      "subtitle": "Toggle experimental gateway features."
+      "subtitle": "Deployment-wide gateway subsystems. Saved changes apply to every org and hot-reload on the next config poll."
     },
     "preferences": {
       "title": "Preferences",
