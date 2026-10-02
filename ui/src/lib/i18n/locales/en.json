@@ -3805,8 +3805,8 @@
   },
   "providers": {
     "unserved": {
-      "title_one": "{{count}} config entry is not being served to gateways",
-      "title_other": "{{count}} config entries are not being served to gateways"
+      "title_one": "{{count}} config entry is not being served as written",
+      "title_other": "{{count}} config entries are not being served as written"
     }
   },
   "account": {
