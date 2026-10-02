@@ -385,7 +385,7 @@ function KeyCard({
             <span>{t("account.keys.card.noUsage")}</span>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {/* both controls name their card: N identical "Rotate" and "Delete"
               buttons are a list a screen reader cannot tell apart (#1214, #1896) */}
           <Button

@@ -14,6 +14,7 @@ import {
 } from "./story-harness";
 import type { MttrRow, TimelineRow, UptimeRow } from "@/lib/api";
 import { resolveColorToken } from "@/lib/story-tokens";
+import { phoneFits } from "@/lib/story-viewport";
 
 // two grains of the same provider. `openai-dead` is watched by probes (a
 // provider-grain row) *and* by real traffic through two models; before #1257
@@ -338,3 +339,24 @@ export const Forbidden: Story = {
     await expectLoadError(canvasElement, /You do not have access to health rollups/);
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const healthFits = phoneFits({
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Health />
+    </Harness>
+  ),
+  ready: async (canvas) => {
+    await waitFor(() => expect(canvas.getByText("sonnet@eu")).toBeVisible());
+    // a target's name had been squeezed to "gp…" beside four fixed-width figures
+    for (const name of ["gpt-4o", "gpt-4o-mini"]) {
+      const el = canvas.getByText(name);
+      await expect(el.scrollWidth).toBeLessThanOrEqual(el.clientWidth);
+    }
+  },
+});
+export const MobileFits: Story = healthFits("mobile", "en");
+export const MobileFitsInRussian: Story = healthFits("mobile", "ru");
+export const SmallPhone: Story = healthFits("small", "en");

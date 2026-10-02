@@ -216,7 +216,7 @@ export default function Keys() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {/* a list that has not loaded exports a header line and no rows,
               which reads as a project with no keys (#2056) */}
           <Button variant="outline" disabled={!keys.isSuccess} onClick={exportCsv}>

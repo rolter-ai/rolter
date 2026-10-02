@@ -798,7 +798,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             <span className={cn("h-[7px] w-[7px] flex-none rounded-full", feed.dot)} />
             {feed.label}
           </span>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             {/* a lookup does not stream, so there is nothing to pause */}
             {!lookup && (
               <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
