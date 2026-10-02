@@ -1,5 +1,4 @@
 import * as React from "react";
-import { MemoryRouter } from "react-router";
 
 import App from "@/App";
 import type { SubsystemStability } from "@/lib/api";
@@ -133,10 +132,11 @@ export function shellStub(extra: [string, () => unknown][] = []): FetchStub {
 /**
  * The whole dashboard at `route`, with a session already in localStorage.
  *
- * The provider order mirrors `main.tsx`: query client, toasts, session,
- * router, `App`. `MemoryRouter` rather than `BrowserRouter` because the
- * Storybook iframe's URL belongs to Storybook — a story that pushed onto it
- * would navigate the runner instead of the shell.
+ * The harness provides the router (a `MemoryRouter` at `route`), then
+ * toasts, session and `App`. `MemoryRouter` rather than `BrowserRouter`
+ * because the Storybook iframe's URL belongs to Storybook — a story that
+ * pushed onto it would navigate the runner instead of the shell. A second
+ * router inside the harness's would throw.
  */
 export function AppShell({
   route = "/dashboard",
@@ -152,12 +152,10 @@ export function AppShell({
     return null;
   });
   return (
-    <Harness fetchStub={fetchStub}>
+    <Harness fetchStub={fetchStub} route={route}>
       <ToastProvider>
         <StaleSession email={USER.email}>
-          <MemoryRouter initialEntries={[route]}>
-            <App />
-          </MemoryRouter>
+          <App />
         </StaleSession>
       </ToastProvider>
     </Harness>
