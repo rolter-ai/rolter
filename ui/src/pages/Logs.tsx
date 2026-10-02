@@ -78,14 +78,7 @@ const num = (v: number | string | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-function statusTone(status: number): [string, string] {
-  if (status === 0 || status >= 500) return ["var(--status-danger-text)", "rgba(229,57,53,.14)"];
-  if (status === 429) return ["var(--status-warning-text)", "rgba(245,158,11,.14)"];
-  if (status >= 400) return ["var(--status-warning-text)", "rgba(245,158,11,.14)"];
-  return ["var(--status-success-text)", "rgba(22,163,74,.14)"];
-}
-
-// the same verdict as `statusTone`, in the badge's own tones for the drawer
+// the verdict of a status, in the badge's own tones, for the table and the drawer
 function verdictTone(status: number): "success" | "warning" | "danger" {
   if (status === 0 || status >= 500) return "danger";
   if (status >= 400) return "warning";
@@ -927,7 +920,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             <tbody>
               {rows.map((r) => {
                 const st = num(r.status);
-                const tone = statusTone(st);
                 // the drawer beside the table has no other tie back to the
                 // row it describes, so the open row says so, to the eye and
                 // to a screen reader (#1983)
@@ -963,12 +955,12 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                       {r.provider || "—"}
                     </td>
                     <td className={TD}>
-                      <span
-                        className="inline-flex items-center rounded-[6px] px-[7px] py-0.5 font-mono text-[11px] font-semibold"
-                        style={{ color: tone[0], background: tone[1] }}
+                      <Badge
+                        tone={verdictTone(st)}
+                        className="font-mono text-[0.6875rem] font-semibold"
                       >
                         {st || "ERR"}
-                      </span>
+                      </Badge>
                     </td>
                     <td
                       className={cn(
