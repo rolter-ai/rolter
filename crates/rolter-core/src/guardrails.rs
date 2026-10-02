@@ -135,7 +135,7 @@ pub struct GuardrailRule {
     #[serde(default)]
     pub action: GuardAction,
     /// replacement token for `redact`; falls back to the built-in default token
-    /// (or a generic `[REDACTED]`) when omitted
+    /// (or a generic `[REDACTED]`) when omitted, empty or whitespace-only
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement: Option<String>,
     /// also scan system messages. Off by default: operator-authored system
@@ -230,10 +230,11 @@ impl CompiledRule {
             (None, Some(pattern)) => (compile(pattern).ok()?, "[REDACTED]"),
             (None, None) => return None,
         };
-        let token = rule
-            .replacement
-            .clone()
-            .unwrap_or_else(|| default_token.to_string());
+        // an empty token would silently delete matches, so it means "default"
+        let token = match rule.replacement.as_deref() {
+            Some(custom) if !custom.trim().is_empty() => custom.to_string(),
+            _ => default_token.to_string(),
+        };
         Some(Self {
             name: rule.name.trim().to_string(),
             regex,
@@ -604,6 +605,19 @@ mod tests {
         );
         assert_eq!(report.redactions, 1);
         assert_eq!(report.hits, vec![("email".to_string(), 1)]);
+    }
+
+    #[test]
+    fn empty_or_blank_replacement_uses_the_default_token() {
+        for blank in ["", "   "] {
+            let mut r = rule("email", BuiltinRule::Email, GuardAction::Redact);
+            r.replacement = Some(blank.to_string());
+            let g = compiled(vec![r]);
+            let mut budget = g.scan_budget();
+            let mut report = GuardrailReport::default();
+            let out = g.scan_segment("a@example.com", false, &mut budget, &mut report);
+            assert_eq!(out, ScanOutcome::Redacted("[REDACTED:EMAIL]".to_string()));
+        }
     }
 
     #[test]
