@@ -12604,7 +12604,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(before["config"]["security"]["virtual_key_required"], false);
+    assert!(before["config"]["security"]["virtual_key_required"].is_null());
     assert!(before["config"]["security"]["required_headers"].is_null());
     assert!(before["config"]["security"]["auth_bypass_routes"].is_null());
 
@@ -12626,7 +12626,10 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(saved["virtual_key_required"], true, "{saved}");
+    // an old client still sends the retired virtual-key switch (#2357): the
+    // save goes through, and the field neither comes back nor reaches a gateway
+    assert!(saved["auth_bypass_routes"].is_array(), "{saved}");
+    assert!(saved.get("virtual_key_required").is_none(), "{saved}");
     // the dashboard password was removed because nothing enforced it (#2356):
     // an old client's fields are ignored, and none of them comes back
     for field in [
@@ -12648,6 +12651,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .unwrap();
     assert!(read.get("dashboard_auth_enabled").is_none(), "{read}");
     assert!(read.get("dashboard_secret_configured").is_none(), "{read}");
+    assert!(read.get("virtual_key_required").is_none(), "{read}");
     // and the toggle that controlled nothing is gone from the surface (#1162)
     assert!(saved.get("allow_direct_provider_keys").is_none());
 
@@ -12661,7 +12665,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .await
         .unwrap();
     let security = &after["config"]["security"];
-    assert_eq!(security["virtual_key_required"], true);
+    assert!(security.get("virtual_key_required").is_none(), "{security}");
     // header names are lowercased on the way through, because that is how the
     // gateway looks them up
     assert_eq!(security["required_headers"]["x-mesh-id"], "edge-42");

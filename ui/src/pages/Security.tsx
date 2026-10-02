@@ -10,7 +10,6 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError, describedBy } from "@/components/ui/field-error";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   fetchClusterNodes,
@@ -36,9 +35,8 @@ import { errorDetail, useToast } from "@/lib/toast";
 import { useDraft, type FieldEquality } from "@/lib/use-draft";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-// the four list fields hold one entry per line
+// every field holds one entry per line
 interface FormState {
-  enforceVk: boolean;
   allowedOrigins: string;
   allowedHeaders: string;
   requiredHeaders: string;
@@ -48,7 +46,6 @@ interface FormState {
 type ListKey = "allowedOrigins" | "allowedHeaders" | "requiredHeaders" | "bypassRoutes";
 
 const fromDto = (dto: SecuritySettingsDto): FormState => ({
-  enforceVk: dto.virtual_key_required,
   allowedOrigins: listToText(dto.allowed_origins),
   allowedHeaders: listToText(dto.allowed_headers),
   requiredHeaders: requiredHeadersToText(dto.required_headers),
@@ -68,7 +65,6 @@ const EQUALS: FieldEquality<FormState> = {
 // the cards of the screen, by the fields each one holds: a card is marked when
 // any of its fields changed, and the footer counts cards
 const SECTIONS: (keyof FormState)[][] = [
-  ["enforceVk"],
   ["allowedOrigins"],
   ["allowedHeaders"],
   ["requiredHeaders"],
@@ -76,7 +72,6 @@ const SECTIONS: (keyof FormState)[][] = [
 ];
 
 const policyOf = (form: FormState): SecurityPolicy => ({
-  virtualKeyRequired: form.enforceVk,
   authBypassRoutes: entriesOf(form.bypassRoutes),
 });
 
@@ -85,7 +80,6 @@ const policyOf = (form: FormState): SecurityPolicy => ({
 function toInput(form: FormState): UpdateSecuritySettingsInput {
   const lists = parseLists(form);
   return {
-    virtual_key_required: form.enforceVk,
     allowed_origins: lists.allowedOrigins.entries,
     allowed_headers: lists.allowedHeaders.entries,
     required_headers: requiredHeadersPayload(lists.requiredHeaders.entries),
@@ -251,13 +245,6 @@ function SecurityScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <ToggleCard
-        title={t("pages.security.enforceVk")}
-        desc={t("pages.security.enforceVkHint")}
-        checked={form.enforceVk}
-        changed={changed.includes("enforceVk")}
-        onChange={(v) => set({ enforceVk: v })}
-      />
       <ListCard
         title={t("pages.security.allowedOrigins")}
         desc={t("pages.security.allowedOriginsHint")}
@@ -329,7 +316,7 @@ function SecurityScreen() {
       >
         <ul className="flex flex-col gap-2.5">
           {confirming.items.map((item) => (
-            <LooseningRow key={item.kind === "bypassRoute" ? item.route : item.kind} item={item} />
+            <LooseningRow key={item.route} item={item} />
           ))}
         </ul>
       </ConfirmDialog>
@@ -368,45 +355,13 @@ function LooseningRow({ item }: { item: Loosening }) {
   return (
     <li className="flex flex-col gap-0.5">
       <span className="text-sm font-medium">
-        {t(`pages.security.confirm.${item.kind}.label`)}
-        {item.kind === "bypassRoute" && (
-          <>
-            {" "}
-            <code className="font-mono text-xs">{item.route}</code>
-          </>
-        )}
+        {t(`pages.security.confirm.${item.kind}.label`)}{" "}
+        <code className="font-mono text-xs">{item.route}</code>
       </span>
       <span className="text-sm text-muted-foreground">
         {t(`pages.security.confirm.${item.kind}.effect`)}
       </span>
     </li>
-  );
-}
-
-function ToggleCard({
-  title,
-  desc,
-  checked,
-  changed,
-  onChange,
-}: {
-  title: string;
-  desc: string;
-  checked: boolean;
-  changed: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{title}</span>
-          {changed && <ChangedBadge />}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} aria-label={title} />
-    </section>
   );
 }
 
