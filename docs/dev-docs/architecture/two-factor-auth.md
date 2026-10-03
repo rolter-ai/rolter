@@ -153,7 +153,7 @@ working. It is called out in the operator docs so it does not read as a fault.
 
 Two independent budgets, because they defend different things.
 
-- **The password** is guarded by [`login_throttle`](../../crates/rolter-control/src/login_throttle.rs)
+- **The password** is guarded by [`login_throttle`](../../../crates/rolter-control/src/login_throttle.rs)
   (#1079), unchanged: a wrong password still costs the attacker its escalating
   delay and lockout.
 - **The challenge** carries its own `attempts` counter, capped at three, and

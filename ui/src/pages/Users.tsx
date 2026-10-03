@@ -88,6 +88,7 @@ import {
   membershipScope,
   sameScope,
 } from "@/lib/role-grants";
+import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -407,7 +408,7 @@ export default function Users() {
             actions={
               filtersActive ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("common.clearSearch")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <GatedButton
@@ -556,6 +557,26 @@ function InviteUserDialog({
         ? t("pages.users.teamRole")
         : t("pages.users.orgRole");
 
+  // the same read the pending list makes, so it is one request: creating an
+  // invitation for an address that already has a live one replaces it (#2324)
+  const pendingInvitations = useQuery({
+    queryKey: ["invitations", orgId],
+    queryFn: () => listInvitations(orgId),
+    enabled: open && method === "link",
+    retry: false,
+  });
+  const typed = email.trim().toLowerCase();
+  const replaces =
+    method === "link" &&
+    typed !== "" &&
+    (pendingInvitations.data ?? []).some(
+      (invitation) =>
+        invitation.email.toLowerCase() === typed &&
+        !invitation.accepted_at &&
+        !invitation.revoked_at &&
+        !isExpired(invitation),
+    );
+
   const create = useMutation({
     mutationFn: async () => {
       if (method === "link") {
@@ -650,7 +671,10 @@ function InviteUserDialog({
       onSave={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.users.email")}>
+        <Field
+          label={t("pages.users.email")}
+          hint={replaces ? t("pages.users.inviteReplaces", { email: email.trim() }) : undefined}
+        >
           <Input
             type="email"
             value={email}
@@ -737,14 +761,28 @@ function privilegeChange(user: UserRow, draft: AccountDraft, own: boolean): Priv
 }
 
 /**
+ * The line under a 409 `last_superadmin` refusal: the change would leave no
+ * active superadmin, and the way out is to promote another account first. The
+ * list is org-scoped, so the screen cannot warn before the click (#2471).
+ */
+function lastSuperadminHint(t: TFunction, error: unknown): string | null {
+  return error instanceof ApiError && error.status === 409 && error.code === "last_superadmin"
+    ? t("pages.users.confirm.lastSuperadmin")
+    : null;
+}
+
+/**
  * What the control plane's refusal of an account change means here, under the
  * message it sent. A 403 is a caller who is not a superadmin, which a gate
  * that answered for another scope can still let through; a 404 is an account
- * that was deleted in the meantime.
+ * that was deleted in the meantime; a 409 `last_superadmin` is a change that
+ * would leave no active superadmin.
  */
 function AccountErrorHint({ error }: { error: unknown }) {
   const { t } = useTranslation();
   if (!(error instanceof ApiError)) return null;
+  const lastSuperadmin = lastSuperadminHint(t, error);
+  if (lastSuperadmin) return <p className="text-xs text-muted-foreground">{lastSuperadmin}</p>;
   if (error.status !== 403 && error.status !== 404) return null;
   return (
     <p className="text-xs text-muted-foreground">
@@ -843,7 +881,13 @@ function EditUserDialog({
           key={user.id}
           user={user}
           saving={save.isPending}
-          errorMessage={save.isError ? (save.error as Error).message : undefined}
+          errorMessage={
+            save.isError
+              ? [(save.error as Error).message, lastSuperadminHint(t, save.error)]
+                  .filter(Boolean)
+                  .join(" ")
+              : undefined
+          }
           onSave={requestSave}
           onClose={onClose}
           onDelete={onDelete}
@@ -1196,10 +1240,6 @@ function AddRoleDialog({
 interface GrantTarget {
   grant: MembershipRow;
   user: UserRow;
-}
-
-function roleLabel(t: TFunction, role: string): string {
-  return t(`shell.roles.${role}`, { defaultValue: role });
 }
 
 /**

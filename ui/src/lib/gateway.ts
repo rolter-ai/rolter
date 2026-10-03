@@ -21,15 +21,20 @@ const GW_BASE = "/gw";
  * `expiresAt` is set for a key rolter minted; a key the operator pasted by
  * hand carries no expiry here, because the dashboard did not choose one and
  * guessing at it would be worse than saying nothing.
+ *
+ * `models` is the reach the control plane wrote onto a key it minted, so the
+ * screen can say when that reach is the built-in `fake-llm` alone (#2300). It
+ * is empty for a pasted key, whose reach the dashboard never saw.
  */
 export interface PlaygroundKeyState {
   key: string;
   expiresAt: string | null;
   /** rolter minted this key for this sitting, rather than a person pasting it */
   minted: boolean;
+  models: readonly string[];
 }
 
-const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false };
+const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false, models: [] };
 
 // deliberately a module variable and not `localStorage` (#944): a gateway
 // credential written to browser storage outlives the sitting that needed it and
@@ -52,14 +57,20 @@ export function getPlaygroundKey(): string {
  *
  * Passing an empty key clears it. The whole state object is replaced rather
  * than mutated so `useSyncExternalStore` sees a new reference and re-renders
- * the screen — and so a renewed key can never keep the previous expiry.
+ * the screen — and so a renewed key can never keep the previous expiry or
+ * reach.
  */
 export function setPlaygroundKey(
   key: string,
-  options: { expiresAt?: string | null; minted?: boolean } = {},
+  options: { expiresAt?: string | null; minted?: boolean; models?: readonly string[] } = {},
 ): void {
   state = key
-    ? { key, expiresAt: options.expiresAt ?? null, minted: options.minted ?? false }
+    ? {
+        key,
+        expiresAt: options.expiresAt ?? null,
+        minted: options.minted ?? false,
+        models: options.models ?? [],
+      }
     : NO_KEY;
   for (const listener of listeners) listener();
 }
