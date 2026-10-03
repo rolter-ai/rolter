@@ -271,10 +271,11 @@ wait.
 
 ## The merge queue
 
-`master` merges through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
-so `ci.yml` also triggers on `merge_group`. (The trigger is inert until the queue
-is switched on in branch protection — see
-[merge protection on `master`](merge-protection.md).) That run checks out a synthetic ref —
+`master` is meant to merge through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
+so `ci.yml` also triggers on `merge_group`. **The queue is not switched on today**
+(#2029), so the trigger is inert and has never fired — see
+[merge protection on `master`](merge-protection.md). Read this section as how it
+behaves once it is. That run checks out a synthetic ref —
 `refs/heads/gh-readonly-queue/master/pr-<n>-<sha>` — holding `master` plus every
 entry ahead of this one in the queue, and reports the same `ci-ok` against it. It
 is the only run that ever sees the tree that will actually exist, which is the
