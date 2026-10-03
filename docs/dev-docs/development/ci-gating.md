@@ -317,10 +317,11 @@ wait.
 
 ## The merge queue
 
-`master` merges through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
-so `ci.yml` also triggers on `merge_group`. (The trigger is inert until the queue
-is switched on in branch protection — see
-[merge protection on `master`](merge-protection.md).) That run checks out a synthetic ref —
+`master` is meant to merge through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
+so `ci.yml` also triggers on `merge_group`. **The queue is not switched on today**
+(#2029), so the trigger is inert and has never fired — see
+[merge protection on `master`](merge-protection.md). Read this section as how it
+behaves once it is. That run checks out a synthetic ref —
 `refs/heads/gh-readonly-queue/master/pr-<n>-<sha>` — holding `master` plus every
 entry ahead of this one in the queue, and reports the same `ci-ok` against it. It
 is the only run that ever sees the tree that will actually exist, which is the
@@ -739,6 +740,18 @@ trade.
 Pull-request runs are unchanged: pushing again to a PR still cancels the
 in-flight run for the superseded commit, which is what you want, because nobody
 will ever merge that sha.
+
+## Runner image pin
+
+Every workflow runs on `ubuntu-24.04`, never `ubuntu-latest`. GitHub moves the
+`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), which changes the
+preinstalled tools, the default Docker and compose versions and the system
+libraries under the gate at once, so the compose smoke test, coverage, the
+Playwright `--with-deps` install and the release image build could all start
+failing on an unrelated pull request. The pin is deliberate. Moving to
+`ubuntu-26.04` is a tracked follow-up (#2736), done on a branch where a
+dispatch run of `quality.yml` and `extended.yml` shows what breaks. New
+workflows and matrix entries use the explicit `ubuntu-24.04` label too.
 
 ## `codeql (rust)` on a pull request with no Rust change
 

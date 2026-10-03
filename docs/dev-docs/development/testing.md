@@ -77,7 +77,7 @@ A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
 unconfirmed part shape fails loudly instead of producing a shortened body.
 
-Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
+Test grouping is configured in [`.config/nextest.toml`](../../../.config/nextest.toml):
 the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
 reset the schema per test, so they run in a single-threaded group to avoid
 clobbering each other.
@@ -119,7 +119,7 @@ run, they just share the database the url names.
 `ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
 up writing to. The database is derived from the workspace the test binary was
 compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
-[`rolter_store::postgres::test_database`](../../crates/rolter-store/src/postgres/test_database.rs).
+[`rolter_store::postgres::test_database`](../../../crates/rolter-store/src/postgres/test_database.rs).
 A new worktree is therefore isolated without exporting anything, which is the
 point: this repository expects several agents working several worktrees at once
 (see [worktrees.md](worktrees.md)), so concurrent suites against one database is
@@ -223,7 +223,7 @@ Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
 `search_path`, because plain `cargo test` — which the coverage job runs — puts
 every test in one process as a thread, and a shared `public` schema would race
 on DDL. Build it through
-[`rolter_store::postgres::test_schema::TestSchema`](../../crates/rolter-store/src/postgres/test_schema.rs)
+[`rolter_store::postgres::test_schema::TestSchema`](../../../crates/rolter-store/src/postgres/test_schema.rs)
 rather than by hand; other crates reach it through the store's `test-support`
 feature, which `rolter-control` already carries as a dev-dependency.
 
@@ -292,7 +292,7 @@ sweep, so nothing is reclaimed until you drop it yourself.
 ### What keeps all of this honest
 
 Three rules hold the isolation together, and
-[`crates/rolter-store/tests/db_test_isolation.rs`](../../crates/rolter-store/tests/db_test_isolation.rs)
+[`crates/rolter-store/tests/db_test_isolation.rs`](../../../crates/rolter-store/tests/db_test_isolation.rs)
 fails the build when a new test breaks one — the same shape of source-level
 drift guard as the gateway's `lock_discipline.rs`:
 
@@ -453,8 +453,8 @@ CI runs coverage in the `coverage` job of `quality.yml` on every pull request
 [`extended.yml`](#nightly-extended-checks), whose run also saves the Rust cache
 the PR job restores under the shared key `coverage`. Both enforce a
 **ratcheting baseline**: the committed baseline lives in
-[`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
-[`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
+[`.github/coverage-baseline.txt`](../../../.github/coverage-baseline.txt), and
+[`.github/scripts/coverage-ratchet.sh`](../../../.github/scripts/coverage-ratchet.sh)
 fails the step if the current percentage drops more than
 `COVERAGE_TOLERANCE` points (default `0.5`) below it. The job also uploads the
 `lcov.info` report as a CI artifact.
@@ -480,7 +480,7 @@ Policy (ROL-246):
 The checks that read the tree and build nothing run as steps of one job,
 `static checks` (`static` in `quality.yml`): gitleaks over the working tree and
 the branch history, the session-url check over the PR's commits, migrations
-append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
+append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
 release handoff checker, its self-test and the release gate scripts' fixture
 test, the board automation retry policy, and the helm chart's appVersion check,
 lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
@@ -518,6 +518,14 @@ check added to the job therefore needs three things: its step, an `OUTCOME_*`
 line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
+
+The `dev-docs links` step runs `scripts/check-dev-docs-links.py` (also the
+`dev-docs-links` prek hook). It fails on any relative link in a `.md` file under
+`docs/dev-docs/` that does not resolve to an existing file or directory, with
+the `#anchor` stripped. mdBook only validates links inside the book, so a link to
+a repository file written with one `../` too few used to point at nothing. From
+`docs/dev-docs/<section>/` the repository root is `../../../`; from
+`docs/dev-docs/` itself it is `../../`.
 
 ### The rust lint and rust build jobs
 
@@ -1165,6 +1173,33 @@ await expect(within(canvasElement).getByRole("button")).toBeDisabled();
 One thing the check deliberately does not see, and which a reviewer still has
 to: a data query more than one statement after the sheet opened.
 
+#### Text inside a `CodeBlock` is a container assertion
+
+`CodeBlock` paints its value as one text node and swaps it for token and line
+spans once the lazy highlight chunk resolves
+([#2644](https://github.com/rolter-ai/rolter/issues/2644)). So a
+`getByText(/"model": "gpt-4o"/)` or `findByText("curl https://…")` aimed at code
+passes only while it wins the race against that chunk: afterwards the key, the
+colon and the value sit in separate spans and no single element carries the
+string. The same story is green locally, where the chunk is cached, and red in
+CI. Only `language="text"` and values past `HIGHLIGHT_CHAR_LIMIT` never
+highlight.
+
+Assert on the container's text instead, and let it retry:
+
+```ts
+const body = within(drawer).getByRole("region", { name: /^Request — / });
+await waitFor(() => expect(body).toHaveTextContent(/"model": "gpt-4o"/));
+```
+
+`CodeBlock` names its scroll region from `label`, so the region is the handle.
+`toHaveTextContent` reads `textContent`, which is the same before and after
+highlighting; the `waitFor` is for the data behind the block, not the chunk. A
+matcher function over `textContent` is the alternative when a query is wanted.
+`check:waits` cannot see this: whether a string lives inside a `CodeBlock`
+depends on the page, not on the line, and a heuristic over the argument would
+flag prose as often as code. A reviewer still has to.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
@@ -1406,7 +1441,7 @@ than one assertion needs.
 
 ### Nightly extended checks
 
-[`.github/workflows/extended.yml`](../../.github/workflows/extended.yml) holds
+[`.github/workflows/extended.yml`](../../../.github/workflows/extended.yml) holds
 the informational checks that need a full build and gate nothing. It runs nightly
 at 01:41 UTC and on `workflow_dispatch`, rather than on every push, so none of
 them takes a slot from the 20-job runner pool while PRs wait
@@ -1421,8 +1456,14 @@ them takes a slot from the 20-job runner pool while PRs wait
 
 The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
 and outranks the default a toolchain action sets, so a plain `cargo check` would
-test stable and never the declared version. It is red until #2026 settles
-`rust-version` against a lockfile that already needs 1.88.
+test stable and never the declared version; the step prints `rustc --version`
+for that toolchain first, so the log shows which compiler ran. The declared
+version is 1.91 (#2026): the lockfile alone needs 1.88 (redis, tonic, icu and
+`time` declare it), and our own code calls `str::floor_char_boundary`, stable
+since 1.91. To find the floor again after a dependency bump or a newer std API,
+install the candidate with `rustup toolchain install <ver> --profile minimal`
+and run `cargo +<ver> check --workspace --all-features`; the version below it
+must fail.
 
 None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
 failure has to reach the `report failure` job as `failure`. On `master` that
@@ -1457,9 +1498,9 @@ it end-to-end. Run it locally with the same script CI uses:
 bash docker/smoke/smoke.sh
 ```
 
-It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
+It layers [`docker/docker-compose.ci.yml`](../../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
-[`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
+[`docker/smoke/rolter.smoke.toml`](../../../docker/smoke/rolter.smoke.toml) (a
 keyless open config, `require_auth = false`) into the gateway and the control
 plane, so the built-in `fake-llm` model answers without any provider secret. The
 control plane gets it too because the gateway follows the control plane's

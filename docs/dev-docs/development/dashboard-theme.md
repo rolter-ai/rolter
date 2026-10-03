@@ -160,7 +160,11 @@ track — which is `--surface-subtle` (`#27272a`) for every entry:
 one colour (#2436). No two of `--chart-1` … `--chart-8` may be closer than CIE76
 ΔE 17, in plain vision and under simulated protanopia, deuteranopia and
 tritanopia (Machado 2009, full severity). The current minima are 18.6, 17.9,
-18.6 and 18.5. Re-run that check when a hue changes.
+18.6 and 18.5. The floor is enforced: `ui/scripts/chart-palette-distinct.test.ts`
+(part of `bun run test`) reads the floor from the comment in `ui/src/index.css`,
+resolves every `--chart-N` token to hex, simulates each vision type and fails
+naming the pair, the vision type and the measured ΔE. It covers `--chart-1` …
+`--chart-8` only; `--chart-other` is exempt.
 
 `--chart-1` used to be `--red-folk` (2.23:1 worst) and `--chart-7` used to be
 `--zinc-600` (1.93:1 worst). Both were lifted in #1269. `--chart-1` matters

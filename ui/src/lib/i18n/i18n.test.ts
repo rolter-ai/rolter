@@ -12,7 +12,7 @@ import i18n, {
   detectLocale,
   setLocale,
 } from "./index";
-import { formattersFor } from "./format";
+import { formattersFor, setChartTimeZone } from "./format";
 import { compare, flatten, type Catalog } from "./parity";
 
 // bun's runtime ships no localStorage (which is why the source wraps every
@@ -228,10 +228,30 @@ describe("formatters", () => {
   test("log stamps share one house format, with milliseconds where they matter", () => {
     const en = formattersFor("en");
     expect(en.dateTime(at)).toContain("15:34:56");
-    expect(en.dateTime(at)).toContain("10/05/2026");
+    expect(en.dateTime(at)).toContain("Oct 5, 2026");
     expect(en.dateTimeMs(at)).toContain("15:34:56.789");
     expect(en.time(at)).toBe("15:34:56");
     expect(en.timeShort(at)).toBe("15:34");
+  });
+
+  test("a date-time names its month and its time zone, in en and ru (#2219)", () => {
+    // an instant pinned in UTC; the zone is set through the chart-zone preference,
+    // not the machine's, so the assertion holds on any runner
+    const instant = new Date(Date.UTC(2026, 7, 6, 13, 0, 0));
+    try {
+      setChartTimeZone("UTC");
+      expect(formattersFor("en").dateTime(instant)).toBe("Aug 6, 2026, 13:00:00 UTC");
+      const ru = formattersFor("ru").dateTime(instant);
+      expect(ru).toContain("2026");
+      expect(ru).toContain("13:00:00");
+      expect(ru).toContain("UTC");
+      expect(ru).not.toMatch(/\d{2}\.\d{2}\.\d{4}/);
+      expect(formattersFor("en").dateTimeMs(instant)).toBe("Aug 6, 2026, 13:00:00.000 UTC");
+      setChartTimeZone("Asia/Tokyo");
+      expect(formattersFor("en").dateTime(instant)).toBe("Aug 6, 2026, 22:00:00 GMT+9");
+    } finally {
+      setChartTimeZone(undefined);
+    }
   });
 
   test("a day is named only when the moment did not fall today", () => {

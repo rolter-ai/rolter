@@ -451,14 +451,14 @@ async fn summary(
         Err(resp) => return resp,
     };
     let sql = format!(
-        "select count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
+        "select {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
-                countIf(status >= 400) as errors, \
+                {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} format JSON"
     );
@@ -466,6 +466,20 @@ async fn summary(
         .query(&sql, &with_access(window_params(&q), &access))
         .await)
 }
+
+// Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
+// carries `sample_weight` (clickhouse/014) = how many real requests it stands
+// for. Counts and sums are scaled by it so a sampled log does not under-report
+// traffic or spend (#2239); averages and percentiles are left alone, since a
+// uniform sample already estimates them. Rows written unsampled, or before the
+// column existed, weigh 1.
+const REQUESTS: &str = "round(sum(sample_weight))";
+const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
+const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
+const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
+const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
+const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -487,9 +501,9 @@ async fn timeseries(
     };
     let sql = format!(
         "select {bucket_expr}(ts) as bucket, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by bucket order by bucket format JSON"
     );
@@ -510,11 +524,11 @@ async fn by_model(
     };
     let sql = format!(
         "select model, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
-                countIf(status >= 400) as errors, \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
@@ -571,12 +585,12 @@ async fn by_attribution(
     };
     let sql = format!(
         "select {column} as id, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(status >= 400) as errors \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {ERRORS} as errors \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by id having {attributed} order by cost_usd desc format JSON"
     );
@@ -918,6 +932,31 @@ mod tests {
             .await
             .expect("mcp insert is bounded");
         assert!(mcp.is_err());
+    }
+
+    #[test]
+    fn counts_and_sums_scale_by_the_row_sample_weight() {
+        // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
+        // a row once; averages and percentiles stay unweighted
+        for expr in [
+            REQUESTS,
+            TOKENS,
+            PROMPT_TOKENS,
+            COMPLETION_TOKENS,
+            COST,
+            UNPRICED,
+            ERRORS,
+        ] {
+            assert!(expr.contains("sample_weight"), "{expr}");
+        }
+        assert_eq!(REQUESTS, "round(sum(sample_weight))");
+        let src = include_str!("analytics.rs");
+        let handlers = &src[src.find("async fn summary(").unwrap()
+            ..src.find("pub struct InvocationsQuery").unwrap()];
+        assert!(!handlers.contains("count()"), "an unweighted count()");
+        assert!(!handlers.contains("countIf("), "an unweighted countIf()");
+        assert!(handlers.contains("avg(latency_ms)"));
+        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
     }
 
     #[test]

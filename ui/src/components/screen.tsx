@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
 import { useRefusedClick } from "@/lib/ux-react";
@@ -211,14 +212,25 @@ export function ListCell(props: React.HTMLAttributes<HTMLDivElement>) {
   return <div role="cell" {...props} />;
 }
 
+// `STICKY_ACTIONS` pins the buttons column to the frame's right edge below
+// `md`, where the table scrolls sideways: a row's edit button sat at x=663 on a
+// 375px phone, a scroll away from being pressed (#2004). the header takes the
+// same class so its band stays unbroken, and the cell is content-sized so the
+// opaque ground covers what it holds and nothing more
+export const STICKY_ACTIONS = {
+  header:
+    "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-[color:var(--surface-subtle)]",
+  cell: "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-background max-md:pl-2",
+};
+
 // the header over a row's buttons shows no text, but a column header with no
 // name is announced as an empty column (axe `empty-table-header`), so it says
 // what the column holds to a screen reader. a table whose buttons take more
 // than one column passes `label` so each column has its own name
-export function ListActionsHeader({ label }: { label?: string }) {
+export function ListActionsHeader({ label, className }: { label?: string; className?: string }) {
   const { t } = useTranslation();
   return (
-    <ListHeaderCell>
+    <ListHeaderCell className={className}>
       <span className="sr-only">{label ?? t("common.rowActions")}</span>
     </ListHeaderCell>
   );
@@ -291,8 +303,20 @@ export function ListSummary<T>({
   children: (data: T) => React.ReactNode;
 }) {
   const content = data === undefined ? fallback : children(data);
-  if (content === undefined || content === null) return null;
-  return <span className={cn("text-sm text-muted-foreground", className)}>{content}</span>;
+  const shown = content !== undefined && content !== null;
+  // a polite live region, rendered from the first paint even while it is empty:
+  // a region that appears with its text already in it is not announced, so the
+  // count a search or filter changes would be heard by no one (#2005, WCAG 4.1.3)
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      aria-atomic
+      className={shown ? cn("text-sm text-muted-foreground", className) : "contents"}
+    >
+      {shown ? content : null}
+    </span>
+  );
 }
 
 // card grids use `[grid-template-columns:repeat(auto-fill,minmax(min(Npx,100%),1fr))]`:
@@ -405,9 +429,12 @@ export function RowIconButton({
 }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
   return (
-    <span className="contents" {...refusal}>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
       <button
+        id={id}
         type="button"
         disabled={disabled || denied}
         title={denied ? reason : title}
@@ -421,6 +448,6 @@ export function RowIconButton({
         )}
         {...props}
       />
-    </span>
+    </RefusalWrap>
   );
 }

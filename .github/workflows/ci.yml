@@ -116,7 +116,7 @@ jobs:
     # may inherit the title-edit fast path, and a retarget (`changes.base`)
     # never takes it
     if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
@@ -258,7 +258,7 @@ jobs:
     # records the verdict for the new base like any other gate run
     if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
     needs: [quality, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: record that the heavy gate passed on this run
         run: echo "quality and codeql both succeeded on this run"
@@ -287,7 +287,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [quality, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # above the fast path's 90-minute wait for an in-flight gate
     # (scripts/assert-gate-ran.sh), so its own deadline, with a message that
     # says what to do, is what fires rather than a bare job timeout. every
