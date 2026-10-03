@@ -914,6 +914,15 @@ times the only thing that caught it was fetching `/index.json` by hand.
   worktree, or a process whose cwd lsof will not disclose — fails the run. On a
   machine with no `lsof` the check is skipped with a warning rather than failing;
   the index check still applies
+- **it renders one story of each file once, untimed.** `storybook dev` compiles
+  on demand, so whichever story ran first paid for the whole preview and its
+  screen's module graph inside its own 15 second budget — about 30s for
+  `Screens/Users › Loaded`, which timed out with nothing wrong with it (#2637).
+  A timed-out test also leaves its `postVisit` axe run going in the same tab, so
+  the story after it failed too, with "Axe is already running". The warm-up
+  opens the first indexed story of each file in headless chromium and waits for
+  it to render; a warm-up that fails is only logged, since the timed run says
+  more precisely what is wrong. CI never hit this: it tests a static build
 - only then does it run the tests, one file per invocation — the positional
   pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
   dies with a shell syntax error

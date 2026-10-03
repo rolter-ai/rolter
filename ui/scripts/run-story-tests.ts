@@ -22,7 +22,10 @@
 //      above compares content only and another worktree of this same project
 //      serves the same story ids under the same paths (#1693). The listening
 //      pid's working directory has to be inside this worktree's `ui/`
-//   5. only then does it run `test-storybook`, one file per invocation — the
+//   5. it opens one story of each file in a headless browser and waits for it
+//      to render, so the dev server compiles the preview and that file's module
+//      graph before any test is timed (#2637)
+//   6. only then does it run `test-storybook`, one file per invocation — the
 //      positional pattern goes through `/bin/sh`, so a pattern containing
 //      `(`, `|` or `)` dies with a shell syntax error
 //
@@ -41,6 +44,8 @@ const UI_DIR = join(import.meta.dir, "..");
 export interface IndexEntry {
   id: string;
   importPath: string;
+  /** `story` or `docs`; storybook writes it on every entry */
+  type?: string;
 }
 
 export interface StorybookIndex {
@@ -166,6 +171,79 @@ export function missingFrom(
     }
   }
   return problems;
+}
+
+/**
+ * The story to open for each file before the timed run, one per file that has
+ * any: the first the index lists for it. Any story of a file pulls in that
+ * file's whole module graph; a docs entry renders no story, so it is never
+ * picked.
+ */
+export function warmupStories(index: StorybookIndex, files: { path: string }[]): string[] {
+  const entries = Object.values(index.entries ?? {});
+  return files.flatMap((file) => {
+    const first = entries.find(
+      (entry) =>
+        entry.importPath.replace(/^\.\//, "") === file.path && (entry.type ?? "story") === "story",
+    );
+    return first ? [first.id] : [];
+  });
+}
+
+// as long as `waitForIndex` gives storybook to come up: a cold compile of the
+// preview is the same order of work
+const WARMUP_TIMEOUT_MS = 180_000;
+
+/**
+ * Render one story of each file once, untimed, before `test-storybook` starts
+ * the clock (#2637).
+ *
+ * `storybook dev` compiles on demand: nothing is transformed until a browser
+ * asks for it. So the first story of a run paid for the whole preview — every
+ * vendored font, the i18n catalogs, react, the screen under test and all it
+ * imports — inside its own 15 second test budget. `Screens/Users › Loaded`
+ * spends ~30s of a cold start there and timed out with nothing wrong with it.
+ * jest abandons a timed-out test but not its page: the `postVisit` axe run goes
+ * on in the same tab, so the next story's own axe run then fails with "Axe is
+ * already running". That is how `ShowsDisplayNamesBesideTheEmail`, the story
+ * straight after it, failed with nothing wrong with it either. CI
+ * never sees this, because it tests a static build. A failure here is only
+ * reported: the timed run that follows says what is wrong with a story more
+ * precisely than a warm-up can.
+ */
+async function warmUp(port: number, storyIds: string[]): Promise<void> {
+  if (storyIds.length === 0) return;
+  // the playwright the test-runner drives, so no second browser install is needed
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    for (const id of storyIds) {
+      const started = Date.now();
+      try {
+        await page.goto(
+          `http://127.0.0.1:${port}/iframe.html?id=${encodeURIComponent(id)}&viewMode=story`,
+          { waitUntil: "load", timeout: WARMUP_TIMEOUT_MS },
+        );
+        // storybook marks the body once the story's file has been imported and
+        // it starts to render, or once it has given up on it
+        await page.waitForFunction(
+          () =>
+            document.body.classList.contains("sb-show-main") ||
+            document.body.classList.contains("sb-show-errordisplay"),
+          undefined,
+          { timeout: WARMUP_TIMEOUT_MS },
+        );
+        // and the chunks the render itself pulls in, a lazily loaded locale say
+        await page.waitForLoadState("networkidle", { timeout: WARMUP_TIMEOUT_MS });
+        console.log(`[stories] warmed ${id} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+      } catch (error) {
+        console.warn(`[stories] could not warm ${id}, running it cold: ${String(error)}`);
+      }
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 /**
@@ -344,6 +422,7 @@ async function main() {
       }
     }
     console.log(`[stories] index confirmed: ${files.length} file(s), this worktree's build`);
+    await warmUp(port, warmupStories(index, files));
 
     for (const file of files) {
       // one file per invocation: the positional pattern is passed through
