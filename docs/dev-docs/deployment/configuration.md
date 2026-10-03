@@ -1,6 +1,6 @@
 # Configuration reference
 
-The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`rolter.example.toml`](../../rolter.example.toml). At runtime, the control plane is the source of truth and applies changes without a restart ([config-and-hot-reload.md](../architecture/config-and-hot-reload.md)).
+The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`rolter.example.toml`](../../../rolter.example.toml). At runtime, the control plane is the source of truth and applies changes without a restart ([config-and-hot-reload.md](../architecture/config-and-hot-reload.md)).
 
 ## Schema
 

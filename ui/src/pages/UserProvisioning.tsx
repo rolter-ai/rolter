@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BookUser, Loader2, Plus, Users } from "lucide-react";
+import { BookUser, Loader2, Plus, Users } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -7,18 +7,16 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { GroupMappings } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
-import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
-import { CopyButton } from "@/components/CopyButton";
+import { TableSkeleton } from "@/components/LoadingState";
+import { PublicUrlValue } from "@/components/PublicUrlValue";
 import { ListSummary, PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
-import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
 import { SecretValue, useSecretCloseGuard } from "@/components/ui/secret-reveal";
 import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, type TableColumn } from "@/components/ui/table";
 import {
   createScimGroupMapping,
@@ -35,8 +33,6 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
-import { usePublicUrl } from "@/lib/use-public-url";
 import { useScreenReady } from "@/lib/ux-react";
 
 const TOKENS_QUERY_KEY = ["scim-tokens"];
@@ -66,97 +62,27 @@ function When({ fmt, iso }: { fmt: Formatters; iso: string }) {
   );
 }
 
-// a value to copy out of the dashboard and into the identity provider's
-// connector. mono and wrapping rather than truncated, because an address or a
-// token is checked by its end, and the copy button is named for what it copies
-function CopyBox({
-  value,
-  copyLabel,
-  testId,
-  className,
-}: {
-  value: string;
-  copyLabel: string;
-  testId: string;
-  className?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex items-center justify-between gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] py-1.5 pl-3 pr-1.5",
-        className,
-      )}
-    >
-      <code data-testid={testId} className="min-w-0 break-all font-mono text-sm text-foreground">
-        {value}
-      </code>
-      <CopyButton value={value} label={copyLabel} />
-    </div>
-  );
-}
-
 /**
- * The address an identity provider's SCIM connector is pointed at (#2079).
+ * The address an identity provider's SCIM connector is pointed at (#2079):
+ * the control plane's public base with `/scim/v2` appended.
  *
- * The control plane builds every address it gives an outside caller from
- * `ROLTER_PUBLIC_URL`, never from the request, and the dashboard may be open
- * under a different name than the one the provider must call. So the base is
- * read from the control plane (the query the Single Sign-On screen shares) and
- * `/scim/v2` is appended to it, never to `window.location`. A wrong value
- * fails in the provider's own test console with no hint from rolter, and the
- * reveal step is the one window where an operator is also holding a secret
- * that will not be shown again, so the address sits beside the token.
- *
- * Unset, the base is the control plane's default, which only a caller on its own
- * host can reach; the value is still shown and copyable, with that said under
- * it rather than left for the provider's error to say later. The read does not
- * gate the screen: pending holds the space, and a failed read says so with a
- * retry instead of a URL that might be wrong.
+ * A wrong value fails in the provider's own test console with no hint from
+ * rolter, and the reveal step is the one window where an operator is also
+ * holding a secret that will not be shown again, so the address sits beside
+ * the token. Pending, failed and an unset `ROLTER_PUBLIC_URL` are
+ * `PublicUrlValue`'s to say, the same way the Connectors screen says them.
  */
 function ScimBaseUrl({ hint, className }: { hint?: string; className?: string }) {
   const { t } = useTranslation();
-  const publicUrl = usePublicUrl();
-  const labelId = React.useId();
-  const value = publicUrl.data ? scimBaseUrl(publicUrl.data.public_url) : null;
   return (
-    <div role="group" aria-labelledby={labelId} className="flex min-w-0 flex-col gap-1.5">
-      <FieldLabel id={labelId} label={t("pages.userProvisioning.baseUrl.label")} />
-      {publicUrl.isError ? (
-        <LoadError
-          error={publicUrl.error}
-          resource={t("errors.resources.publicUrl")}
-          onRetry={() => publicUrl.refetch()}
-          target="public-url"
-        />
-      ) : value ? (
-        <CopyBox
-          value={value}
-          copyLabel={t("pages.userProvisioning.baseUrl.copy")}
-          testId="scim-base-url"
-          className={className}
-        />
-      ) : (
-        <LoadingRegion className={cn("w-full", className)}>
-          <Skeleton height={46} radius={6} />
-        </LoadingRegion>
-      )}
-      {hint && value && <p className="text-xs text-muted-foreground">{hint}</p>}
-      {publicUrl.data?.configured === false && (
-        <p
-          role="note"
-          className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]"
-        >
-          <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
-          <span>
-            <Trans
-              i18nKey="pages.userProvisioning.baseUrl.default"
-              values={{ url: publicUrl.data.public_url }}
-              components={{ code: <code className="font-mono" /> }}
-            />
-          </span>
-        </p>
-      )}
-    </div>
+    <PublicUrlValue
+      address={scimBaseUrl}
+      label={t("pages.userProvisioning.baseUrl.label")}
+      copyLabel={t("pages.userProvisioning.baseUrl.copy")}
+      hint={hint}
+      testId="scim-base-url"
+      className={className}
+    />
   );
 }
 
