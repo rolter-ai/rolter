@@ -58,6 +58,7 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
+// not reachable from any sign-in route yet (#1826); see the module docs
 pub mod ldap;
 #[cfg(feature = "postgres")]
 mod logging_settings;
@@ -2747,26 +2748,33 @@ mod tests {
             redact_url("http://clickhouse:8123"),
             "http://clickhouse:8123"
         );
-        let masked = redact_url("http://u:hunter2@ch:8123/?password=hunter2&db=x");
-        assert!(!masked.contains("hunter2"), "{masked}");
-        assert!(masked.contains("db=x"), "{masked}");
-        let junk = redact_url("not a url hunter2");
-        assert!(!junk.contains("hunter2"), "{junk}");
+        let secret = format!("sec-{}", uuid::Uuid::new_v4());
+        let masked = redact_url(&format!(
+            "http://u:{secret}@ch:8123/?password={secret}&db=x"
+        ));
+        assert!(!masked.contains(&secret), "the secret survived redaction");
+        assert!(
+            masked.contains("db=x"),
+            "a non-secret query value was dropped"
+        );
+        let junk = redact_url(&format!("not a url {secret}"));
+        assert!(!junk.contains(&secret), "an unparsable url kept the secret");
         assert_eq!(junk, INVALID_URL_PLACEHOLDER);
     }
 
     #[test]
     fn config_view_masks_unparsable_and_query_secret_urls() {
+        let secret = format!("sec-{}", uuid::Uuid::new_v4());
         let mut config = GatewayConfig::default();
-        config.logging.clickhouse_url = Some("http://ch:8123/?token=hunter2".into());
+        config.logging.clickhouse_url = Some(format!("http://ch:8123/?token={secret}"));
         config.providers.push(rolter_core::config::ProviderConfig {
-            egress_proxy: Some("pa ss:hunter2@proxy".into()),
-            egress_proxies: vec!["http://p:hunter2@proxy:3128".into()],
+            egress_proxy: Some(format!("pa ss:{secret}@proxy")),
+            egress_proxies: vec![format!("http://p:{secret}@proxy:3128")],
             ..Default::default()
         });
         redact_config_for_dashboard(&mut config);
         let json = serde_json::to_string(&config).unwrap();
-        assert!(!json.contains("hunter2"), "{json}");
+        assert!(!json.contains(&secret), "{json}");
     }
 
     /// A scratch `ui_dir`, removed when the guard drops. No `tempfile` in this
@@ -3461,7 +3469,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_requires_admin_token_when_configured() {
-        let addr = serve(build_app_with_internal(state_with_token(Some("sekrit")))).await;
+        let token = format!("tok-{}", uuid::Uuid::new_v4());
+        let addr = serve(build_app_with_internal(state_with_token(Some(&token)))).await;
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/internal/snapshot");
 
@@ -3471,7 +3480,7 @@ mod tests {
         let wrong = client.get(&url).bearer_auth("nope").send().await.unwrap();
         assert_eq!(wrong.status(), 401);
 
-        let ok = client.get(&url).bearer_auth("sekrit").send().await.unwrap();
+        let ok = client.get(&url).bearer_auth(&token).send().await.unwrap();
         assert_eq!(ok.status(), 200);
 
         // the rest of the api stays open (dashboard reads, health)

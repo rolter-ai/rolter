@@ -15,7 +15,7 @@ docker compose -f docker/docker-compose.yml logs -f gateway
 
 The gateway follows the control plane (`ROLTER_SNAPSHOT_URL=http://control:4001/internal/snapshot`, plus `ROLTER_REDIS_URL` for immediate wake-ups), so a provider, route or virtual key created in the dashboard reaches it within a poll (5 s). It starts whether or not the control plane answers yet: the watcher logs a failed poll and retries, and `depends_on: control` only orders the start, since the distroless image has no shell to run a container healthcheck with. The control plane reads `ROLTER_GATEWAY_URL=http://gateway:4000` for the Playground's `/gw/*` proxy, whose default, `localhost:4000`, is the control container itself. `ROLTER_KEK` is passed through when exported; without it the dashboard refuses to store a provider key.
 
-All three rolter services share one `build:` block that sets `CARGO_FEATURES=postgres`. That is also the Dockerfile default, so the published image gets it too (#2405). A control plane built with `CARGO_FEATURES=` has no `--database-url`, no CRUD API and no sign-in, so the Postgres next to it would sit unused; the `image-smoke` job fails if the image's `rolter-control --help` does not list `--database-url`. The feature is enabled on the launcher as well, so `rolter config export`, `mfa reset` and `kek verify` work from the image.
+All three rolter services share one `build:` block that sets `CARGO_FEATURES=postgres`. That is also the Dockerfile default, so the published image gets it too (#2405). A control plane built with `CARGO_FEATURES=` has no `--database-url`, no CRUD API and no sign-in, so the Postgres next to it would sit unused; the image smoke in `quality.yml` fails if the image's `rolter-control --help` does not list `--database-url`. On a PR that smoke runs against the `runtime-prebuilt` target, whose binaries `rust build` compiles with the same `--features postgres`; `release.yml`'s `smoke image` job runs the same check against the `runtime` image of every published architecture. The feature is enabled on the launcher as well, so `rolter config export`, `mfa reset` and `kek verify` work from the image.
 
 ### Team shape
 
@@ -93,9 +93,24 @@ again on its own, unless `ROLTER_ALLOW_OPEN_MODE=1` acknowledges it. The
 machine. Anything other hosts reach needs an admin token, and a virtual key of
 its own in place of the bundled `sk-rolter-dev`, which is public and allows
 every model. `docker/smoke/image-smoke.sh` checks all three states through
-published ports: the blocking `image-smoke` job in `quality.yml` runs it on
+published ports: the blocking `rust build` job in `quality.yml` runs it on
 every PR, and the release workflow's `smoke image` job runs it against each
 built architecture.
+
+On a PR the image under test is the Dockerfile's `runtime-prebuilt` target, not
+`runtime` (#2037). Both build on one `runtime-base` stage that carries
+everything above: the distroless `nonroot` base, `/app` as the working
+directory, the bundled `/app/rolter.toml`, `ROLTER_UI_DIR=/app/ui/dist`, the two
+exposed ports and the `easy-up --host 0.0.0.0` command. `runtime` compiles the
+binaries and the dashboard in its builder stages; `runtime-prebuilt` copies
+them from the named build contexts `rolter-bin` and `rolter-ui`, so CI smokes
+the published layout without a cold release build on every call. CI builds it
+on distroless debian13 (`--build-arg RUNTIME_DISTRO=debian13`), because binaries
+compiled on its Ubuntu 24.04 runner need a newer glibc than debian 12 has; the
+default, and every image that is built for use, stays on debian12. It is never
+published. See
+[testing](../development/testing.md#published-port-image-smoke) for the local
+commands.
 
 Then open http://localhost:4001 and verify the data plane with:
 

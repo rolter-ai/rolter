@@ -1,7 +1,14 @@
 import { describe, expect, it } from "bun:test";
 
 import type { MembershipRow } from "@/lib/api";
-import { afterRevoke, grantScope, higherRole, membershipScope, sameScope } from "@/lib/role-grants";
+import {
+  afterRevoke,
+  grantScope,
+  higherRole,
+  isLastOrgAdmin,
+  membershipScope,
+  sameScope,
+} from "@/lib/role-grants";
 
 const ORG = "org-1";
 
@@ -137,5 +144,30 @@ describe("afterRevoke", () => {
     const target = grant("t", "member", { project_id: "project-9" });
     const team = grant("tm", "admin", { team_id: "team-1" });
     expect(afterRevoke(target, [target, team], ORG, teamOf)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("isLastOrgAdmin", () => {
+  const mine = grant("a", "admin", { org_id: ORG, user_id: "u1" });
+  const users = [{ id: "u1" }, { id: "u2", deactivated_at: "2026-01-01T00:00:00Z" }, { id: "u3" }];
+
+  it("is the only org admin grant", () => {
+    expect(isLastOrgAdmin(mine, [mine], users)).toBe(true);
+  });
+
+  it("is not once another active account holds one", () => {
+    const other = grant("b", "admin", { org_id: ORG, user_id: "u3" });
+    expect(isLastOrgAdmin(mine, [mine, other], users)).toBe(false);
+  });
+
+  it("does not count a deactivated account or a narrower scope", () => {
+    const gone = grant("b", "admin", { org_id: ORG, user_id: "u2" });
+    const team = grant("c", "admin", { org_id: ORG, team_id: "team-1", user_id: "u3" });
+    expect(isLastOrgAdmin(mine, [mine, gone, team], users)).toBe(true);
+  });
+
+  it("is never true for a grant that is not an org admin one", () => {
+    const member = grant("d", "member", { org_id: ORG, user_id: "u1" });
+    expect(isLastOrgAdmin(member, [member], users)).toBe(false);
   });
 });

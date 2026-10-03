@@ -548,6 +548,36 @@ max_secs = 300
 
 ---
 
+### \[cache\]
+
+Global exact-match response-cache settings. Backed by Redis; off by default. Individual routes must also opt in or carry a virtual-key cache override.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for global response caching.
+</ParamField>
+
+<ParamField path="default_ttl_secs" default="60" type="u64">
+  Default entry time-to-live in seconds, overridable per route.
+</ParamField>
+
+<ParamField path="namespace" default="rolter:cache" type="string">
+  Redis key prefix for cache entries to isolate and flush entries easily.
+</ParamField>
+
+<ParamField path="max_entry_bytes" default="1048576" type="u64">
+  Largest response body in bytes that may be cached (defaults to 1 MiB).
+</ParamField>
+
+```toml
+[cache]
+enabled = true
+default_ttl_secs = 60
+namespace = "rolter:cache"
+max_entry_bytes = 1048576
+```
+
+---
+
 ### \[timeouts\]
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
@@ -769,6 +799,32 @@ This section is inert without a Redis URL: with no counter store there is nothin
 [usage_recording]
 queue_capacity = 10000
 workers = 4
+```
+
+---
+
+### \[security\]
+
+Ingress rules applied to every request on the `/v1/*` surface. A gateway managed by the control plane takes these from the dashboard's Security screen; a file-configured gateway reads them from this section. Both keys are optional and the section adds no rules when omitted.
+
+<ParamField path="required_headers" type="table">
+  Lowercase header name to the exact value every request must carry. A request that is missing one,
+  or carries a different value, is refused with `403` before authentication. This is an ingress
+  filter (a mesh identity header, a WAF marker), not an authorization decision. The `/healthz` and `/readyz`
+  probes are exempt.
+</ParamField>
+
+<ParamField path="auth_bypass_routes" type="array of strings">
+  Exact `/v1/...` paths served without authentication. Matching is exact: no prefixes and no
+  wildcards.
+</ParamField>
+
+```toml
+[security]
+auth_bypass_routes = ["/v1/models"]
+
+[security.required_headers]
+x-mesh-identity = "gateway"
 ```
 
 ---

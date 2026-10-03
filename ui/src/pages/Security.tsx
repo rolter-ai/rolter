@@ -96,8 +96,7 @@ const PICKUP_POLL_MS = 4_000;
 const PICKUP_WATCH_MS = 90_000;
 
 // global gateway security policy, persisted via /api/v1/security-settings
-// (superadmin only). dashboard secret is write-only: the server seals it and
-// reports only whether one is configured.
+// (superadmin only).
 function SecurityScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();

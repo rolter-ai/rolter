@@ -11,7 +11,14 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardStack,
+  CardTitle,
+} from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -570,13 +577,13 @@ function LimitCard({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
+    <CardStack>
       <div className="flex items-start gap-2.5">
         <div className="min-w-0 flex-1">{figure}</div>
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
       </div>
       {children}
-    </div>
+    </CardStack>
   );
 }
 

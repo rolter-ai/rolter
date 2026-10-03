@@ -1625,7 +1625,10 @@ mod tests {
         // clears the stored secret
         assert!(!seals_client_secret(Some("")));
         // the only shape that seals
-        assert!(seals_client_secret(Some("s3cret")));
+        assert!(seals_client_secret(Some(&format!(
+            "sec-{}",
+            uuid::Uuid::new_v4()
+        ))));
     }
 
     fn accepting(value: &str) -> HeaderMap {
@@ -1876,8 +1879,9 @@ mod tests {
     #[test]
     fn a_token_error_never_carries_the_upstream_body() {
         // the upstream's prose may quote the request, which carried a secret
-        let error = classify(400, "client_secret=hunter2 is wrong");
-        assert!(!error.message().contains("hunter2"));
+        let secret = format!("sec-{}", uuid::Uuid::new_v4());
+        let error = classify(400, &format!("client_secret={secret} is wrong"));
+        assert!(!error.message().contains(&secret));
     }
 
     #[test]

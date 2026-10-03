@@ -1,14 +1,22 @@
 # nextest configuration.
 #
-# The rolter-store and rolter-control tests share a single Postgres and each
-# resets the `public` schema at the start of a test, so they must never run
-# concurrently with one another. A single-threaded test group serializes every
-# test in both packages (their non-DB unit tests are few and fast, so the
-# over-serialization is negligible).
-
-[test-groups]
-serial-db = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'package(rolter-store) | package(rolter-control)'
-test-group = 'serial-db'
+# There is deliberately no test group here. The rolter-store and rolter-control
+# Postgres suites used to run in a single-threaded `serial-db` group because
+# every test reset the shared `public` schema. Since #1364 each test builds its
+# own `test_<pid>_<seq>` schema through `TestSchema` and pins `search_path` to
+# it, and since #1734 each worktree has its own database, so nothing is shared
+# between concurrent tests.
+#
+# Measured for #1429 on a 4-core machine against one shared Postgres with
+# `max_connections = 300` and the 4-connection test pool (781 tests, both
+# packages, `--features postgres`), three runs each:
+#
+#   serialised (old group):  572s, 389s, 398s
+#   parallel (no group):     342s, 155s, 175s
+#
+# All six runs passed 781/781. The machine was shared with other agents, which
+# is why the first pair is slow; the ratio held at about 2.3x on the quiet runs.
+# nextest defaults to one test thread per core, so a worktree holds roughly
+# threads + 5 connections; see "The Postgres test database" in
+# docs/dev-docs/development/testing.md before running on a wide machine against
+# a server left at the stock `max_connections = 100`.
