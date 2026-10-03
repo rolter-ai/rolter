@@ -3176,7 +3176,19 @@
         "apiBase": "Базовый URL API",
         "model": "Модель",
         "strategy": "Стратегия",
-        "targets": "Цели"
+        "targets": "Цели",
+        "virtualKeys": "Виртуальные ключи (из файла конфигурации)",
+        "allowedModels": "Разрешённые модели",
+        "allModels": "все модели",
+        "weight": "вес {{value}}",
+        "upstreamModel": "модель {{model}}",
+        "noTargets": "нет целей",
+        "emptyProvidersTitle": "Провайдеры не настроены",
+        "emptyProvidersBody": "Добавьте провайдера, чтобы у шлюза был апстрим для запросов.",
+        "addProvider": "Перейти к провайдерам",
+        "emptyRoutesTitle": "Маршруты не настроены",
+        "emptyRoutesBody": "Добавьте правило маршрутизации, чтобы открыть имя модели через шлюз.",
+        "addRoute": "Перейти к правилам маршрутизации"
       }
     },
     "mcpSettings": {
