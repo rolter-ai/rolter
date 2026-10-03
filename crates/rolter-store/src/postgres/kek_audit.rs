@@ -55,6 +55,9 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         nonce: "secret_nonce",
         holds: "alert channel webhook secrets",
     },
+    // #2356: nothing writes this column any more, but a row sealed before the
+    // dashboard password was removed may still hold data, and `kek verify`
+    // should keep flagging a KEK that can no longer open it
     SealedColumn {
         table: "security_settings",
         ciphertext: "dashboard_credential_ciphertext",

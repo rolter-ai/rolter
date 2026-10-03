@@ -16,6 +16,7 @@ use crate::budgets::BudgetEnforcer;
 use crate::cache::ResponseCache;
 use crate::health_events::HealthEventSink;
 use crate::logging::LogSink;
+use crate::mcp_log::McpEventSink;
 use crate::metrics::Metrics;
 use crate::queue::ProviderQueues;
 use crate::rate_limits::RateLimiter;
@@ -34,6 +35,13 @@ pub struct RouteEntry {
     /// which guardrail rules apply on this route, resolved once here so the
     /// request path never re-derives it from names (#590)
     pub guardrails: rolter_core::guardrails::RuleSelection,
+    /// the project whose keys alone may use this route because a provider behind
+    /// it is scoped to that project (#1919); `None` when every provider it
+    /// reaches is org-wide. Separate from the route's own `project_only` flag:
+    /// that one is an admin's choice about the route, this one follows the
+    /// provider's, so a route in an org-wide catalogue still cannot hand a
+    /// project's private credential to another project's key
+    pub project_scope: Option<String>,
 }
 
 impl RouteEntry {
@@ -58,6 +66,15 @@ impl RouteEntry {
                 if !key.org_id.is_empty() && key.project_id != project {
                     return false;
                 }
+            }
+        }
+        // a provider or group scoped to a project serves that project's keys
+        // only, whether the key names it with `slug/model` or reaches it
+        // through a route. a key with an org but no project is refused too; a
+        // key from the gateway's own config file is the operator's
+        if let (Some(key), Some(scope)) = (key, self.project_scope.as_deref()) {
+            if !key.org_id.is_empty() && key.project_id != scope {
+                return false;
             }
         }
         true
@@ -474,9 +491,15 @@ impl Snapshot {
                     build_with_stats(route.strategy, &w, &s)
                 })
                 .collect();
+            let project_scope = route
+                .targets
+                .iter()
+                .chain(route.variants.iter().flat_map(|v| v.targets.iter()))
+                .find_map(|t| providers.get(&t.provider).and_then(provider_scope));
             routes.insert(
                 route.model.clone(),
                 RouteEntry {
+                    project_scope,
                     guardrails: compiled_guardrails.resolve_selection(&route.advanced.guardrails),
                     route: route.clone(),
                     balancer,
@@ -633,9 +656,12 @@ impl Snapshot {
                 .providers
                 .get(provider_name)
                 .and_then(|provider| provider.tenancy.clone());
+            // nor does its project scope, which `tenancy.project_id` carries for
+            // a provider: the synthetic route is narrowed to that project
+            let scope = self.providers.get(provider_name).and_then(provider_scope);
             // a single target has nothing to balance between, so a per-request
             // balancer is fine here
-            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy));
+            return Some(self.synthetic_route(model, strategy, vec![target], None, tenancy, scope));
         }
         if let Some(group) = self.groups_by_slug.get(slug) {
             // one target per member; each rewrites to its own upstream model
@@ -652,6 +678,19 @@ impl Snapshot {
             if targets.is_empty() {
                 return None;
             }
+            // a group's scope is its own; failing that, a scoped member still
+            // narrows it, so an org-wide group a row edit left holding one
+            // cannot hand that provider to another project
+            let scope = group
+                .tenancy
+                .as_ref()
+                .and_then(|t| t.project_id.clone())
+                .or_else(|| {
+                    group
+                        .members
+                        .iter()
+                        .find_map(|m| self.providers.get(&m.provider).and_then(provider_scope))
+                });
             // the group's own balancer, so the rotation advances across
             // requests instead of restarting on each one (#1655)
             return Some(self.synthetic_route(
@@ -660,6 +699,7 @@ impl Snapshot {
                 targets,
                 self.group_balancers.get(slug).cloned(),
                 group.tenancy.clone(),
+                scope,
             ));
         }
         None
@@ -679,6 +719,7 @@ impl Snapshot {
         targets: Vec<Target>,
         balancer: Option<Arc<dyn LoadBalancer>>,
         tenancy: Option<rolter_core::Tenancy>,
+        project_scope: Option<String>,
     ) -> RouteEntry {
         let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
         let stats = TargetStats {
@@ -701,6 +742,7 @@ impl Snapshot {
             tenancy,
         };
         RouteEntry {
+            project_scope,
             route,
             balancer,
             variant_balancers: Vec::new(),
@@ -709,6 +751,12 @@ impl Snapshot {
             guardrails: Default::default(),
         }
     }
+}
+
+/// The project a provider is scoped to, if any. For a provider the tenancy's
+/// `project_id` is the scope, where on a route it is the route's own project.
+fn provider_scope(provider: &rolter_core::ProviderConfig) -> Option<String> {
+    provider.tenancy.as_ref()?.project_id.clone()
 }
 
 /// Re-denominate a price into `base`, or `None` when the pair has no rate.
@@ -779,6 +827,10 @@ pub struct AppState {
     /// time; swapped on reload so hostname/rebinding enforcement re-tunes
     /// without rebuilding pooled clients (#656)
     pub egress: rolter_proxy::egress_resolver::SharedEgressPolicy,
+    /// client for the URLs an operator writes that are not a provider's
+    /// `api_base` (guardrail webhook, pii sanitizer, plugins, status pages),
+    /// bound to the same live policy so a reload re-tunes it too
+    pub side_client: crate::egress_client::EgressClient,
     pub forwarder: Arc<Forwarder>,
     /// bounded worker queues keyed by provider; queue settings come from the
     /// live snapshot so a hot reload takes effect for subsequent requests
@@ -787,6 +839,8 @@ pub struct AppState {
     pub log: LogSink,
     /// batched writer for provider health events; disabled when no clickhouse url
     pub health_events: HealthEventSink,
+    /// batched writer for proxied MCP tool calls; disabled when no clickhouse url
+    pub mcp_events: McpEventSink,
     /// enforces spend caps against Redis; disabled when no redis url is set
     pub budgets: BudgetEnforcer,
     /// dedup for the `warn` unpriced-traffic policy, so an unenforceable budget
@@ -827,11 +881,13 @@ impl AppState {
         let metrics = Arc::new(Metrics::default());
         let log = LogSink::disabled(metrics.clone());
         let health_events = HealthEventSink::disabled(metrics.clone());
+        let mcp_events = McpEventSink::disabled(metrics.clone());
         Self::assemble(
             config,
             metrics,
             log,
             health_events,
+            mcp_events,
             BudgetEnforcer::disabled(),
             RateLimiter::disabled(),
             ResponseCache::disabled(),
@@ -863,6 +919,16 @@ impl AppState {
                 metrics.clone(),
             ),
             None => HealthEventSink::disabled(metrics.clone()),
+        };
+        let mcp_events = match &config.logging.clickhouse_url {
+            Some(url) => McpEventSink::spawn(
+                url.clone(),
+                config.logging.batch_max,
+                Duration::from_millis(config.logging.flush_ms),
+                config.logging.queue_capacity,
+                metrics.clone(),
+            ),
+            None => McpEventSink::disabled(metrics.clone()),
         };
         // the request funnel doubles as the passive health-event source
         let log = log.with_health_events(health_events.clone());
@@ -900,17 +966,20 @@ impl AppState {
             metrics,
             log,
             health_events,
+            mcp_events,
             budgets,
             rate_limiter,
             response_cache,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         config: &GatewayConfig,
         metrics: Arc<Metrics>,
         log: LogSink,
         health_events: HealthEventSink,
+        mcp_events: McpEventSink,
         budgets: BudgetEnforcer,
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
@@ -929,8 +998,11 @@ impl AppState {
         forwarder.set_compatibility(&config.compatibility);
         forwarder.set_client_policy(&config.client);
         forwarder.set_model_defaults(&config.model_defaults);
+        health_events.set_provider_orgs(&config.providers);
         let provider_queues = ProviderQueues::new(forwarder.clone(), metrics.clone());
-        let cache_telemetry = crate::cache_telemetry::CacheTelemetry::new(metrics.clone());
+        let side_client = crate::egress_client::EgressClient::new(egress.clone());
+        let cache_telemetry =
+            crate::cache_telemetry::CacheTelemetry::new(metrics.clone(), side_client.clone());
         cache_telemetry.configure(&config.providers);
         Self {
             snapshot: Arc::new(ArcSwap::from_pointee(Snapshot::build_with_telemetry(
@@ -942,11 +1014,13 @@ impl AppState {
             managed_auth: false,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
+            side_client,
             forwarder,
             provider_queues,
             metrics,
             log,
             health_events,
+            mcp_events,
             budgets,
             unpriced_warns: Arc::new(crate::budgets::UnpricedWarnLog::default()),
             rate_limiter,
@@ -999,6 +1073,7 @@ impl AppState {
         // effect on the next connect without rebuilding a single client
         self.egress.store(Arc::new(config.egress.clone()));
         self.cache_telemetry.configure(&config.providers);
+        self.health_events.set_provider_orgs(&config.providers);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
             config,
             &self.loads,
@@ -1045,6 +1120,29 @@ impl AppState {
     pub async fn drain_realtime_sessions(&self, grace: std::time::Duration) -> bool {
         self.realtime_sessions.close();
         self.realtime_sessions.drained(grace).await
+    }
+
+    /// Flush and stop the request-log writer, the health-event writer, the MCP
+    /// tool-call writer and the usage-recording workers, waiting at most `grace`
+    /// for all of them together. Returns whether they finished inside `grace`.
+    ///
+    /// None of them ends on its own at shutdown: `AppState` clones held by the
+    /// prober, scraper and watcher keep every channel sender alive, so without
+    /// this the runtime is dropped with up to `[logging] flush_ms` of rows in a
+    /// batch and any queued budget or `tpm` records unwritten (#1924). Call it
+    /// after the HTTP and realtime drains, once nothing produces new work. They
+    /// run concurrently so a dead ClickHouse and a dead Redis share one
+    /// `grace` rather than spending it twice.
+    pub async fn drain_sinks(&self, grace: std::time::Duration) -> bool {
+        let flush = async {
+            tokio::join!(
+                self.log.shutdown(),
+                self.health_events.shutdown(),
+                self.mcp_events.shutdown(),
+                self.log.usage_recorders().shutdown(),
+            );
+        };
+        tokio::time::timeout(grace, flush).await.is_ok()
     }
 }
 
@@ -1448,6 +1546,7 @@ mod tests {
                 },
             ],
             tenancy: None,
+            ..Default::default()
         });
         // a group whose slug collides with a provider slug is dropped
         config.provider_groups.push(ProviderGroupConfig {
@@ -1460,6 +1559,7 @@ mod tests {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         });
         // an empty group never routes
         config.provider_groups.push(ProviderGroupConfig {
@@ -1468,6 +1568,7 @@ mod tests {
             strategy: Default::default(),
             members: Vec::new(),
             tenancy: None,
+            ..Default::default()
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1517,6 +1618,7 @@ mod tests {
             strategy,
             members,
             tenancy: None,
+            ..Default::default()
         });
         Snapshot::build(&config, &crate::load::LoadTracker::new())
     }
@@ -1596,6 +1698,7 @@ mod tests {
                     })
                     .collect(),
                 tenancy: None,
+                ..Default::default()
             });
         }
         let snap = Snapshot::build(&config, &crate::load::LoadTracker::new());

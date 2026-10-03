@@ -121,12 +121,14 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-six things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+seven things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a
 `DialogFooter` holding a `"destructive"` button, which is a confirmation
 assembled by hand rather than taken from `ConfirmDialog` (see
-[destructive actions](destructive-actions.md)). The fourth is this page's rule
+[destructive actions](destructive-actions.md)), and a bare `animate-spin` /
+`animate-pulse`, which must be `motion-safe:` so `prefers-reduced-motion` stops
+it (#2006). The fourth is this page's rule
 — #1044 sat undiscovered for months because nothing looked, and seven
 primitives stayed trapped in one sheet's file.
 
@@ -196,6 +198,30 @@ because an unexplained waiver is indistinguishable from the bug. Waivers live at
 the point of use rather than in a central allow-list file so they cannot outlive
 the code they excuse, and every one is printed on every run so the set stays
 visible instead of growing quietly.
+
+## Draft state for a settings form
+
+A settings screen saves its fields as one request, so it cannot tell a pristine form from an edited
+one by looking at the Save button. `useDraft` (`ui/src/lib/use-draft.ts`) holds the two copies such a
+screen needs, what the server held at the last load or save and what is being edited, and answers
+the questions Save, the field markers and Discard ask:
+
+```tsx
+const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQUALS);
+```
+
+- `source` is the query's data mapped into the form's shape. The first load seeds both copies, and a
+  refetch behind an edit never takes the edit away.
+- `changed` names the fields whose value differs from `saved`. `EQUALS` is a module constant that
+  gives a field its own comparison, so a blank line in a list, or the space around a colon, is not
+  an edit. A field left out is compared with `Object.is`.
+- `commit(next)` adopts what the server answered as both copies after a save, and `reset()` is
+  Discard.
+
+The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
+React test renderer. The Security screen is the first consumer. The leave guard, the shared field
+errors and the saved-at line that #2214 asks every settings screen to carry are not here yet; they
+belong beside this hook rather than in each screen.
 
 ## Still to do
 

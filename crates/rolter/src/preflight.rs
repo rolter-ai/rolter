@@ -177,7 +177,7 @@ fn check_datastores(env: &dyn Env, out: &mut Vec<Finding>) {
                 "ROLTER_DATABASE_URL is not a postgres URL",
                 format!(
                     "expected a postgres:// or postgresql:// URL, got `{}`",
-                    redact(&url)
+                    rolter_core::redact::redact_url(&url)
                 ),
             )),
         Some(_) => {}
@@ -254,17 +254,6 @@ fn check_exposure(env: &dyn Env, out: &mut Vec<Finding>) {
             "the management API is reachable on every interface. Bind it to a private address, \
              or keep it behind an ingress that terminates TLS and restricts access.",
         ));
-    }
-}
-
-/// Redact anything that looks like credentials in a URL before printing it —
-/// this output goes to CI logs.
-fn redact(url: &str) -> String {
-    match (url.find("://"), url.find('@')) {
-        (Some(scheme), Some(at)) if at > scheme => {
-            format!("{}://***@{}", &url[..scheme], &url[at + 1..])
-        }
-        _ => url.to_string(),
     }
 }
 
@@ -509,6 +498,30 @@ fn custom_api_base_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding>
         .collect()
 }
 
+/// The public example key in a config file is a credential the whole internet
+/// knows, with access to every model. Fatal rather than a warning: a production
+/// config that carries it serves it to every gateway polling the control plane
+/// (#2408).
+fn example_key_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    if !config
+        .virtual_keys
+        .iter()
+        .any(|k| k.is_public_example_key())
+    {
+        return Vec::new();
+    }
+    vec![Finding::error(
+        format!(
+            "config declares the public virtual key {}",
+            rolter_core::PUBLIC_EXAMPLE_KEY
+        ),
+        "it ships in rolter.example.toml and the image's baked config, is published in the \
+         repository, and allows every model. Delete its [[virtual_keys]] entry (`rolter init \
+         --profile production` writes a config without it) and mint keys from the dashboard \
+         or API instead.",
+    )]
+}
+
 /// Report every key in the file the config model does not recognise (#1424).
 ///
 /// rolter's config types have no `deny_unknown_fields` on purpose: a file
@@ -636,7 +649,10 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
             }
         }
         match rolter_core::GatewayConfig::load(std::path::Path::new(path)) {
-            Ok(config) => findings.extend(custom_api_base_findings(&config)),
+            Ok(config) => {
+                findings.extend(custom_api_base_findings(&config));
+                findings.extend(example_key_findings(&config));
+            }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
                 error.to_string(),
@@ -767,6 +783,25 @@ mod tests {
             out.is_empty(),
             "no preview for a file that does not parse: {out}"
         );
+    }
+
+    #[test]
+    fn the_public_example_key_is_a_fatal_finding() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            "[[virtual_keys]]\nkey = \"sk-rolter-dev\"\n",
+        )
+        .expect("parses");
+        let findings = example_key_findings(&config);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].fatal, "must be an error, not a warning");
+        let (_, failed) = report(&findings, false);
+        assert!(failed, "a plain `rolter check` must fail on it");
+
+        let other = rolter_core::GatewayConfig::from_toml_str(
+            "[[virtual_keys]]\nkey = \"sk-something-else\"\n",
+        )
+        .expect("parses");
+        assert!(example_key_findings(&other).is_empty());
     }
 
     #[test]
@@ -1091,7 +1126,7 @@ mod tests {
             !text.contains("hunter2"),
             "credentials leaked into the report:\n{text}"
         );
-        assert!(text.contains("***@db/rolter"));
+        assert!(text.contains("***@db/rolter"), "{text}");
     }
 
     #[test]
@@ -1141,14 +1176,6 @@ mod tests {
         assert_eq!(KEK_ENV, rolter_store::postgres::crypto::KEK_ENV);
     }
 
-    #[test]
-    fn redact_leaves_a_credential_free_url_alone() {
-        assert_eq!(
-            redact("postgres://db:5432/rolter"),
-            "postgres://db:5432/rolter"
-        );
-        assert_eq!(redact("not-a-url"), "not-a-url");
-    }
     #[test]
     fn a_missing_key_pepper_warns() {
         let mut env = FakeEnv::healthy();
@@ -1237,11 +1264,13 @@ mod tests {
         // a loopback port that was just released: the connect is refused
         // immediately and deterministically. an off-host address would be at the
         // mercy of whatever the test environment does to outbound traffic
-        let closed = {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
-            addr
+        // bound but never listening: refused, and the port stays reserved so a
+        // parallel test cannot be handed it
+        let (_closed_guard, closed) = {
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = socket.local_addr().unwrap();
+            (socket, addr)
         };
         let env = FakeEnv::healthy()
             .with(

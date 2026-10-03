@@ -51,6 +51,11 @@ initContainers:
   command: ["/usr/local/bin/rolter"]
   args:
     - "check"
+    # the chart's config, not the image's baked example: `rolter check` reads
+    # ROLTER_CONFIG, which the image points at the example and its public
+    # `sk-rolter-dev` key (#2408)
+    - "--config"
+    - "/etc/rolter/rolter.toml"
     {{- if .root.Values.preflight.strict }}
     - "--strict"
     {{- end }}
@@ -59,6 +64,10 @@ initContainers:
     {{- end }}
   securityContext: {{ toYaml .root.Values.securityContext | nindent 4 }}
   env: {{- .env | nindent 4 }}
+  volumeMounts:
+    - name: config
+      mountPath: /etc/rolter
+      readOnly: true
   resources: {{ toYaml .root.Values.preflight.resources | nindent 4 }}
 {{- end }}
 {{- end }}
@@ -147,6 +156,12 @@ The gateway's environment, for the same reason.
 - name: CLICKHOUSE_URL
   value: {{ .Values.env.clickhouseUrl | quote }}
 {{- end }}
+{{- /* the preflight initContainer runs the `rolter` launcher, which spawns
+       its own release check beside every subcommand, so the one setting has
+       to reach this Deployment too or an air-gapped install still dials
+       api.github.com on every gateway pod start (#2382) */}}
+- name: ROLTER_UPDATE_CHECK
+  value: {{ .Values.control.updateCheck | quote }}
 {{- with .Values.secretEnv }}
 {{ toYaml . }}
 {{- end }}

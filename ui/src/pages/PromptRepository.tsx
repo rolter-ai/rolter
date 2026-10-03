@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -1429,7 +1430,7 @@ function CreateTemplateDialog({
         <DialogDescription>{t("pages.promptRepo.createDescription")}</DialogDescription>
       </DialogHeader>
       <form
-        className="space-y-3"
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1439,45 +1440,47 @@ function CreateTemplateDialog({
           });
         }}
       >
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldName")}
-          <Input
-            className="mt-1"
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder={t("pages.promptRepo.namePlaceholder")}
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldSlug")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Input
-            className="mt-1"
-            value={slug}
-            onChange={(event) => setSlug(event.target.value)}
-            placeholder="support-concierge"
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldDescription")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Textarea
-            className="mt-1"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {error && (
-          <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody className="space-y-3">
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldName")}
+            <Input
+              className="mt-1"
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={t("pages.promptRepo.namePlaceholder")}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldSlug")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Input
+              className="mt-1"
+              value={slug}
+              onChange={(event) => setSlug(event.target.value)}
+              placeholder="support-concierge"
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldDescription")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Textarea
+              className="mt-1"
+              rows={3}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.promptRepo.cancel")}
@@ -1528,38 +1531,40 @@ function RenameTemplateDialog({
         </DialogDescription>
       </DialogHeader>
       <form
-        className="space-y-3"
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({ name: trimmed, description: description.trim() });
         }}
       >
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldName")}
-          <Input
-            className="mt-1"
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldDescription")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Textarea
-            className="mt-1"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {error && (
-          <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody className="space-y-3">
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldName")}
+            <Input
+              className="mt-1"
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldDescription")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Textarea
+              className="mt-1"
+              rows={3}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.promptRepo.cancel")}

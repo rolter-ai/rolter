@@ -4,10 +4,12 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import ProviderGroups from "./ProviderGroups";
 import {
   Harness,
+  adminOfProject,
   cancelConfirmation,
   confirmDestructive,
   expectEmptyState,
   expectLoadError,
+  expectAllowed,
   expectNoUxEvent,
   expectRefused,
   expectSheetClosed,
@@ -375,5 +377,61 @@ export const LabelPanel: Story = {
     await expect(await panel.findByText(/every member priced/)).toBeVisible();
     await expect(panel.getByRole("button", { name: "Remove tier=frontier" })).toBeVisible();
     await expect(panel.queryByRole("button", { name: "Remove tier=observed-frontier" })).toBeNull();
+  },
+};
+
+/** A group scoped to a project says so, and an org-wide one says it is org-wide (#1919). */
+export const ShowsWhichProjectEachGroupIsScopedTo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/provider-groups",
+          () => [
+            { ...GROUPS[0], project_id: "project-1" },
+            { ...GROUPS[0], id: "g-2", name: "shared", slug: "shared", project_id: null },
+          ],
+        ],
+        ["/providers", () => []],
+      ])}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Project: Gateway")).toBeVisible();
+    await expect(canvas.getByText("Organization-wide")).toBeVisible();
+    const row = canvas.getByText("frontier").closest('[role="row"]') as HTMLElement;
+    await expect(within(row).getByText("Project: Gateway")).toBeVisible();
+    await expectListTable(canvasElement, "Provider Groups");
+  },
+};
+
+// the same mixed list as the Providers screen (#2522): a project admin may edit
+// the group scoped to their project and is refused the org-wide one
+export const ProjectAdminOnAMixedList: Story = {
+  render: () => (
+    <Harness
+      role={adminOfProject("project-1")}
+      fetchStub={routes([
+        [
+          "/provider-groups",
+          () => [
+            { ...GROUPS[0], project_id: "project-1" },
+            { ...GROUPS[0], id: "g-2", name: "fallback", slug: "fallback", project_id: null },
+          ],
+        ],
+        ["/providers", () => []],
+      ])}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit provider group frontier");
+    await expectAllowed(canvasElement, "Delete provider group frontier");
+    await expectRefused(canvasElement, "Edit provider group fallback");
+    await expectRefused(canvasElement, "Delete provider group fallback");
   },
 };

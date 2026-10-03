@@ -16,6 +16,14 @@ The plaintext token (`rolter_scim_…`) is returned **once**, at creation. Only 
 
 Because the token resolves to exactly one org, an IdP cannot address another tenant's users: a foreign resource id is a `404`, not a redacted row.
 
+## The base URL an IdP is pointed at
+
+The resource endpoints below are mounted at the root of the control plane (`scim.rs`, `scim_groups.rs`), so the base URL a connector needs is the control plane's public URL plus `/scim/v2`. The control plane builds every address it gives an outside caller from `ROLTER_PUBLIC_URL`, never from the request, and the dashboard can be open under another name than the one the IdP must call, so the User Provisioning screen does not derive the URL from `window.location` (#2079).
+
+It reads `GET /api/v1/public-url` (`public_url.rs`, capability `public_url`, readable by any signed-in caller) and appends the path with `scimBaseUrl()` in `ui/src/lib/api.ts`, which mirrors the mount; `ui/src/lib/scim-urls.test.ts` pins the pair. The read goes through `usePublicUrl()`, which the [Single Sign-On](sso.md) screen calls too, so both screens share one request and agree on whether the variable is set.
+
+The address is shown twice with a copy button each: above the token list, and in the reveal step beside the token, where an operator holds a secret that is never shown again. The reveal is a sheet rather than a dialog for that reason, and it takes the shared `SecretValue` and close guard: a failed copy leaves a message under the token, and closing the sheet before the token was copied asks first ([Dashboard one-time secrets](../development/secret-reveal.md)). With `configured: false` the control plane's default `http://localhost:4001` stands in for the variable. The screen still shows it and says, under it, that an IdP can reach it only from the control plane's own host. The address appears only beside a token list that was read, since a caller refused the list or a control plane with no store has no connector to point anywhere. A failed read of the public URL shows a `LoadError` with a retry instead of a guessed host.
+
 ## Users
 
 ```

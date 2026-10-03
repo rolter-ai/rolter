@@ -148,7 +148,7 @@ lives in Postgres, where the importer does not write it. `just dogfood` runs the
 script after the control plane is up. The script changes only `enabled`, so
 blend weights set on **Adaptive Routing → Settings** survive it. The route then
 engages once it has served `min_samples` picks (50 by default), and the
-**Adaptive Routing → Dashboard** screen shows `engaged` from then on. To compare
+**Adaptive Routing → Telemetry** screen shows `engaged` from then on. To compare
 against the fallback stack, run `just dogfood-adaptive off`, or flip the switch
 on the Settings screen. The choice survives a restart of the control plane, but
 the next `just dogfood` turns the switch back on.

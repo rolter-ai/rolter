@@ -384,7 +384,9 @@ function StageLane({
                   disabled={removingId === plugin.id}
                   onClick={() => onDelete(plugin)}
                 >
-                  {removingId === plugin.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {removingId === plugin.id && (
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                  )}
                   {t("pages.plugins.delete")}
                 </GatedButton>
                 <GatedButton

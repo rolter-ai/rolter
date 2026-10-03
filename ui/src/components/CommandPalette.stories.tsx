@@ -101,10 +101,12 @@ function Palette({
   fetchStub = records,
   startOpen = true,
   recent = ["logs", "providers"],
+  screens = NAV,
 }: {
   fetchStub?: FetchStub;
   startOpen?: boolean;
   recent?: string[];
+  screens?: NavDef[];
 }) {
   const [open, setOpen] = React.useState(startOpen);
   const [went, setWent] = React.useState("none");
@@ -117,9 +119,9 @@ function Palette({
       <CommandPalette
         open={open}
         onOpenChange={setOpen}
-        nav={NAV}
+        nav={screens}
         recent={recent}
-        onNavigate={setWent}
+        onNavigate={(screen, search) => setWent(`${screen}${search ?? ""}`)}
       />
     </Harness>
   );
@@ -304,5 +306,156 @@ export const NoMatches: Story = {
     await expectEmptyState(document.body, new RegExp(palette.noMatches));
     await expect(body().getByText(/zzzz/)).toBeVisible();
     await expect(body().queryAllByRole("option")).toHaveLength(0);
+  },
+};
+
+const REQUEST_ID = "3f2c9a1e-7b4d-4f10-9c2e-0a1b2c3d4e5f";
+const TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+
+/**
+ * A request id pasted into the field is offered as a lookup in LLM Logs (#1861):
+ * one entry, selected, naming the id and saying what kind it is. Enter opens
+ * the screen on it, through the address the screen reads its lookup from, and
+ * the palette closes behind it.
+ */
+export const APastedRequestIdOffersLogs: Story = {
+  render: () => <Palette />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await focused();
+    await userEvent.paste(`${REQUEST_ID}\n`);
+
+    const group = await body().findByRole("group", { name: palette.sections.lookup });
+    const offer = await within(group).findByRole("option", {
+      name: new RegExp(palette.openRequest.replace("{{id}}", REQUEST_ID)),
+    });
+    await expect(offer).toHaveTextContent(palette.kinds.requestId);
+    await expect(offer).toHaveAttribute("aria-selected", "true");
+    // the live region counts the offer as the one result
+    await waitFor(() => expect(body().getByText("1 result")).toBeInTheDocument());
+
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(canvas.getByTestId("went")).toHaveTextContent(`logs?request_id=${REQUEST_ID}`),
+    );
+    await waitFor(() => expect(document.body.querySelector('[role="listbox"]')).toBeNull());
+  },
+};
+
+/**
+ * A `traceparent` header pasted whole is offered as its trace id, with its own
+ * wording, and opens the screen on the trace rather than on a request.
+ */
+export const APastedTraceparentOffersTheTrace: Story = {
+  render: () => <Palette />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await focused();
+    await userEvent.paste(`00-${TRACE_ID}-b7ad6b7169203331-01`);
+
+    const offer = await body().findByRole("option", {
+      name: new RegExp(palette.openTrace.replace("{{id}}", TRACE_ID)),
+    });
+    await expect(offer).toHaveTextContent(palette.kinds.traceId);
+    await userEvent.click(offer);
+    await waitFor(() =>
+      expect(canvas.getByTestId("went")).toHaveTextContent(`logs?trace_id=${TRACE_ID}`),
+    );
+  },
+};
+
+/**
+ * The offer is for an id, never for a name. A route called `gpt-4o-mini` has a
+ * digit and eleven characters, like an id does, and Enter on it still opens
+ * Routing Rules. A word with no digit, and a word too short to be an id, are
+ * searched as names and offered nothing.
+ */
+export const ANameIsNotOfferedAsAnId: Story = {
+  render: () => <Palette />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const field = await focused();
+    await userEvent.type(field, "gpt-4o-mini");
+    await body().findByRole("option", { name: /gpt-4o-mini/ });
+    await expect(body().queryByRole("group", { name: palette.sections.lookup })).toBeNull();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(canvas.getByTestId("went")).toHaveTextContent("routing-rules"));
+
+    await userEvent.click(canvas.getByRole("button", { name: /open the palette/i }));
+    const again = await focused();
+    await userEvent.type(again, "zzzzzzzzzz");
+    await expectEmptyState(document.body, new RegExp(palette.noMatches));
+    await expect(body().queryByRole("group", { name: palette.sections.lookup })).toBeNull();
+  },
+};
+
+/**
+ * A caller whose nav has no LLM Logs is not offered the lookup: it would open a
+ * screen they cannot see, and the palette does not list a dead end.
+ */
+export const NoLookupWithoutTheLogsScreen: Story = {
+  render: () => <Palette screens={NAV.filter((entry) => entry.key !== "observability")} />,
+  play: async () => {
+    await focused();
+    await userEvent.paste(REQUEST_ID);
+    await expectEmptyState(document.body, new RegExp(palette.noMatches));
+    await expect(body().queryByRole("option")).toBeNull();
+  },
+};
+
+/**
+ * The record lists may still hold the name an id-shaped word is, so a request id
+ * waits for them: while they load the section shows its skeleton and nothing is
+ * offered ahead of a record that may be about to match. A trace id cannot be a
+ * name, so it is offered at once.
+ */
+export const ALoadingRecordListHoldsTheRequestOfferBack: Story = {
+  render: () => <Palette fetchStub={pending} />,
+  play: async () => {
+    const field = await focused();
+    await userEvent.paste(REQUEST_ID);
+    await body().findByRole("group", { name: palette.sections.records });
+    await expectSkeleton(document.body);
+    await expect(body().queryByRole("group", { name: palette.sections.lookup })).toBeNull();
+
+    await userEvent.clear(field);
+    await userEvent.paste(TRACE_ID);
+    await body().findByRole("option", {
+      name: new RegExp(palette.openTrace.replace("{{id}}", TRACE_ID)),
+    });
+  },
+};
+
+/** every answer arrives a quarter of a second late, so the scope resolves after the paste */
+const slowRecords: FetchStub = async (input, init) => {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  return records(input, init);
+};
+
+/**
+ * The scope that enables the record lists resolves after the palette is already
+ * open, so for a moment nothing is fetching. A pasted request id must not be
+ * offered in that gap only to vanish when the lists start loading, nor read as
+ * "no screens match": the palette says it is waiting, then offers the id once
+ * and keeps it.
+ */
+export const TheRequestOfferDoesNotFlickerWhileTheScopeResolves: Story = {
+  render: () => <Palette fetchStub={slowRecords} />,
+  play: async () => {
+    await focused();
+    await userEvent.paste(REQUEST_ID);
+    await expect(body().queryByRole("option")).toBeNull();
+    await expect(body().queryByText(palette.noMatches)).toBeNull();
+
+    const offer = await body().findByRole(
+      "option",
+      { name: new RegExp(palette.openRequest.replace("{{id}}", REQUEST_ID)) },
+      { timeout: 6000 },
+    );
+    // it stays: nothing starts fetching behind it and takes it away
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await expect(offer).toBeInTheDocument();
+    await expect(body().queryByText(palette.noMatches)).toBeNull();
+    await expect(body().queryByRole("status", { busy: true })).toBeNull();
   },
 };

@@ -15,6 +15,13 @@
 //! Invitations are independent of single sign-on and co-exist with it. The
 //! membership an acceptance grants carries `source = 'manual'`, so an IdP login
 //! never reconciles it away; see [`crate::sso`] and `docs/dev-docs/architecture/sso.md`.
+//!
+//! The token proves that someone was sent the link, never who holds it: the
+//! inviter gets the same token back from `create_invitation`. So accepting
+//! never signs anyone in to an account that existed before the invitation.
+//! For an existing account it only attaches the invited role, leaves every
+//! credential as it was, and sends the invitee to the normal sign-in, where
+//! their own password and any second factor still apply (#1935).
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -40,8 +47,8 @@ use crate::ControlState;
 /// short enough that a link forwarded on and forgotten stops working
 const INVITE_TTL_HOURS: i64 = 24 * 7;
 
-/// session handed to the invitee on acceptance, so they land signed in rather
-/// than at a login form they have not used yet
+/// session handed to a newly created invitee on acceptance, so they land signed
+/// in rather than at a login form they have not used yet
 const SESSION_TTL_HOURS: i64 = 24 * 7;
 
 pub fn router() -> Router<ControlState> {
@@ -116,7 +123,7 @@ async fn create_invitation(
         Principal::User(user) => Some(user.id),
         Principal::Superadmin => None,
     };
-    let invitation = InvitationRepo(pool_ref)
+    let (invitation, replaced) = InvitationRepo(pool_ref)
         .create(
             org_id,
             &email,
@@ -136,7 +143,9 @@ async fn create_invitation(
         "invitation.create",
         "invitation",
         invitation.id,
-        serde_json::json!({"email": email, "role": body.role}),
+        // `replaced` names the pending invitation this one superseded, so the
+        // revocation is on the record without a second `invitation.revoke` row
+        serde_json::json!({"email": email, "role": body.role, "replaced": replaced}),
     )
     .await;
 
@@ -219,6 +228,13 @@ struct InvitationPreview {
     email: String,
     role: String,
     expires_at: chrono::DateTime<Utc>,
+    /// an account already exists under this email, so accepting adds the role
+    /// to it and the invitee then signs in as usual, rather than choosing a
+    /// password (#1935). The only holders of the token are the invitee and the
+    /// inviter, and the inviter could learn the same by accepting the link
+    /// themselves: an existing account has to be answered differently from a
+    /// new one, or the fix would be the hole it closes
+    has_account: bool,
 }
 
 async fn preview(
@@ -229,17 +245,26 @@ async fn preview(
 ) -> ApiResult<Json<InvitationPreview>> {
     let invitation = live_invitation_throttled(&state, client, &headers, &token).await?;
     let org = OrgRepo(pool(&state)).get(invitation.org_id).await?;
+    let has_account = UserRepo(pool(&state))
+        .find_by_email(&invitation.email)
+        .await?
+        .is_some();
     Ok(Json(InvitationPreview {
         org_name: org.name,
         email: invitation.email,
         role: invitation.role,
         expires_at: invitation.expires_at,
+        has_account,
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct AcceptInvitation {
-    password: String,
+    /// the password for the account the invitation creates. Required when no
+    /// account exists under the invited email, and ignored when one does: an
+    /// invite link is neither a sign-in nor a password reset
+    #[serde(default)]
+    password: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -247,6 +272,41 @@ struct AcceptResponse {
     token: String,
     expires_at: chrono::DateTime<Utc>,
     user: User,
+    /// set when an org requires a second factor this account has not armed yet
+    /// and its grace window is still open, as on a password sign-in (#1852)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mfa_enrol_by: Option<chrono::DateTime<Utc>>,
+}
+
+/// Why an accepted invitation came back without a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SignInReason {
+    /// the email already had an account; the token proves nothing about who
+    /// holds it, so its own password (and factor) has to
+    ExistingAccount,
+    /// a new account in an org whose `required_*` policy is in force: a
+    /// session without the factor is exactly what the policy forbids, and the
+    /// sign-in is where the enrolment challenge is issued
+    SecondFactor,
+}
+
+/// The invitation is accepted and its role granted, but the invitee has to
+/// sign in through `POST /api/v1/auth/login` to get a session.
+#[derive(Debug, Serialize)]
+struct SignInRequired {
+    sign_in_required: bool,
+    email: String,
+    reason: SignInReason,
+}
+
+/// What `POST /api/v1/invitations/accept/{token}/accept` answers with, told
+/// apart by the client on `sign_in_required`.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AcceptOutcome {
+    Session(AcceptResponse),
+    SignIn(SignInRequired),
 }
 
 async fn accept(
@@ -255,10 +315,18 @@ async fn accept(
     headers: axum::http::HeaderMap,
     Path(token): Path<String>,
     SafeJson(body): SafeJson<AcceptInvitation>,
-) -> ApiResult<Json<AcceptResponse>> {
+) -> ApiResult<Json<AcceptOutcome>> {
     let invitation = live_invitation_throttled(&state, client, &headers, &token).await?;
-    let hash = hash_password(&body.password)?;
     let pool_ref = pool(&state);
+
+    // settled before the invitation is claimed, so a missing or too-short
+    // password is refused without spending the link
+    let existing = UserRepo(pool_ref).find_by_email(&invitation.email).await?;
+    let hash = match (&existing, body.password.as_deref()) {
+        (Some(_), _) => None,
+        (None, Some(password)) => Some(hash_password(password)?),
+        (None, None) => return Err(password_required()),
+    };
 
     // claim the invitation first: if two accepts race, exactly one wins, and
     // the loser must not create an account or a membership
@@ -269,29 +337,30 @@ async fn accept(
         return Err(ApiError::Unauthenticated);
     }
 
-    // adopt an account that already exists under this email — someone may hold
-    // a login in another org, or have arrived through sso first — rather than
-    // forking a second row for the same person
-    let user = match UserRepo(pool_ref).find_by_email(&invitation.email).await? {
+    // an account that already exists under this email is adopted rather than
+    // forked -- someone may hold a login in another org, or have arrived
+    // through sso first -- but never *entered*: its password, sso-only or not,
+    // stays exactly as it was, and no session is minted for it. The token went
+    // back to the inviter too, so anything else would let an org admin who
+    // invites a superadmin's email sign in as that superadmin (#1935)
+    let (user, created) = match existing {
         Some(existing) => {
             if existing.deactivated_at.is_some() {
                 return Err(ApiError::Forbidden);
             }
-            if existing.password_hash.is_none() {
-                // an sso-only account accepting an invite gains the password it
-                // was invited to set; an account that already has one keeps it,
-                // because an invite link is not a password reset
-                UserRepo(pool_ref)
-                    .update(existing.id, None, Some(&hash), None)
-                    .await?
-            } else {
-                existing
-            }
+            (existing, false)
         }
         None => {
-            UserRepo(pool_ref)
-                .create(&invitation.email, Some(&hash), false)
-                .await?
+            // settled above; refused rather than assumed, all the same
+            let Some(hash) = hash else {
+                return Err(password_required());
+            };
+            (
+                UserRepo(pool_ref)
+                    .create(&invitation.email, Some(&hash), false)
+                    .await?,
+                true,
+            )
         }
     };
 
@@ -302,8 +371,8 @@ async fn accept(
     };
     // 'manual' on purpose: an invited role is operator intent and must survive
     // every later sso reconciliation
-    let existing = MembershipRepo(pool_ref).list_for_user(user.id).await?;
-    let already = existing.iter().any(|m| {
+    let memberships = MembershipRepo(pool_ref).list_for_user(user.id).await?;
+    let already = memberships.iter().any(|m| {
         m.org_id == org_scope
             && m.team_id == invitation.team_id
             && m.project_id == invitation.project_id
@@ -322,11 +391,19 @@ async fn accept(
             .await?;
     }
 
-    let (session_token, session_hash) = generate_session_token(&session_pepper());
-    let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
-    SessionRepo(pool_ref)
-        .create(user.id, &session_hash, expires_at)
-        .await?;
+    // a new account goes through the decision a password sign-in makes (#1852),
+    // now that the membership binding it to the org's policy exists. It has no
+    // factor armed yet, so the only question is whether one is enforced
+    let outcome = if created {
+        let effective = crate::mfa::effective_policy(&state, &user).await?;
+        if effective.enforced() {
+            Err(SignInReason::SecondFactor)
+        } else {
+            Ok(effective.enforce_after)
+        }
+    } else {
+        Err(SignInReason::ExistingAccount)
+    };
 
     let _ = rolter_store::postgres::repo::AuditLogRepo(pool_ref)
         .create(
@@ -335,15 +412,37 @@ async fn accept(
             "invitation.accept",
             Some("invitation"),
             Some(invitation.id),
-            Some(serde_json::json!({"role": invitation.role})),
+            Some(serde_json::json!({
+                "role": invitation.role,
+                "account_created": created,
+                "signed_in": outcome.is_ok(),
+            })),
         )
         .await;
 
-    Ok(Json(AcceptResponse {
+    let mfa_enrol_by = match outcome {
+        Ok(enrol_by) => enrol_by,
+        Err(reason) => {
+            return Ok(Json(AcceptOutcome::SignIn(SignInRequired {
+                sign_in_required: true,
+                email: user.email,
+                reason,
+            })))
+        }
+    };
+
+    let (session_token, session_hash) = generate_session_token(&session_pepper());
+    let expires_at = Utc::now() + Duration::hours(SESSION_TTL_HOURS);
+    SessionRepo(pool_ref)
+        .create(user.id, &session_hash, expires_at)
+        .await?;
+
+    Ok(Json(AcceptOutcome::Session(AcceptResponse {
         token: session_token,
         expires_at,
         user,
-    }))
+        mfa_enrol_by,
+    })))
 }
 
 /// Resolve a token to a live invitation. Expired, revoked, accepted and simply
@@ -409,6 +508,10 @@ fn generate_invite_token() -> (String, String) {
 
 fn accept_url(base: &str, token: &str) -> String {
     format!("{base}/invite/{token}")
+}
+
+fn password_required() -> ApiError {
+    invalid("a password is required to create the account this invitation is for")
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {

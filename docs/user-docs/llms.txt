@@ -65,6 +65,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Config Export](/configuration/config-export): Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs.
 - [Env Vars](/configuration/environment-variables): All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values.
 - [Providers](/configuration/providers): How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it.
+- [Egress policy](/configuration/egress): Which destinations Rolter refuses to send to, and every URL the policy covers.
 - [Hot Reload](/configuration/hot-reload): Rolter applies provider, route, and key changes from the dashboard instantly without restarting gateways or dropping in-flight connections.
 - [Feature Flags](/configuration/feature-flags): Toggle the response cache, cache-aware routing, circuit breaker, health checks, complexity routing and guardrails from the dashboard, and have every gateway replica pick the change up without a restart.
 - [Plugins](/configuration/plugins): Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline.
@@ -108,10 +109,10 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 ### Deployment
 
-- [Docker](/deployment/docker): Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host.
+- [Docker](/deployment/docker): Run the full Rolter stack with Docker Compose: gateway, control plane, PostgreSQL, Redis and ClickHouse, either open on one machine or closed for a team on one host.
 - [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
 - [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
-- [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, runtime egress guarantees, an operator checklist, and an offline smoke test.
+- [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, every outbound network path with the setting that controls it, an operator checklist, and an offline smoke test.
 - [Documentation links](/deployment/documentation-links): Point the Rolter dashboard at a documentation site so its screens can deep-link the docs, or leave it unset so an air-gapped deployment renders no links at all.
 - [Backup & restore](/deployment/backup-and-restore): How to back up the Rolter control-plane database, restore it safely, verify that ROLTER_KEK still opens your stored credentials, and rotate the key-encryption key without splitting the fleet.
 - [Upgrading](/deployment/upgrading): How Rolter carries your configuration across a version boundary, how to preview an upgrade before you run it, and why skipping releases is safe.
