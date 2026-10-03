@@ -93,7 +93,7 @@ ui-build:
 # rewrite crates/rolter-control/rbac-matrix.json from CAPABILITIES and copy it
 # into the dashboard's story fixtures (#1369); run after changing the rbac matrix
 gen-rbac:
-    ROLTER_UPDATE_RBAC_MATRIX=1 cargo test -p rolter-control --features postgres --lib the_checked_in_matrix_artifact
+    ROLTER_TEST_UPDATE_RBAC_MATRIX=1 cargo test -p rolter-control --features postgres --lib the_checked_in_matrix_artifact
     cd ui && bun run gen:rbac
 
 # bring up postgres, redis, clickhouse and rolter

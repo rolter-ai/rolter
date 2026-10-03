@@ -1807,8 +1807,10 @@ mod tests {
     /// can be copied from it without a running control plane (#1369)
     const MATRIX_ARTIFACT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/rbac-matrix.json");
 
-    /// set to rewrite the artifact instead of comparing against it
-    const UPDATE_ARTIFACT: &str = "ROLTER_UPDATE_RBAC_MATRIX";
+    /// set to rewrite the artifact instead of comparing against it; the
+    /// `ROLTER_TEST_` prefix marks it test-only, which keeps it out of the
+    /// operator env-var reference `env_var_names.rs` holds every other name to
+    const UPDATE_ARTIFACT: &str = "ROLTER_TEST_UPDATE_RBAC_MATRIX";
 
     #[derive(Serialize)]
     struct MatrixArtifact {

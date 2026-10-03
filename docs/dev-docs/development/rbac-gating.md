@@ -306,7 +306,7 @@ Two tests keep the copy honest, one per hop:
   same `builtin_matrix()` the endpoint serves and fails `cargo test` when
   `rbac-matrix.json` differs from it by a byte (the module builds only under
   `--features postgres`, as CI tests it). Run with
-  `ROLTER_UPDATE_RBAC_MATRIX=1`, it rewrites the file instead.
+  `ROLTER_TEST_UPDATE_RBAC_MATRIX=1`, it rewrites the file instead.
 - `ui/scripts/rbac-matrix-artifact.test.ts` fails `bun run test` while
   `ui/src/lib/rbac-capabilities.json` is not a byte-for-byte copy of the
   artifact. `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`) makes
