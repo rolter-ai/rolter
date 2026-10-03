@@ -1243,3 +1243,63 @@ async fn dashboard_filters_narrow_the_rollups_inside_the_callers_visibility() {
         .collect();
     assert_eq!(rows, vec![(model_one.clone(), 1.0)]);
 }
+
+/// Request-log sampling at 50 % (#2239): two kept rows weigh two requests
+/// each, so counts and sums double while latency percentiles do not.
+#[tokio::test]
+async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    // a model name no other test writes, so a shared server cannot skew it
+    let model = format!("sampled-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let rows: Vec<Value> = [(200, 100), (500, 300)]
+        .iter()
+        .enumerate()
+        .map(|(i, (status, latency))| {
+            json!({
+                "ts": ts, "request_id": format!("sampled-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": status, "latency_ms": latency,
+                "total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6,
+                "cost_usd": 0.5, "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/by-model"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model"] == model.as_str())
+        .expect("the sampled model has a row");
+    assert_eq!(row["requests"].as_f64(), Some(4.0));
+    assert_eq!(row["tokens"].as_f64(), Some(40.0));
+    assert_eq!(row["cost_usd"].as_f64(), Some(2.0));
+    assert_eq!(row["errors"].as_f64(), Some(2.0));
+    // a percentile of a uniform sample is already an estimate: never scaled
+    let p50 = row["p50_latency_ms"].as_f64().unwrap();
+    assert!((100.0..=300.0).contains(&p50), "{p50}");
+}
