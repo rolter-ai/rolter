@@ -3,6 +3,17 @@ name: ui e2e (playwright)
 # browser-level e2e for the dashboard SPA (#619). heavy (builds + boots the full
 # fake-vLLM stack, downloads a browser), so it is NOT part of the default PR
 # gate: run it on demand or nightly. fake upstreams only — no secrets.
+#
+# nothing gates on this workflow, so a red nightly used to sit unread in the
+# Actions tab: master failed every day from 2026-09-26 until someone dispatched
+# the suite by hand (#2677). `report failure` now opens or updates a tracking
+# issue, the same way extended.yml's does. it is not a PR check because one run
+# holds a runner for about ten minutes and most PRs touch ui/, which the 20-slot
+# pool cannot absorb (ADR-0034, #2025); dispatch it on a branch instead.
+#
+# only `report failure` writes anything, and it holds `issues: write` and
+# `actions: write` at job level with no checkout: at workflow level zizmor rates
+# those scopes high and fails the gate.
 on:
   workflow_dispatch:
   schedule:
@@ -65,3 +76,63 @@ jobs:
       - name: tear down the stack
         if: ${{ always() }}
         run: docker compose -f integration/e2e/docker-compose.e2e.yml down -v --remove-orphans
+
+  # ── report failure: one tracking issue for the whole workflow ──────────────
+  # a copy of extended.yml's job of the same name, with its own issue title so
+  # the two suites never share an issue. opens the issue the first time a run
+  # fails and comments on it while it stays open; close it once the fix lands
+  # and the next failure opens a fresh one. master only: a dispatch on a branch
+  # is someone trying a change, and its failure belongs in that run. the run
+  # url, ref and result reach the script through env, never inline in run:
+  #
+  # an issue this token opens raises no `issues` event, so project-automation
+  # never sees it (#2201): the job sets the milestone and dispatches
+  # project-automation.yml itself, both best-effort and warning only
+  report-failure:
+    name: report failure
+    needs: [e2e]
+    if: ${{ !cancelled() && needs.e2e.result == 'failure' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: write
+    steps:
+      - name: open or comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          E2E: ${{ needs.e2e.result }}
+          MILESTONE: Maintenance, CI & DX
+        run: |
+          set -euo pipefail
+          title="ui-e2e.yml: dashboard journeys failing"
+          body="$(printf '%s\n' \
+            "[Run]($RUN_URL) on \`$REF\` at \`$SHA\`:" \
+            "" \
+            "| job | result |" \
+            "| --- | --- |" \
+            "| dashboard journeys | $E2E |" \
+            "" \
+            "The run's \`playwright-report\` artifact holds the trace and screenshots of each failing journey.")"
+          number="$(gh issue list --state open --label ci --limit 200 --json number,title \
+            | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+            echo "commented on #$number" >> "$GITHUB_STEP_SUMMARY"
+          else
+            url="$(gh issue create --title "$title" --label ci \
+              --body "$(printf '%s\n\n%s\n' "$body" "Opened by the \`report failure\` job. Close it once the failing journeys are fixed; the next failure opens a new one.")")"
+            echo "opened $url" >> "$GITHUB_STEP_SUMMARY"
+            number="${url##*/}"
+            if ! gh issue edit "$number" --milestone "$MILESTONE"; then
+              echo "::warning title=report failure::could not set the milestone of #$number to $MILESTONE; set it by hand"
+            fi
+            if ! gh workflow run project-automation.yml --ref "$REF" \
+              -f number="$number" -f area=ui -f effort=S; then
+              echo "::warning title=report failure::could not dispatch project-automation for #$number; add it by hand: gh workflow run project-automation.yml -f number=$number -f area=ui -f effort=S"
+            fi
+          fi

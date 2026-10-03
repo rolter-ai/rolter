@@ -733,3 +733,32 @@ that keep it safe:
 A skipped PR has no `/language:rust` analysis of its own, so GitHub's code
 scanning summary on it may say a configuration present on `master` was not
 found. That is expected and blocks nothing.
+
+## Suites that stay out of `ci-ok`
+
+Three workflows run heavy suites that `ci-ok` never waits on: `extended.yml`
+(macOS, compose smoke, msrv, coverage on `master`), `ui-e2e.yml` (the
+dashboard journeys) and `sso-e2e.yml`. Each one holds a runner for ten minutes
+or more, so running them on every pull request would take slots from the
+20-job pool that the gate itself queues on
+([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). They run nightly on
+`master` and on `workflow_dispatch` instead.
+
+A nightly that nothing reads is no check at all. The dashboard journeys failed
+on `master` every day from 2026-09-26, after #2421 and #2514 each broke one, and
+nobody noticed until the suite was dispatched by hand (#2677). So
+`extended.yml` and `ui-e2e.yml` each end in a `report failure` job that opens
+or comments on a tracking issue when a `master` run fails; see
+[Nightly extended checks](testing.md#nightly-extended-checks) and
+[Nightly dashboard journeys](testing.md#nightly-dashboard-journeys).
+
+`ui-e2e.yml` was deliberately kept off pull requests, even as a non-blocking
+path-filtered check. Most pull requests touch `ui/` or
+`crates/rolter-control`, so a filter on those paths would start the suite on
+almost every push, at about ten minutes a run, for a verdict that does not gate
+the merge. The cost of that choice is that a broken journey surfaces up to a
+day late, on the tracking issue, rather than on the PR that broke it. A PR
+that changes a journey's screen should dispatch the suite on its branch
+(`gh workflow run ui-e2e.yml --ref <branch>`). Making it a gate would mean
+adding it to `ci-ok`'s `needs:`, which only reaches jobs inside `ci.yml`, and
+re-measuring the runner budget first.

@@ -1837,6 +1837,7 @@
       "spendUnattributedShare": "{{share}} of the window",
       "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
