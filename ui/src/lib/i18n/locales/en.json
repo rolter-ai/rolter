@@ -103,6 +103,9 @@
         "request": "First request"
       }
     },
+    "publicUrl": {
+      "unset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which only a caller on the control plane's own host can reach. Set <code>ROLTER_PUBLIC_URL</code> to an address the caller can reach and restart the control plane before you copy this one."
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -1427,7 +1430,6 @@
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
-        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "allOffTitle": "Every connector is switched off",
@@ -1475,7 +1477,7 @@
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
         "secretReplaceHint": "Saving replaces the stored secret with this one.",
-        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new endpoint's secret to keep it authenticated.",
         "start": "Start sending as soon as it is created",
         "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
         "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
@@ -1819,9 +1821,9 @@
         "customerBody": "The customer is removed outright and the spend already attributed to it loses its label. Retire it instead to keep the history."
       },
       "unitEmptyTitle": "No business units yet",
-      "unitEmptyBody": "Business units roll teams up so spend can be attributed to the part of the organisation that incurred it.",
+      "unitEmptyBody": "Spend reaches a business unit through a virtual key assigned to it, and through customers that roll up into it. Create the unit, then assign it on a virtual key or a customer.",
       "customerEmptyTitle": "No customers yet",
-      "customerEmptyBody": "Customers attribute usage and spend to the people you serve, so it can be billed on or reported per account.",
+      "customerEmptyBody": "Spend reaches a customer through a virtual key assigned to it, so it can be billed on or reported per account. A customer can also roll up into a business unit.",
       "spendWindows": {
         "last24h": "Spend, last 24 hours",
         "last7d": "Spend, last 7 days",
@@ -1833,6 +1835,7 @@
       "spendAttributed": "Attributed",
       "spendUnattributed": "Unattributed",
       "spendUnattributedShare": "{{share}} of the window",
+      "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
@@ -2397,6 +2400,19 @@
       "prevPageAria": "Previous page",
       "nextPageAria": "Next page",
       "allActions": "All actions",
+      "actionGroups": {
+        "identity": "Identity and access",
+        "tenancy": "Organisations and teams",
+        "keys": "Keys, budgets and limits",
+        "routing": "Providers and routing",
+        "guardrails": "Guardrails",
+        "mcp": "MCP and connectors",
+        "alerts": "Alerts",
+        "content": "Prompts, skills and plugins",
+        "settings": "Settings and policies",
+        "account": "Sign-in and MFA",
+        "other": "Other"
+      },
       "allTargets": "All targets",
       "page": "page {{page}}",
       "totalSuffix": " · {{total}} total",
@@ -2756,8 +2772,7 @@
       "baseUrl": {
         "label": "SCIM base URL",
         "copy": "Copy SCIM base URL",
-        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
-        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org."
       },
       "mappings": {
         "title": "Group mappings",
@@ -2971,7 +2986,7 @@
         "title": "Related settings",
         "featureFlags": {
           "title": "Feature flags",
-          "desc": "Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+          "desc": "Switch deployment-wide gateway subsystems on or off. Persisted and hot-reloaded — no restart."
         },
         "clientSettings": {
           "title": "Client settings",
@@ -2998,7 +3013,19 @@
         "apiBase": "API base",
         "model": "Model",
         "strategy": "Strategy",
-        "targets": "Targets"
+        "targets": "Targets",
+        "virtualKeys": "Virtual keys (from the config file)",
+        "allowedModels": "Allowed models",
+        "allModels": "all models",
+        "weight": "weight {{value}}",
+        "upstreamModel": "model {{model}}",
+        "noTargets": "no targets",
+        "emptyProvidersTitle": "No providers configured",
+        "emptyProvidersBody": "Add a provider so the gateway has an upstream to call.",
+        "addProvider": "Go to Providers",
+        "emptyRoutesTitle": "No routes configured",
+        "emptyRoutesBody": "Add a routing rule to expose a model name through the gateway.",
+        "addRoute": "Go to Routing Rules"
       }
     },
     "mcpSettings": {
@@ -3291,6 +3318,21 @@
       }
     },
     "featureFlags": {
+      "lastSaved": "Last saved {{when}}",
+      "neverSaved": "Not saved yet",
+      "changed": "Changed",
+      "confirm": {
+        "title": "Apply these flag changes?",
+        "body_one": "{{count}} switch changes for the whole deployment, every org. The gateway picks it up on its next config poll, with no restart.",
+        "body_other": "{{count}} switches change for the whole deployment, every org. The gateway picks them up on its next config poll, with no restart.",
+        "confirm": "Apply changes",
+        "on": "turned on",
+        "off": "turned off",
+        "offConsequence": {
+          "guardrails": "Every pre- and post-call guardrail rule stops running for every org.",
+          "circuit_breaker": "Failing targets stay in rotation instead of being tripped out of the pool."
+        }
+      },
       "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
@@ -3651,7 +3693,7 @@
     },
     "business-units": {
       "title": "Business Units",
-      "subtitle": "Roll teams up into cost-attributed business units."
+      "subtitle": "Attribute spend to business units through the virtual keys assigned to them."
     },
     "customers": {
       "title": "Customers",
@@ -3743,7 +3785,7 @@
     },
     "feature-flags": {
       "title": "Feature Flags",
-      "subtitle": "Toggle experimental gateway features."
+      "subtitle": "Deployment-wide gateway subsystems. Saved changes apply to every org and hot-reload on the next config poll."
     },
     "preferences": {
       "title": "Preferences",

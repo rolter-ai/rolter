@@ -1,6 +1,6 @@
 # Kubernetes and Helm
 
-The supported chart is in [`charts/rolter`](../../charts/rolter). It deploys separate gateway and control-plane workloads and services, with health probes, hardened pod defaults, resource requests, an optional HPA, disruption budget, and ingress.
+The supported chart is in [`charts/rolter`](../../../charts/rolter). It deploys separate gateway and control-plane workloads and services, with health probes, hardened pod defaults, resource requests, an optional HPA, disruption budget, and ingress.
 
 ```bash
 helm upgrade --install rolter ./charts/rolter --namespace rolter --create-namespace \

@@ -30,9 +30,9 @@ use rolter_store::postgres::models::{
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
     BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
-    ProjectRepo, PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
-    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo,
-    VirtualKeyRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -3269,7 +3269,13 @@ async fn delete_provider(
         None => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider", Delete)).await?;
-    ProviderRepo(pool(&state)).delete(id).await?;
+    if let ProviderDeletion::InUse(dependents) = ProviderRepo(pool(&state)).delete(id).await? {
+        return Err(ApiError::Conflict(format!(
+            "provider '{}' is used by {}; remove it from them before deleting it",
+            existing.name,
+            dependents.join(", ")
+        )));
+    }
     publish_config_change(&state).await?;
     log_audit(
         &state,
