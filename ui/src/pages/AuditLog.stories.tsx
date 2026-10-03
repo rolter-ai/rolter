@@ -80,6 +80,52 @@ export const Loaded: Story = {
     await expect(group).toBeInTheDocument();
     const allRadio = canvas.getByRole("radio", { name: "All" });
     await expect(allRadio).toHaveAttribute("aria-checked", "true");
+
+    const prevButton = canvas.getByRole("button", { name: "Previous page" });
+    const nextButton = canvas.getByRole("button", { name: "Next page" });
+    await expect(prevButton).toBeDisabled();
+    await expect(nextButton).toBeDisabled();
+  },
+};
+
+export const Paginated: Story = {
+  render: () => (
+    <Screen
+      fetchStub={scoped(async (input) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname.includes("/audit-log")) {
+          const cursor = url.searchParams.get("cursor");
+          if (cursor === "c-next") {
+            return json({
+              items: [entry({ id: "a-3", action: "virtual_key.create" })],
+              next_cursor: null,
+              previous_cursor: "c-prev",
+              has_next: false,
+              has_previous: true,
+              total: 3,
+            });
+          }
+          return json({
+            items: [entry({ id: "a-1" }), entry({ id: "a-2", action: "route.delete" })],
+            next_cursor: "c-next",
+            previous_cursor: null,
+            has_next: true,
+            has_previous: false,
+            total: 3,
+          });
+        }
+        return json([]);
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+
+    const prevButton = canvas.getByRole("button", { name: "Previous page" });
+    const nextButton = canvas.getByRole("button", { name: "Next page" });
+    await expect(prevButton).toBeDisabled();
+    await expect(nextButton).toBeEnabled();
   },
 };
 
