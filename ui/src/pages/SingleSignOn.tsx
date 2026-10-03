@@ -19,11 +19,12 @@ import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
-import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
+import { GroupMappings, MAPPABLE_ROLES } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
+import { CopyableValue } from "@/components/ui/copyable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
@@ -59,6 +60,7 @@ import {
   type SecretGap,
 } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
+import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
@@ -225,8 +227,8 @@ function NoSecretNotice({ gap }: { gap: SecretGap }) {
  * this form wants, so the add sheet shows it from the slug as it is typed
  * rather than only on the card of a provider that already exists. It is not an
  * input: nothing here is editable, and a disabled field would read as refused
- * rather than derived. The value is `select-all`, so on a plain-http dashboard,
- * where the clipboard API is withheld, it can still be copied by hand.
+ * rather than derived. `CopyableValue` keeps it `select-all`, so on a plain-http
+ * dashboard, where the clipboard API is withheld, it can still be copied by hand.
  */
 function RedirectUriRow({
   value,
@@ -244,34 +246,18 @@ function RedirectUriRow({
   children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const labelId = React.useId();
-  const hintId = React.useId();
   return (
-    <div role="group" aria-labelledby={labelId} aria-describedby={hintId} className="space-y-1.5">
-      <p id={labelId} className="text-sm font-medium leading-none">
-        {t("pages.sso.create.redirectUri")}
-      </p>
-      <div className="flex min-h-9 min-w-0 items-center gap-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] py-1 pl-3 pr-1">
-        {value ? (
-          <>
-            <span className="min-w-0 flex-1 select-all break-all font-mono text-xs text-foreground">
-              {value}
-            </span>
-            <CopyButton value={value} label={t("pages.sso.providers.copyRedirectUri")} />
-          </>
-        ) : (
-          <span className="text-sm text-muted-foreground">
-            {invalid
-              ? t("pages.sso.create.redirectUriInvalid")
-              : t("pages.sso.create.redirectUriEmpty")}
-          </span>
-        )}
-      </div>
-      <p id={hintId} className="text-xs text-muted-foreground">
-        {hint}
-      </p>
-      {children}
-    </div>
+    <CopyableValue
+      besideFields
+      label={t("pages.sso.create.redirectUri")}
+      value={value}
+      copyLabel={t("pages.sso.providers.copyRedirectUri")}
+      empty={
+        invalid ? t("pages.sso.create.redirectUriInvalid") : t("pages.sso.create.redirectUriEmpty")
+      }
+      hint={hint}
+      note={children}
+    />
   );
 }
 
@@ -1088,13 +1074,11 @@ function ProviderSheet({
         hint={editing ? t("pages.sso.edit.redirectUriHint") : t("pages.sso.create.redirectUriHint")}
       >
         {redirectNote && (
-          <p className="text-xs text-[color:var(--status-warning-text)]">
-            <Trans
-              i18nKey={redirectNote}
-              values={{ url: publicUrl?.public_url ?? "" }}
-              components={{ code: <code className="font-mono" /> }}
-            />
-          </p>
+          <Trans
+            i18nKey={redirectNote}
+            values={{ url: publicUrl?.public_url ?? "" }}
+            components={{ code: <code className="font-mono" /> }}
+          />
         )}
       </RedirectUriRow>
       <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")}>

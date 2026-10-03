@@ -42,9 +42,10 @@ clickhouse_url = "http://127.0.0.1:8123"
 # instead of an empty panel the operator has to go and switch on.
 #
 # This copy governs only until the control plane's first snapshot. From then on
-# the `logging_settings` row does, and `just dogfood-seed` sets that row from
-# the same section in `dogfood.toml`; a stack that was never seeded serves
-# capture off (#1911).
+# the `logging_settings` row does. `just dogfood` turns that row's switch on
+# through the API (`payload-capture.sh`, #1911), so an unseeded stack captures
+# too; `just dogfood-seed` also writes the row from the same section in
+# `dogfood.toml`, and `just dogfood-capture off` turns it off again.
 #
 # The guardrails still apply and are worth exercising too: `max_bytes` truncates,
 # and `redact_fields` strips the named JSON keys *before* the write, so a

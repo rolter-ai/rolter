@@ -113,8 +113,8 @@ An issue or PR that a workflow opens with its own `GITHUB_TOKEN` raises no
 `opened` event, so the workflow above never runs for it. A dispatch is the one
 event that token can start, so such a workflow dispatches `project-automation.yml`
 with the item's number, and may name an `Area` and `Effort` to seed on top of
-the defaults. `extended.yml`'s `report failure` job does this for the nightly
-tracking issue (#2201), and `ui-security-updates.yml` does it for its pull
+the defaults. The `report failure` jobs of `extended.yml` (#2201) and
+`ui-e2e.yml` (#2677) do this for their nightly tracking issues, and `ui-security-updates.yml` does it for its pull
 request (#2245). The same dispatch puts any item that missed the board back on
 it by hand:
 
