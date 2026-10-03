@@ -1474,6 +1474,37 @@ compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).
 
+### Nightly dashboard journeys
+
+[`.github/workflows/ui-e2e.yml`](../../.github/workflows/ui-e2e.yml) runs the
+Playwright journeys in `ui/e2e/` against the fake-vLLM compose stack
+(`integration/e2e/docker-compose.e2e.yml`), nightly at 03:17 UTC and on
+`workflow_dispatch`. Like `extended.yml` it gates nothing, and for the same
+reason: one run holds a runner for about ten minutes, and most pull requests touch
+`ui/`, so a path-filtered PR trigger would take a slot from the 20-job pool on
+nearly every push ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). Why it
+stays out of `ci-ok` is in
+[ci-gating.md](ci-gating.md#suites-that-stay-out-of-ci-ok).
+
+A failing `master` run used to sit unread in the Actions tab; it was red for a
+week before anyone noticed (#2677). The workflow now ends in a `report failure`
+job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+`ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
+fails, and comments on it with the run link while it stays open. The run's
+`playwright-report` artifact holds the trace and screenshots. A new issue gets
+the `Maintenance, CI & DX` milestone and a `project-automation.yml` dispatch
+with `area=ui` and `effort=S`, both best-effort as in `extended.yml`. The two
+workflows use different titles, so they never share an issue. Close it once
+the fix lands; the next failure opens a new one.
+
+A pull request that changes a screen a journey walks through, or the control
+plane API under it, should dispatch the suite on its branch before merging. A
+failure there shows in that run and leaves the issue alone:
+
+```bash
+gh workflow run ui-e2e.yml --ref <branch>
+```
+
 ### Published-port image smoke
 
 The `image-smoke` job builds the single image from `docker/Dockerfile` and runs
