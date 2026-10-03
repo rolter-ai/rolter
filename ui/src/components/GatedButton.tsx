@@ -1,4 +1,7 @@
+import * as React from "react";
+
 import { Button, type ButtonProps } from "@/components/ui/button";
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { useRefusedClick } from "@/lib/ux-react";
 import { cn } from "@/lib/utils";
@@ -15,7 +18,9 @@ import { cn } from "@/lib/utils";
  * the click and then explains the 403 has already wasted the operator's
  * attention, and a screen reader that is told "button" without "disabled"
  * learns nothing. The `title` says which role the action takes, because
- * "disabled" on its own is the same non-answer the 403 was.
+ * "disabled" on its own is the same non-answer the 403 was. A disabled button takes
+ * no focus, so the reason is also handed to `RefusalWrap`, which makes it
+ * reachable by keyboard and screen reader (#2005).
  *
  * `control` names the button in the UX stream when it is refused (#1731) — a
  * stable slug such as `provider-new`, never the label and never anything read
@@ -35,14 +40,14 @@ export function GatedButton({
 }: ButtonProps & { gate: Capability; control: string }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
 
   return (
-    // `display: contents` so the wrapper is on the event path without being in
-    // the layout — a disabled button never dispatches the click itself, so the
-    // reach is caught here instead (see `useRefusedClick`)
-    <span className="contents" {...refusal}>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
       <Button
         {...props}
+        id={id}
         className={cn(denied && "cursor-not-allowed", className)}
         // the button variants set `disabled:pointer-events-none`, which also
         // suppresses the native tooltip — so the one explanation the control has
@@ -52,6 +57,6 @@ export function GatedButton({
         disabled={disabled || denied}
         title={denied ? reason : title}
       />
-    </span>
+    </RefusalWrap>
   );
 }

@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
+import { useNow } from "@/lib/use-now";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // nodes fall out of the liveness window in under a minute, so the inventory is
@@ -63,11 +64,7 @@ function ClusterScreen() {
   useScreenReady(!nodes.isLoading);
   useErrorState(!!nodes.error, "cluster");
   // one clock for every relative timestamp, so the rows do not drift apart
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  const now = useNow(1000);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
 
