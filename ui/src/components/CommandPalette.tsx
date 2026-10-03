@@ -376,6 +376,7 @@ export function CommandPalette({
                 error={recordsError}
                 resource={t("errors.resources.paletteRecords")}
                 onRetry={retryRecords}
+                target="command-palette"
               />
             ) : (
               <ListSkeleton rows={2} className="px-1 py-1" />

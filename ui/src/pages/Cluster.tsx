@@ -21,7 +21,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // nodes fall out of the liveness window in under a minute, so the inventory is
 // only useful if it refreshes on its own
@@ -62,7 +62,6 @@ function ClusterScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `nodes` is the query the user is actually waiting on for this screen
   useScreenReady(!nodes.isLoading);
-  useErrorState(!!nodes.error, "cluster");
   // one clock for every relative timestamp, so the rows do not drift apart
   const now = useNow(1000);
 
@@ -193,6 +192,7 @@ function ClusterScreen() {
           error={nodes.error}
           resource={t("errors.resources.clusterNodes")}
           onRetry={() => void nodes.refetch()}
+          target="cluster-nodes"
         />
       </PageBody>
     );

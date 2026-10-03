@@ -51,14 +51,16 @@ function writeStored(scope: StoredScope) {
 // the write is broadcast instead
 const listeners = new Set<(scope: StoredScope) => void>();
 
-// the create-project dialog belongs to the sidebar switcher, which owns the
-// scope it creates under. other screens reach it through the same kind of
-// broadcast rather than a route or a query param: nothing to keep in the url,
-// nothing to strip afterwards, and no effect on a screen the switcher is not
-// mounted beside (stories, the sign-in screens)
+// the create-project dialog other screens open is `CreateProjectHost`, which the
+// shell mounts for as long as it is signed in. not the switcher itself: that
+// lives in the rail's account menu and is unmounted whenever the menu is
+// closed, which is exactly when another screen would call this (#2611). screens
+// reach it through the same kind of broadcast rather than a route or a query
+// param: nothing to keep in the url, nothing to strip afterwards, and no effect
+// where no host is mounted (stories, the sign-in screens)
 const createProjectOpeners = new Set<() => void>();
 
-/** Open the create-project dialog the shell's scope switcher owns. */
+/** Open the shell's create-project dialog; a no-op with no team in scope. */
 export function openCreateProject() {
   for (const open of createProjectOpeners) open();
 }

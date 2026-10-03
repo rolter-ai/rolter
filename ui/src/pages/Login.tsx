@@ -39,6 +39,7 @@ const SSO_ERRORS = [
   "idp_error",
   "state_expired",
   "sso_disabled",
+  "unknown_provider",
   "no_mapped_group",
   "account_deactivated",
   "idp_verification_failed",

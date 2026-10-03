@@ -10,7 +10,7 @@ import { ListSkeleton } from "@/components/LoadingState";
 import { LocalePicker } from "@/components/LocalePicker";
 import { OpenModeBanner } from "@/components/OpenModeBanner";
 import { Toaster } from "@/components/ui/toaster";
-import { ScopeSwitcher } from "@/components/ScopeSwitcher";
+import { CreateProjectHost, ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { ShortcutHelp } from "@/components/ShortcutHelp";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
@@ -459,6 +459,10 @@ function Shell() {
         onNavigate={(k, search) => navigate(`/${k}${search ?? ""}`)}
       />
       <ShortcutHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      {/* the dialog `openCreateProject()` raises from any screen (#2611). here
+          and not in the switcher, which only exists while the account menu
+          is open */}
+      <CreateProjectHost />
       <div className="flex min-h-0 flex-1">
         <NavSidebar
           groups={navGroups}

@@ -37,6 +37,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   fetchConfigProblems,
   fetchModels,
+  fetchRoutes,
   mintPlaygroundKey,
   unservedRoutes,
   type MintedKey,
@@ -60,6 +61,8 @@ import {
   type ChatMessage,
   type GeneratedImage,
   type PlaygroundKeyState,
+  getGatewayCallsInFlight,
+  subscribeGatewayCalls,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
 import { useOptionalPreferences } from "@/lib/preferences";
@@ -343,6 +346,19 @@ function isBuiltinOnly(state: PlaygroundKeyState): boolean {
 }
 
 /**
+ * The reach `mint_playground_key` gives a project with these routes, as one
+ * comparable string: the distinct public names, sorted, and the built-in alone
+ * when there are none (#2300).
+ */
+function mintedReach(models: readonly string[]): string {
+  return reachSignature(models.length ? models : [FAKE]);
+}
+
+function reachSignature(models: readonly string[]): string {
+  return [...new Set(models)].sort().join("\n");
+}
+
+/**
  * What the screen knows about the key it sends, and whether it can get one
  * itself. One hook, because the key band, the model catalog and every Send on
  * the screen have to agree on it.
@@ -407,6 +423,50 @@ function useKeySession(): KeySession {
     asked.current = projectId;
     mutate();
   }, [projectId, state.key, gateSettled, refused, mutate]);
+
+  // a minted key's reach is fixed when it is minted, so a route added or
+  // removed afterwards leaves it stale (#2608). the same query the Models screen
+  // lists, so a route saved there reaches this one through its invalidation
+  const routes = useQuery({
+    queryKey: ["routes", projectId],
+    queryFn: () => fetchRoutes(projectId as string),
+    enabled: !!projectId && state.minted,
+  });
+  const callsInFlight = React.useSyncExternalStore(
+    subscribeGatewayCalls,
+    getGatewayCallsInFlight,
+    getGatewayCallsInFlight,
+  );
+  const wanted = routes.data ? mintedReach(routes.data.map((r) => r.model)) : null;
+  const held = reachSignature(state.models);
+  // one re-mint per route set: a failed one is left to the Renew button, and a
+  // set the control plane keeps answering differently cannot turn into a loop
+  const reminted = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    // a pasted key is never touched, and nor is an expired one: the band asks
+    // for that renewal itself
+    if (!projectId || !state.minted || expired || refused || !wanted) return;
+    if (routes.isFetching || mint.isPending || callsInFlight > 0) return;
+    if (wanted === held) {
+      reminted.current = null;
+      return;
+    }
+    const attempt = `${projectId}:${wanted}`;
+    if (reminted.current === attempt) return;
+    reminted.current = attempt;
+    mutate();
+  }, [
+    projectId,
+    state.minted,
+    expired,
+    refused,
+    wanted,
+    held,
+    routes.isFetching,
+    mint.isPending,
+    callsInFlight,
+    mutate,
+  ]);
 
   // the automatic mint is due and has not gone out yet, which is a key on its
   // way rather than a screen without one
@@ -594,6 +654,7 @@ function SessionKeyBar({
           error={mint.error}
           resource={t("errors.resources.playgroundKey")}
           onRetry={() => mint.mutate()}
+          target="playground-key"
         />
       )}
     </>

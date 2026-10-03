@@ -11,7 +11,14 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardStack,
+  CardTitle,
+} from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -106,6 +113,8 @@ export default function Limits() {
 
   useScreenReady(!virtualKeys.isLoading);
 
+  // the key list has no `LoadError` of its own to record a failure, so it is
+  // reported here; budgets and rate limits record theirs (#2444)
   useErrorState(!!virtualKeys.error, "limits");
 
   const budgets = useQuery({
@@ -292,6 +301,7 @@ export default function Limits() {
             error={budgets.error}
             resource={t("errors.resources.budgets")}
             onRetry={() => budgets.refetch()}
+            target="budgets"
           />
         )}
         {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
@@ -361,6 +371,7 @@ export default function Limits() {
             error={rateLimits.error}
             resource={t("errors.resources.rateLimits")}
             onRetry={() => rateLimits.refetch()}
+            target="rate-limits"
           />
         )}
         {!rateLimits.isLoading && scopeId && rateLimits.data?.length === 0 && (
@@ -566,13 +577,13 @@ function LimitCard({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
+    <CardStack>
       <div className="flex items-start gap-2.5">
         <div className="min-w-0 flex-1">{figure}</div>
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
       </div>
       {children}
-    </div>
+    </CardStack>
   );
 }
 

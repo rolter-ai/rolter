@@ -54,7 +54,7 @@ use crate::ControlState;
 /// [`IdentityProvider`] for rolter's own local accounts (email + argon2id
 /// password hash). Implements ROL-35: local login is now one of potentially
 /// several pluggable providers, alongside [`crate::sso::OidcIdentityProvider`]
-/// and, eventually, LDAP (#241).
+/// and, once it is wired to sign-in, LDAP (#1826).
 pub(crate) struct LocalIdentityProvider {
     pool: PgPool,
 }
@@ -757,16 +757,17 @@ mod tests {
 
     #[test]
     fn password_hash_round_trips() {
-        let hash = hash_password("correct horse battery staple");
+        let password = uuid::Uuid::new_v4().to_string();
+        let hash = hash_password(&password);
         let parsed = PasswordHash::new(&hash).unwrap();
         assert!(Argon2::default()
-            .verify_password(b"correct horse battery staple", &parsed)
+            .verify_password(password.as_bytes(), &parsed)
             .is_ok());
     }
 
     #[test]
     fn wrong_password_is_rejected() {
-        let hash = hash_password("correct horse battery staple");
+        let hash = hash_password(&uuid::Uuid::new_v4().to_string());
         let parsed = PasswordHash::new(&hash).unwrap();
         assert!(Argon2::default()
             .verify_password(b"wrong password", &parsed)
@@ -909,6 +910,7 @@ mod argon2_compat_tests {
     /// stored before the argon2 0.6 upgrade keep working
     #[test]
     fn a_hash_from_another_implementation_still_verifies() {
+        // a fixed hash needs its known preimage, so this one phrase stays literal
         let stored = "$argon2id$v=19$m=19456,t=2,p=1$h6bR7aTJmF9VpbOjZnZ6lQ$50T6ADgGDSYvzmOfXCRTqwhrtiXkgKVPIQv7uLjJn0g";
         let parsed = PasswordHash::new(stored).expect("stored hash parses");
         assert!(Argon2::default()

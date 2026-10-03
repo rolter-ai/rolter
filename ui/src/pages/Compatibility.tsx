@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import {
   fetchCompatibilityPolicy,
   updateCompatibilityPolicy,
@@ -16,7 +17,7 @@ import {
 } from "@/lib/api";
 import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   anthropicVersion: string;
@@ -77,7 +78,6 @@ function CompatibilityScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
-  useErrorState(!!policy.error, "compatibility");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -142,6 +142,7 @@ function CompatibilityScreen() {
           error={policy.error}
           resource={t("errors.resources.compatibilitySettings")}
           onRetry={() => void policy.refetch()}
+          target="compatibility"
         />
       </div>
     );
@@ -182,16 +183,15 @@ function CompatibilityScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.compatibility.version.title")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            <Trans
-              i18nKey="pages.compatibility.version.desc"
-              components={[<code key="header" className="font-mono text-xs" />]}
-            />
-          </p>
-        </div>
+      <SettingsPanel
+        title={t("pages.compatibility.version.title")}
+        description={
+          <Trans
+            i18nKey="pages.compatibility.version.desc"
+            components={[<code key="header" className="font-mono text-xs" />]}
+          />
+        }
+      >
         <Input
           className="max-w-[200px] font-mono text-xs"
           id={versionId}
@@ -203,18 +203,17 @@ function CompatibilityScreen() {
           onChange={(e) => set({ anthropicVersion: e.target.value })}
         />
         <FieldError id={`${versionId}-error`} error={errors.anthropicVersion} />
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.compatibility.maxTokens.title")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            <Trans
-              i18nKey="pages.compatibility.maxTokens.desc"
-              components={[<code key="field" className="font-mono text-xs" />]}
-            />
-          </p>
-        </div>
+      <SettingsPanel
+        title={t("pages.compatibility.maxTokens.title")}
+        description={
+          <Trans
+            i18nKey="pages.compatibility.maxTokens.desc"
+            components={[<code key="field" className="font-mono text-xs" />]}
+          />
+        }
+      >
         <Input
           className="max-w-[200px]"
           inputMode="numeric"
@@ -226,7 +225,7 @@ function CompatibilityScreen() {
           onChange={(e) => set({ defaultMaxTokens: e.target.value })}
         />
         <FieldError id={`${tokensId}-error`} error={errors.defaultMaxTokens} />
-      </section>
+      </SettingsPanel>
 
       {restartRequired.length > 0 && (
         <section className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">

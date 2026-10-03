@@ -159,6 +159,16 @@ language = "system"
 files = "^crates/rolter-store/migrations/"
 pass_filenames = false
 
+# every `uvx` tool version lives in .github/tool-pins/requirements.txt, where
+# dependabot can bump it (#2185); this rejects an inline `uvx tool@x.y.z`
+[[repos.hooks]]
+id = "tool-pins"
+name = "uvx tool pins come from one file"
+entry = "bash scripts/check-tool-pins.sh"
+language = "system"
+files = "^(\\.github/|prek\\.toml$|justfile$|scripts/|docs/dev-docs/development/)"
+pass_filenames = false
+
 # relative links in docs/dev-docs/ must resolve; mdBook does not check the ones
 # that leave the book (#1926)
 [[repos.hooks]]
@@ -187,6 +197,15 @@ name = "llms.txt tracks the docs nav"
 entry = "bun scripts/gen-llms-txt.ts --check"
 language = "system"
 files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
+pass_filenames = false
+
+# pinned like the ci step; see #2187 / #2185
+[[repos.hooks]]
+id = "ruff"
+name = "ruff (scripts)"
+entry = "bash -c 'uvx --from \"$(bash scripts/tool-pin.sh ruff)\" ruff check scripts'"
+language = "system"
+files = "^(scripts/.*\\.py|ruff\\.toml)$"
 pass_filenames = false
 
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek

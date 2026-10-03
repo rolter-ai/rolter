@@ -3,6 +3,7 @@ import { CircleDollarSign, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
@@ -27,7 +28,7 @@ import {
   type ModelPriceRow,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PRICES_QUERY_KEY = ["model-prices"];
 
@@ -57,8 +58,6 @@ export default function Pricing() {
   // `prices` is the query the user is actually waiting on for this screen
 
   useScreenReady(!prices.isLoading);
-
-  useErrorState(!!prices.error, "pricing");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: PRICES_QUERY_KEY });
 
@@ -102,6 +101,7 @@ export default function Pricing() {
           error={prices.error}
           resource={t("errors.resources.modelPrices")}
           onRetry={() => prices.refetch()}
+          target="model-prices"
         />
       )}
       {!prices.isLoading && prices.data?.length === 0 && (
@@ -127,10 +127,7 @@ export default function Pricing() {
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))]">
         {prices.data?.map((price) => (
-          <div
-            key={price.id}
-            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
-          >
+          <CardStack key={price.id}>
             <div className="truncate font-mono text-sm font-semibold">{price.model}</div>
             <div className="flex flex-wrap gap-1.5">
               <Badge tone="outline">
@@ -184,7 +181,7 @@ export default function Pricing() {
                 onClick={() => setDeleteTarget(price)}
               />
             </div>
-          </div>
+          </CardStack>
         ))}
       </div>
 
