@@ -151,10 +151,11 @@ from pg_database where datname like 'rolter_test_wt%';
 
 Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
 exactly as given — a throwaway database that is already private, or a deliberate
-reproduction of the shared-database behaviour. The derivation also steps aside
-when it cannot create a database (a role without `CREATEDB`, for instance): it
-prints why and falls back to the configured url, because losing isolation is
-better than losing the suite.
+reproduction of the shared-database behaviour. The derivation never falls back
+silently (#1898): a failure to create the database is retried with a bounded
+backoff, then `test_database::url()` panics naming the cause, because a quiet
+fallback would put one worktree's migrations in a database other worktrees are
+reading. A role without `CREATEDB` should set the opt-out above.
 
 ### The connection budget
 
