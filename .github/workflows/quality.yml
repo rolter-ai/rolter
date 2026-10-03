@@ -1417,8 +1417,16 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
+        # `shell: bash` adds pipefail, so the `| tee` keeps cargo's exit status
+        shell: bash
         run: |
-          cargo llvm-cov --workspace --all-features --no-report
+          # job logs are not readable from every place that triages this job,
+          # so a failing test is named in an annotation as well as the log
+          log="${RUNNER_TEMP}/llvm-cov.log"
+          if ! cargo llvm-cov --workspace --all-features --no-report 2>&1 | tee "${log}"; then
+            bash .github/scripts/annotate-test-failures.sh "${log}" "coverage test failed"
+            exit 1
+          fi
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --json --summary-only > coverage.json

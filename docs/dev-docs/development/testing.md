@@ -434,6 +434,11 @@ Everything else runs under nextest, which gives each test **its own process**.
 whole suite as **threads in one process** sharing one environment. Two rules
 follow, and both have bitten:
 
+When the coverage job goes red, each failing test is named in an `::error`
+annotation on the check run ("coverage test failed"), with its panic location
+and message (`.github/scripts/annotate-test-failures.sh`, #2753). Read those
+rather than the raw job log, which not every triage path can download.
+
 - **Never set a process-wide environment variable to a value only your test
   wants.** `Kek::from_env()` is read at request time, so a test that installs
   its own `ROLTER_KEK` is read by another test's in-flight request, and a value
