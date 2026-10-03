@@ -71,6 +71,9 @@ else
   dim "  or: just dogfood-key"
 fi
 dim "  a brand-new key 401s for up to 5s until the gateway polls (#933)"
+dim "  toggles: just dogfood-adaptive [on|off]   adaptive-routing kill switch"
+dim "           just dogfood-capture [on|off]    raw payload capture (#1911)"
+dim "  'just dogfood' re-enables both"
 if [ -f "$KEK_FILE" ]; then
   printf '  %-14s %s\n' "ROLTER_KEK" "$(cat "$KEK_FILE")"
   dim "  (both planes must share this, or stored provider keys will not decrypt)"

@@ -1837,6 +1837,7 @@
       "spendUnattributedShare": "{{share}} of the window",
       "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
@@ -2866,6 +2867,7 @@
       "projectRole": "Project role",
       "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
       "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
+      "inviteReplaces": "{{email}} already has a pending invitation. Sending another replaces it, and the old link stops working.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
@@ -2954,7 +2956,8 @@
         "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
         "superadminRemoveConfirm": "Remove superadmin",
         "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
-        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
+        "lastSuperadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again."
       }
     },
     "config": {

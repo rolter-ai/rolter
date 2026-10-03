@@ -827,6 +827,13 @@ export interface BusinessUnitRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /**
+   * Virtual keys attributed to this unit that are live: not disabled and not
+   * past their expiry (#2581). Only the org-wide listing carries it; a create
+   * or update answer, or a control plane older than the field, leaves it out,
+   * so absent means "not known" rather than zero.
+   */
+  live_key_count?: number;
 }
 
 export interface CustomerRow {
@@ -837,6 +844,8 @@ export interface CustomerRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /** live virtual keys attributed to this customer; see `BusinessUnitRow` */
+  live_key_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -3602,7 +3611,7 @@ export function collectorConfigUrl(base: string): string {
 // ---------------------------------------------------------------------------
 // mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
 
-export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse"] as const;
+export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse", "websocket"] as const;
 export const MCP_STATUSES = [
   "success",
   "error",

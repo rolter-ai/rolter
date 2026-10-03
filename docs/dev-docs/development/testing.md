@@ -51,10 +51,14 @@ throw it away.
 3. Dispatch the workflow (`gh workflow run gemini-interactions-smoke.yml`),
    optionally with `-f model=<id>`.
 
-Until the secret exists the workflow **fails** rather than skipping. A green
-tick from a run that made no request reads as "the wire format is still
-confirmed" when nothing was checked — worse than no sweep at all. Pass
-`-f allow_unconfigured=true` for a deliberate dry run of the workflow itself.
+Until the secret exists the workflow **skips** every live step and says so: the
+job summary reads "skipped: GEMINI_API_KEY not configured" and a notice
+annotation repeats it on the run. The run is not red (a weekly failure for a
+secret nobody has added teaches people to ignore scheduled failures, #2033), but
+it is also not evidence: a skipped run made no request and confirms nothing
+about the wire format. Check the summary, not just the tick, before treating the
+sweep as having run. Once the secret is present the steps run as before and a
+failure is a real finding.
 
 Each run records the wire shapes it observed into the job summary and uploads
 the full log as an artifact. A billable run should leave evidence behind: the
@@ -151,10 +155,11 @@ from pg_database where datname like 'rolter_test_wt%';
 
 Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
 exactly as given — a throwaway database that is already private, or a deliberate
-reproduction of the shared-database behaviour. The derivation also steps aside
-when it cannot create a database (a role without `CREATEDB`, for instance): it
-prints why and falls back to the configured url, because losing isolation is
-better than losing the suite.
+reproduction of the shared-database behaviour. The derivation never falls back
+silently (#1898): a failure to create the database is retried with a bounded
+backoff, then `test_database::url()` panics naming the cause, because a quiet
+fallback would put one worktree's migrations in a database other worktrees are
+reading. A role without `CREATEDB` should set the opt-out above.
 
 ### The connection budget
 
@@ -381,6 +386,17 @@ black-box harness can only approximate with sleeps:
   request-log and health-event rows must still reach a ClickHouse stand-in
   before the child exits, proving the shutdown sink drain (#1924).
 
+The SIGTERM tests assert request-log and health-event rows but not an MCP
+tool-call row, deliberately. The MCP proxy authenticates with a database virtual
+key, and a TOML config cannot define one, so a child process started from a
+config file cannot reach `/mcp/{server}` without also standing up Postgres and a
+snapshot source. The in-process test
+`mcp_events_are_flushed_by_the_shutdown_drain` (`tests/integration.rs`, #2431)
+covers the MCP row's drain instead. It runs the same shutdown sink drain the
+child process runs, and the child-process tests already prove the signal reaches
+it, so the only untested seam is the signal wiring, which MCP rows share with the
+others.
+
 All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:
@@ -483,7 +499,7 @@ the branch history, the session-url check over the PR's commits, migrations
 append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, ruff
 over `scripts/*.py`, the release handoff checker, its self-test and the release gate scripts' fixture
 test, the board automation retry policy, and the helm chart's appVersion check,
-lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
+lint and its renders (`scripts/check-helm-chart.sh`, shared with the `helm-render` prek hook). Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
 a push starts draws on the same 20 concurrent slots. The decision and its
 trade-offs are in
@@ -761,6 +777,16 @@ actionlint has no entry for `vulnerability-alerts` yet
 `.github/actionlint.yaml` ignores that one message in that one file. Any other
 permission typo in the workflow still fails the check.
 
+CI pins actionlint to **1.7.12**: the `actionlint` step in `quality.yml` downloads that release's
+tarball and checks it against a pinned sha256 before running it, so a new release that adds or
+tightens a rule cannot turn every open PR red on its own. (`taiki-e/install-action` has no
+actionlint manifest, which is why the step fetches it by hand.) Raising the version is a
+deliberate PR that changes `ACTIONLINT_VERSION` and `ACTIONLINT_SHA256` together, takes the digest
+from the release's `actionlint_<version>_checksums.txt`, and fixes whatever the newer rules
+report; it is also the moment to drop the `vulnerability-alerts` ignore above if the new release
+knows that scope. The `prek` hook runs whichever `actionlint` is on your `PATH`, so install the
+pinned version locally when the two disagree.
+
 ### Secret scanning
 
 The two gitleaks steps of the `static checks` job run the gitleaks **CLI** from
@@ -889,6 +915,25 @@ bunx playwright install --with-deps chromium chromium-headless-shell
 bun run test:stories                            # every story file
 bun run test:stories src/pages/Keys.stories.tsx # or just these
 ```
+
+#### Using a pre-installed chromium
+
+Both browser runners — the story tests above and the e2e journeys in `ui/e2e/`
+(`ui/playwright.config.ts`) — launch the chromium revision the pinned Playwright
+downloads. In a sandbox where that download is blocked but a chromium is already
+installed, set `ROLTER_CHROMIUM_PATH` to the binary and both launch it through
+`launchOptions.executablePath` instead (#2678):
+
+```bash
+export ROLTER_CHROMIUM_PATH=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell
+bun run test:stories src/pages/Keys.stories.tsx
+```
+
+Playwright has no variable of its own for this: `PLAYWRIGHT_BROWSERS_PATH` only
+moves the cache, and still looks for the exact revision the pinned version wants.
+The story runner reads the variable in `ui/test-runner-jest.config.js`, which wraps
+the test-runner's stock jest config. Unset, nothing changes. The path must name a
+chromium Playwright can drive; the headless shell and the full build both work.
 
 #### Why `test:stories` rather than the two commands by hand
 
@@ -1514,6 +1559,37 @@ is the check that the two planes are wired together. It then always dumps
 compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).
+
+### Nightly dashboard journeys
+
+[`.github/workflows/ui-e2e.yml`](../../.github/workflows/ui-e2e.yml) runs the
+Playwright journeys in `ui/e2e/` against the fake-vLLM compose stack
+(`integration/e2e/docker-compose.e2e.yml`), nightly at 03:17 UTC and on
+`workflow_dispatch`. Like `extended.yml` it gates nothing, and for the same
+reason: one run holds a runner for about ten minutes, and most pull requests touch
+`ui/`, so a path-filtered PR trigger would take a slot from the 20-job pool on
+nearly every push ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). Why it
+stays out of `ci-ok` is in
+[ci-gating.md](ci-gating.md#suites-that-stay-out-of-ci-ok).
+
+A failing `master` run used to sit unread in the Actions tab; it was red for a
+week before anyone noticed (#2677). The workflow now ends in a `report failure`
+job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+`ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
+fails, and comments on it with the run link while it stays open. The run's
+`playwright-report` artifact holds the trace and screenshots. A new issue gets
+the `Maintenance, CI & DX` milestone and a `project-automation.yml` dispatch
+with `area=ui` and `effort=S`, both best-effort as in `extended.yml`. The two
+workflows use different titles, so they never share an issue. Close it once
+the fix lands; the next failure opens a new one.
+
+A pull request that changes a screen a journey walks through, or the control
+plane API under it, should dispatch the suite on its branch before merging. A
+failure there shows in that run and leaves the issue alone:
+
+```bash
+gh workflow run ui-e2e.yml --ref <branch>
+```
 
 ### Published-port image smoke
 
