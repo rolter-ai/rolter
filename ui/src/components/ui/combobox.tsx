@@ -369,6 +369,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         event.stopPropagation();
         close();
         return;
+      case "Backspace":
+      case "Delete":
+        // nothing typed (the input shows only the chosen label, or is
+        // empty after a delete): the key removes the selection itself
+        if (clearable && value && !disabled && (query === null || query === "")) {
+          event.preventDefault();
+          clear();
+        }
+        return;
       case "Tab":
         if (open) close();
         return;

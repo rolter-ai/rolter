@@ -223,7 +223,7 @@ function ModelSettingsScreen() {
           hint={t("pages.modelSettings.model.defaultModelHint")}
         >
           <Input
-            className="min-w-[320px]"
+            className="sm:min-w-[320px]"
             placeholder={t("pages.modelSettings.providerDefault")}
             value={form.defaultModel}
             disabled={!form.enabled}

@@ -21,7 +21,8 @@ import {
   type ProfileUpdate,
 } from "@/lib/api";
 import { useOptionalAuth } from "@/lib/auth";
-import { errorDetail, useToast } from "@/lib/toast";
+import { describeError } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
 
 export const ME_KEY = "me";
 
@@ -157,7 +158,13 @@ export function ProfileCard() {
             <div role="alert">
               <FieldError
                 id="profile-save-error"
-                error={`${t("account.profile.saveFailed")} ${errorDetail(save.error)}`}
+                error={[
+                  t("account.profile.saveFailed"),
+                  describeError(save.error, t).message,
+                  describeError(save.error, t).detail,
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
               />
             </div>
           )}

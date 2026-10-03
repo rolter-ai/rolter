@@ -17452,3 +17452,164 @@ async fn operator_written_urls_the_egress_policy_denies_are_refused_at_save() {
     )
     .await;
 }
+
+async fn grant_id(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> uuid::Uuid {
+    sqlx::query_scalar("select id from memberships where user_id = $1 and org_id = $2")
+        .bind(holder)
+        .bind(org)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_last_org_admin_grant_cannot_be_revoked_except_by_a_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    let first = seed_user(&pool, "first@example.com", false).await;
+    let second = seed_user(&pool, "second@example.com", false).await;
+    let first_token = seed_session(&pool, first, "org_admin_first").await;
+    seed_membership(&pool, first, Some(org_id), None, None, "admin").await;
+    let first_grant = grant_id(&pool, first, org_id).await;
+
+    // the only admin: refused with the stable code, grant kept
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "last_org_admin", "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("last admin"));
+    assert_eq!(grant_id(&pool, first, org_id).await, first_grant);
+
+    // a deactivated admin is not a remainder
+    seed_membership(&pool, second, Some(org_id), None, None, "admin").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // a lower role is not an admin either
+    sqlx::query("update users set deactivated_at = null where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let second_grant = grant_id(&pool, second, org_id).await;
+    sqlx::query("update memberships set role = 'member' where id = $1")
+        .bind(second_grant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // a second active admin exists: the first can go, then the second is last
+    sqlx::query("update memberships set role = 'admin' where id = $1")
+        .bind(second_grant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let second_token = seed_session(&pool, second, "org_admin_second").await;
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{second_grant}"))
+        .bearer_auth(&second_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // the superadmin (here the admin token) may still repair the org
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{second_grant}"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+}
+
+#[tokio::test]
+async fn concurrent_revokes_of_two_org_admins_leave_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    // applies the migrations
+    let _app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Race', 'race') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let a = seed_user(&pool, "a@example.com", false).await;
+    let b = seed_user(&pool, "b@example.com", false).await;
+    seed_membership(&pool, a, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, b, Some(org_id), None, None, "admin").await;
+    let ga = grant_id(&pool, a, org_id).await;
+    let gb = grant_id(&pool, b, org_id).await;
+
+    let repo_a = rolter_store::postgres::repo::MembershipRepo(&pool);
+    let repo_b = rolter_store::postgres::repo::MembershipRepo(&pool);
+    let (ra, rb) = tokio::join!(
+        repo_a.delete_guarded(ga, true),
+        repo_b.delete_guarded(gb, true)
+    );
+    let refused = [ra.unwrap(), rb.unwrap()]
+        .iter()
+        .filter(|r| matches!(r, rolter_store::postgres::repo::LockoutGuard::WouldLockOut))
+        .count();
+    assert_eq!(refused, 1);
+    let left: i64 =
+        sqlx::query_scalar("select count(*) from memberships where org_id = $1 and role = 'admin'")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 1);
+}

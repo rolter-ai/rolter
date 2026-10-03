@@ -798,7 +798,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             <span className={cn("h-[7px] w-[7px] flex-none rounded-full", feed.dot)} />
             {feed.label}
           </span>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             {/* a lookup does not stream, so there is nothing to pause */}
             {!lookup && (
               <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
@@ -1004,7 +1004,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                           e.stopPropagation();
                           setSelected(r);
                         }}
-                        className="ml-auto flex rounded-sm text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         <ChevronRight className="h-[15px] w-[15px]" />
                       </button>
