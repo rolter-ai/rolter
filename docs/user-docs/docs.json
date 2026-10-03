@@ -167,6 +167,7 @@
               "api/version",
               "api/public-url",
               "api/org-projects",
+              "api/providers",
               "api/attribution-listings",
               "api/project-settings",
               "api/budgets-and-rate-limits",

@@ -2620,7 +2620,7 @@ fn provider_schemas(p: &Prim) -> Value {
     json!({
         "Provider": {
             "type": "object",
-            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at"],
+            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at", "has_stored_key"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string,
                 "slug": {"type": "string", "description": "stable identity for `provider-slug/model` addressing"},
@@ -2630,7 +2630,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "has_stored_key": {"type": "boolean", "description": "whether a sealed key is stored for the provider (a row in `provider_keys`). An `api_key_env` does not count. The key, its ciphertext and its nonce are never returned"}
             }
         },
         "CreateProvider": {

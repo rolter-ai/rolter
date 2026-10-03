@@ -4050,6 +4050,116 @@ async fn provider_api_key_seals_at_rest_and_decrypts_into_snapshot() {
     );
 }
 
+/// The provider DTO says whether a sealed key is stored, on the list, the
+/// create response and the update response, and never carries the key itself.
+#[tokio::test]
+async fn provider_dto_reports_whether_a_sealed_key_is_stored() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let sealed_secret = random_password();
+
+    let mut created = Vec::new();
+    for (name, extra) in [
+        ("sealed", json!({"api_key": sealed_secret})),
+        ("env-only", json!({"api_key_env": "SOME_UPSTREAM_KEY"})),
+        ("bare", json!({})),
+    ] {
+        let mut body =
+            json!({"name": name, "kind": "openai", "api_base": "https://api.openai.com"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let resp = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+        let text = resp.text().await.unwrap();
+        assert!(!text.contains(&sealed_secret), "create leaked the key");
+        created.push(serde_json::from_str::<Value>(&text).unwrap());
+    }
+    assert_eq!(created[0]["has_stored_key"], true);
+    assert_eq!(created[1]["has_stored_key"], false);
+    assert_eq!(created[2]["has_stored_key"], false);
+
+    let listed = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for leak in [sealed_secret.as_str(), "ciphertext", "nonce"] {
+        assert!(!listed.contains(leak), "list leaked {leak}");
+    }
+    let listed: Vec<Value> = serde_json::from_str(&listed).unwrap();
+    let flag = |name: &str| {
+        listed
+            .iter()
+            .find(|p| p["name"] == name)
+            .map(|p| p["has_stored_key"].clone())
+    };
+    assert_eq!(flag("sealed"), Some(json!(true)));
+    assert_eq!(flag("env-only"), Some(json!(false)));
+    assert_eq!(flag("bare"), Some(json!(false)));
+
+    // an update that omits `api_key` keeps the stored key and still reports it
+    let sealed_id = created[0]["id"].as_str().unwrap();
+    let kept: Value = client
+        .put(format!("{base}/api/v1/providers/{sealed_id}"))
+        .json(&json!({"api_base": "https://eu.api.openai.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(kept["has_stored_key"], true);
+
+    // sealing a key on a bare provider flips it, and clearing flips it back
+    let bare_id = created[2]["id"].as_str().unwrap();
+    let sealed: Value = client
+        .put(format!("{base}/api/v1/providers/{bare_id}"))
+        .json(&json!({"api_key": random_password()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sealed["has_stored_key"], true);
+    let cleared: Value = client
+        .put(format!("{base}/api/v1/providers/{bare_id}"))
+        .json(&json!({"api_key": ""}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["has_stored_key"], false);
+}
+
 /// With an admin token configured, the CRUD API and snapshot endpoint reject
 /// unauthenticated calls and accept the bearer token.
 #[tokio::test]
