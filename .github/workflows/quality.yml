@@ -1020,7 +1020,7 @@ jobs:
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         run: |
           find integration -name '*.sh' -print0 \
-            | xargs -0 uvx --from shellcheck-py==0.11.0.1 shellcheck -x --source-path=SCRIPTDIR
+            | xargs -0 uvx --from "$(bash scripts/tool-pin.sh shellcheck-py)" shellcheck -x --source-path=SCRIPTDIR
 
       # ── helm chart: lint and render ───────────────────────────────────────
       # the chart carries the same pre-boot validation the CLI does (#854), and
@@ -1194,7 +1194,7 @@ jobs:
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
             "prek run dogfood-scripts --all-files"
           row "dogfood scripts" "shellcheck (integration scripts)" "${OUTCOME_SHELLCHECK}" yes \
-            "find integration -name '*.sh' -print0 | xargs -0 uvx --from shellcheck-py==0.11.0.1 shellcheck -x --source-path=SCRIPTDIR"
+            "find integration -name '*.sh' -print0 | xargs -0 uvx --from \"\$(bash scripts/tool-pin.sh shellcheck-py)\" shellcheck -x --source-path=SCRIPTDIR"
           row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
             "prek run chart-appversion --all-files"
           row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"

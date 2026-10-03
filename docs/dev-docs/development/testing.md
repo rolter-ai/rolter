@@ -894,7 +894,7 @@ skip them, which is enough for a quick check but is **not** what CI runs.
 
 #### Where the `uvx` tool versions live
 
-`zizmor`, `maturin` and `ruff` run through `uvx`, and dependabot cannot read a version
+`zizmor`, `maturin`, `ruff` and `shellcheck-py` run through `uvx`, and dependabot cannot read a version
 out of a command line, so a `uvx zizmor@x.y.z` pin goes stale without anyone
 being told (#2185). Both are pinned instead in
 `.github/tool-pins/requirements.txt`, a pip manifest that dependabot's `pip`
