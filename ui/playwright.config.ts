@@ -13,6 +13,9 @@ import { defineConfig, devices } from "@playwright/test";
 // the actual login UI separately.
 const PORT = Number(process.env.E2E_UI_PORT) || 3000;
 const BASE_URL = process.env.E2E_BASE_URL || `http://localhost:${PORT}`;
+// optional: a pre-installed chromium for a sandbox whose playwright download is
+// blocked (#2678). unset, playwright uses the revision it installed itself
+const CHROMIUM_PATH = process.env.ROLTER_CHROMIUM_PATH;
 
 export default defineConfig({
   testDir: "./e2e/tests",
@@ -38,7 +41,10 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(CHROMIUM_PATH ? { launchOptions: { executablePath: CHROMIUM_PATH } } : {}),
+      },
     },
   ],
   webServer: {

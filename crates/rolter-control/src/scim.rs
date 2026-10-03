@@ -30,8 +30,8 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    LockoutGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
-    VirtualKeyRepo,
+    DeactivationGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -362,6 +362,13 @@ async fn create_user(
         Some(existing) => existing,
         None => UserRepo(pool).create(&email, None, false).await?,
     };
+    // deactivate before linking: when the lockout guard refuses it (the
+    // adopted account is the last admin it protects) no identity may be left
+    // behind, or the IdP's retry gets "userName already exists" instead of
+    // the same refusal (#2672)
+    if body.active == Some(false) {
+        deactivate(&state, user.id, true).await?;
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -375,9 +382,6 @@ async fn create_user(
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
-    if body.active == Some(false) {
-        deactivate(&state, user.id, true).await?;
-    }
     audit_scim(
         &state,
         &principal,
@@ -455,6 +459,14 @@ async fn replace_user(
     let (user, identity) = resolve(&state, &principal, &id).await?;
     let pool = pool(&state);
     let user_name = body.user_name.clone().unwrap_or(identity.user_name);
+    let mut detail = json!({});
+    // deactivate before writing: when the lockout guard refuses it (the
+    // account is the last admin it protects) the rename, externalId and
+    // display name must not have been applied, or the IdP's retry sees a
+    // half-applied replace (#2705)
+    if body.active == Some(false) {
+        detail["personal_keys"] = deactivate(&state, user.id, true).await?.into();
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -469,9 +481,9 @@ async fn replace_user(
         )
         .await?;
     sync_display_name(pool, user.id, &identity).await?;
-    let mut detail = json!({"user_name": identity.user_name});
-    if let Some(active) = body.active {
-        detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
+    detail["user_name"] = identity.user_name.clone().into();
+    if body.active == Some(true) {
+        detail["personal_keys"] = deactivate(&state, user.id, false).await?.into();
     }
     audit_scim(
         &state,
@@ -646,15 +658,37 @@ fn active_value(candidate: &Value) -> ScimResult<bool> {
 /// the audit row.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
-    if let LockoutGuard::WouldLockOut = UserRepo(pool).set_deactivated(user_id, deactivated).await?
+    match UserRepo(pool)
+        .set_deactivated_guarding_org_admins(user_id, deactivated)
+        .await?
     {
+        DeactivationGuard::Done(_) => {}
         // an IdP that disables the only superadmin would strand the deployment
         // with nobody who can administer it (#2344)
-        return Err(ScimError::new(
-            StatusCode::CONFLICT,
-            None,
-            "this account is the last active superadmin; make another account superadmin first",
-        ));
+        DeactivationGuard::LastSuperadmin => {
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active superadmin; make another account superadmin first",
+            ));
+        }
+        // the same for an org: the token is not a superadmin who could repair
+        // it afterwards, so the IdP is told and retries once there is another
+        // admin. the org id stays out of the message, since the account may
+        // administer an org this token's tenant cannot see (#2558)
+        DeactivationGuard::LastOrgAdmin(org_id) => {
+            tracing::warn!(
+                %org_id,
+                %user_id,
+                "refused a scim deactivation that would leave an org without an admin"
+            );
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active admin of an organization; grant admin to \
+                 another person first",
+            ));
+        }
     }
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
@@ -834,6 +868,9 @@ impl From<ApiError> for ScimError {
         match err {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
+            ApiError::CodedForbidden { message, .. } => {
+                Self::new(StatusCode::FORBIDDEN, None, message)
+            }
             ApiError::Core(err) => err.into(),
             ApiError::Curated(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
