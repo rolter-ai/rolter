@@ -59,8 +59,12 @@ test("provider create → edit → delete", async ({ page }) => {
     .getByRole("button", { name: t("pages.providers.deleteOne", { name }), exact: true })
     .click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText(t("pages.providers.deleteTitle"), { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: t("common.delete"), exact: true }).click();
+  await expect(
+    dialog.getByText(t("pages.providers.confirm.deleteTitle", { name }), { exact: true }),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: t("pages.providers.confirm.deleteConfirm"), exact: true })
+    .click();
 
   await expect(edit).toHaveCount(0);
 });

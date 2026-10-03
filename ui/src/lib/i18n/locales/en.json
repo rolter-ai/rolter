@@ -103,6 +103,9 @@
         "request": "First request"
       }
     },
+    "publicUrl": {
+      "unset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which only a caller on the control plane's own host can reach. Set <code>ROLTER_PUBLIC_URL</code> to an address the caller can reach and restart the control plane before you copy this one."
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -1428,7 +1431,6 @@
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
-        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "allOffTitle": "Every connector is switched off",
@@ -1836,6 +1838,7 @@
       "spendUnattributedShare": "{{share}} of the window",
       "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
@@ -2771,8 +2774,7 @@
       "baseUrl": {
         "label": "SCIM base URL",
         "copy": "Copy SCIM base URL",
-        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
-        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org."
       },
       "mappings": {
         "title": "Group mappings",
@@ -2866,6 +2868,7 @@
       "projectRole": "Project role",
       "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
       "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
+      "inviteReplaces": "{{email}} already has a pending invitation. Sending another replaces it, and the old link stops working.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
@@ -2954,7 +2957,8 @@
         "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
         "superadminRemoveConfirm": "Remove superadmin",
         "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
-        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
+        "lastSuperadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again."
       }
     },
     "config": {
