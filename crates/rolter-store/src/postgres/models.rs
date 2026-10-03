@@ -68,6 +68,33 @@ pub struct Customer {
     pub created_at: DateTime<Utc>,
 }
 
+/// A business unit as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it.
+///
+/// A unit that shows no spend may simply have no key pointing at it, and the
+/// dashboard cannot tell those apart from the row alone (#2581). The count
+/// rides along with the row, flattened beside its columns, so the listing
+/// answers it in the same query rather than one request per unit. A key is
+/// live while it is neither disabled nor past its `expires_at`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BusinessUnitListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub unit: BusinessUnit,
+    pub live_key_count: i64,
+}
+
+/// A customer as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it. See [`BusinessUnitListing`] for why the
+/// count is part of the listing and what counts as live.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CustomerListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub customer: Customer,
+    pub live_key_count: i64,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct PromptTemplate {
     pub id: Uuid,
@@ -395,7 +422,6 @@ pub struct ClientSettings {
 /// they cannot reach a snapshot by accident (#1162)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecurityPolicyRow {
-    pub virtual_key_required: bool,
     pub required_headers: serde_json::Value,
     pub auth_bypass_routes: Vec<String>,
 }
@@ -892,10 +918,10 @@ pub struct AuditLogEntry {
 }
 
 /// Global control-plane security settings. The retired dashboard-password
-/// columns still exist in the table but are not part of this DTO (#2356).
+/// columns (#2356) and `virtual_key_required` (#2357) still exist in the table
+/// but are not part of this DTO.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    pub virtual_key_required: bool,
     pub allowed_origins: Vec<String>,
     pub allowed_headers: Vec<String>,
     pub required_headers: serde_json::Value,

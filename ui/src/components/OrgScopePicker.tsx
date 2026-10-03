@@ -331,6 +331,7 @@ export function OrgScopePicker({
           error={scope.error}
           resource={t("errors.resources.orgScope")}
           onRetry={scope.refetch}
+          target="org-scope"
         />
       )}
     </div>

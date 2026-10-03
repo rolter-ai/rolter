@@ -8,7 +8,15 @@ import {
   shellStub,
   shellStubWithStability,
 } from "./pages/shell-harness";
-import { expectForbidden, recording, withCapabilities } from "./pages/story-harness";
+import {
+  TEAM,
+  confirmation,
+  expectForbidden,
+  json,
+  recording,
+  withCapabilities,
+  type FetchStub,
+} from "./pages/story-harness";
 import type { InvocationRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
@@ -87,6 +95,55 @@ export const Desktop: Story = {
 };
 
 /**
+ * The rail's account block goes by the display name when the account has one and
+ * by the email when it has not; the email is never lost, it moves under the name
+ * in the account menu (#2434).
+ */
+export const AccountMenuShowsTheDisplayName: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([
+        [
+          "/api/v1/auth/me",
+          () => ({
+            user: {
+              id: "user-1",
+              email: "anya@acme.co",
+              display_name: "Anya Petrova",
+              bio: null,
+              is_superadmin: true,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+            memberships: [],
+            display_name_managed: false,
+          }),
+        ],
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const account = await within(rail).findByText("Anya Petrova");
+    await expect(account).toBeVisible();
+    await expect(within(rail).queryByText("anya@acme.co")).toBeNull();
+    await userEvent.click(account);
+    // the menu names the person and keeps the address as the second line
+    const menu = within(document.body);
+    await expect((await menu.findAllByText("Anya Petrova")).length).toBeGreaterThan(1);
+    await expect(await menu.findByText("anya@acme.co")).toBeVisible();
+  },
+};
+
+/** With no display name the rail falls back to the email, as it always did. */
+export const AccountMenuFallsBackToTheEmail: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await expect(await within(rail).findByText("anya@acme.co")).toBeVisible();
+  },
+};
+
+/**
  * The landing screen's reference render is one day of traffic, not figures
  * over empty charts. The shell's stub answered the summary and nothing else, so
  * the tiles said 132 requests beside a spend chart, a donut, bars and a request
@@ -101,7 +158,9 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     await expect(await within(figures).findByText("132")).toBeVisible();
     await expect(figures).toHaveTextContent(/215\s*ms/);
     await expect(
-      await canvas.findByRole("img", { name: en.pages.dashboard.spendChartAria }),
+      await canvas.findByRole("img", {
+        name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),
+      }),
     ).toBeVisible();
     await expect(
       await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),
@@ -114,6 +173,44 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     await expect(canvas.queryByText(en.analytics.noRowsYet)).toBeNull();
     await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
     await expect(canvas.queryByText(en.pages.dashboard.nothingLogged)).toBeNull();
+  },
+};
+
+/**
+ * The shell's team has no project yet. The shared chain answers the project list
+ * before a story's own routes, so this answers it first.
+ */
+function withoutProjects(): FetchStub {
+  const shell = shellStub();
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === `/api/v1/teams/${TEAM.id}/projects` && init?.method !== "POST") return json([]);
+    return shell(input, init);
+  };
+}
+
+/**
+ * Getting started opens the create-project dialog from the Dashboard with the
+ * account menu closed (#2611). The scope switcher lives in that menu and is not
+ * in the document while it is shut, so this is the story that fails if the
+ * dialog ever moves back into it.
+ */
+export const GettingStartedOpensCreateProject: Story = {
+  // the dismissal is persisted per browser, and a card another story put away
+  // would leave nothing here to click
+  beforeEach: () => localStorage.removeItem("rolter.getting-started.dismissed"),
+  render: () => <AppShell route="/dashboard" fetchStub={withoutProjects()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const create = await canvas.findByRole("button", {
+      name: en.pages.gettingStarted.createProject,
+    });
+    // the switcher, and its own + beside Project, are not mounted
+    await expect(canvas.queryByRole("button", { name: en.scope.addProject })).toBeNull();
+    await userEvent.click(create);
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await expect(dialog.getByText(en.scope.newProjectHint)).toBeVisible();
   },
 };
 

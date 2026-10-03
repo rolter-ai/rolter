@@ -34,6 +34,7 @@ import {
   expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -249,6 +250,24 @@ export const Loaded: Story = {
     await expect(await canvas.findByText(fmt.currency(0.0123, "USD"))).toBeInTheDocument();
     // a fetch that succeeded is the one state the toolbar may call live (#1984)
     await expect(canvas.getByText("Streaming · 2 requests")).toBeVisible();
+  },
+};
+
+// a row's chevron is a 15px glyph; its button must still be a 24px target (WCAG 2.5.8, #2573)
+export const RowChevronHasA24pxHitArea: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [chevron] = await canvas.findAllByRole("button", {
+      name: en.analytics.openDetails.replace("{{model}}", "gpt-4o"),
+    });
+    const box = chevron.getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
   },
 };
 
@@ -801,10 +820,47 @@ export const Mobile: Story = {
     // the unpriced row says so in the cost column that is on screen
     await expect(within(shape.cells(1)[3]).getByText("unpriced")).toBeVisible();
     await expect(within(shape.cells(0)[3]).getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
+    await expectStackedRow(canvasElement, 0, ROWS[0].model);
   },
 };
 
-// a model name long enough to wrap in the narrowest column it gets, and a row
+/**
+ * #2446: below 480px a row stacks. The model is on the first line with the
+ * status, time and cost on the second, the model is cut with an ellipsis and
+ * not wrapped, and its full name is in the row's accessible name.
+ */
+async function expectStackedRow(canvasElement: HTMLElement, rowIndex: number, model: string) {
+  const shape = tableShape(canvasElement);
+  const [time, modelCell, status, cost] = [
+    shape.cells(rowIndex)[0],
+    shape.cells(rowIndex)[1],
+    shape.cells(rowIndex)[2],
+    shape.cells(rowIndex)[3],
+  ];
+  await expect(modelCell).toHaveTextContent(model);
+  // one line: no taller than the line it is set in, and cut rather than wrapped
+  const style = getComputedStyle(modelCell);
+  await expect(style.whiteSpace).toBe("nowrap");
+  await expect(style.textOverflow).toBe("ellipsis");
+  await expect(modelCell.getBoundingClientRect().height).toBeLessThan(
+    parseFloat(style.lineHeight) * 1.5,
+  );
+  // the model and the status share the first line, the time and the cost the second
+  const top = (el: Element) => Math.round(el.getBoundingClientRect().top);
+  const bottom = (el: Element) => el.getBoundingClientRect().bottom;
+  await expect(Math.abs(top(modelCell) - top(status))).toBeLessThanOrEqual(6);
+  await expect(Math.abs(top(time) - top(cost))).toBeLessThanOrEqual(2);
+  await expect(top(time)).toBeGreaterThanOrEqual(bottom(modelCell) - 1);
+  await expect(cost.getBoundingClientRect().left).toBeGreaterThan(
+    time.getBoundingClientRect().left,
+  );
+  // the chevron is the row's own button, named by the full model
+  const button = within(shape.cells(rowIndex)[4]).getByRole("button");
+  await expect(button).toHaveAccessibleName(new RegExp(model));
+  await expectInViewport(button);
+}
+
+// a model name long enough to be cut in the narrowest row it gets, and a row
 // with no price, so the cost column holds both of the things it can hold
 const LONG_MODEL = row({
   request_id: "req-long-model",
@@ -816,8 +872,8 @@ const LONG_MODEL = row({
 
 /**
  * #1986 in Russian, the longer copy: Time, Status and Cost all stay in frame
- * at 375px with a model name that has to wrap, and the page does not scroll
- * sideways.
+ * at 375px with a model name that has to be cut, and the page does not scroll
+ * sideways. #2446: the long model stays on one line in every row.
  */
 export const TimeStatusAndCostStayInFrameInRussian: Story = {
   ...atMobile,
@@ -850,6 +906,8 @@ export const TimeStatusAndCostStayInFrameInRussian: Story = {
     await expect(within(shape.cells(2)[3]).getByText(ru.analytics.unpriced)).toBeVisible();
     // the clock is the locale's own: a comma before the milliseconds
     await expect(shape.cells(0)[0]).toHaveTextContent(/^\d{2}:\d{2}:\d{2},\d{3}$/);
+    for (const [index, model] of [ROWS[0].model, ROWS[1].model, LONG_MODEL.model].entries())
+      await expectStackedRow(canvasElement, index, model);
   },
 };
 
@@ -2440,3 +2498,194 @@ export const TheLookupFitsAtMobileInRussian: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+// the sheet portals onto the body
+const screen = () => within(document.body);
+
+const KEY_ID = "22222222-2222-4222-8222-222222222222";
+const GONE_CUSTOMER = "44444444-4444-4444-8444-444444444444";
+const SAVED_VIEW = {
+  id: "11111111-1111-4111-8111-111111111111",
+  surface: "llm_logs",
+  name: "Platform errors",
+  // the stored set still names a customer the account can no longer read
+  filters: {
+    window: "7d",
+    status: "error",
+    model: "internal-llama",
+    key: KEY_ID,
+    business_unit: ["unit-1"],
+    customer: ["cust-1", GONE_CUSTOMER],
+  },
+  effective_filters: {
+    window: "7d",
+    status: "error",
+    model: "internal-llama",
+    key: KEY_ID,
+    business_unit: ["unit-1"],
+    customer: ["cust-1"],
+  },
+  unavailable: [{ filter: "customer", id: GONE_CUSTOMER }],
+  created_at: "2026-09-01T09:00:00Z",
+  updated_at: "2026-09-01T09:00:00Z",
+};
+
+const withSavedView = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") return json([SAVED_VIEW]);
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * #2452: applying a saved view writes its `effective_filters` into the address,
+ * so the screen reads them like any link, and the id it could not apply is
+ * counted, not named. The log is then read with the view's window, key and
+ * attribution, and with no cursor or request id.
+ */
+export const ApplyingASavedViewSetsTheAddress: Story = {
+  parameters: { address: "/logs?request_id=req-ok&unpriced=true" },
+  render: () => (
+    <Harness fetchStub={withSavedView.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(await screen().findByRole("button", { name: "Apply Platform errors" }));
+    await waitFor(() => expect(addressOf(canvasElement).get("status")).toBe("error"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("window")).toBe("7d");
+    await expect(address.get("model")).toBe("internal-llama");
+    await expect(address.get("key")).toBe(KEY_ID);
+    await expect(address.get("business_unit")).toBe("unit-1");
+    await expect(address.get("customer")).toBe("cust-1");
+    // the lookup would have masked the filters, so it is gone; the unpriced
+    // flag is not part of a view and stays
+    await expect(address.has("request_id")).toBe(false);
+    await expect(address.get("unpriced")).toBe("true");
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      "Applied without: 1 customer.",
+    );
+    await waitFor(() => {
+      const sent = lastLogQuery(withSavedView);
+      expect(sent.get("key")).toBe(KEY_ID);
+      expect(sent.get("customer")).toBe("cust-1");
+      expect(sent.get("status")).toBe("error");
+      expect(sent.has("request_id")).toBe(false);
+      const span = Date.now() - Date.parse(sent.get("since") ?? "");
+      expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
+    });
+  },
+};
+
+const savingFromLogs = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") {
+      return init?.method === "POST" ? json(SAVED_VIEW, 201) : json([]);
+    }
+    return serverFiltered(MIXED)(input, init);
+  }),
+);
+
+/**
+ * Saving keeps the filters applied now: an `all` status and empty values are
+ * left out, and neither the lookup id, the cursor nor the limit is sent.
+ */
+export const SavingKeepsOnlyTheAppliedFilters: Story = {
+  parameters: { address: "/logs?status=error&model=gpt-4o&window=30d&trace_id=abc" },
+  render: () => (
+    <Harness fetchStub={savingFromLogs.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    const sheet = within(await screen().findByRole("dialog", { name: "Saved views" }));
+    await userEvent.type(await sheet.findByLabelText("Save the current filters as"), "Mine");
+    await userEvent.click(sheet.getByRole("button", { name: "Save view" }));
+    const body = await savingFromLogs.expectSentBody<{ filters: Record<string, unknown> }>(
+      "POST",
+      "/api/v1/me/saved-views",
+    );
+    await expect(body.filters).toEqual({ window: "30d", status: "error", model: "gpt-4o" });
+  },
+};
+
+const KEY_ROWS: InvocationRow[] = [
+  row({ request_id: "req-ci", model: "gpt-4o", virtual_key_id: "vk-ci" }),
+  row({ request_id: "req-other", model: "internal-llama", virtual_key_id: "vk-other" }),
+];
+
+// the control plane narrows on the one exact key id before the page is cut
+const keyFiltered = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname === "/api/v1/analytics/invocations") {
+      const key = url.searchParams.get("key");
+      return json({ data: KEY_ROWS.filter((r) => !key || r.virtual_key_id === key) });
+    }
+    if (url.pathname === "/api/v1/currency")
+      return json({ base: "USD", codes: ["USD"], rates: {} });
+    if (url.pathname.endsWith("/virtual-keys")) {
+      return json([
+        CI_KEY,
+        { ...CI_KEY, id: "vk-other", name: "batch-worker", key_prefix: "rk_live_cd34" },
+      ]);
+    }
+    return json([]);
+  }),
+);
+
+/**
+ * #2516: a key filter could only arrive from a saved view or a pasted link.
+ * The rail now picks one by name, writes `?key=`, counts toward "Filters · N",
+ * and Clear filters takes it out again.
+ */
+export const AKeyCanBePickedByName: Story = {
+  render: () => (
+    <Harness fetchStub={keyFiltered.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Virtual key" });
+    await expect(picker).toHaveAttribute("placeholder", "All keys");
+
+    await userEvent.click(picker);
+    await expect(await canvas.findByRole("option", { name: /batch-worker/ })).toBeVisible();
+    await userEvent.click(await canvas.findByRole("option", { name: /ci-runner/ }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["gpt-4o"]));
+    await expect(addressOf(canvasElement).get("key")).toBe("vk-ci");
+    await expect(lastLogQuery(keyFiltered).get("key")).toBe("vk-ci");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toHaveLength(2));
+    await expect(addressOf(canvasElement).has("key")).toBe(false);
+    await expect(picker).toHaveValue("");
+  },
+};
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const logsFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  ready: (canvas, locale) => canvas.findByText(formattersFor(locale).timeMs(ROWS[0].ts)),
+});
+// the feed's pager sat 47px past the edge at 320px, in English
+export const SmallPhone: Story = logsFit("small", "en");
+export const SmallPhoneInRussian: Story = logsFit("small", "ru");

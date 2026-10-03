@@ -6,10 +6,13 @@ import { ModelSheet, type ModelSheetMode } from "./ModelSheet";
 import {
   Harness,
   ORG,
+  Toasted,
   PROJECT,
   expectClosesWithoutPrompting,
   expectSheetClosed,
+  expectToast,
   json,
+  openOptions,
   pickOption,
   recording,
   sheet,
@@ -160,12 +163,17 @@ function Stage({
   configModel,
   configTargets,
   stub = backing,
+  providers = PROVIDERS,
+  toasts = false,
 }: {
   mode: ModelSheetMode;
   route?: RouteRow | null;
   configModel?: EffectiveModelDto | null;
   configTargets?: React.ComponentProps<typeof ModelSheet>["configTargets"];
   stub?: FetchStub;
+  providers?: ProviderRow[];
+  /** mount the toast queue, for a story that asserts what the save announced */
+  toasts?: boolean;
 }) {
   const [open, setOpen] = React.useState(true);
   // a ref, not `useMemo`: a story that passes an inline stub changes its
@@ -176,22 +184,25 @@ function Stage({
     recorder.current = recording(stub);
     calls = recorder.current;
   }
+  const Toasting = toasts ? Toasted : React.Fragment;
   return (
     <Harness fetchStub={recorder.current.stub}>
-      <ModelSheet
-        open={open}
-        mode={mode}
-        onOpenChange={setOpen}
-        projectId={PROJECT.id}
-        orgId={ORG.id}
-        providers={PROVIDERS}
-        route={route}
-        configModel={configModel}
-        configTargets={configTargets}
-        models={MODELS}
-        routes={[ROUTE, FLEET_ROUTE]}
-        onDone={() => {}}
-      />
+      <Toasting>
+        <ModelSheet
+          open={open}
+          mode={mode}
+          onOpenChange={setOpen}
+          projectId={PROJECT.id}
+          orgId={ORG.id}
+          providers={providers}
+          route={route}
+          configModel={configModel}
+          configTargets={configTargets}
+          models={MODELS}
+          routes={[ROUTE, FLEET_ROUTE]}
+          onDone={() => {}}
+        />
+      </Toasting>
     </Harness>
   );
 }
@@ -860,5 +871,92 @@ export const DiscardGuardThrowsItAway: Story = {
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(true);
     await expectSheetClosed();
+  },
+};
+
+// providers scoped to a project (#1919): one of this route's project, one of
+// another. the first is the route's to use, the second is not
+const SCOPED_PROVIDERS: ProviderRow[] = [
+  ...PROVIDERS,
+  {
+    ...PROVIDERS[0],
+    id: "prov-3",
+    name: "gateway-private",
+    slug: "gateway-private",
+    project_id: PROJECT.id,
+  },
+  {
+    ...PROVIDERS[0],
+    id: "prov-4",
+    name: "search-private",
+    slug: "search-private",
+    project_id: "project-2",
+  },
+];
+
+/**
+ * A route in project P is offered P's providers and the org-wide ones, and says
+ * how many it is leaving out, so a missing provider is not a mystery.
+ */
+export const OffersOnlyTheProjectsOwnAndOrgWideProviders: Story = {
+  render: () => <Stage mode="add" providers={SCOPED_PROVIDERS} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const listbox = await openOptions(dialog.getByLabelText("Target 1 provider"));
+    const names = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    await expect(names).toEqual(["openai-prod", "vllm-cluster", "gateway-private"]);
+    await userEvent.keyboard("{Escape}");
+    await expect(
+      dialog.getByText("1 provider scoped to another project is not offered here."),
+    ).toBeVisible();
+  },
+};
+
+/** With every provider usable there is nothing to explain. */
+export const SaysNothingWhenNoProviderIsLeftOut: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await expect(dialog.queryByText(/not offered here/)).toBeNull();
+  },
+};
+
+/**
+ * The control plane has the last word: a target it refuses on scope (a provider
+ * another tab just scoped away) reaches the operator as its own sentence.
+ */
+export const TargetRefusedByTheProvidersScope: Story = {
+  render: () => (
+    <Stage
+      mode="add"
+      toasts
+      stub={async (input, init) => {
+        if (String(input).includes("/targets") && init?.method === "POST") {
+          return json(
+            {
+              error: {
+                message:
+                  "this route cannot use provider 'search-private': scoped to a different project; use org-wide providers or ones scoped to the same project",
+              },
+            },
+            409,
+          );
+        }
+        return backing(input, init);
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
+    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await expectToast(canvasElement, /cannot use provider 'search-private'/, "error");
+    // the sheet stays open on the draft
+    await expect(sheet()).toBeVisible();
   },
 };

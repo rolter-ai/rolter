@@ -31,6 +31,10 @@
 **Learning:** `AuthError::Internal(msg)` in `rolter-control` previously echoed `msg` (which carries raw database connection or query failure strings from Postgres/SQLx) directly into the HTTP 500 JSON response body message on auth routes (`/api/v1/auth/login`, `/api/v1/auth/me`, etc.).
 **Prevention:** Always log detailed internal error messages internally via `tracing::error!` and return a generic error message (such as `"an internal server error occurred"`) in HTTP 500 error response bodies to avoid leaking database internals.
 
+## 2026-10-10 - Redact Internal Store Errors in SSO Error Messages
+
+**Learning:** `api_error_message(err)` in `crates/rolter-control/src/sso.rs` previously converted `ApiError::Core(e)` by calling `e.to_string()`. When `e` was an `Error::Store` (carrying SQL or database connection strings), this leaked internal database details via `IdentityError::Provider(...)`.
+**Prevention:** Sanitize internal errors in error message converters by checking for `Error::NotFound` / `Error::Config` vs internal errors, logging the internal detail with `tracing::error!`, and returning a generic error message like `"internal server error"`.
 ## 2026-10-03 - Redact Control Plane Internal Errors in Admin Proxy 502 Responses
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.

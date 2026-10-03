@@ -37,7 +37,7 @@ import {
 } from "@/lib/api";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /// One profile card, with everything the profile actually carries.
 ///
@@ -171,7 +171,11 @@ function ProfileCard({
             disabled={deleting}
             onClick={() => onDelete(profile)}
           >
-            {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+            {deleting ? (
+              <Loader2 className="size-4 motion-safe:animate-spin" />
+            ) : (
+              <Trash2 className="size-4" />
+            )}
           </GatedButton>
         </div>
       </div>
@@ -281,7 +285,6 @@ export default function AccessProfiles() {
   });
 
   useScreenReady(!profiles.isLoading);
-  useErrorState(!!profiles.error, "access-profiles");
 
   const invalidate = (id?: string) => {
     void queryClient.invalidateQueries({ queryKey: ["access-profiles", orgId] });
@@ -389,6 +392,7 @@ export default function AccessProfiles() {
           error={profiles.error}
           resource={t("errors.resources.accessProfiles")}
           onRetry={() => void profiles.refetch()}
+          target="access-profiles"
         />
       )}
       {profiles.data && profiles.data.length === 0 && (

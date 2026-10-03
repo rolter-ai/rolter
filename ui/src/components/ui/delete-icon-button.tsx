@@ -1,6 +1,7 @@
 import { Loader2, Trash2 } from "lucide-react";
 import * as React from "react";
 
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { cn } from "@/lib/utils";
 import { useRefusedClick } from "@/lib/ux-react";
@@ -64,11 +65,12 @@ export function DeleteIconButton({
 }: DeleteIconButtonProps) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
   return (
-    // `display: contents` for the reason `GatedButton` gives: on the event
-    // path, out of the layout
-    <span className="contents" {...refusal}>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
       <button
+        id={id}
         type="button"
         aria-label={label}
         title={denied ? reason : (title ?? label)}
@@ -80,11 +82,11 @@ export function DeleteIconButton({
         {...props}
       >
         {pending ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
         ) : (
           <Trash2 className="h-3.5 w-3.5" />
         )}
       </button>
-    </span>
+    </RefusalWrap>
   );
 }

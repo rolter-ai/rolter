@@ -14,6 +14,7 @@ import {
 import { Field } from "./field";
 import { Input } from "./input";
 import { atMobile, atShort, expectInViewport } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
 
 const meta = {
   title: "Overlays/Dialog",
@@ -68,6 +69,18 @@ export const OpensAndCloses: Story = {
 
     await userEvent.click(body.getByRole("button", { name: "Cancel" }));
     await expect(body.queryByRole("dialog")).toBeNull();
+  },
+};
+
+// the close glyph is 16px; the button around it must still be a 24px target (#2573)
+export const CloseButtonHasA24pxHitArea: Story = {
+  render: () => <Demo />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "Delete project" }));
+    const close = await within(document.body).findByRole("button", { name: en.common.close });
+    const box = close.getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
   },
 };
 

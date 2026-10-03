@@ -309,7 +309,8 @@ export const SummaryWaitsForTheData: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("unread")).toBeEmptyDOMElement();
+    // the live region is there from the first paint and says nothing
+    await expect(canvas.getByTestId("unread")).toHaveTextContent(/^$/);
     await expect(canvas.getByTestId("unread-with-fallback")).toHaveTextContent(
       /^upstreams the gateway routes to$/,
     );
@@ -393,6 +394,7 @@ export const LoadErrorInTheStateRowFitsThePhone: Story = {
           <LoadError
             error={new Error("store unavailable")}
             resource="providers"
+            target="providers"
             onRetry={() => {}}
           />
         </ListStateRow>
@@ -547,5 +549,33 @@ export const RowIconButtonAllowed: Story = {
     await expectAllowed(canvasElement, "Delete openai-prod");
     const button = within(canvasElement).getByRole("button", { name: "Delete openai-prod" });
     await expect(button).not.toHaveAttribute("title");
+  },
+};
+
+/**
+ * The count is a polite live region (#2005, WCAG 4.1.3): a screen reader user
+ * who types a query hears "1 provider" without moving focus. The region is in
+ * the document before its text changes, which is what makes it announce.
+ */
+export const SummaryIsAPoliteLiveRegion: Story = {
+  render: function Render() {
+    const [rows, setRows] = React.useState<ProviderRow[]>([]);
+    return (
+      <PageBody>
+        <ListSummary data={rows}>{(held) => `${held.length} providers`}</ListSummary>
+        <button type="button" onClick={() => setRows([{} as ProviderRow])}>
+          Search
+        </button>
+      </PageBody>
+    );
+  },
+  play: async ({ canvas }) => {
+    const region = canvas.getByRole("status");
+    await expect(region).toHaveAttribute("aria-live", "polite");
+    await expect(region).toHaveTextContent("0 providers");
+    await userEvent.click(canvas.getByRole("button", { name: "Search" }));
+    // the same node, so the change is announced rather than the node being new
+    await expect(canvas.getByRole("status")).toBe(region);
+    await expect(region).toHaveTextContent("1 providers");
   },
 };

@@ -7,22 +7,24 @@ import {
   Pencil,
   Plus,
   ShieldCheck,
-  Trash2,
   Users,
 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
+import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
-import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
+import { GroupMappings, MAPPABLE_ROLES } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
+import { CopyableText, CopyableValue } from "@/components/ui/copyable-value";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
@@ -38,6 +40,7 @@ import {
   fetchAuthPolicy,
   fetchMemberships,
   fetchSsoGroupMappings,
+  ApiError,
   fetchSsoProviders,
   ssoRedirectUri,
   updateAuthPolicy,
@@ -57,30 +60,30 @@ import {
   type SecretGap,
 } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
+import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
-import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
 
-// a labelled line inside a provider card: mono value, optionally copyable. an
-// address wraps instead of truncating, because the end of it is what tells the
-// redirect uri from the login url; `note` says what the value is for
+// a labelled line inside a provider card: mono value, optionally copyable. a
+// copyable address is `CopyableText` and wraps, because the end of it is what
+// tells the redirect uri from the login url. every other value is one truncated
+// line, so a long issuer or scope list does not stretch the card; `note` says
+// what the value is for
 function Detail({
   label,
   value,
   copyLabel,
   note,
-  wrap = false,
 }: {
   label: string;
   value: string;
   copyLabel?: string;
   note?: string;
-  wrap?: boolean;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-2">
@@ -88,19 +91,23 @@ function Detail({
         {label}
       </span>
       <div className="min-w-0 flex-1">
-        <span
-          className={cn(
-            "block font-mono text-xs leading-4 text-[color:var(--text-secondary)]",
-            wrap ? "break-all" : "truncate",
-          )}
-        >
-          {value}
-        </span>
+        {copyLabel ? (
+          <CopyableText
+            variant="inline"
+            value={value}
+            copyLabel={copyLabel}
+            className="text-xs leading-4"
+          />
+        ) : (
+          <span
+            title={value}
+            className="block truncate font-mono text-xs leading-4 text-[color:var(--text-secondary)]"
+          >
+            {value}
+          </span>
+        )}
         {note && <span className="mt-0.5 block text-xs text-muted-foreground">{note}</span>}
       </div>
-      {/* centred on the value's first line, so a copyable row keeps the same
-          rhythm as the rows around it */}
-      {copyLabel && <CopyButton value={value} label={copyLabel} className="-my-2" />}
     </div>
   );
 }
@@ -143,7 +150,7 @@ function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
     <WarningNote title={t("pages.sso.publicUrl.title")}>
       <p className="text-muted-foreground">
         <Trans
-          i18nKey="pages.sso.publicUrl.body"
+          i18nKey="common.publicUrl.unset"
           values={{ url: publicUrl.public_url }}
           components={{ code: <code className="font-mono text-xs text-foreground" /> }}
         />
@@ -153,23 +160,15 @@ function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
 }
 
 /**
- * What a change to a provider would leave nobody able to do (#2084).
- *
- * Raised inside the confirmation for taking the last enabled provider out of
- * service or deleting it while password sign-in is off. It says who still gets
- * in, and only from what the control plane enforces: superadmins are exempt
- * from `allow_password_login = false` (`auth_policy.rs`), and an account that
- * signed up through a provider was created with no password, so turning
- * password sign-in back on does not bring it back.
+ * The control plane's own refusal (409) of the change the card already holds
+ * back (#2443), in the dashboard's words. It still arrives when another admin
+ * turned the last other way in off between this screen's read and the click.
  */
-function LockoutNotice({ name }: { name: string }) {
-  const { t } = useTranslation();
-  return (
-    <WarningNote title={t("pages.sso.lockout.title")}>
-      <p className="text-muted-foreground">{t("pages.sso.lockout.body", { name })}</p>
-      <p className="text-muted-foreground">{t("pages.sso.lockout.noPassword")}</p>
-    </WarningNote>
-  );
+function refusal(error: unknown, t: (key: string) => string): unknown {
+  if (error instanceof ApiError && error.status === 409) {
+    return new Error(t("pages.sso.lastMethod.refused"));
+  }
+  return error;
 }
 
 /**
@@ -231,8 +230,8 @@ function NoSecretNotice({ gap }: { gap: SecretGap }) {
  * this form wants, so the add sheet shows it from the slug as it is typed
  * rather than only on the card of a provider that already exists. It is not an
  * input: nothing here is editable, and a disabled field would read as refused
- * rather than derived. The value is `select-all`, so on a plain-http dashboard,
- * where the clipboard API is withheld, it can still be copied by hand.
+ * rather than derived. `CopyableValue` keeps it `select-all`, so on a plain-http
+ * dashboard, where the clipboard API is withheld, it can still be copied by hand.
  */
 function RedirectUriRow({
   value,
@@ -250,34 +249,18 @@ function RedirectUriRow({
   children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const labelId = React.useId();
-  const hintId = React.useId();
   return (
-    <div role="group" aria-labelledby={labelId} aria-describedby={hintId} className="space-y-1.5">
-      <p id={labelId} className="text-sm font-medium leading-none">
-        {t("pages.sso.create.redirectUri")}
-      </p>
-      <div className="flex min-h-9 min-w-0 items-center gap-1 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] py-1 pl-3 pr-1">
-        {value ? (
-          <>
-            <span className="min-w-0 flex-1 select-all break-all font-mono text-xs text-foreground">
-              {value}
-            </span>
-            <CopyButton value={value} label={t("pages.sso.providers.copyRedirectUri")} />
-          </>
-        ) : (
-          <span className="text-sm text-muted-foreground">
-            {invalid
-              ? t("pages.sso.create.redirectUriInvalid")
-              : t("pages.sso.create.redirectUriEmpty")}
-          </span>
-        )}
-      </div>
-      <p id={hintId} className="text-xs text-muted-foreground">
-        {hint}
-      </p>
-      {children}
-    </div>
+    <CopyableValue
+      besideFields
+      label={t("pages.sso.create.redirectUri")}
+      value={value}
+      copyLabel={t("pages.sso.providers.copyRedirectUri")}
+      empty={
+        invalid ? t("pages.sso.create.redirectUriInvalid") : t("pages.sso.create.redirectUriEmpty")
+      }
+      hint={hint}
+      note={children}
+    />
   );
 }
 
@@ -303,16 +286,6 @@ const MFA_KEY: Record<MfaPolicy, string> = {
   required_superadmin: "requiredSuperadmin",
   required_all: "requiredAll",
 };
-
-/**
- * The break-glass procedure, for the confirmation that warns about a lockout.
- *
- * A link to our own docs on the forge rather than to a docs site this
- * deployment may not be able to reach — and the command itself is in the copy,
- * so an operator with no network still knows what to run.
- */
-const MFA_DOCS_URL =
-  "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/security/two-factor-authentication.mdx#break-glass-a-lost-device";
 
 /**
  * How long an org may give its members before a `required_*` policy starts
@@ -494,7 +467,7 @@ function SignInPolicyCard({
   const bothOff = !password && !sso;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
         <h2 className="text-sm font-medium text-foreground">{t("pages.sso.policy.title")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.subtitle")}</p>
@@ -594,7 +567,7 @@ function SignInPolicyCard({
             else save.mutate();
           }}
         >
-          {save.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {save.isPending && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {t("pages.sso.policy.save")}
         </GatedButton>
       </footer>
@@ -658,17 +631,10 @@ function SignInPolicyCard({
             it happens rather than after */}
         <p className="text-xs text-muted-foreground">
           {t("pages.sso.policy.mfaConfirm.breakGlass")}{" "}
-          <a
-            href={MFA_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            {t("pages.sso.policy.mfaConfirm.breakGlassLink")}
-          </a>
+          <DocsLink page="breakGlass" label={t("pages.sso.policy.mfaConfirm.breakGlassLink")} />
         </p>
       </ConfirmDialog>
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -720,6 +686,7 @@ function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
 
 function ProviderCard({
   provider,
+  lastWayIn,
   onClearSecret,
   onDelete,
   onEdit,
@@ -729,6 +696,8 @@ function ProviderCard({
   toggling,
 }: {
   provider: SsoProviderRow;
+  /** the last enabled provider while password sign-in is off (#2443) */
+  lastWayIn: boolean;
   onClearSecret: (provider: SsoProviderRow) => void;
   onDelete: (provider: SsoProviderRow) => void;
   onEdit: (provider: SsoProviderRow) => void;
@@ -738,9 +707,13 @@ function ProviderCard({
   toggling: boolean;
 }) {
   const { t } = useTranslation();
+  // the control plane refuses to disable or delete the last way in while
+  // password sign-in is off, so the card says so instead of offering it (#2443)
+  const reasonId = `sso-last-way-${provider.id}`;
+  const held = lastWayIn ? reasonId : undefined;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="flex items-start gap-3 px-4 py-3.5">
         <KeyRound aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -772,6 +745,11 @@ function ProviderCard({
                 })
               : t("pages.sso.providers.noDefaultRole")}
           </p>
+          {lastWayIn && (
+            <p id={reasonId} className="mt-1 text-sm text-muted-foreground">
+              {t("pages.sso.lastMethod.reason")}
+            </p>
+          )}
         </div>
         {/* taking a provider out of service is a routine act — an IdP
             migration, a broken secret — and used to require deleting it,
@@ -781,7 +759,9 @@ function ProviderCard({
           gate="sso_provider:update"
           control="sso-provider-toggle"
           checked={provider.enabled}
-          disabled={toggling}
+          disabled={toggling || lastWayIn}
+          title={lastWayIn ? t("pages.sso.lastMethod.reason") : undefined}
+          aria-describedby={held}
           onCheckedChange={(next) => onToggle(provider, next)}
           aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
         />
@@ -810,27 +790,22 @@ function ProviderCard({
             onClick={() => onClearSecret(provider)}
           >
             {clearingSecret ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <Eraser className="h-3.5 w-3.5" />
             )}
           </RowIconButton>
         )}
-        <RowIconButton
-          danger
+        <DeleteIconButton
           gate="sso_provider:delete"
           control="sso-provider-delete"
-          title={t("pages.sso.providers.delete")}
-          aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          disabled={deleting}
+          label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
+          title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
+          pending={deleting}
+          disabled={lastWayIn}
+          aria-describedby={held}
           onClick={() => onDelete(provider)}
-        >
-          {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </RowIconButton>
+        />
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
@@ -854,21 +829,19 @@ function ProviderCard({
           value={provider.redirect_uri}
           copyLabel={t("pages.sso.providers.copyRedirectUri")}
           note={t("pages.sso.providers.redirectUriNote")}
-          wrap
         />
         <Detail
           label={t("pages.sso.providers.startUrl")}
           value={provider.login_url}
           copyLabel={t("pages.sso.providers.copyStartUrl")}
           note={t("pages.sso.providers.startUrlNote")}
-          wrap
         />
         <Detail label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
         <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
       </div>
 
       <ProviderMappings provider={provider} />
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -1051,7 +1024,7 @@ function ProviderSheet({
     !provider && publicUrlFailed
       ? "pages.sso.create.redirectUriUnknown"
       : publicUrl?.configured === false
-        ? "pages.sso.create.redirectUriDefault"
+        ? "common.publicUrl.unset"
         : null;
 
   return (
@@ -1096,13 +1069,11 @@ function ProviderSheet({
         hint={editing ? t("pages.sso.edit.redirectUriHint") : t("pages.sso.create.redirectUriHint")}
       >
         {redirectNote && (
-          <p className="text-xs text-[color:var(--status-warning-text)]">
-            <Trans
-              i18nKey={redirectNote}
-              values={{ url: publicUrl?.public_url ?? "" }}
-              components={{ code: <code className="font-mono" /> }}
-            />
-          </p>
+          <Trans
+            i18nKey={redirectNote}
+            values={{ url: publicUrl?.public_url ?? "" }}
+            components={{ code: <code className="font-mono" /> }}
+          />
         )}
       </RedirectUriRow>
       <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")}>
@@ -1197,7 +1168,6 @@ export default function SingleSignOn() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // the provider list is what the user is actually waiting on here
   useScreenReady(!providers.isLoading);
-  useErrorState(!!providers.error, "sso");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY, orgId] });
 
@@ -1232,7 +1202,7 @@ export default function SingleSignOn() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: provider.name }),
-        detail: errorDetail(error),
+        detail: errorDetail(refusal(error, t)),
       });
     },
   });
@@ -1303,20 +1273,20 @@ export default function SingleSignOn() {
   // no org means nothing to hang a provider on, and an unreadable list means
   // this principal may not manage them either
   const canManage = !!orgId && !providers.isError;
-  // against the saved policy: with it unread there is nothing to warn from, and
-  // the plain confirmation still stands
-  const locksOut = (target: SsoProviderRow | null) =>
-    !!target && !!policy.data && locksOutMembers(rows, target, policy.data);
-  const disableLocksOut = locksOut(disableTarget);
-  const deleteLocksOut = locksOut(deleteTarget);
+  // against the saved policy: with it unread there is nothing to hold back
+  // from, and the server still refuses the change itself (#2443)
+  const locksOut = (target: SsoProviderRow) =>
+    !!policy.data && locksOutMembers(rows, target, policy.data);
 
   return (
     <PageBody>
       {policy.isError && (
+        // load-error-allow: the sign-in policy is a single record, not a list; the providers list pairs as sso-providers
         <LoadError
           error={policy.error}
           resource={t("errors.resources.signInPolicy")}
           onRetry={() => policy.refetch()}
+          target="sign-in-policy"
         />
       )}
       {policy.data && orgId && (
@@ -1351,6 +1321,7 @@ export default function SingleSignOn() {
           error={providers.error}
           resource={t("errors.resources.ssoProviders")}
           onRetry={() => providers.refetch()}
+          target="sso-providers"
         />
       )}
 
@@ -1379,6 +1350,7 @@ export default function SingleSignOn() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
+                lastWayIn={locksOut(provider)}
                 clearingSecret={clearSecret.isPending && clearSecret.variables?.id === provider.id}
                 deleting={remove.isPending && remove.variables === provider.id}
                 toggling={toggle.isPending && toggle.variables?.provider.id === provider.id}
@@ -1435,9 +1407,8 @@ export default function SingleSignOn() {
       />
 
       {/* out of service is reversible with one flip, so it confirms as a
-          default-tone action; it turns destructive only when it would leave
-          members no way in. the mutation is reset on close so a refusal for one
-          provider does not greet the next */}
+          default-tone action. the mutation is reset on close so a refusal for
+          one provider does not greet the next */}
       <ConfirmDialog
         name="sso-provider-disable"
         open={!!disableTarget}
@@ -1449,9 +1420,8 @@ export default function SingleSignOn() {
         title={t("pages.sso.disable.title", { name: disableTarget?.name })}
         description={t("pages.sso.disable.body")}
         confirmLabel={t("pages.sso.disable.confirm")}
-        tone={disableLocksOut ? "danger" : "default"}
         pending={toggle.isPending}
-        error={toggle.error}
+        error={toggle.error ? refusal(toggle.error, t) : undefined}
         onConfirm={() => {
           if (!disableTarget) return;
           toggle.mutate(
@@ -1459,9 +1429,7 @@ export default function SingleSignOn() {
             { onSuccess: () => setDisableTarget(null) },
           );
         }}
-      >
-        {disableLocksOut && disableTarget && <LockoutNotice name={disableTarget.name} />}
-      </ConfirmDialog>
+      />
 
       <ConfirmDialog
         name="sso-connection-delete"
@@ -1471,7 +1439,7 @@ export default function SingleSignOn() {
         description={t("pages.sso.confirm.body")}
         confirmLabel={t("pages.sso.confirm.confirm")}
         pending={remove.isPending}
-        error={remove.error}
+        error={remove.error ? refusal(remove.error, t) : undefined}
         onConfirm={() => {
           if (!deleteTarget) return;
           const what = deleteTarget.name;
@@ -1484,14 +1452,12 @@ export default function SingleSignOn() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorDetail(refusal(error, t)),
               });
             },
           });
         }}
-      >
-        {deleteLocksOut && deleteTarget && <LockoutNotice name={deleteTarget.name} />}
-      </ConfirmDialog>
+      />
     </PageBody>
   );
 }

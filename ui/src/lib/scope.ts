@@ -11,6 +11,7 @@ import {
   type TeamRow,
 } from "@/lib/api";
 import { useOptionalAuth } from "@/lib/auth";
+import { useOptionalPreferences } from "@/lib/preferences";
 
 // persisted, user-selectable org/team/project scope. the lists come from the
 // control plane already narrowed to what the account can reach (#1846), so a
@@ -49,6 +50,33 @@ function writeStored(scope: StoredScope) {
 // re-ask when the org changes — kept the previous scope until they remounted.
 // the write is broadcast instead
 const listeners = new Set<(scope: StoredScope) => void>();
+
+// the create-project dialog other screens open is `CreateProjectHost`, which the
+// shell mounts for as long as it is signed in. not the switcher itself: that
+// lives in the rail's account menu and is unmounted whenever the menu is
+// closed, which is exactly when another screen would call this (#2611). screens
+// reach it through the same kind of broadcast rather than a route or a query
+// param: nothing to keep in the url, nothing to strip afterwards, and no effect
+// where no host is mounted (stories, the sign-in screens)
+const createProjectOpeners = new Set<() => void>();
+
+/** Open the shell's create-project dialog; a no-op with no team in scope. */
+export function openCreateProject() {
+  for (const open of createProjectOpeners) open();
+}
+
+/** Registers the dialog's opener for as long as the caller is mounted. */
+export function useCreateProjectOpener(open: () => void) {
+  const latest = React.useRef(open);
+  latest.current = open;
+  React.useEffect(() => {
+    const fn = () => latest.current();
+    createProjectOpeners.add(fn);
+    return () => {
+      createProjectOpeners.delete(fn);
+    };
+  }, []);
+}
 
 /** The org, team and project of the account's most specific membership. */
 function ownScope(
@@ -100,12 +128,21 @@ export function useScope(): ScopeResult {
   const memberships = useOptionalAuth()?.memberships;
   const own = ownScope(memberships);
   const memberOrgId = memberships?.find((m) => m.org_id)?.org_id ?? own?.orgId;
-  // prefer the stored id if it still exists in the fetched list, then the org
-  // the account belongs to, and only then the first org the control plane
-  // happened to return — this also self-heals a stale stored id (e.g. the org
-  // was deleted from another session)
+  // the account's saved default scope (#2448), as the control plane computed
+  // it from what the account can read *now*. never the raw `default_*_id`
+  // keys: those can name a scope access was lost to. `null` — a default that
+  // is gone, or none — falls through to the rules below
+  const fallback = useOptionalPreferences()?.preferences?.effective_default_scope ?? undefined;
+  // prefer the stored id if it still exists in the fetched list (an in-session
+  // pick always wins), then the account's default scope, then the org the
+  // account belongs to, and only then the first org the control plane happened
+  // to return — this also self-heals a stale stored id (e.g. the org was
+  // deleted from another session)
   const orgId =
     (stored.orgId && orgs.data?.some((o) => o.id === stored.orgId) ? stored.orgId : undefined) ??
+    (fallback?.org_id && orgs.data?.some((o) => o.id === fallback.org_id)
+      ? fallback.org_id
+      : undefined) ??
     (memberOrgId && orgs.data?.some((o) => o.id === memberOrgId) ? memberOrgId : undefined) ??
     orgs.data?.[0]?.id;
 
@@ -117,6 +154,11 @@ export function useScope(): ScopeResult {
   const teamId =
     (stored.teamId && teams.data?.some((t) => t.id === stored.teamId)
       ? stored.teamId
+      : undefined) ??
+    (fallback?.org_id === orgId &&
+    fallback?.team_id &&
+    teams.data?.some((t) => t.id === fallback.team_id)
+      ? fallback.team_id
       : undefined) ??
     (own?.orgId === orgId && own?.teamId && teams.data?.some((t) => t.id === own.teamId)
       ? own.teamId
@@ -131,6 +173,11 @@ export function useScope(): ScopeResult {
   const projectId =
     (stored.projectId && projects.data?.some((p) => p.id === stored.projectId)
       ? stored.projectId
+      : undefined) ??
+    (fallback?.team_id === teamId &&
+    fallback?.project_id &&
+    projects.data?.some((p) => p.id === fallback.project_id)
+      ? fallback.project_id
       : undefined) ??
     (own?.teamId === teamId && own?.projectId && projects.data?.some((p) => p.id === own.projectId)
       ? own.projectId

@@ -45,5 +45,5 @@ Start here. rolter is a high-performance OpenAI/Anthropic-compatible AI gateway 
 
 ## Planning
 
-- [Roadmap](../ROADMAP.md)
-- [TODO](../TODO.md)
+- [Roadmap](../../ROADMAP.md)
+- [TODO](../../TODO.md)

@@ -23,6 +23,10 @@ export default defineConfig({
       // the path segment: a bare "/api" prefix also swallowed the dashboard's
       // own /api-keys screen, which then rendered blank in dev
       "^/api/": "http://localhost:4001",
+      // a browser SSO sign-in starts and ends on the control plane
+      // (/auth/sso/{slug}/callback redirects back to /login), and the
+      // dashboard redeems its one-time code at /auth/sso/exchange
+      "^/auth/sso/": "http://localhost:4001",
       // proxy playground /v1 calls to the rolter-gateway (data plane) during
       // dev so the browser stays same-origin (no CORS). in production the
       // control plane needs to reverse-proxy /gw/* to the gateway (follow-up).

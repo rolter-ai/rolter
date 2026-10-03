@@ -22,6 +22,7 @@ Never render a load failure by hand. Use `LoadError`:
     error={keys.error}
     resource={t("errors.resources.virtualKeys")}
     onRetry={() => keys.refetch()}
+    target="virtual-keys"
   />
 )}
 ```
@@ -34,7 +35,9 @@ because the placeholder is present in every locale and it is the render that
 drops it. `src/lib/load-error.test.ts` holds the copy to the one variable the
 component passes, and the `EveryKind` story asserts no `{{` survives to the DOM. Pass `onRetry` whenever the
 caller holds a query handle; the component decides whether offering it is
-honest.
+honest. `target` is required: it names the region on the `error_state` UX event
+the component records each time it appears, so the screen does not call
+`useErrorState` beside it ([UX telemetry](ux-telemetry.md), #2444).
 
 ## What it distinguishes
 
@@ -162,9 +165,10 @@ traffic share and the by-model bars) stating one failure twice.
 A partial failure is unchanged: a card whose read failed holds its own alert while the
 ones that answered stay up, and those keep polling. So does a failure next to a read
 that is still out, since a read that has not answered is not a failure: the screen
-becomes one alert only when the last read fails. The per-card error signals of
-`useErrorState` are withheld while the screen-level alert is the placeholder on
-screen, so one outage is one signal, `dashboard-analytics`.
+becomes one alert only when the last read fails. The per-card error signals are
+withheld while the screen-level alert is the placeholder on screen, since each
+`LoadError` records its own and the cards' are not mounted, so one outage is one
+signal, `dashboard-analytics`.
 
 A poll that fails over data a card already shows keeps that data, and every card
 says so. `RefreshFailed` writes `Refresh failed at {time}, retrying` in the
@@ -275,9 +279,10 @@ targets failed must not open an editor seeded from nothing.
 
 Two consequences fall out of this. A count in the screen's summary counts only
 the rows that resolved, because a denominator that includes the unread ones
-states them as empty. And `useScreenReady` / `useErrorState` follow the detail
-reads too — a screen that reports itself interactive while every row is still
-a skeleton is measuring the wrong moment.
+states them as empty. And `useScreenReady` follows the detail reads too, as the
+error signal does through each row's own `LoadError` — a screen that reports
+itself interactive while every row is still a skeleton is measuring the wrong
+moment.
 
 An editor opened from such a row re-reads its own record (`refetchOnMount:
 "always"`) rather than seeding from the list's cache, so it has the same two
@@ -340,3 +345,27 @@ the field, on screen for as long as it is wrong.
 had — the screen looked saved and the rest of the dashboard did not agree. The
 eleven settings screens now write the response _and_ invalidate the query, so
 the save is what the next read sees (#1197).
+
+## Inline error copy (#2216)
+
+The control plane answers in English, and some of its messages are internal. An
+inline error (a sheet footer, a field error, an `ErrorNote`) therefore never
+leads with `error.message`: pass the thrown value through `describeError` in
+`ui/src/lib/error-copy.ts`. It reads the stable `code` first
+(`errors.api.codes.<code>`), then the HTTP status, and only when neither is known
+returns the server's words as `detail`, to be shown below a generic translated
+line. A new code the control plane starts sending is added to `KNOWN_ERROR_CODES`
+and to `errors.api.codes` in every catalog.
+
+On the control plane, a refusal earns a code by going through the helpers in
+`crates/rolter-control/src/crud.rs` rather than a bare `Error::Config` or
+`ApiError::Conflict`: `invalid_field(field, message)` for a 400 about one field
+(the body then carries `field` too), `name_taken(message)` for a taken name, and
+`ApiError::CodedConflict` with `REFERENCED` or `SCOPE_MISMATCH` for the other
+409s. A unique violation the store reports is `Error::AlreadyExists`, which the
+API renders as `409 name_taken` with a generic message, so a write that loses a
+race, or hits a constraint nobody checked first, never surfaces as a 500
+(#2567). Status codes do not change when a code is added. The codes are listed
+in `docs/user-docs/api/control-plane-openapi.mdx`. `invalid_field` is the one
+known code whose server message `describeError` keeps as `detail`, because the
+translated line cannot say which field was wrong.

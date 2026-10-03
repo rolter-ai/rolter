@@ -128,6 +128,13 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a provider delete answers while something still references it
+const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
+
+/// the `409` revoking an org's last admin grant answers (#2311)
+const LAST_ORG_ADMIN_409: &str =
+    "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -147,9 +154,11 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
-    /// when this operation can answer `409` with a stable `error.code`, what
-    /// that refusal means
+    /// when this operation can answer `409`, what that refusal means, naming
+    /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
+    /// a ClickHouse-backed read, which can answer `502` or `504`
+    clickhouse: bool,
 }
 
 impl Op {
@@ -171,6 +180,7 @@ impl Op {
             public: false,
             see_other: None,
             conflict: None,
+            clickhouse: false,
         }
     }
 
@@ -225,6 +235,14 @@ impl Op {
         self
     }
 
+    /// Mark a read that goes to ClickHouse: it answers `502`
+    /// `analytics_query_failed`, or `504` `analytics_query_timeout` when the
+    /// query ran past the control plane's request timeout.
+    fn clickhouse_read(mut self) -> Self {
+        self.clickhouse = true;
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -269,6 +287,22 @@ impl Op {
             responses.insert(
                 "409".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if self.clickhouse {
+            responses.insert(
+                "502".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "ClickHouse did not answer the query (`analytics_query_failed`)"
+                }),
+            );
+            responses.insert(
+                "504".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "the query ran past the request timeout (`analytics_query_timeout`); narrow the time window"
+                }),
             );
         }
         responses.insert(
@@ -404,7 +438,36 @@ const SAVED_VIEW_QUERY: &[QueryParam] = &[QueryParam::new(
     "only presets of one screen: llm_logs or dashboard",
 )];
 
-/// The window plus the bucket only the timeseries endpoint reads.
+/// The row filters the dashboard's reads and the invocation log share, with
+/// the same shapes on both (#2453). Each narrows inside the caller's row
+/// visibility and an omitted one applies no filter.
+const MODEL_FILTER: QueryParam =
+    QueryParam::new("model", "string", "exact model name; omit for every model");
+const KEY_FILTER: QueryParam =
+    QueryParam::new("key", "string", "exact virtual key id; omit for every key");
+const BUSINESS_UNIT_FILTER: QueryParam = QueryParam::new(
+    "business_unit",
+    "string",
+    "comma-separated business unit ids; omit for every unit",
+);
+const CUSTOMER_FILTER: QueryParam = QueryParam::new(
+    "customer",
+    "string",
+    "comma-separated customer ids; omit for every customer",
+);
+
+/// The dashboard's summary and by-model reads: the window plus the row filters.
+const DASHBOARD_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
+];
+
+/// The window plus the bucket only the timeseries endpoint reads, and the
+/// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
     SINCE,
     UNTIL,
@@ -413,6 +476,10 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
         "string",
         "time bucket: `hour`, `day`, `week` or `month`",
     ),
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -494,18 +561,10 @@ const ATTRIBUTION_QUERY: &[QueryParam] = &[
 const INVOCATIONS_QUERY: &[QueryParam] = &[
     SINCE,
     UNTIL,
-    QueryParam::new("model", "string", "exact model name; omit for every model"),
-    QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
-    QueryParam::new(
-        "business_unit",
-        "string",
-        "comma-separated business unit ids; omit for every unit",
-    ),
-    QueryParam::new(
-        "customer",
-        "string",
-        "comma-separated customer ids; omit for every customer",
-    ),
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
     QueryParam::new("status", "string", "all|error|success; defaults to all"),
     QueryParam::new(
         "request_id",
@@ -761,7 +820,7 @@ fn operations() -> Vec<Op> {
                 "listBusinessUnits",
                 "List business units",
             )
-            .ok(Payload::List("BusinessUnit")),
+            .ok(Payload::List("BusinessUnitListing")),
             Op::post(
                 "/api/v1/orgs/{org_id}/business-units",
                 "createBusinessUnit",
@@ -786,7 +845,7 @@ fn operations() -> Vec<Op> {
                 "listCustomers",
                 "List customers",
             )
-            .ok(Payload::List("Customer")),
+            .ok(Payload::List("CustomerListing")),
             Op::post(
                 "/api/v1/orgs/{org_id}/customers",
                 "createCustomer",
@@ -848,7 +907,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
-            ),
+            )
+            .conflict(LAST_ORG_ADMIN_409),
         ],
     ));
 
@@ -967,7 +1027,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/providers/{id}",
                 "deleteProvider",
                 "Delete an upstream provider",
-            ),
+            )
+            .conflict(PROVIDER_IN_USE_409),
             Op::post(
                 "/api/v1/providers/{id}/test",
                 "testProvider",
@@ -1164,6 +1225,7 @@ fn operations() -> Vec<Op> {
                 "getMyUsage",
                 "Spend and usage for the calling account's keys",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::patch(
                 "/api/v1/me/profile",
@@ -1637,18 +1699,21 @@ fn operations() -> Vec<Op> {
                 "listMcpLogs",
                 "Page MCP tool-call events",
             )
+            .clickhouse_read()
             .query(MCP_LOGS_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/summary",
                 "getMcpLogSummary",
                 "Aggregate MCP tool-call activity",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/{event_id}",
                 "getMcpLogEvent",
                 "Read one MCP tool-call event",
-            ),
+            )
+            .clickhouse_read(),
         ],
     ));
 
@@ -1714,30 +1779,35 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsSummary",
                 "Spend, tokens and request counts over a window",
             )
-            .query(WINDOW_QUERY),
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
             Op::get(
                 "/api/v1/analytics/timeseries",
                 "getAnalyticsTimeseries",
                 "Bucketed spend and usage over a window",
             )
+            .clickhouse_read()
             .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
                 "Spend and usage grouped by model",
             )
-            .query(WINDOW_QUERY),
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
             Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
                 "Spend and usage grouped by business unit or customer",
             )
+            .clickhouse_read()
             .query(ATTRIBUTION_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations",
                 "listInvocations",
                 "Page the request records the caller's roles reach, bodies withheld below the payload floor",
             )
+            .clickhouse_read()
             .query(INVOCATIONS_QUERY),
         ],
     ));
@@ -1750,18 +1820,21 @@ fn operations() -> Vec<Op> {
                 "getUptime",
                 "Per-provider uptime over a window",
             )
+            .clickhouse_read()
             .query(UPTIME_QUERY),
             Op::get(
                 "/api/v1/health/timeline",
                 "getHealthTimeline",
                 "Per-provider health transitions over a window",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
                 "Mean time to recovery per provider",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
         ],
     ));
@@ -2000,7 +2073,15 @@ fn operations() -> Vec<Op> {
                 "startSsoLogin",
                 "Begin an SSO login",
             )
-            .public(),
+            .public()
+            .see_other(
+                "the identity provider's authorization endpoint. While the provider's org has \
+                 single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
+                 dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
+                 other caller gets a `403` with `error.code` `sso_disabled`. A slug no enabled provider \
+                 answers to sends a browser to `/login` with `sso_error=unknown_provider`, and any \
+                 other caller a `400`",
+            ),
             Op::get(
                 "/auth/sso/{slug}/callback",
                 "ssoCallback",
@@ -2118,32 +2199,27 @@ fn operations() -> Vec<Op> {
                 "/gw/{path}",
                 "proxyGet",
                 "Reverse-proxy a GET to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::post(
                 "/gw/{path}",
                 "proxyPost",
                 "Reverse-proxy a POST to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::put(
                 "/gw/{path}",
                 "proxyPut",
                 "Reverse-proxy a PUT to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::patch(
                 "/gw/{path}",
                 "proxyPatch",
                 "Reverse-proxy a PATCH to the gateway data plane",
-            )
-            .public(),
+            ),
             Op::delete(
                 "/gw/{path}",
                 "proxyDelete",
                 "Reverse-proxy a DELETE to the gateway data plane",
             )
-            .public()
             .ok(Payload::Open),
         ],
     ));
@@ -2345,8 +2421,15 @@ fn error_schemas(p: &Prim) -> Value {
                     "properties": {
                         "message": string,
                         "type": string,
-                        "code": string,
-                        "param": nullable_string
+                        "code": {
+                            "type": "string",
+                            "description": "stable, never renamed; a client branches on it \
+                                rather than on `message`. The common ones are `name_taken`, \
+                                `invalid_field`, `referenced` and `scope_mismatch` (#2567)"
+                        },
+                        "param": nullable_string,
+                        // the field an `invalid_field` refusal is about
+                        "field": string
                     }
                 }
             }
@@ -2425,6 +2508,23 @@ fn tenancy_schemas(p: &Prim) -> Value {
                 "created_at": timestamp
             }
         },
+        "BusinessUnitListing": {
+            "description": "A business unit as the org-wide listing returns it, with the count of live virtual keys attributed to it, computed in the same query.",
+            "allOf": [
+                {"$ref": "#/components/schemas/BusinessUnit"},
+                {
+                    "type": "object",
+                    "required": ["live_key_count"],
+                    "properties": {
+                        "live_key_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "virtual keys attributed to this business unit that are live: not disabled and not past their expiry. Zero on a card with no spend means no key could have produced any"
+                        }
+                    }
+                }
+            ]
+        },
         "CreateBusinessUnit": {
             "type": "object",
             "required": ["name"],
@@ -2454,6 +2554,23 @@ fn tenancy_schemas(p: &Prim) -> Value {
                 "retired_at": nullable_timestamp,
                 "created_at": timestamp
             }
+        },
+        "CustomerListing": {
+            "description": "A customer as the org-wide listing returns it, with the count of live virtual keys attributed to it, computed in the same query.",
+            "allOf": [
+                {"$ref": "#/components/schemas/Customer"},
+                {
+                    "type": "object",
+                    "required": ["live_key_count"],
+                    "properties": {
+                        "live_key_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "virtual keys attributed to this customer that are live: not disabled and not past their expiry. Zero on a card with no spend means no key could have produced any"
+                        }
+                    }
+                }
+            ]
         },
         "CreateCustomer": {
             "type": "object",
@@ -2569,7 +2686,7 @@ fn provider_schemas(p: &Prim) -> Value {
     json!({
         "Provider": {
             "type": "object",
-            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at"],
+            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at", "has_stored_key"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string,
                 "slug": {"type": "string", "description": "stable identity for `provider-slug/model` addressing"},
@@ -2579,7 +2696,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "has_stored_key": {"type": "boolean", "description": "whether a sealed key is stored for the provider (a row in `provider_keys`). An `api_key_env` does not count. The key, its ciphertext and its nonce are never returned"}
             }
         },
         "CreateProvider": {
@@ -3277,6 +3395,36 @@ mod tests {
         assert_eq!(doc["paths"]["/healthz"]["get"]["security"], json!([]));
     }
 
+    /// #2581: the business-unit and customer listings carry a live key count
+    /// beside each row, and the create and update answers do not claim one.
+    #[test]
+    fn attribution_listings_document_their_live_key_count() {
+        let doc = document();
+        for (path, listing, row) in [
+            (
+                "/api/v1/orgs/{org_id}/business-units",
+                "BusinessUnitListing",
+                "BusinessUnit",
+            ),
+            (
+                "/api/v1/orgs/{org_id}/customers",
+                "CustomerListing",
+                "Customer",
+            ),
+        ] {
+            let items = &doc["paths"][path]["get"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["items"]["$ref"];
+            assert_eq!(items, &json!(format!("#/components/schemas/{listing}")));
+            let schema = &doc["components"]["schemas"][listing]["allOf"];
+            assert_eq!(schema[0]["$ref"], format!("#/components/schemas/{row}"));
+            assert_eq!(schema[1]["required"], json!(["live_key_count"]));
+            assert_eq!(schema[1]["properties"]["live_key_count"]["type"], "integer");
+            let created = &doc["paths"][path]["post"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"];
+            assert_eq!(created, &json!(format!("#/components/schemas/{row}")));
+        }
+    }
+
     /// #2166: a browser landing on the MCP consent callback is sent to the
     /// dashboard, and the reference says so beside the JSON answer it keeps.
     #[test]
@@ -3288,11 +3436,17 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
-        // the SSO callback is the only other one (#2297)
+        // the SSO callback is another (#2297)
         let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
         assert!(sso["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
+        // the start of an sso login redirects too, and names the refusal it
+        // can end in (#2339)
+        let start = &doc["paths"]["/auth/sso/{slug}/start"]["get"]["responses"];
+        assert!(start["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_disabled")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3301,7 +3455,48 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 2);
+        assert_eq!(redirects, 3);
+    }
+
+    #[test]
+    fn the_dashboard_reads_document_the_invocation_logs_row_filters() {
+        let doc = document();
+        let names_of = |path: &str| -> BTreeSet<String> {
+            doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} declares its query parameters"))
+                .iter()
+                .map(|p| {
+                    p["name"]
+                        .as_str()
+                        .expect("a parameter has a name")
+                        .to_string()
+                })
+                .collect()
+        };
+        let invocations = names_of("/api/v1/analytics/invocations");
+        for path in [
+            "/api/v1/analytics/summary",
+            "/api/v1/analytics/timeseries",
+            "/api/v1/analytics/by-model",
+        ] {
+            let names = names_of(path);
+            for filter in [
+                "since",
+                "until",
+                "model",
+                "key",
+                "business_unit",
+                "customer",
+            ] {
+                assert!(names.contains(filter), "{path} lacks {filter}: {names:?}");
+                assert!(invocations.contains(filter), "invocations lacks {filter}");
+            }
+            // the list's own paging and lookups are not the rollups' to take
+            for absent in ["status", "cursor", "limit", "request_id"] {
+                assert!(!names.contains(absent), "{path} documents {absent}");
+            }
+        }
     }
 
     #[test]
@@ -3604,5 +3799,17 @@ mod tests {
         assert!(routes.contains(&("/gw/{path}".into(), "any".into())));
         // `#[cfg(test)]` fixtures stand up their own routers; none of them count
         assert!(!routes.contains(&("/v1/ping".into(), "get".into())));
+    }
+
+    #[test]
+    fn clickhouse_reads_document_the_timeout_code() {
+        let doc = document();
+        let responses = &doc["paths"]["/api/v1/analytics/summary"]["get"]["responses"];
+        assert!(responses["504"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("analytics_query_timeout")));
+        assert!(responses["502"].is_object());
+        let mcp = &doc["paths"]["/api/v1/mcp/logs/{event_id}"]["get"]["responses"];
+        assert!(mcp["504"].is_object());
     }
 }

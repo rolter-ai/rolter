@@ -82,6 +82,7 @@ be, and then it is not breaking.
 
 The commit stage uses prek's built-in checks plus pinned Gitleaks and
 Conventional Commit hooks. Project-specific checks require `actionlint`,
-`taplo`, and `typos` on `PATH`. The push stage also requires `cargo-deny` and
+`taplo`, and `typos` on `PATH`, and `ruff` runs through `uvx`, so `uv` must be
+installed too. The push stage also requires `cargo-deny` and
 Bun when UI files are part of the push. Install `cargo-nextest` for CI-equivalent
 test execution; the hook falls back to `cargo test` when it is unavailable.

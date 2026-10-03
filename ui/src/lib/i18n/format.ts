@@ -1,4 +1,7 @@
+import * as React from "react";
 import { useTranslation } from "react-i18next";
+
+import { readCachedPreferences } from "@/lib/preferences-cache";
 
 import { DEFAULT_LOCALE, type Locale } from "./index";
 
@@ -43,12 +46,56 @@ function relativeFormat(locale: string): Intl.RelativeTimeFormat {
   return formatter;
 }
 
+// the time zone every date, clock and chart axis is drawn in (#2448). the
+// account's `chart_time_zone` preference, or `undefined` for the browser's own
+// zone. the server only checks the *shape* of a zone name, so a well-formed name
+// this engine does not know must fall back to the local zone rather than throw
+// a RangeError out of every formatter on every screen
+let activeTimeZone: string | undefined;
+const zoneListeners = new Set<() => void>();
+
+/** `zone` if this engine knows it, else `undefined` — the browser's zone. */
+export function validTimeZone(zone: string | null | undefined): string | undefined {
+  if (!zone) return undefined;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: zone });
+    return zone;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Set the chart time zone; an unknown or empty one means the browser's. */
+export function setChartTimeZone(zone: string | null | undefined): void {
+  const next = validTimeZone(zone);
+  if (next === activeTimeZone) return;
+  activeTimeZone = next;
+  for (const listener of zoneListeners) listener();
+}
+
+export function chartTimeZone(): string | undefined {
+  return activeTimeZone;
+}
+
+function subscribeTimeZone(listener: () => void): () => void {
+  zoneListeners.add(listener);
+  return () => {
+    zoneListeners.delete(listener);
+  };
+}
+
+// first paint: the cached preference, before the fetch has answered
+activeTimeZone = validTimeZone(readCachedPreferences()?.chart_time_zone);
+
 /** the house short date — `medium` so `10/5` is never read as 5 October */
 const DATE: Intl.DateTimeFormatOptions = { dateStyle: "medium" };
 
 // the day without its year, for a stamp that sits beside a clock in a narrow
 // column: a named month for the same reason as `DATE`
 const DAY: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+
+// numeric day, only compared against itself to tell whether two moments share a day
+const DAY_KEY: Intl.DateTimeFormatOptions = { year: "numeric", month: "numeric", day: "numeric" };
 
 // log and audit rows are scanned as a column, so the clock is always h23: an
 // AM/PM stamp sorts badly by eye and doubles the width of the cell
@@ -67,11 +114,14 @@ const CLOCK_MS = {
   fractionalSecondDigits: 3,
 } as Intl.DateTimeFormatOptions;
 
+// a named month so `08/06` is never read as 8 June or 6 August, and the zone
+// so the instant is unambiguous on an audit or incident timeline (#2219)
 const STAMP: Intl.DateTimeFormatOptions = {
   year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
+  month: "short",
+  day: "numeric",
   ...CLOCK,
+  timeZoneName: "short",
 };
 
 const STAMP_MS = {
@@ -129,7 +179,9 @@ function toDate(value: Date | string | number): Date | null {
 export function formattersFor(locale: Locale): Formatters {
   const stamp = (value: Date | string | number, options: Intl.DateTimeFormatOptions) => {
     const date = toDate(value);
-    return date === null ? "" : dateFormat(locale, options).format(date);
+    if (date === null) return "";
+    const zoned = activeTimeZone ? { ...options, timeZone: activeTimeZone } : options;
+    return dateFormat(locale, zoned).format(date);
   };
   return {
     locale,
@@ -169,7 +221,8 @@ export function formattersFor(locale: Locale): Formatters {
       const date = toDate(value);
       if (date === null) return "";
       const today = (now === undefined ? null : toDate(now)) ?? new Date();
-      if (date.toDateString() === today.toDateString()) return "";
+      // the same calendar day *in the chart zone*, not in the browser's
+      if (stamp(date, DAY_KEY) === stamp(today, DAY_KEY)) return "";
       return stamp(date, DAY);
     },
     relative: (value, now) => {
@@ -188,6 +241,8 @@ export function formattersFor(locale: Locale): Formatters {
 /** formatters for the locale currently rendered — re-derives on every switch */
 export function useFormat(): Formatters {
   const { i18n } = useTranslation();
+  // re-render every consumer when the zone preference changes
+  React.useSyncExternalStore(subscribeTimeZone, chartTimeZone, chartTimeZone);
   const locale = (i18n.resolvedLanguage ?? DEFAULT_LOCALE) as Locale;
   return formattersFor(locale);
 }

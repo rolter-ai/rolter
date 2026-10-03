@@ -4,6 +4,11 @@
 //! per-user sessions (#2356). A client that still sends the retired
 //! `dashboard_*` fields is not rejected; the request struct ignores unknown
 //! fields, so they are dropped.
+//!
+//! There is no "enforce virtual keys" switch either (#2357). It only ever
+//! reached managed gateways, which refuse a keyless request anyway, so it
+//! changed nothing; `virtual_key_required` from an older client is dropped the
+//! same way.
 
 use axum::extract::State;
 use axum::http::header::HeaderName;
@@ -37,7 +42,6 @@ async fn get_security_settings(
 
 #[derive(Deserialize)]
 struct UpdateSecuritySettings {
-    virtual_key_required: bool,
     #[serde(default)]
     allowed_origins: Vec<String>,
     #[serde(default)]
@@ -131,8 +135,8 @@ async fn update_security_settings(
             // The gateway has no direct-provider-key passthrough, so the
             // column never controlled anything; the store pins it to its
             // default rather than leave a toggle that reads like a security
-            // control and is not one
-            body.virtual_key_required,
+            // control and is not one. `virtual_key_required` went the same
+            // way for the same reason (#2357)
             &body.allowed_origins,
             &body.allowed_headers,
             serde_json::to_value(&body.required_headers).map_err(|err| invalid(err.to_string()))?,
@@ -156,7 +160,6 @@ async fn update_security_settings(
             Some("security_settings"),
             None,
             Some(serde_json::json!({
-                "virtual_key_required": row.virtual_key_required,
                 "origin_count": row.allowed_origins.len(),
                 "required_header_count": body.required_headers.len(),
                 "bypass_route_count": row.auth_bypass_routes.len(),
@@ -191,9 +194,10 @@ mod tests {
     fn the_retired_dashboard_fields_are_ignored_not_rejected() {
         let body: UpdateSecuritySettings = serde_json::from_value(serde_json::json!({
             "virtual_key_required": true,
+            "allowed_origins": [],
             "dashboard_auth_enabled": true,
             "dashboard_credential_ref": "X",
-            "managed_dashboard_secret": "hunter2",
+            "managed_dashboard_secret": uuid::Uuid::new_v4().to_string(),
         }))
         .expect("old clients must still parse");
         assert!(validate_settings(&body).is_ok());
@@ -202,7 +206,6 @@ mod tests {
     #[test]
     fn rejects_multiline_required_header_value() {
         let body = UpdateSecuritySettings {
-            virtual_key_required: false,
             allowed_origins: Vec::new(),
             allowed_headers: Vec::new(),
             required_headers: [("x-tenant".to_string(), "a\nb".to_string())]

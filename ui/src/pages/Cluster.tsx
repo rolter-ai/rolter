@@ -20,7 +20,8 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useNow } from "@/lib/use-now";
+import { useScreenReady } from "@/lib/ux-react";
 
 // nodes fall out of the liveness window in under a minute, so the inventory is
 // only useful if it refreshes on its own
@@ -61,13 +62,8 @@ function ClusterScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `nodes` is the query the user is actually waiting on for this screen
   useScreenReady(!nodes.isLoading);
-  useErrorState(!!nodes.error, "cluster");
   // one clock for every relative timestamp, so the rows do not drift apart
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  const now = useNow(1000);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
 
@@ -155,7 +151,7 @@ function ClusterScreen() {
               onClick={() => drain.mutate({ id: row.id, draining: !draining })}
             >
               {drain.isPending && drain.variables?.id === row.id && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
               )}
               {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
             </GatedButton>
@@ -172,7 +168,7 @@ function ClusterScreen() {
               onClick={() => startForget(row)}
             >
               {forget.isPending && forget.variables === row.id && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
               )}
               {t("pages.cluster.forget")}
             </GatedButton>
@@ -196,6 +192,7 @@ function ClusterScreen() {
           error={nodes.error}
           resource={t("errors.resources.clusterNodes")}
           onRetry={() => void nodes.refetch()}
+          target="cluster-nodes"
         />
       </PageBody>
     );

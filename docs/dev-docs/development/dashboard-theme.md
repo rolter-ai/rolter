@@ -150,10 +150,21 @@ track — which is `--surface-subtle` (`#27272a`) for every entry:
 | `--chart-3`     | `--status-info` `#3b82f6`    | 4.05:1                  | 5.13:1       |
 | `--chart-4`     | `--status-success` `#16a34a` | 4.52:1                  | 5.72:1       |
 | `--chart-5`     | `--status-warning` `#f59e0b` | 6.94:1                  | 8.78:1       |
-| `--chart-6`     | `--red-500` `#ff4017`        | 4.25:1                  | 5.39:1       |
+| `--chart-6`     | cyan `#22d3ee`               | 8.24:1                  | 10.44:1      |
 | `--chart-7`     | `--zinc-500` `#71717a`       | 3.08:1                  | 3.90:1       |
 | `--chart-8`     | `--zinc-300` `#d4d4d8`       | 10.08:1                 | 12.76:1      |
 | `--chart-other` | `--zinc-700` `#3f3f46`       | 1.43:1, exempt          | 1.81:1       |
+
+`--chart-6` used to be `--red-500` (`#ff4017`), one lightness step from
+`--chart-1`, so the first and sixth series of every categorical chart read as
+one colour (#2436). No two of `--chart-1` … `--chart-8` may be closer than CIE76
+ΔE 17, in plain vision and under simulated protanopia, deuteranopia and
+tritanopia (Machado 2009, full severity). The current minima are 18.6, 17.9,
+18.6 and 18.5. The floor is enforced: `ui/scripts/chart-palette-distinct.test.ts`
+(part of `bun run test`) reads the floor from the comment in `ui/src/index.css`,
+resolves every `--chart-N` token to hex, simulates each vision type and fails
+naming the pair, the vision type and the measured ΔE. It covers `--chart-1` …
+`--chart-8` only; `--chart-other` is exempt.
 
 `--chart-1` used to be `--red-folk` (2.23:1 worst) and `--chart-7` used to be
 `--zinc-600` (1.93:1 worst). Both were lifted in #1269. `--chart-1` matters

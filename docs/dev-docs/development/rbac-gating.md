@@ -39,12 +39,77 @@ exactly the chain its route's guard passes to `authorize`:
 | `project`   | org + team + project | the org, that team, or that project |
 
 A team admin asked at `(org, team, project)` therefore gets `route:create` (a
-team-scoped row) but not `provider:create` or `team:create` (org-scoped rows),
+team-scoped row) but not `team:create` or `custom_role:read` (org-scoped rows),
 which the guard would refuse with a 403. Custom-role grants are trimmed the
 same way, and `deployment` rows keep the whole chain because they name no
 tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
 `rbac_matrix.rs` walks every row against the guard's own decision, so the
 advisory answer cannot promise more than the guard grants (#1877).
+
+`provider` and `provider_group` are `project` rows although a row may also be
+org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
+a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
+on a provider scoped to that project, and an org admin still passes through the
+org membership. The page-level answer cannot tell an org-wide row from a scoped
+one: a project admin would see Edit on an org-wide provider and the handler
+would answer `403`, because `crud.rs` checks such a row at the org. That check,
+not this table, is the authority, so the two list screens gate each row at the
+row's own scope (#2522), see
+[Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
+membership reaches neither.
+
+`budget` and `rate_limit` are `project` rows for the same reason (#2527): a caller
+whose only role is on a project must read the caps that throttle their own keys,
+and a project membership never satisfied an org-scoped read. The row's own scope
+is still what the guard checks, so the writes are unchanged: a project admin may
+write caps on their project and its keys, never on the team or org above it. The
+list routes `GET /api/v1/budgets` and `GET /api/v1/rate-limits` take a
+`scope_type` and `scope_id`, and answer `200` for the caller's own project, and for
+the team and org above any place they hold a role; another project, a sibling team,
+a customer or a business unit answer `403`.
+
+The Roles & Permissions screen (`rbac` in `nav.tsx`) names no resource, so no
+capability gates the page: `GET /api/v1/rbac/matrix` publishes what roles can do,
+not anyone's data, and answers every signed-in caller. The org's custom roles on
+it keep their own check (a role anywhere in that org), and the write controls stay
+gated on `custom_role:create`, `:update` and `:delete`.
+
+## Gating a row at its own scope
+
+A capability whose rows may live at more than one scope (`provider`,
+`provider_group`) cannot be answered once for the page. Wrap the row's controls
+in `RowCapabilityScope` (`ui/src/lib/can.tsx`) and hand it
+`rowGateScope(row, orgScope.byTeam)` from `ui/src/lib/provider-scope.ts`:
+
+```tsx
+<RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
+  <GatedButton gate="provider:update" control="provider-edit">
+    …
+  </GatedButton>
+  <DeleteIconButton gate="provider:delete" control="provider-delete" … />
+</RowCapabilityScope>
+```
+
+It swaps the capability context for the controls below it, so the primitives
+stay as they are and keep recording their refusals. An org-wide row
+(`project_id` null) is asked at the org alone, where a project membership
+reaches nothing; a project row is asked at its org + team + project, the team
+read from the org's project list. The query key is the provider's, so rows
+sharing a scope share one request. A project the dashboard cannot place
+(deleted, or not listable by this caller) keeps the page's answer and the `403`
+stays the backstop. Stories play a project admin with
+`role={adminOfProject(id)}` on `Harness` — a viewer of the org plus an admin
+membership on the project — and the stub answers `rbac/effective` for the
+queried chain, deciding each row at its own scope as the server does.
+
+Budgets and rate limits (#2529) are the second user. A cap names its own scope,
+so `capGateScope(row, { byTeam, keyProjectId })` (`ui/src/lib/limit-scope.ts`)
+maps `scope_type` to the chain: `org` is asked at the org alone, `team` at org +
+team (`RowScope` carries a `teamId` with no project for it), `project` at org +
+team + project, and `virtual_key` at the project the page lists keys of. A
+business unit or customer cap, and a project the dashboard cannot place, keep
+the page's answer. A project admin therefore edits their project's caps and is
+refused the team's and the org's above it, as the guard does.
 
 ## Three answers, not two
 
@@ -115,7 +180,11 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   open like everywhere else. A 403 from one of its lists hides it too, since
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
-  screen a member opens (#1848).
+  screen a member opens (#1848). With no project under the team in scope, its
+  **Create project** control is a `GatedButton` on `project:create` that calls
+  `openCreateProject()` (#2611); the sentence beside it is picked by the same
+  answer, and the `CreateProjectAllowedForAnAdmin` and
+  `NoProjectAndCannotCreateOne` stories pin both sides.
 - **The pending invitations on the Users screen.** The section reads
   `invitation:read` through `useCan()` for its presence, the way the checklist
   does: it waits for the answer, is absent on an explicit `false`, and sends no
@@ -169,6 +238,32 @@ which also suppresses the native tooltip, so a refused button re-enables pointer
 events through an inline style. `disabled` still swallows the click; the
 `RefusedSwallowsTheClick` story asserts exactly that.
 
+### The reason is reachable without a pointer
+
+A disabled element takes no focus, so a reason held only in the `title` reached
+the mouse and nothing else (#2005). Every gated control (`GatedButton`,
+`GatedSwitch`, `GatedCombobox`, `DeleteIconButton`, `RowIconButton`) therefore
+sits in `RefusalWrap` (`ui/src/components/ui/refusal-wrap.tsx`). While the
+control is refused the wrapper is a focusable `role="group"`, named by the
+control it wraps (`aria-labelledby`) and described by the reason
+(`aria-describedby`, pointing at visually hidden text beside it), so Tab stops on
+it and a screen reader reads "Add provider, group, Requires the Admin role". The
+control stays a real `disabled`, and the `title` stays for the mouse. While the
+control is allowed the wrapper is `display: contents`, as before. A new gated
+primitive wraps itself in `RefusalWrap` rather than hand-rolling a second one.
+
+## Counts, toasts and charts (#2005)
+
+Three other things only some users used to get, fixed in the shared primitives:
+
+- `ListSummary` renders a polite live region (`role="status"`) from the first
+  paint, even while empty, so the count a search or filter changes is announced.
+- Toasts are paused while the pointer or focus is on the card (WCAG 2.2.1), and
+  an error has no timer at all: it stays until dismissed. A caller may still pass
+  a `duration`.
+- A `LineChart` given a `label` carries a visually hidden table of the values it
+  plots, captioned with that label.
+
 ## One query, per scope
 
 `CapabilityProvider` sits above the shell in `App.tsx` — above, because the rail
@@ -180,11 +275,25 @@ scope switch re-keys the query, so a viewer in one org does not carry a cached
 ## The stories render as a role from the real table
 
 `<Harness role="viewer">` stubs both RBAC endpoints, and it derives the answers
-from `ui/src/lib/rbac-capabilities.json` — a generated copy of `CAPABILITIES`,
-written by `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`).
-`ui/src/lib/rbac-capabilities.ts` turns that copy into the two payloads the
-same way the control plane does: `matrixFixture()` is the port of
-`resource_view`, `effectiveFor()` of `allowed_for`.
+from `ui/src/lib/rbac-capabilities.json` — a copy of
+`crates/rolter-control/rbac-matrix.json`, which is `GET /api/v1/rbac/matrix`
+minus the per-tenant custom roles, rendered by the control plane itself from
+`CAPABILITIES`, plus the `chain_at` table described below. `ui/src/lib/rbac-capabilities.ts` serves that copy as
+`matrixFixture()` unchanged and derives `effectiveFor()` from it the way
+`allowed_for` does.
+
+`allowed_for` decides each capability at the part of the queried chain its
+`scope` names (`chain_at`, #1877): an org-scoped row at the org alone, a
+team-scoped row at org + team, anything else at the whole chain, each with the
+role `resolve_role` picks there (most specific membership wins, ties to the
+higher role). `effectiveFor()` ports both (#2376), so a team admin's stub
+answers `role: "admin"` yet lacks `team:create` and `plugin:create`, exactly as
+the server does. A bare `role="admin"` is one org membership, which reaches
+every part of every chain; pass memberships to play anyone held lower.
+The artifact carries that rule too: its `chain_at` table lists, for every
+scope the matrix uses, the chain fields `chain_at` clears, written by calling
+the function rather than by reading its source. `rbac-matrix-artifact.test.ts`
+fails when the port's `chainAt` (`CHAIN_TRIMS`) clears anything else.
 
 It used to be a table typed out by hand in `story-harness.tsx`, and nothing
 compared the two. So it drifted — #1258 found it calling `model` and
@@ -194,13 +303,24 @@ only a superadmin writes, which let two screens gate on `model:create` and
 their stories passed. A fixture more generous than the deployment makes a
 gating story assert behaviour nobody runs.
 
-`ui/scripts/rbac-matrix-source.test.ts` is the gate (#1298): it re-parses
-`rbac_matrix.rs` on every `bun run test` and fails when the copy disagrees,
-naming the pair — `model_price:update takes superadmin in
-crates/rolter-control/src/rbac_matrix.rs, admin in the fixture`. **Change the
-capability table, run `bun run gen:rbac` and commit the JSON with it.** The
-generator parses the Rust source because the control plane emits no artifact to
-read; #1369 tracks replacing that with a snapshot the Rust test suite writes.
+Two tests keep the copy honest, one per hop:
+
+- `the_checked_in_matrix_artifact_is_what_the_endpoint_publishes` in
+  `crates/rolter-control/src/rbac_matrix.rs` renders the matrix through the
+  same `builtin_matrix()` the endpoint serves and fails `cargo test` when
+  `rbac-matrix.json` differs from it by a byte (the module builds only under
+  `--features postgres`, as CI tests it). Run with
+  `ROLTER_TEST_UPDATE_RBAC_MATRIX=1`, it rewrites the file instead.
+- `ui/scripts/rbac-matrix-artifact.test.ts` fails `bun run test` while
+  `ui/src/lib/rbac-capabilities.json` is not a byte-for-byte copy of the
+  artifact. `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`) makes
+  the copy.
+
+**Change the capability table, run `just gen-rbac` and commit both JSON files
+with it.** The recipe does both hops. Until #1369 the generator parsed the Rust
+source for the table, which tied it to the exact shape of a `const` struct
+literal; the artifact is the control plane's own rendering, so the table can
+be reorganised freely (#1298).
 
 ## Adding a screen
 

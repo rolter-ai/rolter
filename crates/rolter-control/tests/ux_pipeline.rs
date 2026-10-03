@@ -60,47 +60,91 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply the shipped `ui_events` DDL, and every migration that has widened it.
+/// Apply every shipped ClickHouse migration, once per test binary.
 ///
 /// Read from `clickhouse/` rather than repeated here on purpose: a copy would
-/// let the table this test writes to drift away from the one a deployment gets,
-/// which is precisely the class of failure the test exists to catch. Every
-/// statement is `create table if not exists` or an `alter`, so this is also the
-/// repair for the failure mode a dogfood stack is most likely to hit — a
-/// ClickHouse volume created before #805 landed never ran the init scripts
-/// again and has no `ui_events` table at all.
+/// let the tables this test writes to drift away from the ones a deployment
+/// gets, which is precisely the class of failure the test exists to catch.
+/// Every statement is `create ... if not exists` or an `alter`, so this is also
+/// the repair for a ClickHouse volume created before #805 landed, which never
+/// ran the init scripts again and has no `ui_events` table at all.
 ///
-/// All of them, not just the `create`: the `action` column is an `Enum8` that
-/// `010_*` appended to, and a test that only ran the `create` would reject
-/// every value added since while the deployment accepted it (#1731).
-async fn ensure_table(client: &reqwest::Client, base: &str) {
+/// All of them, not just the `ui_events` ones: the `action` column is an
+/// `Enum8` that `010_*` appended to (#1731), and the control plane's startup
+/// `reconcile_retention` also touches `request_logs`, which a `ui_events`-only
+/// schema leaves missing and answers with an `UNKNOWN_TABLE` warning (#2697).
+///
+/// Once, because with every test running its own `ALTER`s in parallel each one
+/// took up to about 2 s (#2697). Each `#[tokio::test]` owns a runtime, so a
+/// `tokio::sync::OnceCell` would be tied to whichever runtime first awaited it;
+/// a `std::sync::OnceLock` filled from a thread with a private runtime is not.
+async fn ensure_table(base: &str) {
+    static APPLIED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let base = base.to_string();
+    tokio::task::spawn_blocking(move || {
+        APPLIED.get_or_init(|| {
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the schema runtime")
+                    .block_on(apply_schema(&base));
+            })
+            .join()
+            .expect("apply the clickhouse schema");
+        });
+    })
+    .await
+    .expect("join the schema setup");
+}
+
+async fn apply_schema(base: &str) {
+    let client = reqwest::Client::new();
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .expect("read the clickhouse migration directory")
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            let name = path.file_name()?.to_str()?.to_string();
-            // the numeric prefix is the order, and it is why these are sorted
-            // by file name rather than taken as the directory hands them over
-            name.contains("ui_events").then_some((name, path))
+            (path.extension()? == "sql").then_some(path)
         })
         .collect();
+    // the numeric prefix is the order
     files.sort();
-    assert!(!files.is_empty(), "no ui_events DDL found in clickhouse/");
+    assert!(
+        files
+            .iter()
+            .any(|f| f.to_string_lossy().contains("ui_events")),
+        "no ui_events DDL found in clickhouse/"
+    );
 
-    for (name, path) in files {
-        let ddl = std::fs::read_to_string(&path).expect("read the shipped ui_events DDL");
-        let response = client
-            .post(format!("{base}/"))
-            .body(ddl)
-            .send()
-            .await
-            .expect("reach clickhouse");
-        assert!(
-            response.status().is_success(),
-            "{name} failed: {}",
-            response.text().await.unwrap_or_default()
-        );
+    for path in files {
+        let ddl = std::fs::read_to_string(&path).expect("read the shipped DDL");
+        // comments go first, as `ux-capture.sh apply-schema` strips them: several
+        // hold a `;` of their own. then one statement per request, since the HTTP
+        // interface refuses more than one
+        let stripped: String = ddl
+            .lines()
+            .map(|line| line.split("--").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for statement in stripped
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            let response = client
+                .post(format!("{base}/"))
+                .body(statement.to_string())
+                .send()
+                .await
+                .expect("reach clickhouse");
+            assert!(
+                response.status().is_success(),
+                "{}: {}",
+                path.display(),
+                response.text().await.unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -123,9 +167,75 @@ async fn rows_for_session(client: &reqwest::Client, base: &str, session_id: &str
         .send()
         .await
         .expect("reach clickhouse");
-    assert!(response.status().is_success(), "read-back query failed");
-    let body: Value = response.json().await.expect("clickhouse json");
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "read-back query failed ({status}): {text}"
+    );
+    let body: Value = serde_json::from_str(&text).expect("clickhouse json");
     body["data"].as_array().cloned().unwrap_or_default()
+}
+
+/// Assert a response's status, and say why when it is wrong.
+///
+/// A bare `assert_eq!` on the status printed `left: 500, right: 202` and
+/// nothing else (#1940). The body is printed too, but a 500 from the ingest
+/// endpoint is deliberately generic (#1747), so the ClickHouse side is fetched
+/// as well: the insert exceptions `system.query_log` holds for the last few
+/// minutes. An empty list there is itself the answer — the insert never reached
+/// the server, so the failure was on the connection rather than in ClickHouse.
+/// Returns the body for the assertions that read it.
+async fn expect_status(
+    response: reqwest::Response,
+    expected: u16,
+    clickhouse: Option<(&reqwest::Client, &str)>,
+) -> String {
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if status != expected {
+        let store = match clickhouse {
+            Some((http, base)) => recent_insert_errors(http, base).await,
+            None => "not consulted".to_string(),
+        };
+        panic!(
+            "expected {expected}, got {status}\nbody: {body}\nclickhouse insert errors: {store}"
+        );
+    }
+    body
+}
+
+/// The `ui_events` insert exceptions ClickHouse logged in the last five
+/// minutes, newest first, as text for a failure message.
+async fn recent_insert_errors(http: &reqwest::Client, base: &str) -> String {
+    // the query log is flushed on an interval; without this the failure that
+    // just happened is usually not in it yet
+    let _ = http
+        .post(format!("{base}/"))
+        .body("system flush logs")
+        .send()
+        .await;
+    let sql = "select toString(event_time) as at, exception \
+               from system.query_log \
+               where type in ('ExceptionBeforeStart', 'ExceptionWhileProcessing') \
+               and query_kind = 'Insert' and query like '%ui_events%' \
+               and event_time > now() - interval 5 minute \
+               order by event_time desc limit 5 FORMAT JSON";
+    let response = match http.post(format!("{base}/")).body(sql).send().await {
+        Ok(response) => response,
+        Err(err) => return format!("query_log unreachable: {err}"),
+    };
+    let text = response.text().await.unwrap_or_default();
+    match serde_json::from_str::<Value>(&text) {
+        Ok(body) => match body["data"].as_array() {
+            Some(rows) if rows.is_empty() => {
+                "none logged (the insert never reached clickhouse)".to_string()
+            }
+            Some(rows) => format!("{rows:?}"),
+            None => text,
+        },
+        Err(_) => text,
+    }
 }
 
 async fn fresh_db() -> TestSchema {
@@ -188,7 +298,7 @@ fn session_id() -> String {
 async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -242,7 +352,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
 
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), 2, "batch did not land: {rows:?}");
@@ -282,7 +392,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
 async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -326,7 +436,7 @@ async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
 
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), actions.len(), "an action was refused: {rows:?}");
@@ -362,7 +472,7 @@ async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
 async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -398,7 +508,7 @@ async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
 
     // 400, not 404/405 — so `ux.ts` drops this batch and keeps sending the next
     // one rather than disabling itself
-    assert_eq!(response.status(), 400);
+    expect_status(response, 400, Some((&http, &ch_url))).await;
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert!(
         rows.is_empty(),
@@ -417,7 +527,7 @@ async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
 async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -449,10 +559,9 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 500);
     // the store's own error goes to the control-plane log, not the browser: no
     // insert url, no address, no clickhouse wording (#1747)
-    let body = response.text().await.unwrap();
+    let body = expect_status(response, 500, None).await;
     for leak in [closed.to_string().as_str(), "http", "clickhouse", "INSERT"] {
         assert!(!body.contains(leak), "the 500 body leaks {leak:?}: {body}");
     }
@@ -484,7 +593,7 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resumed.status(), 202);
+    expect_status(resumed, 202, Some((&http, &ch_url))).await;
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["event_id"], "ux-after-outage");
@@ -503,7 +612,7 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
 async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -532,7 +641,7 @@ async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
         .send()
         .await
         .unwrap();
-    assert_eq!(anonymous.status(), 401);
+    expect_status(anonymous, 401, None).await;
 
     let expired = http
         .post(format!("http://{addr}/api/v1/ui-events"))
@@ -541,7 +650,7 @@ async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
         .send()
         .await
         .unwrap();
-    assert_eq!(expired.status(), 401);
+    expect_status(expired, 401, None).await;
 
     assert!(
         rows_for_session(&http, &ch_url, &session).await.is_empty(),
@@ -579,7 +688,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
         .send()
         .await
         .unwrap();
-    assert_eq!(missing.status(), 404);
+    expect_status(missing, 404, None).await;
 
     let wrong_method = http
         .get(format!("http://{addr}/api/v1/ui-events"))
@@ -587,7 +696,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
         .send()
         .await
         .unwrap();
-    assert_eq!(wrong_method.status(), 405);
+    expect_status(wrong_method, 405, None).await;
 }
 
 /// An oversized batch is refused whole, and the client's own cap is what keeps
@@ -600,7 +709,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
 async fn a_batch_over_the_server_limit_is_refused_whole() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -630,7 +739,7 @@ async fn a_batch_over_the_server_limit_is_refused_whole() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 400);
+    expect_status(response, 400, Some((&http, &ch_url))).await;
     assert!(rows_for_session(&http, &ch_url, &session).await.is_empty());
 }
 
@@ -647,7 +756,7 @@ async fn a_batch_over_the_server_limit_is_refused_whole() {
 async fn switching_ui_events_off_answers_202_and_stores_nothing() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -673,8 +782,7 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
     };
 
     let off = set_ui_events(false).await.unwrap();
-    assert_eq!(off.status(), 200);
-    let off: Value = off.json().await.unwrap();
+    let off: Value = serde_json::from_str(&expect_status(off, 200, None).await).unwrap();
     assert_eq!(off["ui_events"], false);
 
     let session = session_id();
@@ -691,14 +799,14 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
     assert!(
         rows_for_session(&http, &ch_url, &session).await.is_empty(),
         "an opted-out deployment still stored UX events"
     );
 
     let on = set_ui_events(true).await.unwrap();
-    assert_eq!(on.status(), 200);
+    expect_status(on, 200, None).await;
     let response = http
         .post(format!("http://{addr}/api/v1/ui-events"))
         .bearer_auth(&token)
@@ -706,6 +814,6 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
     assert_eq!(rows_for_session(&http, &ch_url, &session).await.len(), 1);
 }

@@ -28,7 +28,10 @@ CONTROL="${CONTROL%/}"
 # shellcheck source=integration/dogfood/creds.env
 set -a; . "$DIR/creds.env"; set +a
 if [ -f "$TOKENS_FILE" ]; then
-  set -a; . "$TOKENS_FILE"; set +a
+  set -a
+  # shellcheck source=/dev/null
+  . "$TOKENS_FILE"
+  set +a
 fi
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }

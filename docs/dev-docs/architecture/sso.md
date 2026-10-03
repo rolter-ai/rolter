@@ -20,19 +20,30 @@ never mentions it.
 The dashboard asks `GET /api/v1/auth/methods` — the one unauthenticated
 endpoint in this area — and renders whichever of the three it is told. That
 endpoint returns provider names, slugs and start URLs only; all of which are
-already visible in the login URL, and none of which are secret.
+already visible in the login URL, and none of which are secret. It lists a
+provider only while it is enabled _and_ its org's `allow_sso` is on
+(`SsoRepo::list_sign_in_providers`; an org with no policy row counts as on),
+so a member is never offered a button that would be refused (#2339).
 
 ## The flow
 
 Authorization code with PKCE, no implicit grant, no client-side tokens:
 
-1. `GET /auth/sso/{slug}/start` mints a `state`, a `nonce` and a PKCE verifier,
-   stores them in `sso_login_states`, and redirects to the provider's
-   `authorization_endpoint`.
+1. `GET /auth/sso/{slug}/start` refuses a provider whose org has `allow_sso`
+   off with the same `sso_disabled` refusal the callback gives (a browser is
+   redirected to `/login?sso_error=sso_disabled&sso=<slug>`, any other caller
+   gets a `403` with `error.code` `sso_disabled`). A slug no enabled provider
+   answers to is refused the same way: a browser is redirected to
+   `/login?sso_error=unknown_provider` (no `sso=`, nothing vouches for the
+   slug), any other caller gets the `400`. Otherwise it mints a
+   `state`, a `nonce` and a PKCE verifier, stores them in `sso_login_states`,
+   and redirects to the provider's `authorization_endpoint`.
 2. The provider redirects back to `GET /auth/sso/{slug}/callback`.
 3. The callback **consumes** the state row (`DELETE … RETURNING`), so a replayed
    `code` + `state` pair finds nothing and is refused. States older than ten
-   minutes are treated as absent and swept.
+   minutes are refused, and a background sweep deletes the ones a login
+   abandoned at the provider leaves behind (#2414; see
+   [data-model.md](data-model.md#single-sign-on)).
 4. The code is exchanged at the `token_endpoint` with the PKCE verifier and the
    sealed client secret.
 5. The id token is verified against the provider's JWKS: signature by `kid`,
@@ -81,7 +92,8 @@ and receives the same body the JSON callback returns (`token`, `expires_at`,
 - **Single use.** The redemption is one `DELETE … RETURNING`, so two concurrent
   redemptions cannot both win.
 - **Sixty seconds.** The dashboard redeems it as soon as it loads. The clock is
-  the database's, and an expired row is swept on the next redemption.
+  the database's, and an expired row is deleted by the same background sweep
+  as login states.
 - **Hashed at rest.** `sso_exchange_codes` holds the SHA-256 of the code, so
   reading the table is not a sign-in. The code is 256 random bits, which is why
   the exchange needs no throttle of its own: the login throttle is keyed on an
@@ -107,6 +119,7 @@ in the URL.
 | `idp_error`               | the provider answered with an `error` (declined, policy)             |
 | `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
 | `sso_disabled`            | the org turned SSO off                                               |
+| `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
 | `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
 | `account_deactivated`     | the account is deactivated                                           |
 | `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
@@ -163,8 +176,10 @@ not silently gain a second, weaker credential.
 
 - `allow_password_login` — when false, members of this org cannot use the
   password form.
-- `allow_sso` — when false, callbacks for this org's providers are refused
-  without deleting the provider rows, so an IdP can be cut off in one request.
+- `allow_sso` — when false, this org's providers are left out of
+  `/api/v1/auth/methods` and refused at both `/start` and the callback (the
+  latter catches a login begun before the switch), without deleting the
+  provider rows, so an IdP can be cut off in one request.
   An account a provider created has no password, so while this is off those
   members cannot sign in at all, whatever `allow_password_login` says. The
   dashboard confirms the change when the org has an enabled provider (#2326).
@@ -253,7 +268,7 @@ the one place its query key and options are written, so they share one request.
 
 Unit and Postgres-gated integration tests drive a stub IdP in-process, which
 covers rolter's own logic. Interoperability is a separate question, so the
-[e2e harness](../../integration/e2e/README.md) runs the same flows against a
+[e2e harness](../../../integration/e2e/README.md) runs the same flows against a
 real Keycloak — genuine discovery document, real JWKS, real login form, real
 `/`-prefixed realm groups:
 

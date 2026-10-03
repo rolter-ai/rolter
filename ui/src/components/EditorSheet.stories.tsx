@@ -13,10 +13,12 @@ import {
   expectNoUxEvent,
   expectSheetClosed,
   expectUxEvent,
+  mountStrictly,
   recordUxEvents,
   sheet,
   uxEvents,
 } from "@/pages/story-harness";
+import { StrictModeHost } from "@/pages/story-strict";
 
 /**
  * The shell around a caller-owned draft.
@@ -473,8 +475,8 @@ export const ClosingWithoutSavingEmitsAnAbandon: Story = {
  * *unmounted* instead of closed. There is no closing edge to read here, and
  * reading only that edge is why those screens reported zero abandonments.
  */
-function Unmountable({ mounted: initial = true }: { mounted?: boolean }) {
-  const [draft, setDraft] = React.useState<string | null>(initial ? "openai-prod" : null);
+function Unmountable() {
+  const [draft, setDraft] = React.useState<string | null>("openai-prod");
   const [submitted, setSubmitted] = React.useState(false);
   return (
     <UxScreenProvider screen={SCREEN}>
@@ -542,19 +544,21 @@ export const UnmountingWithoutSavingEmitsOneAbandon: Story = {
  * the newly placed subtree and only doubles what sits below a `StrictMode`
  * element it passed on the way down, so a StrictMode placed in the same commit
  * as its children doubles nothing and this story would assert against a
- * lifecycle that never happened. It is also the app's own shape — the root is
- * strict long before anyone opens an editor.
+ * lifecycle that never happened. `StrictModeHost` is that arrangement, and
+ * `mountStrictly` fails the story unless the double-invoke was observed. It is
+ * also the app's own shape — the root is strict long before anyone opens an
+ * editor.
  */
 export const StrictModeDoesNotInventAnAbandon: Story = {
   render: () => (
-    <React.StrictMode>
-      <Unmountable mounted={false} />
-    </React.StrictMode>
+    <StrictModeHost>
+      <Unmountable />
+    </StrictModeHost>
   ),
   play: async () => {
-    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
-    // the submit is the proof that the double-invoke has been and gone: it
-    // cannot be pressed before the sheet has mounted, remounted and settled
+    await mountStrictly();
+    // the double-invoke is over once that returns; the submit anchors the
+    // absence below, since it cannot be pressed before the sheet has settled
     await userEvent.click(within(sheet()).getByRole("button", { name: "Save provider" }));
     await expectUxEvent("form_submit", TARGET);
     await waitFor(() => expect(screen().getByText("submitted")).toBeVisible());
@@ -569,12 +573,12 @@ export const StrictModeDoesNotInventAnAbandon: Story = {
  */
 export const StrictModeStillReportsARealAbandonOnce: Story = {
   render: () => (
-    <React.StrictMode>
-      <Unmountable mounted={false} />
-    </React.StrictMode>
+    <StrictModeHost>
+      <Unmountable />
+    </StrictModeHost>
   ),
   play: async () => {
-    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
+    await mountStrictly();
     await waitFor(() => expect(sheet()).toBeVisible());
     await userEvent.click(screen().getByRole("button", { name: "drop the editor" }));
     await expectSheetClosed();

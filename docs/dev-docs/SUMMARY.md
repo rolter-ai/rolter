@@ -18,7 +18,7 @@
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
-- [LDAP authentication](architecture/ldap.md)
+- [LDAP authentication (not shipped)](architecture/ldap.md)
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)
 - [Client disconnects](architecture/client-disconnects.md)
