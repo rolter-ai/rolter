@@ -128,6 +128,9 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a provider delete answers while something still references it
+const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
+
 /// the `409` revoking an org's last admin grant answers (#2311)
 const LAST_ORG_ADMIN_409: &str =
     "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
@@ -151,8 +154,8 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
-    /// when this operation can answer `409` with a stable `error.code`, what
-    /// that refusal means
+    /// when this operation can answer `409`, what that refusal means, naming
+    /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
 }
 
@@ -972,7 +975,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/providers/{id}",
                 "deleteProvider",
                 "Delete an upstream provider",
-            ),
+            )
+            .conflict(PROVIDER_IN_USE_409),
             Op::post(
                 "/api/v1/providers/{id}/test",
                 "testProvider",
@@ -2005,7 +2009,13 @@ fn operations() -> Vec<Op> {
                 "startSsoLogin",
                 "Begin an SSO login",
             )
-            .public(),
+            .public()
+            .see_other(
+                "the identity provider's authorization endpoint. While the provider's org has \
+                 single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
+                 dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
+                 other caller gets a `403` with `error.code` `sso_disabled`",
+            ),
             Op::get(
                 "/auth/sso/{slug}/callback",
                 "ssoCallback",
@@ -3288,11 +3298,17 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
-        // the SSO callback is the only other one (#2297)
+        // the SSO callback is another (#2297)
         let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
         assert!(sso["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
+        // the start of an sso login redirects too, and names the refusal it
+        // can end in (#2339)
+        let start = &doc["paths"]["/auth/sso/{slug}/start"]["get"]["responses"];
+        assert!(start["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_disabled")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3301,7 +3317,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 2);
+        assert_eq!(redirects, 3);
     }
 
     #[test]

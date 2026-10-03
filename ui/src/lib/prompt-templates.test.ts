@@ -24,33 +24,33 @@ const live: TemplateContent = {
 };
 
 describe("requiredVariables", () => {
-  test("a referenced variable with no default is required", () => {
+  test("a variable declared required is required", () => {
     expect(requiredVariables(live)).toEqual(["customer_name"]);
   });
 
-  // the gateway never reads the flag: an unreferenced variable is never
-  // resolved, so leaving it out refuses nothing
-  test("a required variable no decorator references is not", () => {
+  // the gateway reads the flag, not the decorators: a required variable is
+  // refused when missing even if nothing renders it (#2280)
+  test("a required variable no decorator references is still required", () => {
     expect(
       requiredVariables({
         variables: [{ name: "unused", required: true }],
         decorators: [system("no placeholders")],
       }),
-    ).toEqual([]);
+    ).toEqual(["unused"]);
   });
 
-  // and the other way round: optional with nothing to fall back on is
-  // refused as missing when a decorator needs it
-  test("an optional variable with no default is required once referenced", () => {
+  // and the other way round: optional with nothing to fall back on renders
+  // empty rather than refusing the request
+  test("an optional variable with no default is not required", () => {
     expect(
       requiredVariables({
         variables: [{ name: "ticket", required: false }],
         decorators: [system("Ticket {{ticket}}")],
       }),
-    ).toEqual(["ticket"]);
+    ).toEqual([]);
   });
 
-  test("an empty default is still a default", () => {
+  test("an optional variable with an empty default is not required", () => {
     expect(
       requiredVariables({
         variables: [{ name: "note", required: false, default: "" }],

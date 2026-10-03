@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 export interface LineChartSeries {
   name: string;
@@ -23,7 +24,10 @@ interface LineChartProps {
    * Accessible name for the graphic. `role="img"` promises a name, and axe
    * fails the story when there is none (#1181); a chart the caller does not
    * name is treated as decorative instead, because the heading and the figures
-   * beside it already carry the fact. Pass a translated string.
+   * beside it already carry the fact. Pass a translated string. A named chart
+   * also carries a visually hidden table of the values it plots, captioned with
+   * this label, since the graphic alone gives assistive technology a name and
+   * no numbers (#2005).
    */
   label?: string;
 }
@@ -54,6 +58,7 @@ export function LineChart({
   emptyState,
   label,
 }: LineChartProps) {
+  const { t } = useTranslation();
   const allValues = series.flatMap((s) => s.values).filter((v) => Number.isFinite(v));
   // nothing to plot: no series, no points, or nothing finite in them
   const hasData = allValues.length > 0 && labels.length > 0;
@@ -192,6 +197,35 @@ export function LineChart({
           ) : null,
         )}
       </svg>
+      {label ? (
+        <table className="sr-only">
+          <caption>{label}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{t("common.chartPoint")}</th>
+              {series.map((s) => (
+                <th key={s.name} scope="col">
+                  {s.name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {labels.map((point, i) => (
+              <tr key={`${point}-${i}`}>
+                <th scope="row">{point}</th>
+                {series.map((s) => {
+                  const value = s.values[i];
+                  const known = value !== undefined && Number.isFinite(value);
+                  return (
+                    <td key={s.name}>{known ? (formatValue ? formatValue(value) : value) : ""}</td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </div>
   );
 }

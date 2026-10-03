@@ -15,7 +15,9 @@ import {
   expectSkeleton,
   expectUxEvent,
   json,
+  openOptions,
   pending,
+  pickOption,
   recordUxEvents,
   recording,
   routes,
@@ -63,6 +65,18 @@ const NARROWED: CurrencySettings = {
 const withCurrency = (settings: CurrencySettings, prices = PRICES) =>
   routes([
     ["/api/v1/currency", () => settings],
+    [
+      "/api/v1/models",
+      () => [
+        { model: "gpt-4o", strategy: "round_robin", targets: 2, source: "db" },
+        { model: "claude-sonnet", strategy: "round_robin", targets: 1, source: "config" },
+      ],
+    ],
+    // seen in traffic: one that is also a route, one that is not
+    [
+      "/api/v1/analytics/by-model",
+      () => ({ data: [{ model: "gpt-4o" }, { model: "llama-3-70b" }] }),
+    ],
     ["/model-prices", () => prices],
   ]);
 
@@ -162,9 +176,8 @@ export const UnconvertibleCurrency: Story = {
 };
 
 /**
- * The currency field is a free-text input rather than a chooser on this screen:
- * the catalog is global and an operator may be pricing in a code before adding
- * its rate. The control plane rejects the write, which is where the guard is.
+ * A new price opens with empty rates (#2100): a zero default would turn an
+ * unpriced model into a free one, and drop it from every unpriced flag.
  */
 export const AddsAPrice: Story = {
   render: () => (
@@ -174,7 +187,123 @@ export const AddsAPrice: Story = {
   ),
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add price/i);
-    await expect(within(sheet()).getByLabelText("Currency")).toHaveValue("USD");
+    const form = within(sheet());
+    await expect(form.getByLabelText("Currency")).toHaveValue("USD");
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+    await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(null);
+  },
+};
+
+/** saving the untouched form is refused at each field, and sends nothing */
+let emptySubmit: Recorder;
+export const EmptySubmitIsRefused: Story = {
+  render: () => {
+    emptySubmit = recording(withCurrency(CONFIGURED));
+    return (
+      <Harness fetchStub={emptySubmit.stub}>
+        <Pricing />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const form = within(sheet());
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    await expect(form.getByLabelText("Model name")).toBeInvalid();
+    await expect(form.getByText("Choose a model to price.")).toBeInTheDocument();
+    const input = form.getByLabelText("Input price per Mtok");
+    await expect(input).toBeInvalid();
+    await expect(input).toHaveAccessibleDescription(/Enter a price/);
+    await expect(form.getByLabelText("Output price per Mtok")).toBeInvalid();
+    await expect(form.getByLabelText("Cached input price per Mtok (optional)")).toBeValid();
+    emptySubmit.expectNotSent("PUT", "/model-prices");
+
+    // zero is allowed, but has to be typed
+    await userEvent.type(input, "0");
+    await expect(input).toBeValid();
+  },
+};
+
+/** the model and currency are picked from what the screen knows, or typed */
+let validSubmit: Recorder;
+export const PicksAModelAndACurrency: Story = {
+  render: () => {
+    validSubmit = recording(
+      scoped(async (input, init) =>
+        init?.method === "PUT"
+          ? json(price("llama-3-70b", "EUR"))
+          : withCurrency(CONFIGURED)(input, init),
+      ),
+    );
+    return (
+      <Harness fetchStub={validSubmit.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const form = within(sheet());
+
+    // routes first, then models seen in traffic that are not already routes
+    const models = within(await openOptions(form.getByLabelText("Model name")));
+    await waitFor(() =>
+      expect(models.getAllByRole("option").map((o) => o.textContent)).toEqual([
+        "gpt-4o",
+        "claude-sonnet",
+        "llama-3-70b",
+      ]),
+    );
+    await userEvent.click(models.getByRole("option", { name: "llama-3-70b" }));
+    await expect(form.getByLabelText("Model name")).toHaveValue("llama-3-70b");
+
+    // the base currency and every code with a rate
+    const currencies = within(await openOptions(form.getByLabelText("Currency")));
+    await expect(currencies.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "USDbase currency",
+      "EUR",
+      "RUB",
+    ]);
+    await userEvent.click(currencies.getByRole("option", { name: "EUR" }));
+
+    await userEvent.type(form.getByLabelText("Input price per Mtok"), "0.59");
+    await userEvent.type(form.getByLabelText("Output price per Mtok"), "0");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    await expect(
+      await validSubmit.expectSentBody<Record<string, unknown>>("PUT", "/model-prices"),
+    ).toEqual({
+      model: "llama-3-70b",
+      input_per_mtok: "0.59",
+      output_per_mtok: "0",
+      currency: "EUR",
+    });
+  },
+};
+
+/** a model or a code the lists do not carry can still be typed, with a warning */
+export const AcceptsAFreeModelAndCode: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add price/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Model name"), "my-finetune");
+    await userEvent.click(await form.findByRole("option", { name: /Use “my-finetune”/ }));
+    await expect(form.getByLabelText("Model name")).toHaveValue("my-finetune");
+
+    await userEvent.type(form.getByLabelText("Currency"), "KZT");
+    await userEvent.click(await form.findByRole("option", { name: /Use “KZT”/ }));
+    await expect(form.getByLabelText("Currency")).toHaveValue("KZT");
+    await expect(form.getByLabelText("Currency")).toHaveAccessibleDescription(
+      /KZT, which has no conversion rate/,
+    );
   },
 };
 
@@ -202,7 +331,7 @@ export const AddRejectedByTheServer: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add price/i);
     const form = within(sheet());
-    await userEvent.type(form.getByLabelText("Model name"), "gpt-4o");
+    await pickOption(form.getByLabelText("Model name"), "gpt-4o");
     await userEvent.type(form.getByLabelText("Input price per Mtok"), "2.50");
     await userEvent.type(form.getByLabelText("Output price per Mtok"), "10.00");
     await userEvent.click(form.getByRole("button", { name: "Save" }));

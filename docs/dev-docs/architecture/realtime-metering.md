@@ -149,19 +149,66 @@ was opened with, and every tick of the meter, in the snapshot it loads for that
 tick, calls `handlers::recheck_session_access`. That is the upgrade's own
 sequence: the `snap.keys` lookup and `is_active` test `authenticate` does,
 `authorize_model`, `named_route_for` and `authorize_route`, so narrowing `models`
-or removing route access reaches a live session as well. The refusal wording
+or removing route access reaches a live session as well. One check is added that
+the upgrade does not need: the provider the session is pinned to must still be
+on the key's `providers` list (#2384). `authorize_route` only asks that _some_
+provider on the route is allowed, which is enough to pick one at the upgrade but
+not to keep a session that cannot move off the one it has. The refusal wording
 comes from `AccessDenial::message_and_code`, shared with the HTTP responses.
 
 A failure closes the session like a spent budget does: an `error` event, then a
 `1008` close and the upstream leg closed. The event code is `invalid_api_key`
 for a disabled, expired or deleted key (the HTTP 401 carries no code, so this is
 the OpenAI one), otherwise the denial's `model_not_allowed` /
-`route_not_allowed`, or `model_not_found` when the route was removed. The check
-runs before the budget read and shares its channel, so a revoked key is reported
+`route_not_allowed`, `provider_not_allowed` for a pinned provider taken off the
+key's list, or `model_not_found` when the route was removed. The check runs
+before the budget read and shares its channel, so a revoked key is reported
 instead of a spent budget. The bound is one flush interval, or the one-second
 tick when `usage_flush_secs = 0`, plus snapshot propagation. A session opened
-without a key (auth disabled) has nothing to re-check. The key's scope is fixed
-at the upgrade: moving a key to another org does not re-scope a live session.
+without a key (auth disabled) has nothing to re-check.
+
+The check runs on every tick rather than only when the snapshot changes: a key
+can expire with no config change at all, and a tick that finds nothing changed
+costs one map lookup and a handful of string comparisons, with no allocation.
+
+## A key moved or its limits changed mid-session
+
+The session's scope (org, team, project, key, business unit, customer) is
+resolved at the upgrade, and budgets, rate limits and the request log are all
+keyed by those ids. Limits themselves were never pinned: the meter reads
+`snap.budgets` and `snap.rate_limits` from the snapshot it loads for each flush,
+so a budget lowered, a `tpm` cap added or a price edited applies to a live
+session from its next tick, and a budget lowered below what the scope already
+spent closes the session there like any other spent budget. What used to be
+pinned was the scope those limits are looked up for (#2384).
+
+The tick that re-checks the key therefore also compares the key's scope in the
+snapshot with the session's (`realtime_metering::rescope`), and the choice is:
+
+- **Unchanged** — nearly every tick. Nothing happens.
+- **Moved within its organization** (another team, project, business unit or
+  customer) — the session is **re-scoped**. The meter swaps its `ScopeIds`, so
+  later turns are logged under the new ids and charged to the new chain's
+  budgets and `tpm` windows, and the budgets are read for the new chain on the
+  same tick: a key moved into a project whose budget is spent is closed there
+  with `insufficient_quota`. Turns already pending are flushed to the scope they
+  were served under first. The relay is told over a `watch` channel, and a
+  content policy, when the session has one, takes the new project and tenant so
+  the guardrail webhook and plugins see the scope the session bills to.
+- **Moved to another organization**, or **into a project whose `pre_upstream`
+  plugins differ** — the session is **closed**: an `error` event with code
+  `key_scope_changed` (status `403`), then a `1008` close, like a revoked key.
+  The content policy is built once at the upgrade for the org and plugin set of
+  the scope it was opened in, and cannot be rebuilt mid-session; another org is
+  also another tenant, with its own provider credentials and guardrail tenancy.
+  The plugin sets are compared by identity in the current snapshot, so a move
+  between two projects of an org whose plugins are all org-wide is followed.
+
+Re-scoping rather than closing is the default because a key moved between teams
+or projects is a routine reorganisation, and ending a live voice session over
+it would punish the user for an accounting change. What a re-scope does not do
+is re-admit the session: it took one `rpm` slot of the old chain when it opened
+and does not take one of the new chain, since the session was not opened again.
 
 ## Responses cut short
 
@@ -178,6 +225,7 @@ as its status:
 | `max_session_secs` or idle time | `408`             | `realtime session closed by <limit>`   |
 | a budget ran out                | `402`             | the budget refusal message             |
 | its key or access was revoked   | `401`/`403`/`404` | the refusal the upgrade would give     |
+| its key moved out of reach      | `403`             | why the session could not follow it    |
 | the gateway shut down           | `503`             | `gateway shutting down`                |
 
 This follows [Client disconnects](client-disconnects.md) and
@@ -240,13 +288,29 @@ at shutdown they used to be cancelled mid-batch (#1924).
 After the HTTP and realtime drains, `run()` cancels each sink's token. The task
 closes its receiver, which still yields everything already queued and then
 `None`, so the normal "senders gone" path flushes the remainder and exits. The
-three sinks drain concurrently and the process waits at most 5 seconds for all
+four sinks drain concurrently and the process waits at most 5 seconds for all
 of them. That bound is deliberately short: a healthy ClickHouse or Redis takes
 milliseconds, so it only ever expires when one is unreachable, and it must not
 push the HTTP drain, the 10 second realtime grace and this wait past the 30
 seconds an orchestrator usually allows before `SIGKILL`. When it expires, a
 warning is logged and whatever the sinks still held is lost. A `try_send` that
 races the close is counted as dropped, like any other full or stopped queue.
+The usage-recording workers check their stop token before the queue (a
+`biased` select), so the queue closes on a worker's first turn after the stop
+rather than once the backlog runs dry: the drain applies exactly what was
+queued when it began, and a record offered during it lands on
+`rolter_usage_records_dropped_total` (#2374).
+
+The background loops — the health prober, the upstream-metrics scraper, the
+status-page poller, the adaptive-routing telemetry task and the config watcher —
+are not stopped before the drain; they end with the runtime. Of these only the
+prober and the status-page poller emit health events, and one they emit after
+`drain_sinks` has closed the health-event queue is refused and counted on
+`rolter_health_events_dropped_total`, never written. That is deliberate: such an
+event describes an upstream at the moment of one probe or poll, the next
+gateway to start takes the same reading within an interval, and stopping the
+loops first would add a second cancellation path to each for rows nothing
+relies on. A few drops on that counter around a shutdown are expected.
 
 ## Failure modes
 
@@ -468,7 +532,7 @@ ends, an unpriced model is refused under `block`, a spent budget refuses a new
 session, a session is closed when its budget runs out, a budget spent by other
 traffic closes an idle session on the flush timer and, with
 `usage_flush_secs = 0`, on the one-second budget tick, usage is charged while
-the session continues, a session is closed when its key is disabled or its `models` are narrowed (and left alone when nothing changed), `rpm` applies per key rather than per process, and turn
+the session continues, a session is closed when its key is disabled, its `models` are narrowed or its pinned provider is taken off the key's list (and left alone when nothing changed, or when only a sibling key changed), a key moved to another project re-scopes its session's later turns while a key moved to another org closes it, a key moved into a project with a spent budget and a budget lowered below the spend both close the session, `rpm` applies per key rather than per process, and turn
 tokens fill the key's `tpm` window. The Redis-backed ones read
 `ROLTER_TEST_REDIS_URL` and skip, or skip their Redis assertions, without it.
 
@@ -494,4 +558,5 @@ or are rewritten), a match split across deltas is caught, a clean response is
 unchanged, and the guardrail webhook refuses a client event.
 
 The tracker's frame handling, including which deltas count as a first token, is
-unit-tested in `realtime_metering.rs` itself.
+unit-tested in `realtime_metering.rs` itself, as is the re-scope decision for
+each kind of move.

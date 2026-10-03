@@ -60,7 +60,7 @@ jobs:
   # fails the job when one was skipped
   rust-lint:
     name: rust lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
     # requests no longer cache for each other. a hung step fails the gate in
     # half an hour instead of GitHub's 360-minute default
@@ -225,7 +225,7 @@ jobs:
   # failure into a warning, never an error (ADR-0032, ADR-0034)
   rust-build:
     name: rust build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 3.5 min warm; the three builds can take 20 cold, and the semver
     # step carries a limit of its own
     timeout-minutes: 45
@@ -502,7 +502,7 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
     # a hung test fails the gate in half an hour instead of GitHub's 360-minute
@@ -604,7 +604,7 @@ jobs:
   # report, or it runs without the report ever vouching for it
   static:
     name: static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 90 s of work. without a timeout a hung step would hold the runner,
     # and every sibling's verdict with it, for GitHub's 360-minute default
     timeout-minutes: 20
@@ -741,6 +741,14 @@ jobs:
           # clone — use it there and fall back to the branch elsewhere (#1318)
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
+
+      # ── docs: dev-docs relative links resolve ─────────────────────────────
+      # mdBook only checks links inside the book, so a `../../` that should
+      # have been `../../../` pointed at nothing and nothing failed. see #1926.
+      - name: dev-docs links
+        id: dev-docs-links
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-dev-docs-links.py
 
       # ── spelling: docs / comments / identifiers ───────────────────────────
       # false positives are pinned in .github/config/typos.toml with an
@@ -964,6 +972,7 @@ jobs:
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_DEV_DOCS_LINKS: ${{ steps.dev-docs-links.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
           OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
@@ -1041,6 +1050,8 @@ jobs:
             "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
+          row "dev-docs links" "dev-docs links" "${OUTCOME_DEV_DOCS_LINKS}" yes \
+            "prek run dev-docs-links --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
           row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
           row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
@@ -1094,7 +1105,7 @@ jobs:
   # `bun install` does not hide a docs failure
   ui:
     name: ui, storybook, docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 5-6 min, most of it the chromium download and the storybook build.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
     # 360-minute default
@@ -1348,7 +1359,7 @@ jobs:
   # extended.yml's compose smoke: it needs no secrets and no compose stack
   image-smoke:
     name: image smoke (published ports)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1379,7 +1390,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
     # integration tests actually run under coverage (they self-skip when

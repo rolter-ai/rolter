@@ -34,6 +34,7 @@ import {
   expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -249,6 +250,24 @@ export const Loaded: Story = {
     await expect(await canvas.findByText(fmt.currency(0.0123, "USD"))).toBeInTheDocument();
     // a fetch that succeeded is the one state the toolbar may call live (#1984)
     await expect(canvas.getByText("Streaming · 2 requests")).toBeVisible();
+  },
+};
+
+// a row's chevron is a 15px glyph; its button must still be a 24px target (WCAG 2.5.8, #2573)
+export const RowChevronHasA24pxHitArea: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [chevron] = await canvas.findAllByRole("button", {
+      name: en.analytics.openDetails.replace("{{model}}", "gpt-4o"),
+    });
+    const box = chevron.getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
   },
 };
 
@@ -2617,3 +2636,17 @@ export const AKeyCanBePickedByName: Story = {
     await expect(picker).toHaveValue("");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const logsFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  ready: (canvas, locale) => canvas.findByText(formattersFor(locale).timeMs(ROWS[0].ts)),
+});
+// the feed's pager sat 47px past the edge at 320px, in English
+export const SmallPhone: Story = logsFit("small", "en");
+export const SmallPhoneInRussian: Story = logsFit("small", "ru");

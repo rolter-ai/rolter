@@ -158,7 +158,11 @@ fn config(upstream: SocketAddr, rules: Value) -> GatewayConfig {
 }
 
 async fn open(config: &GatewayConfig) -> Client {
-    let state = rolter_gateway::AppState::with_logging(config, None);
+    connect(rolter_gateway::AppState::with_logging(config, None)).await
+}
+
+/// A session through a gateway the caller keeps a handle on.
+async fn connect(state: rolter_gateway::AppState) -> Client {
     let gw = serve(rolter_gateway::build_router(
         state,
         "/metrics",
@@ -415,6 +419,50 @@ async fn the_guardrail_webhook_is_consulted_for_client_events() {
     let seen = upstream_saw(&received, 1).await;
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0]["item"]["content"][0]["text"], "hello");
+}
+
+/// A key moved to another project mid-session re-scopes the session, and the
+/// guardrail webhook is told the tenant the session now bills to (#2384).
+#[tokio::test]
+async fn the_guardrail_webhook_sees_the_project_a_session_was_moved_to() {
+    let (up, received) = upstream(vec!["fine"]).await;
+    let tenants: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let seen = tenants.clone();
+    let hook = serve(Router::new().route(
+        "/",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().push(body["tenant"].clone());
+                axum::Json(json!({"action": "allow"}))
+            }
+        }),
+    ))
+    .await;
+    let mut config = config(up, json!([]));
+    config.guardrail_webhook = serde_json::from_value(json!({
+        "enabled": true, "url": format!("http://{hook}/"), "failure_mode": "fail_closed"
+    }))
+    .unwrap();
+    // the one-second tick, so the move is noticed without waiting out a flush
+    config.realtime.usage_flush_secs = 0;
+    config.db_virtual_keys[0].project_id = "proj-a".into();
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let mut client = connect(state.clone()).await;
+
+    send(&mut client, item("before")).await;
+    upstream_saw(&received, 1).await;
+    config.db_virtual_keys[0].project_id = "proj-b".into();
+    state.reload(&config, 2);
+    tokio::time::sleep(Duration::from_millis(1400)).await;
+    send(&mut client, item("after")).await;
+    assert_eq!(upstream_saw(&received, 2).await.len(), 2);
+
+    let tenants = tenants.lock().clone();
+    assert_eq!(tenants.len(), 2, "{tenants:?}");
+    assert_eq!(tenants[0]["project"], "proj-a");
+    assert_eq!(tenants[1]["project"], "proj-b");
+    assert_eq!(tenants[1]["org"], "org-guardrails");
 }
 
 #[tokio::test]
