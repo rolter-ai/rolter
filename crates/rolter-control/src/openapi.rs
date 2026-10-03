@@ -154,6 +154,8 @@ struct Op {
     /// when this operation can answer `409` with a stable `error.code`, what
     /// that refusal means
     conflict: Option<&'static str>,
+    /// a ClickHouse-backed read, which can answer `502` or `504`
+    clickhouse: bool,
 }
 
 impl Op {
@@ -175,6 +177,7 @@ impl Op {
             public: false,
             see_other: None,
             conflict: None,
+            clickhouse: false,
         }
     }
 
@@ -229,6 +232,14 @@ impl Op {
         self
     }
 
+    /// Mark a read that goes to ClickHouse: it answers `502`
+    /// `analytics_query_failed`, or `504` `analytics_query_timeout` when the
+    /// query ran past the control plane's request timeout.
+    fn clickhouse_read(mut self) -> Self {
+        self.clickhouse = true;
+        self
+    }
+
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -273,6 +284,22 @@ impl Op {
             responses.insert(
                 "409".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if self.clickhouse {
+            responses.insert(
+                "502".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "ClickHouse did not answer the query (`analytics_query_failed`)"
+                }),
+            );
+            responses.insert(
+                "504".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "the query ran past the request timeout (`analytics_query_timeout`); narrow the time window"
+                }),
             );
         }
         responses.insert(
@@ -1169,6 +1196,7 @@ fn operations() -> Vec<Op> {
                 "getMyUsage",
                 "Spend and usage for the calling account's keys",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::patch(
                 "/api/v1/me/profile",
@@ -1642,18 +1670,21 @@ fn operations() -> Vec<Op> {
                 "listMcpLogs",
                 "Page MCP tool-call events",
             )
+            .clickhouse_read()
             .query(MCP_LOGS_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/summary",
                 "getMcpLogSummary",
                 "Aggregate MCP tool-call activity",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/mcp/logs/{event_id}",
                 "getMcpLogEvent",
                 "Read one MCP tool-call event",
-            ),
+            )
+            .clickhouse_read(),
         ],
     ));
 
@@ -1719,30 +1750,35 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsSummary",
                 "Spend, tokens and request counts over a window",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/analytics/timeseries",
                 "getAnalyticsTimeseries",
                 "Bucketed spend and usage over a window",
             )
+            .clickhouse_read()
             .query(TIMESERIES_QUERY),
             Op::get(
                 "/api/v1/analytics/by-model",
                 "getAnalyticsByModel",
                 "Spend and usage grouped by model",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
                 "Spend and usage grouped by business unit or customer",
             )
+            .clickhouse_read()
             .query(ATTRIBUTION_QUERY),
             Op::get(
                 "/api/v1/analytics/invocations",
                 "listInvocations",
                 "Page the request records the caller's roles reach, bodies withheld below the payload floor",
             )
+            .clickhouse_read()
             .query(INVOCATIONS_QUERY),
         ],
     ));
@@ -1755,18 +1791,21 @@ fn operations() -> Vec<Op> {
                 "getUptime",
                 "Per-provider uptime over a window",
             )
+            .clickhouse_read()
             .query(UPTIME_QUERY),
             Op::get(
                 "/api/v1/health/timeline",
                 "getHealthTimeline",
                 "Per-provider health transitions over a window",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
                 "/api/v1/health/mttr",
                 "getMttr",
                 "Mean time to recovery per provider",
             )
+            .clickhouse_read()
             .query(WINDOW_QUERY),
         ],
     ));
@@ -3604,5 +3643,17 @@ mod tests {
         assert!(routes.contains(&("/gw/{path}".into(), "any".into())));
         // `#[cfg(test)]` fixtures stand up their own routers; none of them count
         assert!(!routes.contains(&("/v1/ping".into(), "get".into())));
+    }
+
+    #[test]
+    fn clickhouse_reads_document_the_timeout_code() {
+        let doc = document();
+        let responses = &doc["paths"]["/api/v1/analytics/summary"]["get"]["responses"];
+        assert!(responses["504"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("analytics_query_timeout")));
+        assert!(responses["502"].is_object());
+        let mcp = &doc["paths"]["/api/v1/mcp/logs/{event_id}"]["get"]["responses"];
+        assert!(mcp["504"].is_object());
     }
 }

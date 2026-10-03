@@ -101,3 +101,17 @@ Errors use the shape every rolter surface renders:
   }
 }
 ```
+
+## Analytics read errors
+
+The reads that query ClickHouse — `/api/v1/analytics/*`, `/api/v1/health/*`,
+`/api/v1/mcp/logs*` and `/api/v1/me/usage` — answer two distinct errors when the
+query does not come back, so a client can tell a slow query from a broken
+database:
+
+| Status | `error.code`              | Meaning                                                                                   |
+| ------ | ------------------------- | ----------------------------------------------------------------------------------------- |
+| `502`  | `analytics_query_failed`  | ClickHouse refused, errored or was unreachable. The message never carries driver detail.  |
+| `504`  | `analytics_query_timeout` | The query ran past the control plane's 15s request timeout. Retry with a narrower window. |
+
+An unconfigured ClickHouse is still a `503`.

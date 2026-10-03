@@ -421,16 +421,38 @@ pub(crate) fn run(rows: anyhow::Result<Vec<Value>>) -> Response {
 /// host, and it used to be echoed verbatim into the dashboard (#1221). The
 /// operator gets a stable sentence plus a `code` the UI can key on; the detail
 /// goes to the control-plane log, which is where a query failure is debugged.
-pub(crate) fn query_failed(
-    what: &'static str,
-    err: &(impl std::fmt::Display + ?Sized),
-) -> Response {
+///
+/// A read that ran past the client's request timeout answers `504` with
+/// `analytics_query_timeout` instead, so the dashboard can say the query was
+/// slow (narrow the window) rather than that ClickHouse is down.
+pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response {
+    if is_timeout(err) {
+        tracing::warn!(error = %err, "{what}: timed out");
+        return (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({"error": {
+                "message": "analytics query timed out; narrow the time window",
+                "code": "analytics_query_timeout"
+            }})),
+        )
+            .into_response();
+    }
     tracing::warn!(error = %err, "{what}");
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": {"message": what, "code": "analytics_query_failed"}})),
     )
         .into_response()
+}
+
+/// Whether any error in the chain is a `reqwest` timeout, however much context
+/// a caller wrapped around it.
+fn is_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    })
 }
 
 /// Totals over the window: request count, tokens, cost, error count, avg latency.
@@ -898,7 +920,12 @@ mod tests {
         );
         // the route-level mapping carries no driver text either
         let response = run(Err(err));
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "analytics_query_timeout");
     }
 
     #[tokio::test]

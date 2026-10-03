@@ -3592,9 +3592,9 @@ mod tests {
         .await
         .expect("the request must not hang")
         .unwrap();
-        assert_eq!(response.status(), 502);
+        assert_eq!(response.status(), 504);
         let body = response.text().await.unwrap();
-        assert!(body.contains("analytics_query_failed"), "{body}");
+        assert!(body.contains("analytics_query_timeout"), "{body}");
         assert!(
             !body.contains(crate::analytics::testing::STALLED_USERINFO_SECRET)
                 && !body.contains("127.0.0.1"),
