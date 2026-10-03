@@ -240,7 +240,7 @@ export const RejectsAnOutOfRangeTemperature: Story = {
 // stored value must neither show an error nor block saving (#2645); turning
 // the defaults back on validates it again
 export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
-  render: () => <Harness fetchStub={async () => json({ ...BASE, default_temperature: 3 })} />,
+  render: () => <Harness fetchStub={answering({ ...BASE, default_temperature: 3 })} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByLabelText("Temperature")).toBeDisabled());
@@ -255,11 +255,7 @@ export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
   },
 };
 
-const switchingOff = recording(async (_input, init) =>
-  init?.method === "PUT"
-    ? json({ ...CONFIGURED, ...JSON.parse(String(init.body)) })
-    : json(CONFIGURED),
-);
+const switchingOff = recording(answering(CONFIGURED));
 
 // a bad draft left behind by switching the defaults off is not what gets
 // saved: the field cannot be reached any more, so the stored value is kept
