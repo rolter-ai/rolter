@@ -15,7 +15,13 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
-import { fetchAuditLogPage, fetchUsers, type AuditLogEntry } from "@/lib/api";
+import {
+  fetchAuditLogPage,
+  fetchDeploymentAuditLogPage,
+  fetchUsers,
+  type AuditLogEntry,
+} from "@/lib/api";
+import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -116,6 +122,12 @@ export default function AuditLog() {
   const scope = useScope();
   const [expanded, setExpanded] = React.useState<string | null>(null);
 
+  // the deployment-wide read is offered on an explicit yes only: an unanswered
+  // gate must not show a switch the control plane may then refuse
+  const canReadDeployment = useCan()("deployment_audit_log", "read") === true;
+  const [wide, setWide] = React.useState(false);
+  const deployment = canReadDeployment && wide;
+
   const [actor, setActor] = React.useState("");
   const [action, setAction] = React.useState("");
   const [target, setTarget] = React.useState("");
@@ -141,9 +153,17 @@ export default function AuditLog() {
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
-    queryKey: ["audit-log", scope.orgId, action, target, actorParam, rangeIdx, cursor],
-    queryFn: () =>
-      fetchAuditLogPage(scope.orgId as string, {
+    queryKey: [
+      "audit-log",
+      deployment ? "deployment" : scope.orgId,
+      action,
+      target,
+      actorParam,
+      rangeIdx,
+      cursor,
+    ],
+    queryFn: () => {
+      const query = {
         limit: PAGE_SIZE,
         cursor,
         action: action || undefined,
@@ -151,8 +171,12 @@ export default function AuditLog() {
         actor: actorParam,
         from,
         include_total: !cursor,
-      }),
-    enabled: !!scope.orgId,
+      };
+      return deployment
+        ? fetchDeploymentAuditLogPage(query)
+        : fetchAuditLogPage(scope.orgId as string, query);
+    },
+    enabled: deployment || !!scope.orgId,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -163,13 +187,15 @@ export default function AuditLog() {
 
   useErrorState(!!page.error, "audit-log");
 
+  const [total, setTotal] = React.useState<number | null>(null);
+
   // reset to the first page whenever the filter set changes
   React.useEffect(() => {
     setCursors([]);
-  }, [action, target, actorParam, rangeIdx]);
+    setTotal(null);
+  }, [action, target, actorParam, rangeIdx, deployment]);
 
   const rows = page.data?.items ?? [];
-  const [total, setTotal] = React.useState<number | null>(null);
   const filtersActive = !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
   const clearFilters = () => {
     setActor("");
@@ -192,9 +218,31 @@ export default function AuditLog() {
       key: "actor_user_id",
       header: t("pages.auditLog.columns.actor"),
       mono: true,
-      render: (v) =>
-        v ? <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span> : "system",
+      render: (v, row) =>
+        v ? (
+          <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span>
+        ) : deployment && row.action.startsWith("auth.") ? (
+          // a sign-in attempt against an address nobody registered has no actor
+          <Badge tone="outline">{t("pages.auditLog.unknownAddress")}</Badge>
+        ) : (
+          "system"
+        ),
     },
+    ...(deployment
+      ? [
+          {
+            key: "org_id",
+            header: t("pages.auditLog.columns.org"),
+            mono: true,
+            render: (v: unknown) =>
+              v ? (
+                <span title={String(v)}>{String(v).slice(0, 8)}</span>
+              ) : (
+                <Badge tone="outline">{t("pages.auditLog.noOrg")}</Badge>
+              ),
+          },
+        ]
+      : []),
     {
       key: "action",
       header: t("pages.auditLog.columns.action"),
@@ -260,7 +308,7 @@ export default function AuditLog() {
           onRetry={() => page.refetch()}
         />
       )}
-      {!scope.isLoading && !scope.errorKey && !scope.orgId && (
+      {!deployment && !scope.isLoading && !scope.errorKey && !scope.orgId && (
         <EmptyState
           uxTarget="audit-log-no-org"
           icon={<Building2 />}
@@ -269,10 +317,21 @@ export default function AuditLog() {
         />
       )}
 
-      {scope.orgId && (
+      {(deployment || scope.orgId) && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            {users.data && users.data.length > 0 ? (
+            {canReadDeployment && (
+              <Segmented
+                value={wide ? "deployment" : "org"}
+                options={[
+                  { value: "org", label: t("pages.auditLog.scopes.org") },
+                  { value: "deployment", label: t("pages.auditLog.scopes.deployment") },
+                ]}
+                onChange={(val) => setWide(val === "deployment")}
+                ariaLabel={t("pages.auditLog.scopeAria")}
+              />
+            )}
+            {!deployment && users.data && users.data.length > 0 ? (
               <Combobox
                 className="w-[280px]"
                 aria-label={t("pages.auditLog.actorFilterAria")}

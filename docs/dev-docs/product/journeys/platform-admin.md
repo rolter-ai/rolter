@@ -81,14 +81,14 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-a — no identity provider: invitations and passwords
 
-| #     | step                                       | where                                                                                   | expect                                                                                     | status          |
-| ----- | ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------- |
-| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations`            | a one-time link, valid for days, naming the role and scope it grants                       | verified        |
-| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                                | the invitee receives it                                                                    | partial — #1828 |
-| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                                    | an account with exactly the invited role; the link is dead once used                       | verified        |
-| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)                     | members without a factor are refused a session until they enrol (the confirmation says so) | partial — #1852 |
-| A1a.5 | withdraw a link sent to the wrong address  | **Governance → Users → Pending invitations**, the × · `DELETE /api/v1/invitations/{id}` | the link stops working at once; the address can be invited again                           | works — #2054   |
-| A1a.6 | block a leaver, or remove their account    | **Governance → Users**, deactivate or **Edit → Delete** · `/api/v1/users/{id}`          | a confirmation names the account; sign-in is blocked and sessions end                      | works — #2055   |
+| #     | step                                       | where                                                                                   | expect                                                                                     | status                                                              |
+| ----- | ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations`            | a one-time link, valid for days, naming the role and scope it grants                       | verified                                                            |
+| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                                | the invitee receives it                                                                    | partial — #1828                                                     |
+| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                                    | an account with exactly the invited role; the link is dead once used                       | verified                                                            |
+| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)                     | members without a factor are refused a session until they enrol (the confirmation says so) | verified (#1852; the viewer gets an enrolment token, not a session) |
+| A1a.5 | withdraw a link sent to the wrong address  | **Governance → Users → Pending invitations**, the × · `DELETE /api/v1/invitations/{id}` | the link stops working at once; the address can be invited again                           | works — #2054                                                       |
+| A1a.6 | block a leaver, or remove their account    | **Governance → Users**, deactivate or **Edit → Delete** · `/api/v1/users/{id}`          | a confirmation names the account; sign-in is blocked and sessions end                      | works — #2055                                                       |
 
 ### A1-b — an OIDC identity provider (Okta, Entra ID, Google, Keycloak)
 
@@ -110,13 +110,13 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-d — provisioning from the IdP (SCIM), with any of the above
 
-| #     | step                                   | where                                            | expect                                                                | status      |
-| ----- | -------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------- | ----------- |
-| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | verified    |
-| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | verified    |
-| A1d.3 | map IdP groups to teams and roles      | **Group mappings** on the same screen            | group membership in the IdP becomes a role in rolter on the next sync | works       |
-| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | verified    |
-| A1d.5 | their personal keys stop working too   | the gateway                                      | a key the leaver minted is refused                                    | bug — #1841 |
+| #     | step                                   | where                                            | expect                                                                | status                                                  |
+| ----- | -------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------- |
+| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | verified                                                |
+| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | verified                                                |
+| A1d.3 | map IdP groups to teams and roles      | **Group mappings** on the same screen            | group membership in the IdP becomes a role in rolter on the next sync | works                                                   |
+| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | verified                                                |
+| A1d.5 | their personal keys stop working too   | the gateway                                      | a key the leaver minted is refused                                    | works — #1841 fixed (T6.2 walks the membership variant) |
 
 ### A1-e — custom roles and access profiles (optional)
 
@@ -148,13 +148,13 @@ many places, and does traffic need spreading?**
 
 ### A3-a — one provider, one route
 
-| #     | step                                      | where                                                                                                               | expect                                                                                      | status                                                 |
-| ----- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| A3.1  | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers`                                 | the key is sealed with the KEK and never shown again                                        | verified                                               |
-| A3.2  | check it before anything depends on it    | **Test connection**, offered in the sheet right after **Create provider** (#2142)                                   | a model list from the upstream, or the reason there is none                                 | verified                                               |
-| A3.3  | add a route: public name → provider/model | **Model Catalog → + Add model** or **Routing Rules → + Add route**, one sheet · `POST /api/v1/projects/{id}/routes` | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)                                        |
-| A3.3a | check the upstream name before saving     | **Model Catalog → + Add model**, the sheet                                                                          | the provider's catalogue lists the upstream model, or the reason it could not tell          | gap — #2008 (UI: #2009)                                |
-| A3.4  | try it                                    | **Playground**, the new model                                                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | bug — #1853; #1847 for a superadmin with no membership |
+| #     | step                                      | where                                                                                                               | expect                                                                                      | status                  |
+| ----- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------- |
+| A3.1  | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers`                                 | the key is sealed with the KEK and never shown again                                        | verified                |
+| A3.2  | check it before anything depends on it    | **Test connection**, offered in the sheet right after **Create provider** (#2142)                                   | a model list from the upstream, or the reason there is none                                 | verified                |
+| A3.3  | add a route: public name → provider/model | **Model Catalog → + Add model** or **Routing Rules → + Add route**, one sheet · `POST /api/v1/projects/{id}/routes` | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)         |
+| A3.3a | check the upstream name before saving     | **Model Catalog → + Add model**, the sheet                                                                          | the provider's catalogue lists the upstream model, or the reason it could not tell          | gap — #2008 (UI: #2009) |
+| A3.4  | try it                                    | **Playground**, the new model                                                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | verified (#1853, #1847) |
 
 ### A3-b — the same model from two providers, with failover
 
@@ -201,14 +201,14 @@ many places, and does traffic need spreading?**
 
 ## A5 — spend and budgets
 
-| #    | step                                                    | where                                                                | expect                                                         | status                      |
-| ---- | ------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
-| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`   | `cost_usd` on every row; nothing counts as free by accident    | works                       |
-| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)         | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
-| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)     | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
-| A5.4 | cap throughput                                          | **Add rate limit**                                                   | HTTP 429 with `Retry-After`                                    | verified                    |
-| A5.5 | hear about it before the cap                            | —                                                                    | a warning at a threshold                                       | gap — #337                  |
-| A5.6 | alert on spend velocity                                 | **Alerting → Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
+| #    | step                                                    | where                                                                      | expect                                                         | status                      |
+| ---- | ------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
+| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`         | `cost_usd` on every row; nothing counts as free by accident    | works                       |
+| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)               | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
+| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)           | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
+| A5.4 | cap throughput                                          | **Add rate limit**                                                         | HTTP 429 with `Retry-After`                                    | verified                    |
+| A5.5 | hear about it before the cap                            | —                                                                          | a warning at a threshold                                       | gap — #337                  |
+| A5.6 | alert on spend velocity                                 | **Alerting → Alert Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
 
 ## A6 and A7 — run it, and keep it safe
 

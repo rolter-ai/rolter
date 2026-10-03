@@ -211,14 +211,25 @@ export function ListCell(props: React.HTMLAttributes<HTMLDivElement>) {
   return <div role="cell" {...props} />;
 }
 
+// `STICKY_ACTIONS` pins the buttons column to the frame's right edge below
+// `md`, where the table scrolls sideways: a row's edit button sat at x=663 on a
+// 375px phone, a scroll away from being pressed (#2004). the header takes the
+// same class so its band stays unbroken, and the cell is content-sized so the
+// opaque ground covers what it holds and nothing more
+export const STICKY_ACTIONS = {
+  header:
+    "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-[color:var(--surface-subtle)]",
+  cell: "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-background max-md:pl-2",
+};
+
 // the header over a row's buttons shows no text, but a column header with no
 // name is announced as an empty column (axe `empty-table-header`), so it says
 // what the column holds to a screen reader. a table whose buttons take more
 // than one column passes `label` so each column has its own name
-export function ListActionsHeader({ label }: { label?: string }) {
+export function ListActionsHeader({ label, className }: { label?: string; className?: string }) {
   const { t } = useTranslation();
   return (
-    <ListHeaderCell>
+    <ListHeaderCell className={className}>
       <span className="sr-only">{label ?? t("common.rowActions")}</span>
     </ListHeaderCell>
   );

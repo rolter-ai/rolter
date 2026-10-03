@@ -155,6 +155,67 @@ export function CapabilityProvider({ children }: { children: React.ReactNode }) 
   return <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>;
 }
 
+/** The chain a row is gated at, when that is not the chain the page is scoped to. */
+export interface RowScope {
+  /** the row's own project, or `null` for a row above one */
+  projectId: string | null;
+  /** the team that owns `projectId`, or the team itself for a team row; the guard walks org + team + project */
+  teamId?: string | null;
+}
+
+/**
+ * Answer every gated control below it for a row's own scope (#2522).
+ *
+ * `provider` and `provider_group` are project rows that may also be org-wide,
+ * so the page's answer — asked at whatever scope the switcher holds — says
+ * "yes" to a project admin on a row `crud.rs` checks at the org. The page-level
+ * gate cannot tell the two rows apart; this can. An org-wide row (`projectId`
+ * null) is asked at the org alone, where a project membership reaches nothing,
+ * a team row (#2529) at org + team, and a project row at its own org + team +
+ * project chain.
+ *
+ * It replaces the context rather than adding a prop to every control, so
+ * `GatedButton`, `DeleteIconButton` and the rest gate on the row's scope
+ * without learning about scopes. The query key is the provider's, so a row at
+ * the page's own chain is a cache hit, and rows sharing a project share one
+ * request. Without a provider above (a story, a test) it renders as
+ * the page does, which is un-gated.
+ */
+export function RowCapabilityScope({
+  at,
+  children,
+}: {
+  at: RowScope | undefined;
+  children: React.ReactNode;
+}) {
+  const parent = useCapabilities();
+  const scope = useScope();
+  const chain = {
+    orgId: scope.orgId,
+    teamId: at?.teamId ?? undefined,
+    projectId: at?.projectId ?? undefined,
+  };
+  const effective = useQuery({
+    queryKey: ["rbac", "effective", chain.orgId, chain.teamId, chain.projectId],
+    queryFn: () => fetchEffective(chain),
+    enabled: !!at && !!parent && !scope.isLoading && !!scope.orgId,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const value = React.useMemo<CapabilityValue | null>(
+    () =>
+      parent && at
+        ? {
+            effective: effective.data ?? null,
+            matrix: parent.matrix,
+            resolved: !!scope.orgId && !effective.isPending,
+          }
+        : parent,
+    [parent, at, effective.data, effective.isPending, scope.orgId],
+  );
+  return <CapabilityContext.Provider value={value}>{children}</CapabilityContext.Provider>;
+}
+
 /** The raw context, for the components that need more than a yes/no. */
 export function useCapabilities(): CapabilityValue | null {
   return React.useContext(CapabilityContext);

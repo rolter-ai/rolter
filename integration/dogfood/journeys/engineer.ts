@@ -28,7 +28,7 @@ await step("E2.1", "mint a personal key: dashboard, then API", async () => {
   const uiBlocked = await until(async () => {
     const text = await page.locator("main").innerText();
     if (/Select a project in the sidebar to mint a virtual key/i.test(text)) return "blocked";
-    const gen = page.getByRole("button", { name: "Generate virtual key" });
+    const gen = page.getByRole("button", { name: "Generate virtual key" }).first();
     if (await gen.count()) return (await gen.isDisabled()) ? "blocked" : "open";
     return null;
   }, 10000).then((v) => v === "blocked");
@@ -85,8 +85,11 @@ await step("E3.1", "Playground answers without any key handling", async () => {
   const box = page.getByRole("textbox").last();
   await box.fill("say hi");
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(3000);
-  const after = await page.locator("main").innerText();
+  // the default model can be a slow target (deepseek-r1 first-token is seconds): wait for the reply, not a fixed beat
+  const after = await until(async () => {
+    const a = await page.locator("main").innerText();
+    return a.length > text.length && !/ASSISTANT\s*\n\s*…/i.test(a) ? a : null;
+  }, 25000).catch(async () => await page.locator("main").innerText());
   return after.length > text.length ? ["pass", "an answer streamed in"] : ["fail", "no answer appeared"];
 }, page);
 
@@ -134,10 +137,14 @@ await step("E5.2", "find the failing request in LLM Logs, bodies included", asyn
     return r.json?.data?.find((x: any) => x.request_id === rid) ?? null;
   }, 30000);
   const body = found.request_payload ?? "";
-  const byId = /request_id|request id/i.test(await (async () => { await goto(page, "/logs"); return await page.locator("main").innerText(); })());
-  const note = `failing call → ${fail.status}; its row found by key filter (${found.status}, ${found.provider}, ${found.latency_ms} ms); bodies ${body ? "readable" : "withheld"}`;
+  // paste the id the client received into LLM Logs' lookup box: the request's drawer opens
+  await goto(page, "/logs");
+  await page.getByPlaceholder("Request ID or trace ID").fill(rid);
+  await page.getByRole("button", { name: "Find", exact: true }).click();
+  const byId = await page.getByRole("complementary", { name: "Details" }).waitFor({ timeout: 10000 }).then(() => true, () => false);
+  const note = `failing call → ${fail.status}; its row found by key filter (${found.status}, ${found.provider}, ${found.latency_ms} ms) and by the x-request-id the client got; bodies ${body ? "readable" : "withheld"}`;
   if (!body) return ["fail", note];
-  return byId ? ["pass", note] : ["partial", `${note}; no lookup by the x-request-id the client got (#1849)`];
+  return byId ? ["pass", note] : ["partial", `${note.replace(" and by the x-request-id the client got", "")}; pasting the x-request-id the client got into the LLM Logs lookup opened nothing (#1849, #1861)`];
 }, page);
 
 await step("E5.4", "is the upstream sick? provider health for a member", async () => {

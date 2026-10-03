@@ -15,6 +15,7 @@ import {
   json,
   recording,
   scopeResponse,
+  StaleSession,
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
@@ -94,9 +95,14 @@ const minted = (key = "sk-rolter-minted") => ({
   key,
 });
 
-/** Every `Authorization` the screen sent to the gateway, in order. */
+/**
+ * What the screen sent to the gateway, in order: the virtual key from
+ * `x-rolter-gateway-key` and, beside it, the dashboard session from
+ * `Authorization`, which the control plane's `/gw` proxy requires (#2486).
+ */
 interface Sent {
   keys: string[];
+  sessions?: (string | null)[];
 }
 
 /** The body of a chat completion request, as the gateway reads it. */
@@ -226,9 +232,11 @@ function deployment(
     if (url.includes(MINT_PATH)) return mint();
     if (path === "/api/v1/config/problems") return problems();
     if (url.includes("/gw/v1/models")) {
-      const auth = new Headers(init?.headers).get("Authorization");
-      if (!auth) return json({ error: { message: "missing key" } }, 401);
-      sent.keys.push(auth.replace("Bearer ", ""));
+      const headers = new Headers(init?.headers);
+      const key = headers.get("x-rolter-gateway-key");
+      if (!key) return json({ error: { message: "missing key" } }, 401);
+      sent.keys.push(key);
+      sent.sessions?.push(headers.get("Authorization"));
       return gateway(gatewayCalls++);
     }
     if (url.includes(CHAT_PATH)) {
@@ -681,6 +689,24 @@ export const KeylessGatewayNeedsNoKey: Story = {
     // the list is the gateway's own, so there is no fallback to explain
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
     await expect(canvas.queryByText(/Pick a project to mint a key against/)).toBeNull();
+  },
+};
+
+/**
+ * The /gw proxy refuses a call without the dashboard session, and the gateway
+ * only knows the virtual key, so the screen sends both on separate headers
+ * (#2486): the key is never `Authorization`, and a signed-in tab's token is.
+ */
+const withSession = { keys: [] as string[], sessions: [] as (string | null)[] };
+export const SendsTheSessionBesideTheKey: Story = {
+  render: () => (
+    <StaleSession token="session-abc">
+      <Screen fetchStub={deployment(async () => json(minted()), withSession)} />
+    </StaleSession>
+  ),
+  play: async () => {
+    await waitFor(() => expect(withSession.keys).toContain("sk-rolter-minted"));
+    await expect(withSession.sessions.every((a) => a === "Bearer session-abc")).toBe(true);
   },
 };
 
@@ -1643,6 +1669,11 @@ export const Mobile: Story = {
     await waitFor(() => expect(canvasElement.querySelector('[role="combobox"]')).toBeTruthy());
     void canvas;
     await expectNoHorizontalOverflow();
+    // the strip scrolls and hides its scrollbar, so it says there is more: the
+    // last tab ("Realtime") was clipped with nothing to show it (#2004)
+    const strip = canvas.getByRole("tablist");
+    await expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+    await expect(strip).toHaveAttribute("data-more-end", "true");
   },
 };
 

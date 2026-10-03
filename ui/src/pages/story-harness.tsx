@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
+import { MemoryRouter, useInRouterContext } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -102,9 +103,12 @@ export function routes(table: [string, () => unknown][], status = 200): FetchStu
 export function Harness({
   fetchStub,
   role,
+  route,
   children,
 }: {
   fetchStub: FetchStub;
+  /** the router's starting path, when a story asserts where a link went */
+  route?: string;
   /**
    * Answer `GET /api/v1/rbac/effective` as this role and mount the screen
    * under a `CapabilityProvider` (#1183).
@@ -113,7 +117,7 @@ export function Harness({
    * un-gated case every other story asserts, because `can()` with no provider
    * above it says "unknown" and every control renders enabled.
    */
-  role?: StoryRole;
+  role?: StoryRole | RoleAt;
   children: React.ReactNode;
 }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
@@ -141,7 +145,15 @@ export function Harness({
   ) : (
     children
   );
-  return <QueryClientProvider client={client}>{body}</QueryClientProvider>;
+  // screens link with the router's Link, which throws outside one; a story that
+  // brings its own router keeps it
+  const inRouter = useInRouterContext();
+  const routed = inRouter ? (
+    body
+  ) : (
+    <MemoryRouter initialEntries={route ? [route] : undefined}>{body}</MemoryRouter>
+  );
+  return <QueryClientProvider client={client}>{routed}</QueryClientProvider>;
 }
 
 /**
@@ -190,6 +202,24 @@ export type StoryRole = Role | "superadmin";
  * generated copy of `CAPABILITIES` instead, and a test fails the build when
  * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
  */
+/**
+ * A caller whose role depends on the chain `rbac/effective` is asked at
+ * (#2522): the stub reads `org_id`, `team_id` and `project_id` off the query
+ * string, the way the control plane does, and answers for the role this
+ * returns. It is how a story plays a project admin, who holds nothing at the
+ * org alone.
+ */
+export type RoleAt = (chain: {
+  orgId: string | null;
+  teamId: string | null;
+  projectId: string | null;
+}) => StoryRole;
+
+/** An admin of `projectId` and a viewer anywhere that membership does not reach. */
+export function adminOfProject(projectId: string): RoleAt {
+  return (chain) => (chain.projectId === projectId ? "admin" : "viewer");
+}
+
 export function effectiveFor(role: StoryRole): RbacEffective {
   return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
 }
@@ -198,10 +228,22 @@ export function effectiveFor(role: StoryRole): RbacEffective {
 export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
-export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub {
+export function withCapabilities(role: StoryRole | RoleAt, handler: FetchStub): FetchStub {
   return async (input, init) => {
-    const path = new URL(String(input), "http://localhost").pathname;
-    if (path === "/api/v1/rbac/effective") return json(effectiveFor(role));
+    const url = new URL(String(input), "http://localhost");
+    const path = url.pathname;
+    if (path === "/api/v1/rbac/effective") {
+      const q = url.searchParams;
+      const as =
+        typeof role === "function"
+          ? role({
+              orgId: q.get("org_id"),
+              teamId: q.get("team_id"),
+              projectId: q.get("project_id"),
+            })
+          : role;
+      return json(effectiveFor(as));
+    }
     if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
     return handler(input, init);
   };

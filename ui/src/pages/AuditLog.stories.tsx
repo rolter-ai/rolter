@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { MemoryRouter } from "react-router";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AuditLog from "./AuditLog";
 import {
   Harness,
   expectEmptyState,
+  expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
@@ -14,6 +15,7 @@ import {
   pending,
   routes,
   scoped,
+  withCapabilities,
   type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry } from "@/lib/api";
@@ -191,5 +193,71 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to the audit log/);
     await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
+  },
+};
+
+// the deployment-wide read (#2398): a superadmin switches scope and sees the
+// rows no per-org view carries, marked rather than left blank
+const wideEntries = [
+  entry({ id: "w-1", org_id: null, action: "auth.login", target_type: null }),
+  entry({
+    id: "w-2",
+    org_id: null,
+    actor_user_id: null,
+    action: "auth.login_failed",
+    target_type: null,
+  }),
+];
+
+const wideStub = (calls: { urls: string[] }) =>
+  withCapabilities(
+    "superadmin",
+    scoped(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/audit-log")) {
+        calls.urls.push(url);
+        return json(page(wideEntries));
+      }
+      if (url.includes("/audit-log")) return json(page([entry()]));
+      return json([]);
+    }),
+  );
+
+export const DeploymentWideAsSuperadmin: Story = {
+  render: () => {
+    const calls = { urls: [] as string[] };
+    return (
+      <MemoryRouter>
+        <Harness fetchStub={wideStub(calls)} role="superadmin">
+          <AuditLog />
+        </Harness>
+      </MemoryRouter>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await waitFor(() => expect(canvas.getByText("auth.login_failed")).toBeVisible());
+    await expect(canvas.getAllByText("No org")).toHaveLength(2);
+    await expect(canvas.getByText("Unknown address")).toBeVisible();
+    await expect(canvas.getByRole("columnheader", { name: "Org" })).toBeVisible();
+  },
+};
+
+export const DeploymentWideIsHiddenFromAnAdmin: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={loaded} role="admin">
+        <AuditLog />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    await expectGateAnswered();
+    await expect(canvas.queryByRole("radiogroup", { name: "Audit log scope" })).toBeNull();
   },
 };

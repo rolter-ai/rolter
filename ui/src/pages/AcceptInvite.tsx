@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
+import { describeError, type ErrorCopy } from "@/lib/error-copy";
 
 // the invitee may have no account yet, so this screen renders outside the
 // signed-in shell. the token in the url is the only credential it has, and it
@@ -23,7 +24,7 @@ export default function AcceptInvite({ token }: { token: string }) {
   const navigate = useNavigate();
   const { signIn } = useAuth();
   const [invite, setInvite] = useState<InvitationPreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorCopy | null>(null);
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [pending, setPending] = useState(false);
@@ -44,7 +45,7 @@ export default function AcceptInvite({ token }: { token: string }) {
     let live = true;
     void previewInvitation(token)
       .then((p) => live && setInvite(p))
-      .catch(() => live && setError(t("pages.acceptInvite.invalidLink")));
+      .catch(() => live && setError({ message: t("pages.acceptInvite.invalidLink") }));
     return () => {
       live = false;
     };
@@ -69,7 +70,7 @@ export default function AcceptInvite({ token }: { token: string }) {
       // against a token that had just been consumed
       navigate("/dashboard", { replace: true });
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setPending(false);
     }
@@ -92,7 +93,7 @@ export default function AcceptInvite({ token }: { token: string }) {
 
           {invite == null ? (
             <p className="text-sm text-muted-foreground">
-              {error ?? t("pages.acceptInvite.checking")}
+              {error?.message ?? t("pages.acceptInvite.checking")}
             </p>
           ) : (
             <>
@@ -180,7 +181,12 @@ export default function AcceptInvite({ token }: { token: string }) {
                   )}
                   {error != null && (
                     <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                      {error}
+                      {error.message}
+                      {error.detail && (
+                        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+                          {error.detail}
+                        </span>
+                      )}
                     </p>
                   )}
                   <Button
@@ -195,7 +201,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                             ? "pages.acceptInvite.accepting"
                             : "pages.acceptInvite.creating",
                         )}{" "}
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
                       </>
                     ) : (
                       <>

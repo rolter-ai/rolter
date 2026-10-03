@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 // one confirmation for every destructive action (#1179).
@@ -98,6 +99,7 @@ export function ConfirmDialog({
   // or a decision.
   const ux = useFormTelemetry(name, open);
 
+  const hasChildren = React.Children.toArray(children).length > 0;
   const busy = pending ?? false;
   const runsRequest = pending !== undefined;
 
@@ -159,7 +161,15 @@ export function ConfirmDialog({
       {/* the control plane's own message, never a gloss on it — see
           docs/dev-docs/development/error-states.md */}
       {error !== undefined && error !== null && (
-        <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+        <p
+          role="alert"
+          className={cn(
+            "text-xs text-[color:var(--status-danger-text)]",
+            // the gap the children keep between themselves (gap-2.5), so the
+            // message is not flush against the last of them (#2359)
+            hasChildren && "mt-2.5",
+          )}
+        >
           {error instanceof Error ? error.message : String(error)}
         </p>
       )}
@@ -175,7 +185,7 @@ export function ConfirmDialog({
           disabled={busy || confirmDisabled}
           onClick={confirm}
         >
-          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {busy && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {confirmLabel}
         </Button>
       </DialogFooter>

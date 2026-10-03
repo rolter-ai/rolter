@@ -1,5 +1,5 @@
 import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { LocalePicker } from "@/components/LocalePicker";
@@ -11,6 +11,7 @@ import { Field } from "@/components/ui/field";
 import {
   ApiError,
   challengeDeadline,
+  exchangeSsoCode,
   getAuthMethods,
   isMfaChallenge,
   isMfaEnrolmentChallenge,
@@ -32,6 +33,25 @@ import { useToast } from "@/lib/toast";
  * visitor and the QR encoder behind it is needed by almost none of them.
  */
 const SignInEnrolment = lazy(() => import("@/components/SignInEnrolment"));
+
+/** the refusal codes `/auth/sso/{slug}/callback` sends (`SsoFailure` in `sso.rs`) */
+const SSO_ERRORS = [
+  "idp_error",
+  "state_expired",
+  "sso_disabled",
+  "no_mapped_group",
+  "account_deactivated",
+  "idp_verification_failed",
+  "not_configured",
+  "internal_error",
+] as const;
+
+/** a code this dashboard has no wording for is still an SSO failure, not a blank screen */
+function ssoErrorKey(code: string): (typeof SSO_ERRORS)[number] {
+  return (SSO_ERRORS as readonly string[]).includes(code)
+    ? (code as (typeof SSO_ERRORS)[number])
+    : "internal_error";
+}
 
 /**
  * Guesses one challenge allows, matching `MAX_CHALLENGE_ATTEMPTS` in
@@ -109,6 +129,46 @@ export default function Login() {
     [fmt, signIn, t, toast],
   );
 
+  // how a browser SSO sign-in ended, read once from the query string the
+  // callback redirected to. `slug` is only ever looked up against the methods
+  // list, never rendered: the url is not trusted to name anything
+  const [ssoNotice, setSsoNotice] = useState<{ key: string; slug: string | null } | null>(null);
+  // the exchange code is single use, and React.StrictMode runs this screen's
+  // effects twice on mount. A ref survives that simulated remount, so the
+  // second pass finds the code already claimed and does nothing; the effect
+  // has no cleanup that cancels, so the first pass's answer is still applied
+  const ssoHandled = useRef(false);
+
+  useEffect(() => {
+    if (ssoHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const ssoCode = params.get("sso_code");
+    const ssoError = params.get("sso_error");
+    if (!ssoCode && !ssoError) return;
+    ssoHandled.current = true;
+    // a code in the address bar outlives the redeeming of it in history
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+    if (ssoError) {
+      setSsoNotice({ key: `auth.sso.errors.${ssoErrorKey(ssoError)}`, slug: params.get("sso") });
+      return;
+    }
+    setPending(true);
+    exchangeSsoCode(ssoCode as string)
+      .then((res) => finishSignIn(res))
+      .catch((err) => {
+        setSsoNotice({
+          key:
+            err instanceof ApiError && err.code === "invalid_exchange_code"
+              ? "auth.sso.exchangeExpired"
+              : err instanceof ApiError && err.status < 500
+                ? "auth.sso.errors.internal_error"
+                : "auth.errors.unavailable",
+          slug: null,
+        });
+      })
+      .finally(() => setPending(false));
+  }, [finishSignIn]);
+
   const leaveEnrolment = useCallback((reason: string | null) => {
     setEnrolment(null);
     setError(reason);
@@ -137,6 +197,7 @@ export default function Login() {
   const resolved = methods !== null;
   const showPassword = methods?.password !== false;
   const providers = methods?.sso ?? [];
+  const ssoProviderName = providers.find((p) => p.slug === ssoNotice?.slug)?.name;
 
   // a challenge lives five minutes. Sending the user back when it dies beats
   // letting them finish typing into a token the server will refuse whatever
@@ -270,6 +331,15 @@ export default function Login() {
               {t("auth.sessionExpired")}
             </p>
           )}
+          {ssoNotice && (
+            <div
+              role="alert"
+              className="flex flex-col gap-1 rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
+            >
+              <p>{t(ssoNotice.key)}</p>
+              {ssoProviderName && <p>{t("auth.sso.provider", { name: ssoProviderName })}</p>}
+            </div>
+          )}
           {!resolved && (
             <>
               <FormSkeleton fields={2} />
@@ -313,7 +383,8 @@ export default function Login() {
               >
                 {pending ? (
                   <>
-                    {t("auth.mfa.verifying")} <Loader2 className="h-4 w-4 animate-spin" />
+                    {t("auth.mfa.verifying")}{" "}
+                    <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
                   </>
                 ) : (
                   <>
@@ -401,7 +472,7 @@ export default function Login() {
               >
                 {pending ? (
                   <>
-                    {t("auth.signingIn")} <Loader2 className="h-4 w-4 animate-spin" />
+                    {t("auth.signingIn")} <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
                   </>
                 ) : (
                   <>

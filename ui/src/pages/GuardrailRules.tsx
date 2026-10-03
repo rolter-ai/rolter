@@ -401,7 +401,7 @@ function GuardrailRulesScreen() {
                           disabled={remove.isPending && remove.variables === rule.id}
                         >
                           {remove.isPending && remove.variables === rule.id && (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                           )}
                           {t("common.delete")}
                         </GatedButton>
