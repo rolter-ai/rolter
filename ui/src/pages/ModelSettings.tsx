@@ -247,7 +247,7 @@ function ModelSettingsScreen() {
           }
         >
           <Combobox
-            className="min-w-[320px]"
+            className="sm:min-w-[320px]"
             options={modelOptions}
             allowCustom
             clearable

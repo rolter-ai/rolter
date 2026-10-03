@@ -2,10 +2,10 @@ name: quality
 
 # reusable quality/security gate, called from ci.yml on every push/pr (and from
 # the one-shot publish-bootstrap.yml). the release paths do not re-run it: they
-# wait for ci.yml's `ci-ok` on the commit they publish (release-plz.yml's
-# `release-gate` on the push run, release.yml's `verify-external-checks` on the
-# tagged sha), so nothing publishes on a commit whose tests, lint or
-# supply-chain check has not passed.
+# wait for `ci-ok` on ci.yml's push run for the commit they publish
+# (release-plz.yml's `release-gate` and release.yml's `verify-external-checks`,
+# both through scripts/wait-for-ci-gate.sh), so nothing publishes on a commit
+# whose tests, lint or supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
 # reviewer: many independent checks. they share a handful of jobs by what they
