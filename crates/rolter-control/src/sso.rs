@@ -1609,6 +1609,66 @@ async fn sqlx_mapping(state: &ControlState, id: Uuid) -> ApiResult<SsoGroupMappi
     })
 }
 
+/// How often the background sweep clears abandoned SSO state.
+const STATE_SWEEP_SECS: u64 = 300;
+/// Batches one sweep pass deletes per table before yielding to the next tick,
+/// so a vast backlog drains over several passes instead of in one long burst.
+const STATE_SWEEP_MAX_BATCHES: usize = 10;
+
+/// Spawn the sweep that deletes expired login states and exchange codes
+/// (#2414). Both are otherwise removed only when the same flow comes back to
+/// use them, and a login abandoned at the identity provider never does.
+pub(crate) fn start_state_sweeper(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(STATE_SWEEP_SECS));
+        loop {
+            interval.tick().await;
+            sweep_expired_state(&pool).await;
+        }
+    });
+}
+
+/// One sweep pass over both tables, each in bounded batches. Failures are
+/// logged and swallowed: the next tick tries again, and the rows are inert
+/// until then because every read path checks expiry itself.
+async fn sweep_expired_state(pool: &sqlx::PgPool) {
+    let repo = SsoRepo(pool);
+    let batch = rolter_store::postgres::repo::SSO_SWEEP_BATCH;
+    let mut states = 0;
+    let mut codes = 0;
+    for _ in 0..STATE_SWEEP_MAX_BATCHES {
+        match repo.sweep_login_states(LOGIN_STATE_TTL_SECS, batch).await {
+            Ok(n) => {
+                states += n;
+                if n < batch as u64 {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not sweep expired sso login states");
+                break;
+            }
+        }
+    }
+    for _ in 0..STATE_SWEEP_MAX_BATCHES {
+        match repo.sweep_exchange_codes(batch).await {
+            Ok(n) => {
+                codes += n;
+                if n < batch as u64 {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not sweep expired sso exchange codes");
+                break;
+            }
+        }
+    }
+    if states + codes > 0 {
+        tracing::debug!(states, codes, "swept expired sso state");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
