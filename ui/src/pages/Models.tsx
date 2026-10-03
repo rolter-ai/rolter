@@ -51,7 +51,7 @@ import { useScope } from "@/lib/scope";
 import { strategyHintKey } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // model · provider · strategy · targets · origin · price · actions. strategy
 // is sized for `precise_cache_aware`, the longest identifier it has to hold,
@@ -124,7 +124,6 @@ export default function Models() {
 
   useScreenReady(!models.isLoading);
 
-  useErrorState(!!models.error, "models");
   const routes = useQuery({
     queryKey: ["routes", scope.projectId],
     queryFn: () => fetchRoutes(scope.projectId as string),
@@ -394,6 +393,7 @@ export default function Models() {
           error={models.error}
           resource={t("errors.resources.models")}
           onRetry={() => models.refetch()}
+          target="models"
         />
       )}
       {scopeBlocked && (

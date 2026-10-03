@@ -57,6 +57,7 @@ export function PublicUrlValue({
             error={publicUrl.error}
             resource={t("errors.resources.publicUrl")}
             onRetry={() => void publicUrl.refetch()}
+            target="public-url"
           />
         ) : value ? undefined : (
           <LoadingRegion className="w-full">
