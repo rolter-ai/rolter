@@ -8,7 +8,7 @@ name: ui-security-updates
 # that fixes them, and this workflow raises it instead (#1148). a package that
 # only arrives transitively through bun.lock raises no alert at all, since the
 # dependency graph does not read that file, so it is out of this workflow's
-# sight (#1930).
+# sight; extended.yml's `ui lockfile audit` job covers it (#1930).
 #
 # every run lists the open dependabot alerts, lets
 # ui/scripts/security-updates.ts raise each vulnerable direct dependency to its
