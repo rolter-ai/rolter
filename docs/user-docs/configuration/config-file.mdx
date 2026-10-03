@@ -136,6 +136,10 @@ A base that would double the prefix is rejected on write rather than stored. The
   An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
 </ParamField>
 
+<ParamField path="egress_proxies" type="list">
+  A pool of outbound proxy URLs that requests rotate through round-robin. When the list is empty, a legacy `egress_proxy` is used as a one-entry pool. Write an authenticated proxy as `${ENV_VAR}` so its credentials never appear in serialized configuration or database rows.
+</ParamField>
+
 <ParamField path="api_keys" type="array of tables">
   Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key — the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
 
@@ -199,6 +203,22 @@ In the dashboard and API, the provider's `project_id` is the same scope. See [Pr
 
 <ParamField path="ca_bundles" type="list">
   Provider-specific list of PEM CA bundle file paths. When set, overrides the global `[tls].ca_bundles` setting for tls verification against this provider.
+</ParamField>
+
+<ParamField path="kv_events" type="table">
+  vLLM ZeroMQ KV-event subscription for the `precise_cache_aware` strategy, written as `[providers.kv_events]`. Keys: `endpoint` (required, e.g. `tcp://vllm-0:5557`), `topic` (default `kv-events`), `max_blocks` (resident block identities kept, default `1000000`) and `stale_secs` (telemetry older than this is ignored, default `30`). See [cache-aware routing](/concepts/cache-aware-routing).
+</ParamField>
+
+<ParamField path="lmcache" type="table">
+  LMCache controller signal for the `lmcache_aware` strategy, written as `[providers.lmcache]`. Keys: `endpoint` (required, an HTTP URL returning `{ "occupancy": 0..1, "cache_available": bool }`), `refresh_secs` (default `2`) and `stale_secs` (default `10`). See [cache-aware routing](/concepts/cache-aware-routing).
+</ParamField>
+
+<ParamField path="role_profile" type="string">
+  How this provider handles instruction roles: `openai` keeps `developer` and `system` messages distinct, `system_only` lowers `developer` to `system`, and `anthropic` sends top-level `system` blocks. When omitted, native OpenAI keeps both roles, Anthropic uses top-level system blocks, and OpenAI-compatible providers use `system_only`.
+</ParamField>
+
+<ParamField path="model_role_profiles" type="table">
+  Per-upstream-model overrides of `role_profile`, keyed by the upstream model id, e.g. `model_role_profiles = { "my-model" = "openai" }`. Use it for a custom chat template that explicitly supports the `developer` role.
 </ParamField>
 
 ```toml

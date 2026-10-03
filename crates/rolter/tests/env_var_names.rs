@@ -228,17 +228,8 @@ fn all_provider_config_fields_are_documented_in_config_file_reference() {
     let mut fields = provider_config_fields();
     assert!(!fields.is_empty(), "no ProviderConfig fields were found");
 
-    // Internal or non-direct fields in ProviderConfig:
-    // egress_proxies (advanced proxy pool list, egress_proxy is documented)
-    // kv_events, lmcache, role_profile, model_role_profiles, tenancy
-    let internal_fields = [
-        "egress_proxies",
-        "kv_events",
-        "lmcache",
-        "role_profile",
-        "model_role_profiles",
-        "tenancy",
-    ];
+    // `tenancy` is filled in by the store and never written in a config file
+    let internal_fields = ["tenancy"];
     fields.retain(|f| !internal_fields.contains(&f.as_str()));
 
     let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
