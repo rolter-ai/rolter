@@ -33,7 +33,7 @@
 //   bun scripts/run-story-tests.ts src/pages/Keys.stories.tsx [more…]
 //   bun scripts/run-story-tests.ts --port 6040 src/pages/Keys.stories.tsx
 //   bun scripts/run-story-tests.ts            # every story file
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, Socket } from "node:net";
 import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -337,6 +337,33 @@ export function listenersOn(port: number): Listener[] | null {
   });
 }
 
+/**
+ * Stop the storybook child and resolve only once it is gone, so the port it
+ * held is free for the next run (#2661). `process.exit` straight after a
+ * SIGTERM left storybook still listening, and a back-to-back run on the same
+ * port was refused as "already in use".
+ *
+ * The child leads its own process group (`detached`), because `bunx` forks the
+ * real server and a signal to `bunx` alone would not reach it. SIGTERM goes to
+ * the group; after `graceMs` without an exit it escalates to SIGKILL, and after
+ * `killMs` more it gives up rather than hang the run.
+ */
+export async function stopChild(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "once">,
+  signal: (sig: NodeJS.Signals) => void,
+  graceMs = 5000,
+  killMs = 2000,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<boolean>((resolveP) => child.once("exit", () => resolveP(true)));
+  const within = (ms: number) =>
+    Promise.race([exited, new Promise<boolean>((r) => setTimeout(() => r(false), ms))]);
+  signal("SIGTERM");
+  if (await within(graceMs)) return;
+  signal("SIGKILL");
+  await within(killMs);
+}
+
 function storyFiles(args: string[]): string[] {
   if (args.length > 0) return args.map((arg) => relative(UI_DIR, resolve(arg)));
   const found = spawnSync("rg", ["--files", "-g", "*.stories.tsx", "src"], {
@@ -384,16 +411,25 @@ async function main() {
   const storybook = spawn(
     "bunx",
     ["storybook", "dev", "--ci", "--quiet", "-p", String(port), "--no-open"],
-    { cwd: UI_DIR, stdio: ["ignore", "ignore", "inherit"] },
+    { cwd: UI_DIR, stdio: ["ignore", "ignore", "inherit"], detached: true },
   );
-  const stop = () => {
-    if (!storybook.killed) storybook.kill("SIGTERM");
+  const signalGroup = (sig: NodeJS.Signals) => {
+    try {
+      // a negative pid signals the whole group, bunx's forked server included
+      if (storybook.pid !== undefined) process.kill(-storybook.pid, sig);
+    } catch {
+      // already gone
+    }
   };
-  process.on("exit", stop);
-  process.on("SIGINT", () => {
-    stop();
-    process.exit(130);
-  });
+  const stop = () => stopChild(storybook, signalGroup);
+  // last resort for an exit path that did not await stop(): a sync kill
+  process.on("exit", () => signalGroup("SIGKILL"));
+  const exitAfterStop = async (code: number): Promise<never> => {
+    await stop();
+    process.exit(code);
+  };
+  process.on("SIGINT", () => void exitAfterStop(130));
+  process.on("SIGTERM", () => void exitAfterStop(143));
 
   let failed = false;
   try {
@@ -404,7 +440,7 @@ async function main() {
         `[stories] the storybook on ${port} is not serving this worktree's build:\n  ` +
           problems.join("\n  "),
       );
-      process.exit(1);
+      await exitAfterStop(1);
     }
     // and who is serving it: the index above compares content, which another
     // worktree of this same project satisfies (#1693)
@@ -418,7 +454,7 @@ async function main() {
       const stranger = foreignServer(listeners, UI_DIR);
       if (stranger !== null) {
         console.error(`[stories] ${stranger}`);
-        process.exit(1);
+        await exitAfterStop(1);
       }
     }
     console.log(`[stories] index confirmed: ${files.length} file(s), this worktree's build`);
@@ -438,7 +474,7 @@ async function main() {
       if (run.status !== 0) failed = true;
     }
   } finally {
-    stop();
+    await stop();
   }
   process.exit(failed ? 1 : 0);
 }
