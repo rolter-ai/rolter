@@ -3931,19 +3931,25 @@ async fn admin_token_guards_crud_and_snapshot() {
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
 
-/// Every GET the served OpenAPI document does not mark public refuses an
-/// anonymous or forged caller once an admin token is configured (#1820).
+/// A forged bearer is refused on every operation the served OpenAPI document
+/// does not mark public, once an admin token is configured (#1820, #2464).
 ///
-/// The analytics and health routes answered anyone for months: they were merged
-/// onto the open router, the document said they needed a bearer, and nothing
-/// compared the two. This walks the document the control plane actually serves,
-/// so a route added later without a guard fails here rather than in a
-/// deployment — and so does a route that is open by design but was never marked
-/// `.public()`, which keeps the document honest about what an anonymous caller
-/// can ask. Only a 401 passes: before the fix these routes answered 503 in a
-/// test app with no ClickHouse, so "anything but 200" would have passed too.
+/// The anonymous half of this used to live here too. It is now
+/// `no_route_answers_an_anonymous_caller_unless_it_is_allowlisted` in
+/// `src/public_routes.rs`, which covers every method rather than only GET,
+/// pins `.public()` to a reasoned allowlist both ways, and needs no database:
+/// an anonymous caller has to be refused before any handler reaches the pool.
+///
+/// What that guard cannot exercise is a bearer that is present but wrong. It
+/// misses the admin token, so the extractor looks it up as a session token,
+/// and that lookup needs a real database — against the guard's pool that
+/// never connects it answers an error rather than "no such session". So this
+/// is the one case that stays here: a forged token must come back `401`, not
+/// a `500` from a lookup that trips over it nor a `200` from an extractor
+/// that treats any bearer as good enough. The `/gw` proxy is no longer exempt:
+/// it takes a session since #2463, and a forged one is refused like any other.
 #[tokio::test]
-async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller() {
+async fn every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer() {
     skip_without_db!();
     let db = fresh_db().await;
     let app =
@@ -3961,19 +3967,10 @@ async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller()
         .await
         .unwrap();
 
-    // authenticated downstream rather than here: the playground proxy hands the
-    // caller's virtual key to the gateway, and the gateway is what checks it
-    const CHECKED_DOWNSTREAM: &[&str] = &["/gw/{path}"];
     let nil = uuid::Uuid::nil().to_string();
     let mut answered = Vec::new();
     let mut walked = 0;
     for (path, item) in spec["paths"].as_object().expect("the document has paths") {
-        let Some(op) = item.get("get") else {
-            continue;
-        };
-        if op.get("security") == Some(&json!([])) || CHECKED_DOWNSTREAM.contains(&path.as_str()) {
-            continue;
-        }
         // every path parameter becomes the nil uuid: a guarded route has to
         // refuse the caller before it looks anything up
         let mut concrete = String::with_capacity(path.len());
@@ -3985,27 +3982,33 @@ async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller()
             rest = &rest[close + 1..];
         }
         concrete.push_str(rest);
-        for bearer in [None, Some("forged")] {
-            let mut request = client.get(format!("http://{addr}{concrete}"));
-            if let Some(bearer) = bearer {
-                request = request.bearer_auth(bearer);
+        for method in ["get", "post", "put", "patch", "delete"] {
+            let Some(op) = item.get(method) else {
+                continue;
+            };
+            if op.get("security") == Some(&json!([])) {
+                continue;
             }
-            let status = request.send().await.unwrap().status();
+            let verb = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+                .expect("a standard method");
+            let status = client
+                .request(verb, format!("http://{addr}{concrete}"))
+                .bearer_auth("forged")
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap()
+                .status();
             if status != 401 {
-                let who = if bearer.is_some() {
-                    "forged bearer"
-                } else {
-                    "anonymous"
-                };
-                answered.push(format!("{path} ({who}) -> {status}"));
+                answered.push(format!("{} {path} -> {status}", method.to_uppercase()));
             }
+            walked += 1;
         }
-        walked += 1;
     }
-    assert!(walked > 50, "the sweep only reached {walked} routes");
+    assert!(walked > 50, "the sweep only reached {walked} operations");
     assert!(
         answered.is_empty(),
-        "routes that did not refuse a caller without credentials: {answered:#?}"
+        "operations that did not refuse a forged bearer: {answered:#?}"
     );
 }
 
