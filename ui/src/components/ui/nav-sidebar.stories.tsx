@@ -96,6 +96,15 @@ export const Resizable: Story = {
   },
 };
 
+/** A touch drag must resize the rail, not scroll the page (#2573). */
+export const SplitterOptsOutOfTouchScrolling: Story = {
+  args: resizable("default"),
+  play: async ({ canvasElement }) => {
+    const handle = within(canvasElement).getByRole("separator", { name: /resize/i });
+    await expect(getComputedStyle(handle).touchAction).toBe("none");
+  },
+};
+
 export const DraggedNarrow: Story = {
   args: resizable("narrow"),
   play: async ({ canvasElement }) => {

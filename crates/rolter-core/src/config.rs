@@ -3259,7 +3259,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &mut self.routes {
             let unknown = route.advanced.guardrails.unknown_rules(&rule_names);
@@ -3270,12 +3270,12 @@ impl GatewayConfig {
                 .advanced
                 .guardrails
                 .disable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             route
                 .advanced
                 .guardrails
                 .enable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             let mut seen = std::collections::HashSet::new();
             for name in unknown.into_iter().filter(|name| seen.insert(name.clone())) {
                 warnings.push(format!(
@@ -3930,7 +3930,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &self.routes {
             for unknown in route.advanced.guardrails.unknown_rules(&rule_names) {
@@ -5987,6 +5987,14 @@ mod tests {
         assert_eq!(overrides.disable, vec!["live".to_string()]);
         assert!(overrides.enable.is_empty());
         assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn a_padded_guardrail_override_matches_the_trimmed_rule_name() {
+        let mut cfg = config_with_guardrail_override(&[" live "], &[]);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+        assert!(cfg.sanitize_for_snapshot().is_empty());
+        assert_eq!(cfg.routes[0].advanced.guardrails.disable.len(), 1);
     }
 
     #[test]

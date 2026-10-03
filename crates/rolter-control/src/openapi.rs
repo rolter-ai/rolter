@@ -128,6 +128,10 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` revoking an org's last admin grant answers (#2311)
+const LAST_ORG_ADMIN_409: &str =
+    "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -848,7 +852,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
-            ),
+            )
+            .conflict(LAST_ORG_ADMIN_409),
         ],
     ));
 
