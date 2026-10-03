@@ -9101,6 +9101,211 @@ async fn sso_login(
     Some(body["token"].as_str().unwrap().to_string())
 }
 
+/// #2339: an org that turns single sign-on off stops offering its providers
+/// on the login screen, and refuses them at the start of a login as well as at
+/// the callback, instead of sending the member to the identity provider first.
+/// Another org's provider and password sign-in are untouched, and turning sso
+/// back on restores the button and the round trip.
+#[tokio::test]
+async fn sso_off_hides_the_provider_and_refuses_its_login() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let create_org = |name: &'static str, slug: &'static str| {
+        let (client, base) = (&client, &base);
+        async move {
+            let org: Value = client
+                .post(format!("{base}/api/v1/orgs"))
+                .bearer_auth("admintok")
+                .json(&json!({"name": name, "slug": slug}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            org["id"].as_str().unwrap().to_string()
+        }
+    };
+    let create_provider = |org_id: String, slug: &'static str| {
+        let (client, base, issuer) = (&client, &base, &issuer);
+        async move {
+            let provider: Value = client
+                .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+                .bearer_auth("admintok")
+                .json(&json!({
+                    "name": format!("IdP {slug}"), "slug": slug, "issuer": issuer,
+                    "client_id": "rolter", "client_secret": format!("idp-{}", uuid::Uuid::new_v4()),
+                    "default_role": "member"
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(provider["slug"], slug, "{provider}");
+        }
+    };
+    let listed = || {
+        let (client, base) = (&client, &base);
+        async move {
+            let methods: Value = client
+                .get(format!("{base}/api/v1/auth/methods"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let slugs: Vec<String> = methods["sso"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["slug"].as_str().unwrap().to_string())
+                .collect();
+            (methods["password"].as_bool().unwrap(), slugs)
+        }
+    };
+    let set_sso = |org_id: String, allow_sso: bool| {
+        let (client, base) = (&client, &base);
+        async move {
+            let response = client
+                .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+                .bearer_auth("admintok")
+                .json(&json!({"allow_password_login": true, "allow_sso": allow_sso}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+        }
+    };
+
+    let org_id = create_org("MixedOrg", "mixed-org").await;
+    create_provider(org_id.clone(), "mixed").await;
+    // a second org with no policy row at all: sso reads as on for it
+    let other_id = create_org("OtherOrg", "other-org").await;
+    create_provider(other_id, "other").await;
+    let member_password = random_password();
+    let member = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/users"))
+        .bearer_auth("admintok")
+        .json(&json!({"email": "local@example.com", "password": member_password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(member.status(), 200);
+
+    assert_eq!(
+        listed().await,
+        (true, vec!["mixed".to_string(), "other".to_string()])
+    );
+    // a login begun while sso is on, finished after it is turned off
+    let in_flight = client
+        .get(format!("{base}/auth/sso/mixed/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(in_flight.status(), 303);
+    let in_flight_state = url_param(in_flight.headers()["location"].to_str().unwrap(), "state");
+
+    set_sso(org_id.clone(), false).await;
+
+    // the login screen no longer offers the org's provider, and still offers
+    // the other org's and the password form
+    assert_eq!(listed().await, (true, vec!["other".to_string()]));
+
+    // a stale button is refused before the identity provider: a JSON caller
+    // gets the 403 with a stable code and no redirect
+    let start = client
+        .get(format!("{base}/auth/sso/mixed/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 403);
+    assert!(start.headers().get("location").is_none());
+    let body: Value = start.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "sso_disabled", "{body}");
+    assert!(body["error"]["message"].as_str().is_some());
+
+    // and a browser is sent back to the login screen with the same code the
+    // callback uses
+    let browser_start = client
+        .get(format!("{base}/auth/sso/mixed/start"))
+        .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(browser_start.status(), 303);
+    assert_eq!(
+        browser_start.headers()["location"].to_str().unwrap(),
+        format!("{base}/login?sso_error=sso_disabled&sso=mixed")
+    );
+    let states: i64 = sqlx::query_scalar("select count(*) from sso_login_states")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(states, 1, "a refused start must not record a login state");
+
+    // the callback of the login begun before still refuses, with the same body
+    *stub.next_claims.lock().unwrap() = stub_idp::claims(
+        &issuer,
+        "rolter",
+        &url_param(in_flight.headers()["location"].to_str().unwrap(), "nonce"),
+        json!([]),
+    );
+    let callback = client
+        .get(format!(
+            "{base}/auth/sso/mixed/callback?code=abc&state={in_flight_state}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status(), 403);
+    let body: Value = callback.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "sso_disabled", "{body}");
+
+    // the other org's provider still starts
+    let other = client
+        .get(format!("{base}/auth/sso/other/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status(), 303);
+    assert!(other.headers()["location"]
+        .to_str()
+        .unwrap()
+        .starts_with(&issuer));
+
+    // local sign-in for the same org keeps working
+    let local = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": "local@example.com", "password": member_password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(local.status(), 200);
+
+    // switching sso back on restores the button and the round trip
+    set_sso(org_id, true).await;
+    assert_eq!(
+        listed().await,
+        (true, vec!["mixed".to_string(), "other".to_string()])
+    );
+    assert!(sso_login(&client, &base, &stub, &issuer, json!([]))
+        .await
+        .is_some());
+}
+
 /// #2297: the provider sends the browser to the callback, so the callback must
 /// end on the dashboard. A success hands over a one-time code (never the
 /// token), redeemed once; a refusal names a stable code and none of the IdP's
@@ -9330,20 +9535,6 @@ async fn browser_sso_sign_in_ends_on_the_dashboard_with_a_one_time_code() {
         .await
         .unwrap();
 
-    let disabled = client
-        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
-        .bearer_auth("admintok")
-        .json(&json!({"allow_password_login": true, "allow_sso": false}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(disabled.status(), 200);
-    let off = navigate(json!(["admins"])).await;
-    assert_eq!(
-        location_of(&off),
-        format!("{base}/login?sso_error=sso_disabled&sso=browser")
-    );
-
     // a caller that is not a browser still gets the JSON refusal
     let start = client
         .get(format!("{base}/auth/sso/browser/start"))
@@ -9360,6 +9551,35 @@ async fn browser_sso_sign_in_ends_on_the_dashboard_with_a_one_time_code() {
         .await
         .unwrap();
     assert_eq!(json_refusal.status(), 400);
+
+    // a login begun before the org turns sso off ends on the same refusal a
+    // fresh start now gives at once (#2339)
+    let in_flight = client
+        .get(format!("{base}/auth/sso/browser/start"))
+        .send()
+        .await
+        .unwrap();
+    let state = url_param(&location_of(&in_flight), "state");
+    let disabled = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/auth-policy"))
+        .bearer_auth("admintok")
+        .json(&json!({"allow_password_login": true, "allow_sso": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    let off = client
+        .get(format!(
+            "{base}/auth/sso/browser/callback?code=abc&state={state}"
+        ))
+        .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        location_of(&off),
+        format!("{base}/login?sso_error=sso_disabled&sso=browser")
+    );
 }
 
 /// Invitation onboarding (#712): an admin mints a one-time link, the invitee
@@ -12604,6 +12824,106 @@ async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new
         !config.contains("Bearer"),
         "the config carries a bearer header"
     );
+}
+
+/// #2404: health describes one endpoint and credential, so changing either
+/// resets it to `unknown`; an unrelated edit keeps it.
+#[tokio::test]
+async fn a_connector_edit_resets_health_only_when_endpoint_or_secret_changes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (sink, _) = serve_capturing_sink().await;
+    let (other_sink, _) = serve_capturing_sink().await;
+    let endpoint = format!("http://{sink}/v1/logs");
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": endpoint,
+            "enabled": true,
+            "sampling_rate": 1.0,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let put = |name: &'static str, endpoint: String, secret: Option<String>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        async move {
+            let mut body = json!({
+                "name": name,
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret.into();
+            }
+            let response = client
+                .put(url)
+                .bearer_auth("sekrit")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let test = || async {
+        let tested = client
+            .post(format!("{base}/api/v1/connectors/{id}/test"))
+            .bearer_auth("sekrit")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tested.status(), 200);
+    };
+    let health = || async {
+        sqlx::query_as::<_, (String, bool, bool)>(
+            "select health_status, health_checked_at is not null, health_error is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    test().await;
+    assert_eq!(health().await, ("healthy".to_string(), true, false));
+
+    // a rename and the same endpoint keep the result
+    let body = put("Renamed", endpoint.clone(), None).await;
+    assert_eq!(body["health_status"], "healthy");
+    assert_eq!(health().await, ("healthy".to_string(), true, false));
+
+    // a new secret on the same endpoint resets it
+    put("Renamed", endpoint.clone(), Some(random_password())).await;
+    assert_eq!(health().await, ("unknown".to_string(), false, false));
+
+    // so does a new endpoint, error included
+    test().await;
+    assert_eq!(health().await.0, "healthy");
+    let body = put("Renamed", format!("http://{other_sink}/v1/logs"), None).await;
+    assert_eq!(body["health_status"], "unknown");
+    assert!(body["health_checked_at"].is_null());
+    assert_eq!(health().await, ("unknown".to_string(), false, false));
 }
 
 /// #1162: the Security screen wrote to a table nothing downstream read. This

@@ -43,6 +43,7 @@ import {
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
+import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
   chatCompletion,
@@ -780,14 +781,19 @@ function GatewayButton({
 }
 
 // an error arrives after an action, so it is announced the moment it appears
-function ErrorNote({ error }: { error: string | null }) {
+function ErrorNote({ error }: { error: ErrorCopy | null }) {
   if (!error) return null;
   return (
     <p
       role="alert"
       className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
     >
-      {error}
+      {error.message}
+      {error.detail && (
+        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+          {error.detail}
+        </span>
+      )}
     </p>
   );
 }
@@ -839,7 +845,7 @@ function ChatColumn({
   const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
   // the finished reply, for the live region: `id` makes a reply identical to
@@ -897,7 +903,7 @@ function ChatColumn({
       }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1203,7 +1209,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
     t("pages.playground.samples.embeddings").split("\n"),
   );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
@@ -1214,7 +1220,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const run = async () => {
     const rows = texts.filter((t) => t.trim());
     if (rows.length < 2) {
-      setError(t("pages.playground.embedNeedTwo"));
+      setError({ message: t("pages.playground.embedNeedTwo") });
       return;
     }
     setError(null);
@@ -1230,7 +1236,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) * 100;
       setPoints(proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1310,7 +1316,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const gen = async () => {
@@ -1319,7 +1325,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
     try {
       setImages(await generateImages(model, prompt, n, size));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1407,7 +1413,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const clipRef = React.useRef<HTMLAudioElement>(null);
@@ -1424,7 +1430,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setAudioUrl(await synthesizeSpeech(model, text, voice));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1437,7 +1443,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setTranscript(await transcribe(model, f));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }

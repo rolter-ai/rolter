@@ -92,6 +92,15 @@ impl Default for UsageBufferPool {
     }
 }
 
+/// The number of requests one kept row represents at `sample_rate`.
+fn sample_weight(sample_rate: f64) -> f64 {
+    if sample_rate > 0.0 && sample_rate < 1.0 {
+        1.0 / sample_rate
+    } else {
+        1.0
+    }
+}
+
 fn should_sample_request(request_id: &str, sample_rate: f64) -> bool {
     if sample_rate >= 1.0 {
         return true;
@@ -211,6 +220,11 @@ pub struct RequestLog {
     pub payload_redact_fields: Vec<String>,
     #[serde(skip)]
     pub sample_rate: f64,
+    /// how many real requests this stored row stands for: `1 / sample_rate`
+    /// at write time, so analytics can scale counts and sums back to the
+    /// traffic that actually ran (#2239). Stamped by the sink after the
+    /// sampling decision, never by the request path.
+    pub sample_weight: f64,
 }
 
 impl Default for RequestLog {
@@ -254,6 +268,7 @@ impl Default for RequestLog {
             payload_max_bytes: 0,
             payload_redact_fields: Vec::new(),
             sample_rate: 1.0,
+            sample_weight: 1.0,
         }
     }
 }
@@ -1187,6 +1202,10 @@ impl LogSink {
         let Some(tx) = &self.tx else {
             return;
         };
+        // recorded per row because the configured rate can change between
+        // writes; the rate in force when the row was kept is the one that
+        // applies to it
+        record.sample_weight = sample_weight(record.sample_rate);
         // minted here, after sampling and only for a sink that writes, so a
         // dropped or disabled row costs no entropy
         record.log_id = Uuid::new_v4();
@@ -2013,6 +2032,55 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         assert!(should_sample_request("req-1", 2.0));
         assert!(!should_sample_request("req-1", 0.0));
         assert!(!should_sample_request("req-1", -0.1));
+    }
+
+    #[test]
+    fn a_kept_row_weighs_the_inverse_of_its_sample_rate() {
+        assert_eq!(sample_weight(0.5), 2.0);
+        assert_eq!(sample_weight(0.25), 4.0);
+        // unsampled and out-of-range rates count each row once
+        assert_eq!(sample_weight(1.0), 1.0);
+        assert_eq!(sample_weight(2.0), 1.0);
+        assert_eq!(sample_weight(0.0), 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_sampled_row_is_written_with_its_weight() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            10,
+            Duration::from_millis(50),
+            100,
+            Arc::new(Metrics::default()),
+        );
+        // a request id the 50 % hash keeps
+        let kept = (0..200)
+            .map(|i| format!("req-{i}"))
+            .find(|id| should_sample_request(id, 0.5))
+            .expect("some id is kept at 50 %");
+        sink.log(RequestLog {
+            request_id: kept,
+            sample_rate: 0.5,
+            ..Default::default()
+        });
+        let req = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap();
+        assert!(req.contains("\"sample_weight\":2.0"), "{req}");
     }
 
     #[tokio::test]

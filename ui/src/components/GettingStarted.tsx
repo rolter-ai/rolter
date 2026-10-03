@@ -17,6 +17,7 @@ import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
 import { splitCapability, useCan, useCapabilities, useGate, type Capability } from "@/lib/can";
 import { classifyLoadError } from "@/lib/load-error";
 import { useScope } from "@/lib/scope";
+import { KEY_ENV } from "@/lib/snippets";
 import { useGatewayBase } from "@/lib/use-gateway-base";
 import { cn } from "@/lib/utils";
 
@@ -148,7 +149,7 @@ function ClientRequest() {
   if (!gateway) return <GatewayBasePrompt />;
   const snippet = [
     `curl ${gateway.url}/v1/chat/completions \\`,
-    `  -H "Authorization: Bearer $ROLTER_VIRTUAL_KEY" \\`,
+    `  -H "Authorization: Bearer $${KEY_ENV}" \\`,
     `  -H "Content-Type: application/json" \\`,
     `  -d '{"model": "fake-llm", "messages": [{"role": "user", "content": "hi"}]}'`,
   ].join("\n");

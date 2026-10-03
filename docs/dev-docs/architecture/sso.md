@@ -20,15 +20,21 @@ never mentions it.
 The dashboard asks `GET /api/v1/auth/methods` — the one unauthenticated
 endpoint in this area — and renders whichever of the three it is told. That
 endpoint returns provider names, slugs and start URLs only; all of which are
-already visible in the login URL, and none of which are secret.
+already visible in the login URL, and none of which are secret. It lists a
+provider only while it is enabled _and_ its org's `allow_sso` is on
+(`SsoRepo::list_sign_in_providers`; an org with no policy row counts as on),
+so a member is never offered a button that would be refused (#2339).
 
 ## The flow
 
 Authorization code with PKCE, no implicit grant, no client-side tokens:
 
-1. `GET /auth/sso/{slug}/start` mints a `state`, a `nonce` and a PKCE verifier,
-   stores them in `sso_login_states`, and redirects to the provider's
-   `authorization_endpoint`.
+1. `GET /auth/sso/{slug}/start` refuses a provider whose org has `allow_sso`
+   off with the same `sso_disabled` refusal the callback gives (a browser is
+   redirected to `/login?sso_error=sso_disabled&sso=<slug>`, any other caller
+   gets a `403` with `error.code` `sso_disabled`), and otherwise mints a
+   `state`, a `nonce` and a PKCE verifier, stores them in `sso_login_states`,
+   and redirects to the provider's `authorization_endpoint`.
 2. The provider redirects back to `GET /auth/sso/{slug}/callback`.
 3. The callback **consumes** the state row (`DELETE … RETURNING`), so a replayed
    `code` + `state` pair finds nothing and is refused. States older than ten
@@ -163,8 +169,10 @@ not silently gain a second, weaker credential.
 
 - `allow_password_login` — when false, members of this org cannot use the
   password form.
-- `allow_sso` — when false, callbacks for this org's providers are refused
-  without deleting the provider rows, so an IdP can be cut off in one request.
+- `allow_sso` — when false, this org's providers are left out of
+  `/api/v1/auth/methods` and refused at both `/start` and the callback (the
+  latter catches a login begun before the switch), without deleting the
+  provider rows, so an IdP can be cut off in one request.
   An account a provider created has no password, so while this is off those
   members cannot sign in at all, whatever `allow_password_login` says. The
   dashboard confirms the change when the org has an enabled provider (#2326).

@@ -73,7 +73,9 @@
   "common": {
     "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
+    "chartPoint": "Time",
     "clearSearch": "Clear search",
+    "clearFilters": "Clear filters",
     "close": "Close",
     "copied": "Copied",
     "copy": "Copy",
@@ -109,6 +111,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
@@ -117,6 +121,7 @@
       "placeholder": "Select…",
       "options": "Options",
       "clear": "Clear selection",
+      "use": "Use “{{value}}”",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
@@ -263,6 +268,30 @@
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "requestFailed": "gateway request failed: {{status}}"
+    },
+    "api": {
+      "unreachable": "Could not reach the server. Check your connection and try again.",
+      "unauthorized": "Your session is missing or has expired. Sign in again.",
+      "forbidden": "Your role does not permit this.",
+      "rateLimited": "Too many attempts. Wait a moment and try again.",
+      "server": "The control plane hit an error. Try again, and check its logs if it persists.",
+      "generic": "The server rejected this request.",
+      "codes": {
+        "analytics_query_failed": "The analytics query failed.",
+        "internal": "The control plane hit an internal error.",
+        "invalid_credentials": "The email or password is wrong.",
+        "invalid_cursor": "The page position is no longer valid. Reload the list.",
+        "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_query": "The filter is not valid.",
+        "invalid_time_bound": "The time range is not valid.",
+        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "no_such_endpoint": "This control plane does not offer that feature.",
+        "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
+        "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "too_many_attempts": "Too many failed attempts. Try again later.",
+        "unauthenticated": "Your session is missing or has expired. Sign in again."
+      }
     }
   },
   "locale": {
@@ -796,6 +825,15 @@
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
       "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "modelPlaceholder": "Choose or type a model",
+      "modelRequired": "Choose a model to price.",
+      "priceUnit": "{{currency}} per million tokens",
+      "priceRequired": "Enter a price. Type 0 if the model is free; empty stays unpriced.",
+      "priceInvalid": "Enter a price of 0 or more.",
+      "currencyRequired": "Choose a currency.",
+      "modelGroupRoutes": "Routes",
+      "modelGroupTraffic": "Seen in traffic",
+      "currencyBase": "base currency",
       "confirm": {
         "deleteTitle": "Delete the price for {{model}}?",
         "deleteBody": "Cost accounting for this model falls back to no known price.",
@@ -1360,8 +1398,7 @@
         "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
         "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
         "noMatchTitle": "No transitions match these filters",
-        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
-        "clearFilters": "Clear filters"
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest."
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",
@@ -1411,7 +1448,6 @@
       "deleteAria": "Delete connector {{name}}",
       "editAria": "Edit connector {{name}}",
       "editTitle": "Edit connector {{name}}",
-      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",
@@ -2426,7 +2462,10 @@
       "grainProvider": "probed · {{sources}}",
       "incidents": "Incidents",
       "mttr": "MTTR",
-      "noEvents": "No events in window.",
+      "noTimeline": "No timeline.",
+      "timelineSummary": "Health timeline, {{from}} to {{to}}: {{failures}} failures in {{events}} events over {{buckets}} hourly buckets",
+      "legendOk": "No failures",
+      "legendFailed": "Failures (taller = larger share)",
       "slaAtRisk": "SLA at risk",
       "slaBreaching": "below SLA",
       "slaWithin": "within SLA",
@@ -2562,7 +2601,6 @@
       "statusErrors": "Errors",
       "allModels": "All models",
       "allKeys": "All keys",
-      "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
       "unpricedOnly": "Unpriced only",
@@ -3799,8 +3837,8 @@
   },
   "providers": {
     "unserved": {
-      "title_one": "{{count}} config entry is not being served to gateways",
-      "title_other": "{{count}} config entries are not being served to gateways"
+      "title_one": "{{count}} config entry is not being served as written",
+      "title_other": "{{count}} config entries are not being served as written"
     }
   },
   "account": {

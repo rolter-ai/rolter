@@ -181,7 +181,7 @@ export default function RoutingRules() {
           actions={
             labelFilter ? (
               <Button variant="outline" onClick={() => setLabelFilter("")}>
-                {t("common.clearSearch")}
+                {t("common.clearFilters")}
               </Button>
             ) : (
               <GatedButton

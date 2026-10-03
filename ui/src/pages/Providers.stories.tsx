@@ -31,7 +31,15 @@ import {
   type Recorder,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  atMobile,
+  atTablet,
+  expectInFrame,
+  expectNoHorizontalOverflow,
+  phoneFits,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: ProviderRow[] = [
@@ -157,7 +165,7 @@ export const NoSearchMatch: Story = {
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await userEvent.type(canvas.getByLabelText("Search providers"), "cohere");
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -415,7 +423,7 @@ export const NoLabelMatch: Story = {
     await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
     // clearing puts both back, so the button really cleared both narrowings
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
   },
 };
@@ -981,3 +989,24 @@ export const ProjectAdminOnAMixedList: Story = {
     await expectRefused(canvasElement, "Delete provider anthropic-eu");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const providersFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  ready: async (canvas, locale) => {
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    // the list scrolls sideways, but a row's buttons stay at the frame's edge:
+    // they sat at x=663 on a 375px phone, a scroll away from being pressed
+    const frame = canvas.getByRole("table");
+    const copy = (locale === "ru" ? ru : en).pages.providers.editOne;
+    const edit = canvas.getByRole("button", { name: copy.replace("{{name}}", "openai-prod") });
+    await expectInFrame(edit, frame);
+  },
+});
+export const MobileInRussian: Story = providersFit("mobile", "ru");
+export const ActionsStayInReachAtMobile: Story = providersFit("mobile", "en");

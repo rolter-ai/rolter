@@ -1669,6 +1669,11 @@ export const Mobile: Story = {
     await waitFor(() => expect(canvasElement.querySelector('[role="combobox"]')).toBeTruthy());
     void canvas;
     await expectNoHorizontalOverflow();
+    // the strip scrolls and hides its scrollbar, so it says there is more: the
+    // last tab ("Realtime") was clipped with nothing to show it (#2004)
+    const strip = canvas.getByRole("tablist");
+    await expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+    await expect(strip).toHaveAttribute("data-more-end", "true");
   },
 };
 
