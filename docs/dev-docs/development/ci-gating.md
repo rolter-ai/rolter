@@ -56,7 +56,8 @@ and a title or body edit starts one job instead of three. The price is when
 title feedback arrives. On a run a commit started (`opened`, `synchronize`,
 `reopened`), `pr-title` now runs only after `quality` and `codeql` finish,
 about eight minutes in, rather than within seconds. An `edited` run skips
-both, so a title fix made after the gate is still checked within seconds.
+`quality` and `codeql`, so its `pr-title` and body steps start at once and a
+title fix made after the gate is still checked within seconds.
 The action fetches the title live rather than reading it from the payload, so
 a title fixed while the gate is still running is the one that step validates.
 The body step does the same on a pull request (see
@@ -72,8 +73,10 @@ trigger, the only way to re-run the title check would be to push an empty
 commit, which invalidates every review and re-runs a twenty-minute gate for a
 typo.
 
-The heavy jobs are skipped on that event (`if: github.event.action != 'edited'`
-on `quality` and `codeql`): a title lives in GitHub's database, not in the tree,
+The heavy jobs are skipped on that event (`if: github.event_name != 'pull_request'
+|| github.event.action != 'edited'` on `quality` and `codeql`, scoped to the event
+for the reason given in [the merge queue](#a-merge-group-ref-must-never-take-the-fast-path)):
+a title lives in GitHub's database, not in the tree,
 so no test result can change because of it. The tree that was gated is the same
 tree.
 
@@ -145,7 +148,7 @@ So `ci.yml` has a `gate-ok` job that records the gate's verdict by itself:
 
 ```yaml
 gate-ok:
-  if: github.event.action != 'edited'
+  if: github.event_name != 'pull_request' || github.event.action != 'edited'
   needs: [quality, codeql]
   steps:
     - run: echo "quality and codeql both succeeded on this run"
@@ -272,9 +275,8 @@ wait.
 ## The merge queue
 
 `master` merges through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
-so `ci.yml` also triggers on `merge_group`. (The trigger is inert until the queue
-is switched on in branch protection — see
-[merge protection on `master`](merge-protection.md).) That run checks out a synthetic ref —
+so `ci.yml` also triggers on `merge_group` (see
+[merge protection on `master`](merge-protection.md)). That run checks out a synthetic ref —
 `refs/heads/gh-readonly-queue/master/pr-<n>-<sha>` — holding `master` plus every
 entry ahead of this one in the queue, and reports the same `ci-ok` against it. It
 is the only run that ever sees the tree that will actually exist, which is the
