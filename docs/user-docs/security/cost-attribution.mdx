@@ -166,6 +166,8 @@ For a whole-window total rather than individual requests, `by-attribution` is st
 
 Listing needs **Viewer** on the org; creating, updating and deleting need **Admin**. Every mutation is audited.
 
+Each row in a listing carries `live_key_count`, the number of enabled, unexpired virtual keys attributed to it, so a unit or customer with no spend can be told apart from one no key points at. The dashboard says _no key assigned_ on such a card and links to **Virtual Keys**. See [Attribution listings](/api/attribution-listings).
+
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   https://control.example.com/api/v1/orgs/$ORG_ID/business-units

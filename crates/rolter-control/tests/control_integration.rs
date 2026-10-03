@@ -3183,6 +3183,164 @@ async fn virtual_key_cost_attribution_round_trip() {
     assert!(orphaned[0]["business_unit_id"].is_null());
 }
 
+/// #2581: the business-unit and customer listings count the live virtual keys
+/// attributed to each row, so a zero-spend card can tell "no key" from "no
+/// traffic". A disabled or expired key is not live, and a row nothing points at
+/// still comes back with a zero rather than dropping out of the join.
+#[tokio::test]
+async fn attribution_listings_count_live_virtual_keys() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let pool = db.pool().clone();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+    async fn get(client: &reqwest::Client, url: String) -> Value {
+        let resp = client.get(&url).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "GET {url}");
+        resp.json().await.unwrap()
+    }
+    fn count_for(rows: &Value, id: &str) -> i64 {
+        rows.as_array()
+            .expect("a listing is an array")
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed"))["live_key_count"]
+            .as_i64()
+            .expect("live_key_count is an integer")
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+
+    let unit = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+        json!({"name": "Payments"}),
+    )
+    .await;
+    let unit_id = unit["id"].as_str().expect("unit id");
+    let idle_unit = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+        json!({"name": "Research"}),
+    )
+    .await;
+    let idle_unit_id = idle_unit["id"].as_str().expect("idle unit id");
+    let customer = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/customers"),
+        json!({"name": "Acme EU", "business_unit_id": unit_id}),
+    )
+    .await;
+    let customer_id = customer["id"].as_str().expect("customer id");
+    let idle_customer = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/customers"),
+        json!({"name": "Acme US"}),
+    )
+    .await;
+    let idle_customer_id = idle_customer["id"].as_str().expect("idle customer id");
+
+    // four keys on the same unit and customer: two live, one disabled, one
+    // expired. only the two live ones count
+    let mut key_ids = Vec::new();
+    for name in ["live-a", "live-b", "disabled", "expired"] {
+        let key = post(
+            &client,
+            format!("{base}/api/v1/projects/{project_id}/virtual-keys"),
+            json!({"name": name}),
+        )
+        .await;
+        let key_id = key["id"].as_str().expect("key id").to_string();
+        let attributed = client
+            .put(format!("{base}/api/v1/virtual-keys/{key_id}/attribution"))
+            .json(&json!({"business_unit_id": unit_id, "customer_id": customer_id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(attributed.status(), 200);
+        key_ids.push(key_id);
+    }
+    let disabled = client
+        .put(format!("{base}/api/v1/virtual-keys/{}", key_ids[2]))
+        .json(&json!({"disabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    // no endpoint backdates an expiry, so the store is told directly
+    sqlx::query("update virtual_keys set expires_at = now() - interval '1 day' where id = $1")
+        .bind(uuid::Uuid::parse_str(&key_ids[3]).expect("key uuid"))
+        .execute(&pool)
+        .await
+        .expect("expire key");
+
+    let units = get(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+    )
+    .await;
+    assert_eq!(count_for(&units, unit_id), 2);
+    assert_eq!(count_for(&units, idle_unit_id), 0);
+    // the row's own columns are still there beside the count
+    assert_eq!(units[0]["name"], "Payments");
+    assert_eq!(units[0]["org_id"], org_id);
+
+    let customers = get(&client, format!("{base}/api/v1/orgs/{org_id}/customers")).await;
+    assert_eq!(count_for(&customers, customer_id), 2);
+    assert_eq!(count_for(&customers, idle_customer_id), 0);
+    let listed_customer = customers
+        .as_array()
+        .expect("customers")
+        .iter()
+        .find(|row| row["id"] == customer_id)
+        .expect("customer listed");
+    assert_eq!(listed_customer["business_unit_id"], unit_id);
+
+    // re-enabling a key brings it back into the count
+    let enabled = client
+        .put(format!("{base}/api/v1/virtual-keys/{}", key_ids[2]))
+        .json(&json!({"disabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(enabled.status(), 200);
+    let units = get(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+    )
+    .await;
+    assert_eq!(count_for(&units, unit_id), 3);
+}
+
 /// #2279: a prompt template version `PromptTemplatesConfig::validate` rejects
 /// used to be stored and published, after which the snapshot refused to be
 /// served at all and config propagation froze for every tenant. The endpoint

@@ -22,10 +22,10 @@ use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
-    AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, Skill, SkillVersion, Team, User,
-    VirtualKey,
+    AuditLogEntry, Budget, BusinessUnit, BusinessUnitListing, Customer, CustomerListing,
+    Membership, ModelPrice, Org, OrgProject, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, Skill, SkillVersion, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
@@ -871,7 +871,7 @@ async fn list_business_units(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<BusinessUnit>>> {
+) -> ApiResult<Json<Vec<BusinessUnitListing>>> {
     authorize(
         &state,
         &principal,
@@ -879,7 +879,13 @@ async fn list_business_units(
         cap!("business_unit", Read),
     )
     .await?;
-    Ok(Json(BusinessUnitRepo(pool(&state)).list(org_id).await?))
+    // the live key count rides along so a zero-spend card can say whether any
+    // key is attributed to the unit at all (#2581)
+    Ok(Json(
+        BusinessUnitRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1006,7 +1012,7 @@ async fn list_customers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Customer>>> {
+) -> ApiResult<Json<Vec<CustomerListing>>> {
     authorize(
         &state,
         &principal,
@@ -1014,7 +1020,12 @@ async fn list_customers(
         cap!("customer", Read),
     )
     .await?;
-    Ok(Json(CustomerRepo(pool(&state)).list(org_id).await?))
+    // see list_business_units for why the count is part of the listing
+    Ok(Json(
+        CustomerRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]

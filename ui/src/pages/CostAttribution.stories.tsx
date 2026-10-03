@@ -536,6 +536,74 @@ export const AUnitWithNoTrafficSaysSo: Story = {
     await waitFor(() =>
       expect(canvas.getAllByText("No spend in this window").length).toBeGreaterThan(0),
     );
+    // these rows carry no key count (an older control plane), and an unknown
+    // count must not be read as "no key"
+    await expect(canvas.queryByText(/no key assigned/)).toBeNull();
+  },
+};
+
+/**
+ * A zero-spend card whose unit has no live key says so and links to where keys
+ * are attributed, so "idle" and "nothing could bill it" read differently
+ * (#2581). A unit that has keys but no traffic keeps the plain line.
+ */
+export const AZeroSpendUnitWithNoKeySaysSo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        units: () =>
+          json([
+            { ...UNITS[0], live_key_count: 0 },
+            { ...UNITS[1], live_key_count: 3 },
+          ]),
+        spend: () => json({ data: [] }),
+      })}
+    >
+      <Routes>
+        <Route path="/virtual-keys" element={<p>Virtual keys screen</p>} />
+        <Route path="*" element={<BusinessUnits />} />
+      </Routes>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const noKey = await canvas.findByTestId("card-no-key");
+    await expect(noKey).toHaveTextContent("No spend in this window · no key assigned.");
+    // exactly one card: the unit with three live keys is idle, not unassigned
+    await expect(canvas.getAllByTestId("card-no-key")).toHaveLength(1);
+    await expect(canvas.getAllByText("No spend in this window")).toHaveLength(1);
+    const link = within(noKey).getByRole("link", { name: "Assign a key" });
+    await expect(link).toHaveAttribute("href", "/virtual-keys");
+    // routed inside the app, not a page reload (#2215)
+    await userEvent.click(link);
+    await waitFor(() => expect(canvas.getByText("Virtual keys screen")).toBeVisible());
+  },
+};
+
+/** the customer screen reads its own count the same way */
+export const AZeroSpendCustomerWithNoKeySaysSo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        customers: () =>
+          json([
+            { ...CUSTOMERS[0], live_key_count: 2 },
+            { ...CUSTOMERS[1], live_key_count: 0 },
+          ]),
+        spend: () => json({ data: [] }),
+      })}
+    >
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId("card-no-key")).toHaveLength(1));
+    // the line sits on its own card, which is Globex's and not Acme's
+    const card = canvas.getByTestId("card-no-key").parentElement as HTMLElement;
+    await expect(within(card).getByText("Globex")).toBeVisible();
+    await expect(within(card).queryByText("Acme Corp")).toBeNull();
+    await expect(within(card).getByRole("link", { name: "Assign a key" })).toBeVisible();
   },
 };
 

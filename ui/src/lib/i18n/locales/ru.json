@@ -1886,6 +1886,7 @@
       "spendUnattributed": "Без привязки",
       "spendUnattributedShare": "{{share}} за период",
       "noSpend": "За этот период расходов нет",
+      "noSpendNoKey": "За этот период расходов нет · ключи не назначены. <0>Назначить ключ</0>",
       "cardRequests_one": "{{count}} запрос",
       "cardRequests_few": "{{count}} запроса",
       "cardRequests_many": "{{count}} запросов",

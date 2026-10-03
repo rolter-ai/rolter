@@ -32,13 +32,14 @@ use rolter_core::{Error, Result};
 use super::models::{
     AccessProfile, AccessProfileAssignment, AccessProfilePolicy, AccessProfileRole,
     AdaptiveRoutingPolicy, AdaptiveRoutingTelemetry, AuditLogEntry, Budget, BusinessUnit,
-    ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole, CustomRoleGrant, Customer,
-    EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, MfaPolicyBinding,
-    ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode,
-    SsoGroupMapping, SsoLoginState, SsoProvider, Team, User, VirtualKey,
+    BusinessUnitListing, ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole,
+    CustomRoleGrant, Customer, CustomerListing, EffectiveGrant, FeatureFlags, Invitation,
+    LoggingSettings, Membership, MfaPolicyBinding, ModelDefaults, ModelPrice, Org, OrgAuthPolicy,
+    OrgProject, OwnedVirtualKey, PluginInstance, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity, ScimToken,
+    SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode, SsoGroupMapping,
+    SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -534,6 +535,32 @@ impl BusinessUnitRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The org's business units with the count of live virtual keys
+    /// attributed to each, in one query: a grouped count joined onto the
+    /// units rather than one count per unit.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<BusinessUnitListing>> {
+        sqlx::query_as(
+            "select bu.id, bu.org_id, bu.name, bu.slug, bu.retired_at, bu.created_at,
+                    coalesce(k.live_key_count, 0) as live_key_count
+             from business_units bu
+             left join (
+                 select vk.business_unit_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join business_units owner on owner.id = vk.business_unit_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.business_unit_id
+             ) k on k.business_unit_id = bu.id
+             where bu.org_id = $1
+             order by bu.name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<BusinessUnit> {
         sqlx::query_as(
             "select id, org_id, name, slug, retired_at, created_at
@@ -606,6 +633,32 @@ impl CustomerRepo<'_> {
         sqlx::query_as(
             "select id, org_id, business_unit_id, name, slug, retired_at, created_at
              from customers where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The org's customers with the count of live virtual keys attributed to
+    /// each, in one query: a grouped count joined onto the customers rather
+    /// than one count per customer.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<CustomerListing>> {
+        sqlx::query_as(
+            "select c.id, c.org_id, c.business_unit_id, c.name, c.slug, c.retired_at,
+                    c.created_at, coalesce(k.live_key_count, 0) as live_key_count
+             from customers c
+             left join (
+                 select vk.customer_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join customers owner on owner.id = vk.customer_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.customer_id
+             ) k on k.customer_id = c.id
+             where c.org_id = $1
+             order by c.name",
         )
         .bind(org_id)
         .fetch_all(self.0)

@@ -1,0 +1,86 @@
+---
+title: "Listing Business Units and Customers with Their Key Counts"
+sidebarTitle: "Attribution listings"
+description: "GET /api/v1/orgs/{org_id}/business-units and /customers return each row with the number of live virtual keys attributed to it, so a unit with no spend can be told apart from one that nothing could bill."
+---
+
+A business unit or customer that shows no spend in a window is one of two
+things: it has keys and they were idle, or no live key points at it at all and
+nothing _could_ have been billed to it. The row alone cannot tell those apart,
+so both listings carry a count of the live virtual keys attributed to each row.
+
+## Request
+
+```http
+GET /api/v1/orgs/{org_id}/business-units
+GET /api/v1/orgs/{org_id}/customers
+Authorization: Bearer <session or admin token>
+```
+
+```bash
+curl -s https://control.example.com/api/v1/orgs/$ORG_ID/business-units \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+There are no query parameters.
+
+## Response
+
+```json
+[
+  {
+    "id": "aaaaaaaa-0000-4000-8000-000000000001",
+    "org_id": "11111111-1111-4111-8111-111111111111",
+    "name": "Platform Engineering",
+    "slug": "platform-engineering",
+    "retired_at": null,
+    "created_at": "2026-01-05T10:00:00Z",
+    "live_key_count": 3
+  },
+  {
+    "id": "aaaaaaaa-0000-4000-8000-000000000002",
+    "org_id": "11111111-1111-4111-8111-111111111111",
+    "name": "Research",
+    "slug": "research",
+    "retired_at": null,
+    "created_at": "2026-03-05T10:00:00Z",
+    "live_key_count": 0
+  }
+]
+```
+
+A customer row has the same shape plus its `business_unit_id`. Rows are
+ordered by name.
+
+| Field            | Type    | Meaning                                                              |
+| ---------------- | ------- | -------------------------------------------------------------------- |
+| `live_key_count` | integer | virtual keys whose `business_unit_id` (or `customer_id`) is this row |
+
+A key counts as **live** while it is not disabled and not past its
+`expires_at`. A disabled key counts again once it is re-enabled; a deleted key
+is gone from the count. A row nothing points at answers `0`, never drops out of
+the list.
+
+The count is computed in the same query as the listing, so an org with many
+units costs one round trip, not one per unit.
+
+<Note>
+  **Only the listing carries the count.** `POST` and `PUT` on a business unit
+  or customer answer the row without `live_key_count`, and a control plane
+  older than the field leaves it out of the listing too. Treat an absent count
+  as unknown, not as zero.
+</Note>
+
+## In the dashboard
+
+On **Business Units** and **Customers**, a card with no spend in the selected
+window and a `live_key_count` of `0` reads _No spend in this window · no key
+assigned_, with a link to **Virtual Keys**, where a key is pointed at a unit or
+a customer.
+
+## Authorization
+
+The `business_unit` (or `customer`) capability's read action at the
+**organization** scope: a viewer membership on the org is enough. A caller
+without it is refused with `403`, and an unauthenticated one with `401`, in the
+standard error shape.

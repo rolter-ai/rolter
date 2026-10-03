@@ -1794,6 +1794,7 @@
       "spendUnattributed": "Unattributed",
       "spendUnattributedShare": "{{share}} of the window",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
