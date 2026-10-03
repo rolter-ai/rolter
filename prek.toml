@@ -269,6 +269,16 @@ language = "system"
 files = "^(\\.github/workflows/project-automation\\.yml|scripts/test-project-automation\\.sh)$"
 pass_filenames = false
 
+# integration/dogfood/*.sh decide what an operator is told to do next from their
+# exit codes and nothing else ran them. this drives them against a stub server
+[[repos.hooks]]
+id = "dogfood-scripts"
+name = "dogfood scripts against a stub server"
+entry = "bash scripts/test-dogfood-scripts.sh"
+language = "system"
+files = "^(integration/dogfood/[^/]+\\.sh|integration/dogfood/creds\\.env|integration/dogfood/signoz/dashboards/.*\\.json|scripts/test-dogfood-scripts\\.sh)$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "chart-appversion"
 name = "chart appVersion tracks the workspace version"

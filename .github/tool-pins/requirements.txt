@@ -6,3 +6,4 @@
 maturin==1.15.0
 zizmor==1.26.1
 ruff==0.15.0
+shellcheck-py==0.11.0.1
