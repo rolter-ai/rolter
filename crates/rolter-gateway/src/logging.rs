@@ -1233,6 +1233,10 @@ impl BatchWriter {
         let mut stopping = false;
         loop {
             tokio::select! {
+                // stop first: with a backlog both arms are ready and an
+                // unbiased pick keeps taking from an open queue, so a send
+                // racing the drain would be written instead of counted dropped
+                biased;
                 // shutdown: closing the receiver keeps what is queued readable
                 // and then yields `None`, so the arm below flushes it all
                 _ = stop.cancelled(), if !stopping => {
@@ -2500,6 +2504,92 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         // "unknown" rather than "free"
         assert!(req.contains("\"unpriced\":1"), "{req}");
         assert!(req.contains("\"cost_usd\":0.0"), "{req}");
+    }
+
+    /// The shutdown close lands on the writer's first turn after the stop, so a
+    /// row offered while it is still flushing the backlog is refused and counted
+    /// dropped, not written (#2618). The stand-in answers slowly with one row per
+    /// batch, so the backlog outlives the stop. Probabilistic by nature: without
+    /// `biased;` the writer keeps taking queued rows from the open queue with
+    /// even odds on each turn, so the close assertion fails most runs.
+    #[tokio::test]
+    async fn a_send_racing_the_shutdown_close_is_counted_as_dropped() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    if sock.read(&mut buf).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+
+        // each round is a coin flip without `biased;`, so repeat it
+        for _ in 0..6 {
+            let metrics = Arc::new(Metrics::default());
+            // one row per batch, so every queued row is its own slow flush
+            let sink = LogSink::spawn(
+                format!("http://{addr}"),
+                1,
+                Duration::from_secs(3600),
+                16,
+                metrics.clone(),
+            );
+            for _ in 0..4 {
+                sink.log(RequestLog::default());
+            }
+            // let the writer take the first row, so the stop lands mid-flush
+            let tx = sink.tx.clone().expect("a spawned sink has a channel");
+            for _ in 0..1_000 {
+                if tx.capacity() == 13 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            assert_eq!(tx.capacity(), 13, "the writer never took a row");
+
+            let draining = tokio::spawn({
+                let sink = sink.clone();
+                async move { sink.shutdown().await }
+            });
+            for _ in 0..2_000 {
+                if tx.is_closed() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            assert!(tx.is_closed(), "the drain never closed the queue");
+            // one row was in flight when the stop fired; the close must come on the
+            // very next turn, not once the backlog ran dry
+            assert_eq!(
+                metrics.logs_written_total.load(Relaxed),
+                1,
+                "the queue stayed open while the backlog was flushed"
+            );
+
+            sink.log(RequestLog::default());
+            assert_eq!(metrics.logs_dropped_total.load(Relaxed), 1);
+
+            tokio::time::timeout(Duration::from_secs(10), draining)
+                .await
+                .expect("the drain finished")
+                .expect("the drain task did not panic");
+            assert_eq!(
+                metrics.logs_written_total.load(Relaxed),
+                4,
+                "only the rows queued before the close are written"
+            );
+        }
     }
 
     #[tokio::test]

@@ -4,8 +4,12 @@ import {
   ACTIONS,
   CAPABILITIES,
   allowedFor,
+  chainAt,
   effectiveFor,
   matrixFixture,
+  resolveRole,
+  type Membership,
+  type ScopeChain,
 } from "./rbac-capabilities";
 
 // The mirror of the `rbac_matrix` unit tests in
@@ -67,6 +71,124 @@ describe("effective capabilities", () => {
     // orgs have no update route and an audit log is append-only
     expect(has(allowed, "org:update")).toBe(false);
     expect(has(allowed, "audit_log:create")).toBe(false);
+  });
+});
+
+// the `chain()` and `membership()` fixtures of the Rust tests, and the cases
+// they state about a caller whose role sits below the org (#2376)
+const CHAIN: ScopeChain = { orgId: "o", teamId: "t", projectId: "p" };
+const ORG_ONLY: ScopeChain = { orgId: "o", teamId: null, projectId: null };
+const at = (role: Membership["role"], level: "org" | "team" | "project"): Membership => ({
+  role,
+  orgId: "o",
+  teamId: level === "org" ? null : "t",
+  projectId: level === "project" ? "p" : null,
+});
+const allowedAt = (memberships: Membership[], chain = CHAIN) => allowedFor({ memberships, chain });
+
+describe("each capability decided at its own scope", () => {
+  it("does not promise a team admin org-scoped capabilities", () => {
+    const allowed = allowedAt([at("admin", "team")]);
+    // org-scoped: the guard checks the org alone and a team membership does
+    // not reach it
+    expect(has(allowed, "team:create")).toBe(false);
+    expect(has(allowed, "custom_role:read")).toBe(false);
+    expect(has(allowed, "plugin:create")).toBe(false);
+    // project-scoped: the whole chain, which the team membership does reach
+    expect(has(allowed, "route:create")).toBe(true);
+    expect(has(allowed, "provider:create")).toBe(true);
+    // and the wire `role` is still the one resolved at the whole chain
+    expect(effectiveFor({ memberships: [at("admin", "team")], chain: CHAIN }).role).toBe("admin");
+  });
+
+  it("decides a team-scoped row at org + team, so a project admin does not create projects", () => {
+    expect(chainAt("team", CHAIN)).toEqual({ orgId: "o", teamId: "t", projectId: null });
+    expect(has(allowedAt([at("admin", "project")]), "project:create")).toBe(false);
+    expect(has(allowedAt([at("admin", "team")]), "project:create")).toBe(true);
+  });
+
+  it("does not let a project member read org-scoped resources", () => {
+    const allowed = allowedAt([at("member", "project")]);
+    expect(has(allowed, "custom_role:read")).toBe(false);
+    expect(has(allowed, "team:read")).toBe(false);
+  });
+
+  it("lets a project viewer read budgets and rate limits and write neither", () => {
+    const viewer = [at("viewer", "project")];
+    for (const res of ["budget", "rate_limit"]) {
+      expect(has(allowedAt(viewer), `${res}:read`)).toBe(true);
+      for (const action of ["create", "update", "delete"]) {
+        expect(has(allowedAt(viewer), `${res}:${action}`)).toBe(false);
+      }
+    }
+    // asked at the org alone, or by a caller with no role, nothing is read
+    expect(has(allowedAt(viewer, ORG_ONLY), "budget:read")).toBe(false);
+    expect(has(allowedAt([]), "rate_limit:read")).toBe(false);
+    // an org viewer still reads at any chain
+    for (const chain of [CHAIN, ORG_ONLY]) {
+      expect(has(allowedAt([at("viewer", "org")], chain), "budget:read")).toBe(true);
+    }
+  });
+
+  it("promises a project admin provider writes on their own project only", () => {
+    const admin = [at("admin", "project")];
+    for (const res of ["provider", "provider_group"]) {
+      for (const action of ACTIONS) {
+        expect(has(allowedAt(admin), `${res}:${action}`)).toBe(true);
+      }
+    }
+    expect(has(allowedAt(admin), "team:create")).toBe(false);
+    expect(has(allowedAt([at("viewer", "project")]), "provider:create")).toBe(false);
+    // asked at the org alone, a project membership does not reach it
+    expect(has(allowedAt(admin, ORG_ONLY), "provider:create")).toBe(false);
+    // an org admin still passes, with or without a project in the query
+    for (const chain of [CHAIN, ORG_ONLY]) {
+      expect(has(allowedAt([at("admin", "org")], chain), "provider:create")).toBe(true);
+    }
+  });
+
+  it("resolves the most specific membership, ties to the higher role", () => {
+    // a project viewer in an org they administer is a viewer on the project
+    expect(resolveRole([at("admin", "org"), at("viewer", "project")], CHAIN)).toBe("viewer");
+    expect(resolveRole([at("admin", "org"), at("viewer", "project")], ORG_ONLY)).toBe("admin");
+    expect(resolveRole([at("viewer", "team"), at("member", "team")], CHAIN)).toBe("member");
+    // a membership on another project reaches nothing here
+    expect(resolveRole([{ role: "admin", projectId: "other" }], CHAIN)).toBe(null);
+  });
+
+  // the mirror of `allowed_for_agrees_with_authorize_on_every_row`: for every
+  // row, the answer is the role resolved at the chain that row's guard asks at
+  it("agrees with the guard on every row, for every membership level and role", () => {
+    const levels: Membership[][] = (["viewer", "member", "admin"] as const).flatMap((role) => [
+      [at(role, "org")],
+      [at(role, "team")],
+      [at(role, "project")],
+      [{ role, teamId: "t" }],
+      [{ role, projectId: "p" }],
+    ]);
+    const rank = { viewer: 0, member: 1, admin: 2 } as const;
+    for (const ms of levels) {
+      const allowed = allowedAt(ms);
+      for (const c of CAPABILITIES) {
+        const guard: ScopeChain =
+          c.scope === "org"
+            ? ORG_ONLY
+            : c.scope === "team"
+              ? { orgId: "o", teamId: "t", projectId: null }
+              : CHAIN;
+        const role = resolveRole(ms, guard);
+        for (const action of ACTIONS) {
+          const authority = c[action];
+          if (authority === null || authority === "superadmin" || authority === "authenticated")
+            continue;
+          const decided = role !== null && rank[role] >= rank[authority];
+          expect([`${c.resource}:${action}`, has(allowed, `${c.resource}:${action}`)]).toEqual([
+            `${c.resource}:${action}`,
+            decided,
+          ]);
+        }
+      }
+    }
   });
 });
 
