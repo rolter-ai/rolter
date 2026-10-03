@@ -23,6 +23,7 @@ route per strategy worth looking at, and the whole session traced into SigNoz.
 | `dogfood.toml`        | the desired state `rolter-seed --import` writes to Postgres: providers, groups, eleven routes |
 | `keys.env`            | the API keys the fleet expects (fake, loopback-only, checked in on purpose)                   |
 | `adaptive-routing.sh` | turns the adaptive-routing kill switch on or off (#1817)                                      |
+| `payload-capture.sh`  | turns raw payload capture on or off (#1911)                                                   |
 | `ux-capture.sh`       | applies `clickhouse/*.sql` and proves the dashboard UX capture end to end (#1728)             |
 | `personas.sh`         | one account per user-journey persona, each at the role and scope its script assumes           |
 | `journeys/`           | the user-journey scripts as a headless runner (`just dogfood-journeys`)                       |
@@ -38,8 +39,10 @@ matters for what the gateway needs before (or without) a control plane: the
 listen address in `[server]`, and `[logging].clickhouse_url`, which opens the
 request-log sink once at startup. Everything else in it is replaced wholesale by
 the first snapshot the control plane serves. That includes
-`[logging.payload_capture]`, which from then on comes from Postgres, so a stack
-that was never seeded serves capture off (#1911).
+`[logging.payload_capture]`, which from then on comes from Postgres. That row
+ships with capture off, so `just dogfood` turns it on through
+`PUT /api/v1/logging-settings` (`payload-capture.sh`, #1911) and an unseeded
+stack captures too.
 
 `dogfood.toml` is desired state for `rolter-seed --import` (`just dogfood-seed`),
 and no running process reads it. The importer writes its providers, provider
@@ -148,7 +151,7 @@ lives in Postgres, where the importer does not write it. `just dogfood` runs the
 script after the control plane is up. The script changes only `enabled`, so
 blend weights set on **Adaptive Routing → Settings** survive it. The route then
 engages once it has served `min_samples` picks (50 by default), and the
-**Adaptive Routing → Dashboard** screen shows `engaged` from then on. To compare
+**Adaptive Routing → Telemetry** screen shows `engaged` from then on. To compare
 against the fallback stack, run `just dogfood-adaptive off`, or flip the switch
 on the Settings screen. The choice survives a restart of the control plane, but
 the next `just dogfood` turns the switch back on.

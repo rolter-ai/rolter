@@ -143,9 +143,76 @@ the project the route lives in, and a key of another project gets the same
 miss. It is off by default (a route is visible to its whole org), and an admin
 turns it on as **This project** under the model's **Access & permissions**. A
 key from the gateway's config file is not narrowed. It narrows the named route
-only: the provider or group behind it stays reachable org-wide as
-`provider-slug/model` or `group-slug/model`, so confining a provider to one
-project takes the key's `providers` allow-list (#1919).
+only. Confining the provider or group behind it is a separate scope on the
+provider or group itself, below (#1919).
+
+### Project-scoped providers and groups (#1919)
+
+A provider or provider group carries an optional project scope, stored as
+`providers.project_id` / `provider_groups.project_id` (migration `0082`) and
+served in the snapshot as `tenancy.project_id` (for a provider or group that
+field is the scope; on a route it is the route's own project and narrows
+nothing without `project_only`). Unset is org-wide, which every existing row is:
+every project of the org may use it, so shared providers stay available as
+fallbacks and options. Set, only keys minted in that project may reach it, and
+a key with an org but no project is refused as well. A project is not a team
+child for this purpose: only a project is scopable, and a team scope is not
+modelled.
+
+The gateway enforces it in `RouteEntry::in_tenancy_of`, the one gate every
+resolution path and `model_visible_to` already pass through, with
+`RouteEntry::project_scope`:
+
+- a pinned `provider-slug/model` takes its provider's scope;
+- a pinned `group-slug/model` takes the group's scope, or failing that the scope
+  of a member it finds scoped;
+- a named route takes the scope of the first provider behind its targets or
+  variants that is scoped, so a route listed org-wide still cannot hand a
+  project's credential to another project's key.
+
+The refusal is the miss every other tenancy refusal is: `404 model_not_found`,
+and `GET /v1/models` lists neither the address nor the models only a scoped
+route would reveal. A key from the gateway's own config file carries no org and
+is not narrowed.
+
+The write path keeps rows inside the rule, and answers `409` when it cannot:
+
+- A route (its project) or group may use org-wide providers and its own
+  project's. A route may not use another project's provider.
+- An org-wide group may hold only org-wide providers: its `slug/model` address
+  answers every project of the org, so a scoped member would be reachable by
+  all of them. A scoped group may hold its own project's providers and org-wide
+  ones. Groups resolve to their members' providers by name, with no per-key
+  filtering, which is why the rule is "no scoped member in a wider group"
+  rather than "hide the member from other projects".
+- Changing a scope is checked against what already uses the row: scoping an
+  org-wide provider fails while a route of another project or a group not
+  scoped to the same project holds it; moving a group fails while it holds a
+  provider of another project.
+- The project must belong to the row's org (`400` otherwise, the same message
+  for an unknown id). A trigger on both tables repeats that check for writes
+  that bypass the API, since a foreign key cannot reach the org two joins away.
+- `project_id` has no `on delete` action. `set null` would silently widen a
+  project's private provider to the whole org, and `cascade` would destroy its
+  credential, so deleting a project (or a team holding one) is refused with a
+  `409` naming what it still owns. Deleting an org still works: the check runs
+  at the end of the statement, after the cascade removed both sides.
+
+Authorization: creating or deleting a scoped provider or group needs the
+`provider` / `provider_group` capability at that project (so a project admin can
+manage their own project's), where an org-wide one needs it at the org. Making a
+row org-wide, moving it, and naming an environment variable for a credential
+(`api_key_env`, a read of the control plane's environment) stay an org admin's.
+Listing shows a project member the org-wide rows and their own project's;
+an org-level reader sees everything.
+
+Rows that break the rule anyway (SQL, a seed) are not served:
+`GatewayConfig::sanitize_for_snapshot` prunes the offending target or member
+with a line in `/api/v1/config/problems` and drops a route left with no target,
+the same per-row resilience as #926, #2306 and #2279, so one bad row never
+withholds the snapshot. `rolter-seed --import` and `rolter config export`
+round-trip the scope as `project_scoped = true`, meaning the project the file
+is imported into.
 
 The write path keeps the snapshot inside that rule:
 
@@ -188,9 +255,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. The unauthenticated
-`GET /api/v1/config` still lists every org's providers, routes and groups;
-whether it may describe that topology at all is #1840.
+every key's org, team, project and creator. `GET /api/v1/config` still lists
+every org's providers, routes and groups, so it needs a session of any role
+(#1840).
 
 ### One org never reaches another (#1844, #1845)
 
@@ -224,9 +291,9 @@ the project the route lives in, and a key of another project gets the same
 miss. It is off by default (a route is visible to its whole org), and an admin
 turns it on as **This project** under the model's **Access & permissions**. A
 key from the gateway's config file is not narrowed. It narrows the named route
-only: the provider or group behind it stays reachable org-wide as
-`provider-slug/model` or `group-slug/model`, so confining a provider to one
-project takes the key's `providers` allow-list (#1919).
+only; confining the provider or group behind it is the provider's own project
+scope, described under
+[Project-scoped providers and groups](#project-scoped-providers-and-groups-1919).
 
 The write path keeps the snapshot inside that rule:
 
@@ -269,9 +336,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. The unauthenticated
-`GET /api/v1/config` still lists every org's providers, routes and groups;
-whether it may describe that topology at all is #1840.
+every key's org, team, project and creator. `GET /api/v1/config` still lists
+every org's providers, routes and groups, so it needs a session of any role
+(#1840).
 
 ### Empty key sets
 
@@ -343,8 +410,13 @@ the things a body would carry are the reasons this endpoint exists:
   scopes cannot be a key that "cannot address a model the user could not already
   address", because the client can ask for everything. The list is computed here
   from the routes configured in the project being minted against, and written
-  out explicitly — an empty `models` array means _every_ model, so a project with
-  no routes is a `400` rather than a key with the widest possible reach.
+  out explicitly — an empty `models` array means _every_ model. A project with
+  no routes yet gets `models = ["fake-llm"]` instead (#2300): the built-in is
+  the one model a fresh deployment can answer, and a managed gateway refuses a
+  keyless call even for it (`authenticate` in
+  `crates/rolter-gateway/src/handlers.rs` checks the key before the builtin is
+  resolved), so this key is what lets the first Getting started call work
+  before any provider or route exists, without reaching anything else.
 - **Lifetime.** `expires_in_days` has a floor of one day. A playground key lives
   `PLAYGROUND_KEY_TTL_MINUTES` (30) and the dashboard asks for a fresh one, so a
   credential does not outlive the tab holding it.
@@ -356,14 +428,15 @@ reach, which makes it a snapshot of what the caller could reach rather than a
 standing grant.
 
 The dashboard calls this once per project as the Playground opens, and once
-more per **Mint key** / **Renew key** — never in a loop, since a refusal (a
-routeless project answers `400`, no session answers `401`) is a state the
-operator has to act on rather than one a retry can clear. The automatic call
-waits for `my_virtual_key:create` from `/api/v1/rbac/effective` and is not made
-on an explicit refusal, so a viewer is not sent into a `403` on arrival. The
-endpoint takes no body, so `400` is the one client error it gives, and the
-Playground reads that status as "this project routes nothing": it explains the
-precondition, links Routing Rules and offers no retry (#2061). With no key and
+more per **Mint key** / **Renew key** — never in a loop, since a refusal (no
+session answers `401`) is a state the operator has to act on rather than one a
+retry can clear. The automatic call waits for `my_virtual_key:create` from
+`/api/v1/rbac/effective` and is not made on an explicit refusal, so a viewer is
+not sent into a `403` on arrival. A minted key whose `models` is exactly
+`["fake-llm"]` is the routeless project's: the Playground keeps Send live, says
+the key reaches the built-in only and links Routing Rules, since a route added
+later is outside that key's reach until **Renew key** mints a wider one
+(#2061, #2300). With no key and
 no mint due, the Playground asks `GET /gw/v1/models` once without a key; a
 gateway no control plane manages, holding no keys, answers it, and the screen
 then sends without a key rather than holding back its Send buttons. Both the Virtual Keys screen and the account's
@@ -400,6 +473,14 @@ Human users authenticate to the control plane. Two providers ship today: **local
 - **viewer** — read-only (dashboards, logs)
 
 Roles are granted via `memberships` at an **org / team / project** scope. Permission checks resolve the most specific membership for the target resource.
+
+The deployment always keeps one active superadmin (`is_superadmin` and not deactivated, #2344). `UserRepo::update_account`, `set_deactivated` and `delete` take one transaction-scoped advisory lock (`pg_advisory_xact_lock(hashtextextended('superadmins', 0))`) before they count the other active superadmins, and return `LockoutGuard::WouldLockOut` when the target is the last one. The API maps that to `409` with `error.code = last_superadmin`; SCIM deprovisioning and `active: false` answer a SCIM `409`. The lock is one key for the whole set rather than a row lock on the target because two concurrent demotions of two different superadmins would each lock only their own row and each see the other still active. `ROLTER_ADMIN_TOKEN` is not an account and never counts as a remaining superadmin, nor is it exempt. The `rolter-seed` bootstrap and `rolter mfa reset` only create or promote accounts or clear a second factor, so they cannot shrink the set.
+
+An org also keeps one active org-scoped `admin` grant (#2311). `MembershipRepo::delete_guarded` takes `pg_advisory_xact_lock(hashtextextended('org_admins:' || org, 0))`, re-counts the other admin grants held by non-deactivated users under it, and returns `LockoutGuard::WouldLockOut` when the target is the last; `delete_membership` maps that to `409` with `error.code = last_org_admin` and passes `protect_last_admin = !principal.is_superadmin()`. The control plane has no membership update route (the dashboard's role change is grant-then-revoke), so the revoke is the downgrade path and is covered by the same guard. Deleting or deactivating a user through `/api/v1/users` is superadmin-only and therefore exempt.
+
+The identity-provider paths are guarded too (#2558), each in the way that fits who is on the other end. **SCIM deactivation** (`DELETE /scim/v2/Users/{id}`, `active: false` through `PATCH`, `PUT` or a provisioning `POST`) goes through `UserRepo::set_deactivated_guarding_org_admins`, which in one transaction takes the superadmin lock, then the `org_admins` lock of every org where the account holds an active org-scoped `admin` grant in ascending org order (so two deactivations cannot deadlock), and returns `DeactivationGuard::LastOrgAdmin(org)` when no other active account holds one there. It answers a SCIM `409`, like the last-superadmin refusal: a SCIM token is not a superadmin who could repair the org afterwards, the IdP surfaces the error and retries, and the account is global, so every org it administers counts, not only the token's. The message does not name the org, which the token's tenant may not be able to see. **Group reconciliation** (SSO on login, SCIM group sync) instead revokes each stale `sso`/`scim` grant through `crud::revoke_idp_grant`, which calls `delete_guarded(id, true)` and, on `WouldLockOut`, keeps the grant, logs a warning and writes a `membership.last_admin_kept` audit row. Failing there would turn an IdP group change into a sign-in the admin cannot complete, or a group sync that never converges; keeping the grant is safe because both paths derive the wanted set from the IdP on every run, so the next login or sync revokes it once the org has another admin. On SSO the kept role is reported in the login's `granted_roles`, since it is still in force.
+
+Deleting a SCIM group mapping through the operator API (`DELETE /api/v1/scim-group-mappings/{id}`) reconciles the group's members on the spot, through the same `revoke_idp_grant`, but there it is an operator action rather than an IdP sync, so it follows `delete_membership`: `scim_groups::reconcile_user` takes a `protect` flag and the handler passes `!principal.is_superadmin()` (#2673). A superadmin's deletion therefore revokes the org's last admin grant like a direct revoke would, while an org admin's deletion keeps it and writes `membership.last_admin_kept`. Every IdP-driven path (SCIM group create/replace/patch/delete, user deprovisioning, mapping creation, which only adds grants) passes `true`. Deleting an SSO group mapping reconciles nothing at once, because the control plane only learns a user's groups when they sign in; the next login applies the change with `protect = true`, so a superadmin who wants the last SSO admin grant gone revokes the membership directly.
 
 Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
 
@@ -473,6 +554,24 @@ the org), so a team admin can revoke an invitation they could send.
 `scope_team_id` filled in, and the dashboard's scope switcher uses them to land
 a project member on their own project instead of the first team of the first
 org.
+
+`PATCH /api/v1/me/profile` (#1823) is the one self-service route that writes the
+account itself. It is a bare `CurrentUser` route with no `CAPABILITIES` row: it
+touches only `current.user.id`, so there is nothing to authorize and `user:update`
+stays superadmin-only. It goes through `UserRepo::set_profile`, which names only
+`display_name` and `bio`, so the `users` trigger from `0075` (which fires on
+`deactivated_at` and `is_superadmin`) does not bump `config_version`. Who owns
+the display name is decided by `scim_identities`: SCIM writes `displayName` into
+`users.display_name` on create, replace and patch (last sync wins when two orgs
+provision the same account, see [SCIM provisioning](scim-provisioning.md)), so
+an account with such a row is `display_name_managed` and the route answers
+`409` for a change to it. OIDC's `preferred_username` is only a default: the
+first sign-in of an account with no name writes it through
+`UserRepo::default_display_name` (`where display_name is null`, so it never
+replaces a name), and the account stays unmanaged and edits it freely. LDAP's
+name attribute is read into `Identity` but the LDAP provider is not yet wired
+into a sign-in route, so nothing persists it today. The audit row
+`user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
 builds its principal with `Principal::for_user`, which turns `is_superadmin`
@@ -564,8 +663,10 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories (#241), the next
-  provider to implement `IdentityProvider`.
+- **LDAP** — bind + group mapping for enterprise directories. The provider
+  implements `IdentityProvider` (#241) but no configuration, route or screen
+  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
+  [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.

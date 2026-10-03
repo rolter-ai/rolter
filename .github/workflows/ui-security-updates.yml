@@ -8,7 +8,7 @@ name: ui-security-updates
 # that fixes them, and this workflow raises it instead (#1148). a package that
 # only arrives transitively through bun.lock raises no alert at all, since the
 # dependency graph does not read that file, so it is out of this workflow's
-# sight (#1930).
+# sight; extended.yml's `ui lockfile audit` job covers it (#1930).
 #
 # every run lists the open dependabot alerts, lets
 # ui/scripts/security-updates.ts raise each vulnerable direct dependency to its
@@ -52,7 +52,7 @@ concurrency:
 jobs:
   update:
     name: raise ui security updates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       vulnerability-alerts: read # list the open dependabot alerts
       contents: write # push the update branch
@@ -236,12 +236,10 @@ jobs:
           else
             # also the path that heals a run whose push landed and whose
             # `gh pr create` then failed: its branch is here, unchanged, with
-            # neither an open nor a declined pull request. station:mac owns
-            # ui/, so the pull request has an owner the way any other does
+            # neither an open nor a declined pull request
             url="$(gh pr create --repo "${REPO}" --base master --head "${BRANCH}" \
               --title "$(head -n1 "${RUNNER_TEMP}/commit.txt")" --body-file "${RUNNER_TEMP}/body.md" \
-              --label dependencies --label javascript --label security --label ui-dashboard \
-              --label station:mac)"
+              --label dependencies --label javascript --label security --label ui-dashboard)"
             echo "opened ${url}"
             # a pull request this token opens raises no `pull_request_target`
             # event either, so project-automation never adds it to the board.

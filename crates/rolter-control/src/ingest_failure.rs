@@ -145,7 +145,7 @@ pub(crate) fn insert_failed(
         Reason::Insert,
         &format!("{err:#}"),
     );
-    ApiError::Core(rolter_core::Error::Store(INSERT_FAILED.to_string()))
+    ApiError::Curated(INSERT_FAILED.to_string())
 }
 
 /// A write with nowhere to go, because no column store is configured.
@@ -165,7 +165,7 @@ pub(crate) fn unconfigured(
         Reason::Unconfigured,
         message,
     );
-    ApiError::Core(rolter_core::Error::Store(message.to_string()))
+    ApiError::Curated(message.to_string())
 }
 
 /// Count the failure and, when the gate admits it, log it.
@@ -183,35 +183,11 @@ fn report(
             stream = stream.label(),
             reason = reason.label(),
             suppressed,
-            error = %redact_userinfo(detail),
+            error = %rolter_core::redact::redact_urls_in_text(detail),
             "telemetry ingest failed; the events were dropped (further failures on this \
              stream are summarised once a minute)"
         );
     }
-}
-
-/// Mask the `user:password@` part of any URL in `text`.
-///
-/// The store's error quotes the URL it posted to, and `CLICKHOUSE_URL` may
-/// carry its credentials inline; the log is the right place for the URL but
-/// not for the password in it.
-fn redact_userinfo(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(scheme_end) = rest.find("://") {
-        let authority_start = scheme_end + 3;
-        out.push_str(&rest[..authority_start]);
-        rest = &rest[authority_start..];
-        let authority_end = rest
-            .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace() || c == ')')
-            .unwrap_or(rest.len());
-        if let Some(at) = rest[..authority_end].rfind('@') {
-            out.push_str("***");
-            rest = &rest[at..];
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 #[cfg(test)]
@@ -305,6 +281,7 @@ mod tests {
 
     #[test]
     fn the_log_keeps_the_url_but_not_its_password() {
+        let password = uuid::Uuid::new_v4().to_string();
         let warns = Warns::default();
         let subscriber = tracing_subscriber::registry().with(warns.clone());
         tracing::subscriber::with_default(subscriber, || {
@@ -314,26 +291,13 @@ mod tests {
                 1,
                 Stream::McpLogs,
                 Reason::Insert,
-                "error sending request for url (http://rolter:s3cret@ch:8123/?query=INSERT)",
+                &format!("error sending request for url (http://rolter:{password}@ch:8123/?query=INSERT)"),
             );
         });
         let seen = warns.0.lock().clone();
         assert_eq!(seen.len(), 1);
-        assert!(!seen[0].contains("s3cret"), "{}", seen[0]);
+        assert!(!seen[0].contains(&password), "{}", seen[0]);
         assert!(seen[0].contains("http://***@ch:8123/"), "{}", seen[0]);
-    }
-
-    #[test]
-    fn userinfo_redaction_leaves_everything_else_alone() {
-        assert_eq!(redact_userinfo("no url here"), "no url here");
-        assert_eq!(
-            redact_userinfo("post http://ch:8123/?q=a@b failed"),
-            "post http://ch:8123/?q=a@b failed"
-        );
-        assert_eq!(
-            redact_userinfo("a https://u:p@h/x and http://v@k"),
-            "a https://***@h/x and http://***@k"
-        );
     }
 
     async fn body_of(err: ApiError) -> (u16, String) {
@@ -347,10 +311,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_500_body_quotes_nothing_the_store_said() {
+        let password = uuid::Uuid::new_v4().to_string();
         let upstream = anyhow::anyhow!(
             "clickhouse UX event insert failed (404 Not Found): Code: 60. DB::Exception: \
              Table default.ui_events does not exist. (UNKNOWN_TABLE) \
-             url http://rolter:s3cret@clickhouse.internal:8123/?query=INSERT%20INTO%20ui_events"
+             url http://rolter:{password}@clickhouse.internal:8123/?query=INSERT%20INTO%20ui_events"
         );
         let (status, body) = body_of(insert_failed(
             &ControlHistograms::default(),
@@ -369,7 +334,7 @@ mod tests {
             "UNKNOWN_TABLE",
             "INSERT",
             "http",
-            "s3cret",
+            password.as_str(),
             "404",
         ] {
             assert!(!body.contains(leak), "the body leaks {leak:?}: {body}");

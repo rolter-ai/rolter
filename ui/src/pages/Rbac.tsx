@@ -3,6 +3,7 @@ import { KeySquare, Lock, Pencil, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
@@ -35,7 +36,7 @@ import {
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // Roles & Permissions, rendered from `GET /api/v1/rbac/matrix` (#1178).
 //
@@ -227,17 +228,18 @@ export default function Rbac() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `matrix` is the query the user is actually waiting on for this screen
   useScreenReady(!matrix.isLoading);
-  useErrorState(!!matrix.error, "rbac");
 
   if (matrix.isLoading) return <MatrixSkeleton />;
 
   if (matrix.error) {
     return (
       <PageBody>
+        {/* load-error-allow: the permission matrix is fixed content, never empty */}
         <LoadError
           error={matrix.error}
           resource={t("errors.resources.rbacMatrix")}
           onRetry={() => matrix.refetch()}
+          target="rbac"
         />
       </PageBody>
     );
@@ -654,6 +656,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           error={roles.error}
           resource={t("errors.resources.customRoles")}
           onRetry={() => void roles.refetch()}
+          target="custom-roles"
         />
       )}
       {roles.data && roles.data.length === 0 && (
@@ -685,9 +688,9 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
               key={role.id}
               className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
-              <span className="mt-0.5 flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+              <IconFrame className="mt-0.5">
                 <KeySquare className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{role.name}</span>

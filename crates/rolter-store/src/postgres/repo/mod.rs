@@ -13,12 +13,14 @@ mod guardrails;
 mod labels;
 mod mcp;
 mod mfa;
-mod support;
+mod saved_views;
+pub(super) mod support;
 
 pub use guardrails::*;
 pub use labels::*;
 pub use mcp::*;
 pub use mfa::*;
+pub use saved_views::*;
 use support::store_err;
 
 use chrono::{DateTime, Utc};
@@ -30,12 +32,13 @@ use rolter_core::{Error, Result};
 use super::models::{
     AccessProfile, AccessProfileAssignment, AccessProfilePolicy, AccessProfileRole,
     AdaptiveRoutingPolicy, AdaptiveRoutingTelemetry, AuditLogEntry, Budget, BusinessUnit,
-    ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole, CustomRoleGrant, Customer,
-    EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, MfaPolicyBinding,
-    ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoGroupMapping,
+    BusinessUnitListing, ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole,
+    CustomRoleGrant, Customer, CustomerListing, EffectiveGrant, FeatureFlags, Invitation,
+    LoggingSettings, Membership, MfaPolicyBinding, ModelDefaults, ModelPrice, Org, OrgAuthPolicy,
+    OrgProject, OwnedVirtualKey, PluginInstance, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity, ScimToken,
+    SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode, SsoGroupMapping,
     SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
@@ -379,6 +382,48 @@ impl ProjectRepo<'_> {
             .ok_or_else(|| Error::NotFound(format!("project {id}")))
     }
 
+    /// Whether `project_id` belongs to `org_id`, through its team.
+    pub async fn in_org(&self, project_id: Uuid, org_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from projects p join teams t on t.id = p.team_id
+                            where p.id = $1 and t.org_id = $2)",
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The providers and groups scoped to any of `project_ids` (#1919), named
+    /// for the refusal. Deleting a project that still holds one would either
+    /// widen it to the whole org or destroy it, so the delete is refused.
+    pub async fn scoped_resources(&self, project_ids: &[Uuid]) -> Result<Vec<String>> {
+        let providers: Vec<String> = sqlx::query_scalar(
+            "select name from providers where project_id = any($1) order by name",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select slug from provider_groups where project_id = any($1) order by slug",
+        )
+        .bind(project_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(providers
+            .into_iter()
+            .map(|name| format!("provider '{name}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     /// The owning team of each of `ids`, in one query.
     ///
     /// Replaces a per-id [`Self::get`] on the authorization path, where the
@@ -490,6 +535,32 @@ impl BusinessUnitRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The org's business units with the count of live virtual keys
+    /// attributed to each, in one query: a grouped count joined onto the
+    /// units rather than one count per unit.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<BusinessUnitListing>> {
+        sqlx::query_as(
+            "select bu.id, bu.org_id, bu.name, bu.slug, bu.retired_at, bu.created_at,
+                    coalesce(k.live_key_count, 0) as live_key_count
+             from business_units bu
+             left join (
+                 select vk.business_unit_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join business_units owner on owner.id = vk.business_unit_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.business_unit_id
+             ) k on k.business_unit_id = bu.id
+             where bu.org_id = $1
+             order by bu.name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<BusinessUnit> {
         sqlx::query_as(
             "select id, org_id, name, slug, retired_at, created_at
@@ -562,6 +633,32 @@ impl CustomerRepo<'_> {
         sqlx::query_as(
             "select id, org_id, business_unit_id, name, slug, retired_at, created_at
              from customers where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The org's customers with the count of live virtual keys attributed to
+    /// each, in one query: a grouped count joined onto the customers rather
+    /// than one count per customer.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<CustomerListing>> {
+        sqlx::query_as(
+            "select c.id, c.org_id, c.business_unit_id, c.name, c.slug, c.retired_at,
+                    c.created_at, coalesce(k.live_key_count, 0) as live_key_count
+             from customers c
+             left join (
+                 select vk.customer_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join customers owner on owner.id = vk.customer_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.customer_id
+             ) k on k.customer_id = c.id
+             where c.org_id = $1
+             order by c.name",
         )
         .bind(org_id)
         .fetch_all(self.0)
@@ -1202,6 +1299,18 @@ impl SkillRepo<'_> {
     }
 }
 
+/// What [`ProviderRepo::delete`] did with a provider that exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum ProviderDeletion {
+    /// The provider is gone.
+    Deleted,
+    /// The provider was left in place because something still uses it. Each
+    /// entry names one referrer for the refusal, as `route '<model>'` or
+    /// `provider group '<slug>'`, routes first.
+    InUse(Vec<String>),
+}
+
 /// Upstream providers, scoped to an org.
 pub struct ProviderRepo<'a>(pub &'a PgPool);
 
@@ -1274,9 +1383,77 @@ impl ProviderRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Names of the providers in `provider_ids` that are scoped to a project
+    /// other than `owner`: the ones a route of project `owner`, or a group
+    /// scoped to it, may not use (#1919). `owner` is `None` for an org-wide
+    /// group, which may hold no scoped provider at all. An org-wide provider
+    /// is never listed, so every project can use it.
+    pub async fn scoped_outside(
+        &self,
+        provider_ids: &[Uuid],
+        owner: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        sqlx::query_scalar(
+            "select name from providers
+             where id = any($1) and project_id is not null
+               and project_id is distinct from $2
+             order by name",
+        )
+        .bind(provider_ids)
+        .bind(owner)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// What would stop using `provider_id` if it were scoped to `scope`: the
+    /// routes of other projects that target it and the groups not scoped to
+    /// `scope` that hold it, each named for the error that refuses the change.
+    /// Empty for `None`, since org-wide is reachable from everywhere.
+    pub async fn dependents_outside(
+        &self,
+        provider_id: Uuid,
+        scope: Option<Uuid>,
+    ) -> Result<Vec<String>> {
+        let Some(scope) = scope else {
+            return Ok(Vec::new());
+        };
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1 and r.project_id <> $2
+             order by r.model",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1 and g.project_id is distinct from $2
+             order by g.slug",
+        )
+        .bind(provider_id)
+        .bind(scope)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(routes
+            .into_iter()
+            .map(|model| format!("route '{model}'"))
+            .chain(
+                groups
+                    .into_iter()
+                    .map(|slug| format!("provider group '{slug}'")),
+            )
+            .collect())
+    }
+
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -1287,7 +1464,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -1295,21 +1472,6 @@ impl ProviderRepo<'_> {
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
-    }
-
-    /// The names of every provider in any of `org_ids`: what the gateway writes
-    /// into `provider_health_events.provider`, which carries no org of its own,
-    /// so this is how a health rollup is narrowed to the orgs a caller may read
-    /// (#1820).
-    pub async fn names_in_orgs(&self, org_ids: &[Uuid]) -> Result<Vec<String>> {
-        if org_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        sqlx::query_scalar("select name from providers where org_id = any($1)")
-            .bind(org_ids)
-            .fetch_all(self.0)
-            .await
-            .map_err(store_err)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1323,11 +1485,12 @@ impl ProviderRepo<'_> {
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
         egress_proxies: &[String],
+        project_id: Option<Uuid>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -1337,6 +1500,7 @@ impl ProviderRepo<'_> {
         .bind(api_key_env)
         .bind(egress_proxy)
         .bind(serde_json::json!(egress_proxies))
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -1357,6 +1521,7 @@ impl ProviderRepo<'_> {
         api_key_env: Option<Option<&str>>,
         egress_proxy: Option<Option<&str>>,
         egress_proxies: Option<&[String]>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
@@ -1365,9 +1530,10 @@ impl ProviderRepo<'_> {
                  api_base = coalesce($4, api_base),
                  api_key_env = case when $5 then $6 else api_key_env end,
                  egress_proxy = case when $7 then $8 else egress_proxy end,
-                 egress_proxies = case when $9 then $10 else egress_proxies end
+                 egress_proxies = case when $9 then $10 else egress_proxies end,
+                 project_id = case when $11 then $12 else project_id end
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -1379,28 +1545,158 @@ impl ProviderRepo<'_> {
         .bind(egress_proxy.flatten())
         .bind(egress_proxies.is_some())
         .bind(egress_proxies.map(|v| serde_json::json!(v)))
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from providers where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
+    /// Delete provider `id` unless a route target or a provider-group member
+    /// still references it (#2438).
+    ///
+    /// Both references are `on delete restrict`, so the database would refuse
+    /// anyway, but only with a foreign-key error that names nothing the caller
+    /// can act on. The check and the delete share one transaction that holds
+    /// the provider row `for update`: inserting a target or a member takes a
+    /// `for key share` lock on the provider it references, which conflicts
+    /// with that, so no reference can land between the check and the delete.
+    pub async fn delete(&self, id: Uuid) -> Result<ProviderDeletion> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let found: Option<Uuid> =
+            sqlx::query_scalar("select id from providers where id = $1 for update")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        if found.is_none() {
             return Err(Error::NotFound(format!("provider {id}")));
         }
-        Ok(())
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1
+             order by r.model",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1
+             order by g.slug",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if !routes.is_empty() || !groups.is_empty() {
+            // nothing was written, so dropping the transaction just releases the lock
+            return Ok(ProviderDeletion::InUse(
+                routes
+                    .into_iter()
+                    .map(|model| format!("route '{model}'"))
+                    .chain(
+                        groups
+                            .into_iter()
+                            .map(|slug| format!("provider group '{slug}'")),
+                    )
+                    .collect(),
+            ));
+        }
+        sqlx::query("delete from providers where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(ProviderDeletion::Deleted)
     }
+}
+
+/// Outcome of a write that is refused when it would lock someone out for good:
+/// an org with no way to sign in (#2233), or a deployment with no active
+/// superadmin (#2344).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LockoutGuard<T> {
+    Done(T),
+    /// the write would leave nothing behind: no way to sign in to the org
+    /// (password sign-in is off and no enabled sso provider would remain), or
+    /// no active superadmin account
+    WouldLockOut,
+}
+
+/// Outcome of [`UserRepo::set_deactivated_guarding_org_admins`]: the
+/// deactivation went through, or it is refused because the account is the last
+/// active superadmin (#2344) or holds the last active org-scoped `admin` grant
+/// of the named org (#2558).
+#[derive(Debug, Clone)]
+pub enum DeactivationGuard {
+    Done(User),
+    LastSuperadmin,
+    /// the org the account is the last active admin of
+    LastOrgAdmin(Uuid),
+}
+
+/// Serialise every write that decides whether an org keeps a sign-in method.
+///
+/// The two guards read different rows (the provider list, the policy row), so
+/// a row lock on either cannot stop a provider write racing a policy write;
+/// one advisory lock per org, held to the end of the transaction, orders them
+/// all. Two concurrent disables of different providers queue behind it, and
+/// the second sees the first's commit.
+async fn lock_org_sign_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('org_sign_in:' || $1::text, 0))")
+        .bind(org_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Whether the org's policy refuses passwords. No row is the permissive
+/// default, matching [`OrgAuthPolicyRepo::get`].
+async fn passwords_off(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+) -> Result<bool> {
+    let allow: Option<bool> =
+        sqlx::query_scalar("select allow_password_login from org_auth_policies where org_id = $1")
+            .bind(org_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_err)?;
+    Ok(allow == Some(false))
+}
+
+async fn other_enabled_provider(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    org_id: Uuid,
+    except: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar(
+        "select exists (select 1 from sso_providers where org_id = $1 and enabled and id <> $2)",
+    )
+    .bind(org_id)
+    .bind(except)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
 }
 
 /// OIDC identity providers, their group→role mappings, and the short-lived
 /// state rows that make the authorization-code flow replay-safe.
 pub struct SsoRepo<'a>(pub &'a PgPool);
+
+/// Most rows one SSO sweep statement deletes. Keeps a single delete short
+/// enough that it never holds a long lock, however large the backlog.
+pub const SSO_SWEEP_BATCH: i64 = 1000;
 
 const SSO_PROVIDER_COLUMNS: &str = "id, org_id, name, slug, issuer, client_id, secret_ciphertext, \
      secret_nonce, scopes, group_claim, default_role, enabled, created_at";
@@ -1485,13 +1781,30 @@ impl SsoRepo<'_> {
         &self,
         id: Uuid,
         update: SsoProviderUpdate<'_>,
-    ) -> Result<SsoProvider> {
+    ) -> Result<LockoutGuard<SsoProvider>> {
         let (replace, ciphertext, nonce) = match update.secret {
             SecretUpdate::Keep => (false, None, None),
             SecretUpdate::Clear => (true, None, None),
             SecretUpdate::Set(c, n) => (true, Some(c), Some(n)),
         };
-        sqlx::query_as(&format!(
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let existing: Option<(Uuid, bool)> =
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        let (org_id, was_enabled) =
+            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        if was_enabled && !update.enabled {
+            lock_org_sign_in(&mut tx, org_id).await?;
+            if passwords_off(&mut tx, org_id).await?
+                && !other_enabled_provider(&mut tx, org_id, id).await?
+            {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
+        let row = sqlx::query_as(&format!(
             "update sso_providers set \
                     name = $2, issuer = $3, client_id = $4, \
                     secret_ciphertext = case when $5 then $6 else secret_ciphertext end, \
@@ -1511,10 +1824,12 @@ impl SsoRepo<'_> {
         .bind(update.group_claim)
         .bind(update.default_role)
         .bind(update.enabled)
-        .fetch_optional(self.0)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))
+        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(row))
     }
 
     pub async fn list_providers(&self, org_id: Uuid) -> Result<Vec<SsoProvider>> {
@@ -1558,27 +1873,58 @@ impl SsoRepo<'_> {
         Ok(rows.pop())
     }
 
-    /// every enabled provider across all orgs, for the login screen. Returns
-    /// names and slugs the login URL already exposes; never secrets.
-    pub async fn list_enabled_providers(&self) -> Result<Vec<SsoProvider>> {
+    /// Every provider the login screen may offer: enabled, and owned by an org
+    /// whose auth policy allows single sign-on. An org with no policy row
+    /// allows it, as [`OrgAuthPolicyRepo::get`] reads it, so a deployment that
+    /// never set a policy keeps its buttons. Returns names and slugs the login
+    /// URL already exposes; never secrets.
+    pub async fn list_sign_in_providers(&self) -> Result<Vec<SsoProvider>> {
+        // `not exists` rather than a join, so the shared column list needs no
+        // table prefix and a missing policy row reads as sso on (#2339)
         sqlx::query_as(&format!(
-            "select {SSO_PROVIDER_COLUMNS} from sso_providers where enabled order by name"
+            "select {SSO_PROVIDER_COLUMNS} from sso_providers
+             where enabled
+               and not exists (
+                   select 1 from org_auth_policies p
+                   where p.org_id = sso_providers.org_id and not p.allow_sso
+               )
+             order by name"
         ))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
     }
 
-    pub async fn delete_provider(&self, id: Uuid) -> Result<()> {
+    /// Delete a provider, refusing when it is the org's last enabled one and
+    /// password sign-in is off (#2233).
+    pub async fn delete_provider(&self, id: Uuid) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let existing: Option<(Uuid, bool)> =
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        let (org_id, was_enabled) =
+            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        if was_enabled {
+            lock_org_sign_in(&mut tx, org_id).await?;
+            if passwords_off(&mut tx, org_id).await?
+                && !other_enabled_provider(&mut tx, org_id, id).await?
+            {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
         let res = sqlx::query("delete from sso_providers where id = $1")
             .bind(id)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("sso provider {id}")));
         }
-        Ok(())
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
     }
 
     /// Open the sealed client secret. Returns `None` for a public client.
@@ -1673,19 +2019,101 @@ impl SsoRepo<'_> {
         state: &str,
         max_age_secs: i64,
     ) -> Result<Option<SsoLoginState>> {
-        // opportunistic sweep: expired rows are worthless and unbounded growth
-        // would be the only other outcome
-        let _ = sqlx::query(
-            "delete from sso_login_states where created_at < now() - ($1 || ' seconds')::interval",
-        )
-        .bind(max_age_secs.to_string())
-        .execute(self.0)
-        .await;
+        // opportunistic sweep: expired rows are worthless. bounded, so a large
+        // backlog costs one batch here and the periodic sweeper takes the rest
+        let _ = self.sweep_login_states(max_age_secs, SSO_SWEEP_BATCH).await;
+        // the row is spent either way, but an expired one is refused here
+        // rather than trusted to the sweep above: a bounded sweep may stop
+        // before it reaches this state
         sqlx::query_as(
-            "delete from sso_login_states where state = $1 \
-             returning state, provider_id, code_verifier, nonce, redirect_uri, created_at",
+            "with spent as (delete from sso_login_states where state = $1 \
+                 returning state, provider_id, code_verifier, nonce, redirect_uri, created_at) \
+             select state, provider_id, code_verifier, nonce, redirect_uri, created_at from spent \
+             where created_at >= now() - ($2 || ' seconds')::interval",
         )
         .bind(state)
+        .bind(max_age_secs.to_string())
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Delete at most `limit` login states older than `max_age_secs`, oldest
+    /// first, and return how many went. A login abandoned at the identity
+    /// provider is never consumed, so without this its row would stay forever.
+    ///
+    /// Rows another transaction holds are skipped rather than waited on, so
+    /// two control-plane replicas sweeping at once split the work instead of
+    /// queueing behind each other.
+    pub async fn sweep_login_states(&self, max_age_secs: i64, limit: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from sso_login_states where state in ( \
+                 select state from sso_login_states \
+                 where created_at < now() - ($1 || ' seconds')::interval \
+                 order by created_at limit $2 for update skip locked)",
+        )
+        .bind(max_age_secs.to_string())
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete at most `limit` exchange codes past their expiry, oldest first,
+    /// and return how many went. A code whose browser never came back to
+    /// redeem it would otherwise stay forever; locked rows are skipped as in
+    /// [`SsoRepo::sweep_login_states`].
+    pub async fn sweep_exchange_codes(&self, limit: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from sso_exchange_codes where code_hash in ( \
+                 select code_hash from sso_exchange_codes where expires_at < now() \
+                 order by expires_at limit $1 for update skip locked)",
+        )
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
+    }
+
+    /// Record a one-time exchange code for a completed browser sign-in. Only
+    /// the digest of the code is stored; `ttl_secs` counts from the database
+    /// clock, like every other expiry here.
+    pub async fn issue_exchange(
+        &self,
+        code_hash: &str,
+        user_id: Uuid,
+        provider_id: Uuid,
+        granted_roles: &[String],
+        ttl_secs: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "insert into sso_exchange_codes (code_hash, user_id, provider_id, granted_roles, expires_at) \
+             values ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)",
+        )
+        .bind(code_hash)
+        .bind(user_id)
+        .bind(provider_id)
+        .bind(granted_roles)
+        .bind(ttl_secs.to_string())
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// Redeem an exchange code exactly once. An unknown, already-redeemed or
+    /// expired code yields `None`; the delete is the single-use guarantee, so
+    /// two concurrent redemptions cannot both succeed.
+    pub async fn redeem_exchange(&self, code_hash: &str) -> Result<Option<SsoExchangeCode>> {
+        // opportunistic bounded sweep, as for login states
+        let _ = self.sweep_exchange_codes(SSO_SWEEP_BATCH).await;
+        sqlx::query_as(
+            "delete from sso_exchange_codes where code_hash = $1 and expires_at > now() \
+             returning user_id, provider_id, granted_roles",
+        )
+        .bind(code_hash)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
@@ -1823,6 +2251,15 @@ impl ScimIdentityRepo<'_> {
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// whether any org's IdP provisioned this account
+    pub async fn exists_for_user(&self, user_id: Uuid) -> Result<bool> {
+        sqlx::query_scalar("select exists (select 1 from scim_identities where user_id = $1)")
+            .bind(user_id)
+            .fetch_one(self.0)
+            .await
+            .map_err(store_err)
     }
 
     pub async fn find_by_user_name(
@@ -2158,6 +2595,22 @@ impl ProviderKeyRepo<'_> {
             .await
             .map_err(store_err)?;
         Ok(())
+    }
+
+    /// Which of `provider_ids` have a stored credential, in one query so a
+    /// listing never asks per row. Reads only the key column, never the
+    /// ciphertext or nonce.
+    pub async fn stored_among(
+        &self,
+        provider_ids: &[Uuid],
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select provider_id from provider_keys where provider_id = any($1)")
+                .bind(provider_ids)
+                .fetch_all(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok(ids.into_iter().collect())
     }
 
     /// Whether a credential is stored for `provider_id`.
@@ -2811,6 +3264,13 @@ impl RateLimitRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
+    /// Store a new rate limit.
+    ///
+    /// Refused with [`Error::Config`] unless at least one cap is positive: the
+    /// snapshot loader reads a cap of zero or below as none, so a limit
+    /// without a positive one admits every request while looking like a hard
+    /// stop (#1903). The same rule [`update`](Self::update) applies to what an
+    /// edit leaves behind.
     pub async fn create(
         &self,
         scope_type: &str,
@@ -2818,6 +3278,11 @@ impl RateLimitRepo<'_> {
         rpm: Option<i32>,
         tpm: Option<i32>,
     ) -> Result<RateLimit> {
+        if !keeps_a_cap(rpm, tpm) {
+            return Err(Error::Config(
+                "a rate limit needs an rpm cap, a tpm cap or both, each at least 1".into(),
+            ));
+        }
         sqlx::query_as(
             "insert into rate_limits (scope_type, scope_id, rpm, tpm)
              values ($1, $2, $3, $4)
@@ -3001,7 +3466,8 @@ pub struct UserRepo<'a>(pub &'a PgPool);
 impl UserRepo<'_> {
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where email = $1",
         )
         .bind(email)
@@ -3012,7 +3478,8 @@ impl UserRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
         sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
              from users where id = $1",
         )
         .bind(id)
@@ -3028,7 +3495,7 @@ impl UserRepo<'_> {
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<User>> {
         sqlx::query_as(
             "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
-                    u.deactivated_at, u.created_at
+                    u.deactivated_at, u.created_at, u.display_name, u.bio
              from users u
              join memberships m on m.user_id = u.id
              left join teams t on t.id = m.team_id
@@ -3054,7 +3521,8 @@ impl UserRepo<'_> {
         sqlx::query_as(
             "insert into users (email, password_hash, is_superadmin)
              values ($1, $2, $3)
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(email)
         .bind(password_hash)
@@ -3067,57 +3535,273 @@ impl UserRepo<'_> {
     /// update mutable account fields. each `Some` is applied via `coalesce`, so
     /// `None` leaves the stored value untouched. `password_hash` follows the same
     /// rule; there is no way to clear a password back to null through this path.
-    pub async fn update(
+    ///
+    /// `deactivated` stamps or clears `deactivated_at` in the same transaction.
+    /// the write is refused with [`LockoutGuard::WouldLockOut`] when it would
+    /// demote or deactivate the last active superadmin (#2344); the caller is
+    /// responsible for deleting live sessions when deactivating.
+    pub async fn update_account(
         &self,
         id: Uuid,
         email: Option<&str>,
         password_hash: Option<&str>,
         is_superadmin: Option<bool>,
-    ) -> Result<User> {
-        sqlx::query_as(
+        deactivated: Option<bool>,
+    ) -> Result<LockoutGuard<User>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if is_superadmin == Some(false) || deactivated == Some(true) {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(LockoutGuard::WouldLockOut);
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
             "update users set
                  email = coalesce($2, email),
                  password_hash = coalesce($3, password_hash),
-                 is_superadmin = coalesce($4, is_superadmin)
+                 is_superadmin = coalesce($4, is_superadmin),
+                 deactivated_at = case
+                     when $5::boolean is null then deactivated_at
+                     when $5 then coalesce(deactivated_at, now())
+                     else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(email)
         .bind(password_hash)
         .bind(is_superadmin)
-        .fetch_optional(self.0)
+        .bind(deactivated)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(user))
     }
 
     /// flip the deactivation flag. `true` stamps `deactivated_at = now()` (login
     /// blocked); `false` clears it back to null (re-enabled). the caller is
-    /// responsible for deleting live sessions when deactivating.
-    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<User> {
-        sqlx::query_as(
-            "update users set deactivated_at = case when $2 then now() else null end
+    /// responsible for deleting live sessions when deactivating. refused when it
+    /// would deactivate the last active superadmin (#2344).
+    pub async fn set_deactivated(&self, id: Uuid, deactivated: bool) -> Result<LockoutGuard<User>> {
+        self.update_account(id, None, None, None, Some(deactivated))
+            .await
+    }
+
+    /// flip the deactivation flag like [`Self::set_deactivated`], and also
+    /// refuse to deactivate an account that holds an org's last org-scoped
+    /// `admin` grant among active accounts (#2558).
+    ///
+    /// Used where the caller is not a superadmin who could repair the org
+    /// afterwards: SCIM deprovisioning and `active: false`. The account is
+    /// global, so every org it administers is checked, not only the one the
+    /// caller is scoped to. Each org is counted under the same per-org advisory
+    /// lock `MembershipRepo::delete_guarded` takes, in ascending org order so
+    /// two deactivations cannot deadlock, all in the update's transaction: a
+    /// concurrent revoke or deactivation of the org's other admin waits and
+    /// then counts this one.
+    pub async fn set_deactivated_guarding_org_admins(
+        &self,
+        id: Uuid,
+        deactivated: bool,
+    ) -> Result<DeactivationGuard> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if deactivated {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(DeactivationGuard::LastSuperadmin);
+            }
+            let orgs: Vec<Uuid> = sqlx::query_scalar(
+                "select distinct m.org_id from memberships m join users u on u.id = m.user_id
+                 where m.user_id = $1 and m.role = 'admin' and m.org_id is not null
+                   and u.deactivated_at is null
+                 order by m.org_id",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            for org in orgs {
+                lock_org_admins(&mut tx, org).await?;
+                let others: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.user_id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if !others {
+                    return Ok(DeactivationGuard::LastOrgAdmin(org));
+                }
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
+            "update users set
+                 deactivated_at = case when $2 then coalesce(deactivated_at, now()) else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at",
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
         )
         .bind(id)
         .bind(deactivated)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(DeactivationGuard::Done(user))
+    }
+
+    /// set the self-service profile. each `Some(x)` replaces the column with `x`
+    /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
+    /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
+    /// and so fires the `config_version` trigger, which a name edit must not.
+    /// callers validate and normalise; the table's check constraints are the
+    /// backstop
+    pub async fn set_profile(
+        &self,
+        id: Uuid,
+        display_name: Option<Option<&str>>,
+        bio: Option<Option<&str>>,
+    ) -> Result<User> {
+        sqlx::query_as(
+            "update users set
+                 display_name = case when $2 then $3 else display_name end,
+                 bio = case when $4 then $5 else bio end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                       display_name, bio",
+        )
+        .bind(id)
+        .bind(display_name.is_some())
+        .bind(display_name.flatten())
+        .bind(bio.is_some())
+        .bind(bio.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
+    /// give an account that has no display name the one its identity provider
+    /// asserted. The `is null` guard is in the statement so a name set between
+    /// the caller's read and this write is never overwritten. Returns whether
+    /// a name was written.
+    pub async fn default_display_name(&self, id: Uuid, display_name: &str) -> Result<bool> {
+        let res = sqlx::query(
+            "update users set display_name = $2 where id = $1 and display_name is null",
+        )
+        .bind(id)
+        .bind(display_name)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// delete the account, refused when it is the last active superadmin
+    /// (#2344)
+    pub async fn delete(&self, id: Uuid) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        lock_superadmins(&mut tx).await?;
+        if last_active_superadmin(&mut tx, id).await? {
+            return Ok(LockoutGuard::WouldLockOut);
+        }
         let res = sqlx::query("delete from users where id = $1")
             .bind(id)
-            .execute(self.0)
+            .execute(&mut *tx)
             .await
             .map_err(store_err)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound(format!("user {id}")));
         }
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
+    }
+}
+
+/// Serialise every write that can shrink the set of active superadmins.
+///
+/// A row lock on the target is not enough: two concurrent demotions of two
+/// different superadmins each lock only their own row, each sees the other
+/// still active, and both commit. One advisory lock for the whole set, held to
+/// the end of the transaction, makes the second writer wait and then count the
+/// first one's commit. Writes that only grow the set never take it.
+async fn lock_superadmins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('superadmins', 0))")
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Serialise every write that can shrink the set of active admins of `org`
+/// (#2311, #2558): a revoked org-scoped `admin` grant, or a deactivated account
+/// holding one. Like [`lock_superadmins`], one advisory lock per org held to
+/// the end of the transaction, so the second of two concurrent writers counts
+/// the first one's commit.
+async fn lock_org_admins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, org: Uuid) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))")
+        .bind(org)
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Whether `id` is an active superadmin and no other account is. Call it under
+/// [`lock_superadmins`]; an unknown id answers `false` and the write reports
+/// the not-found itself.
+async fn last_active_superadmin(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar(
+        "select exists (
+             select 1 from users where id = $1 and is_superadmin and deactivated_at is null
+         ) and not exists (
+             select 1 from users where id <> $1 and is_superadmin and deactivated_at is null
+         )",
+    )
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_err)
+}
+
+/// per-user preference documents (#1824). one row per user, created on first
+/// save; the document is an object whose keys the API validates
+pub struct UserPreferencesRepo<'a>(pub &'a PgPool);
+
+impl UserPreferencesRepo<'_> {
+    /// the stored document, or `None` when the user never saved one
+    pub async fn get(&self, user_id: Uuid) -> Result<Option<serde_json::Value>> {
+        sqlx::query_scalar("select prefs from user_preferences where user_id = $1")
+            .bind(user_id)
+            .fetch_optional(self.0)
+            .await
+            .map_err(store_err)
+    }
+
+    /// replace the whole document. `prefs` must be a json object; the table's
+    /// check constraint refuses anything else
+    pub async fn put(&self, user_id: Uuid, prefs: &serde_json::Value) -> Result<()> {
+        sqlx::query(
+            "insert into user_preferences (user_id, prefs) values ($1, $2)
+             on conflict (user_id) do update set prefs = excluded.prefs, updated_at = now()",
+        )
+        .bind(user_id)
+        .bind(prefs)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
         Ok(())
     }
 }
@@ -3233,6 +3917,64 @@ impl MembershipRepo<'_> {
         .map_err(store_err)
     }
 
+    /// delete a grant, refused with [`LockoutGuard::WouldLockOut`] when it is
+    /// an org-scoped `admin` grant held by an active account and no other
+    /// active account holds one for that org (#2311). a per-org advisory lock
+    /// held to the end of the transaction orders two concurrent revocations of
+    /// two different admins, so the second one counts the first one's commit.
+    /// `protect_last_admin = false` skips the check (the superadmin override).
+    pub async fn delete_guarded(
+        &self,
+        id: Uuid,
+        protect_last_admin: bool,
+    ) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if protect_last_admin {
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "select org_id from memberships where id = $1 and role = 'admin'",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?
+            .flatten();
+            if let Some(org) = org {
+                lock_org_admins(&mut tx, org).await?;
+                // read again under the lock: a concurrent revoke may have
+                // committed while this one waited
+                let last: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id = $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     ) and not exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if last {
+                    return Ok(LockoutGuard::WouldLockOut);
+                }
+            }
+        }
+        let res = sqlx::query("delete from memberships where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("membership {id}")));
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from memberships where id = $1")
             .bind(id)
@@ -3253,6 +3995,18 @@ const INVITATION_COLUMNS: &str = "id, org_id, email, role, team_id, project_id, 
      invited_by, expires_at, accepted_at, revoked_at, created_at";
 
 impl InvitationRepo<'_> {
+    /// Create an invitation, replacing the address's live one in the same
+    /// transaction. Returns the new row and the id of the invitation it
+    /// revoked, if any.
+    ///
+    /// `invitations_live_email_idx` forbids two unaccepted, unrevoked rows for
+    /// one address but ignores `expires_at` (its predicate cannot use
+    /// `now()`), so an expired invitation still holds the address. Revoking
+    /// whatever holds it first, expired or not, makes the new link the only
+    /// live one and the old link stop working. A transaction-scoped advisory
+    /// lock on `(org, lower(email))` orders concurrent creates for one
+    /// address: the second waits, then revokes the first's row, so neither
+    /// trips the index.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
@@ -3264,8 +4018,26 @@ impl InvitationRepo<'_> {
         token_hash: &str,
         invited_by: Option<Uuid>,
         expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Invitation> {
-        sqlx::query_as(&format!(
+    ) -> Result<(Invitation, Option<Uuid>)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('invitation:' || $1::text || ':' || lower($2), 0))")
+            .bind(org_id)
+            .bind(email)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let replaced: Option<Uuid> = sqlx::query_scalar(
+            "update invitations set revoked_at = now() \
+             where org_id = $1 and lower(email) = lower($2) \
+               and accepted_at is null and revoked_at is null \
+             returning id",
+        )
+        .bind(org_id)
+        .bind(email)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let invitation = sqlx::query_as(&format!(
             "insert into invitations (org_id, email, role, team_id, project_id, token_hash, \
                     invited_by, expires_at) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -3279,9 +4051,11 @@ impl InvitationRepo<'_> {
         .bind(token_hash)
         .bind(invited_by)
         .bind(expires_at)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok((invitation, replaced))
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Invitation>> {
@@ -3394,6 +4168,10 @@ impl OrgAuthPolicyRepo<'_> {
         }))
     }
 
+    /// Write the policy, refusing to turn passwords off while the org has no
+    /// enabled sso provider. The check runs under the same per-org lock as the
+    /// provider writes, so the two guards cannot both pass against each other
+    /// (#2233).
     pub async fn set(
         &self,
         org_id: Uuid,
@@ -3401,8 +4179,13 @@ impl OrgAuthPolicyRepo<'_> {
         allow_sso: bool,
         mfa_policy: &str,
         mfa_enforce_after: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<OrgAuthPolicy> {
-        sqlx::query_as(
+    ) -> Result<LockoutGuard<OrgAuthPolicy>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        lock_org_sign_in(&mut tx, org_id).await?;
+        if !allow_password_login && !other_enabled_provider(&mut tx, org_id, Uuid::nil()).await? {
+            return Ok(LockoutGuard::WouldLockOut);
+        }
+        let row = sqlx::query_as(
             "insert into org_auth_policies
                  (org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after)
              values ($1, $2, $3, $4, $5)
@@ -3420,9 +4203,11 @@ impl OrgAuthPolicyRepo<'_> {
         .bind(allow_sso)
         .bind(mfa_policy)
         .bind(mfa_enforce_after)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(row))
     }
 
     /// The strictest second-factor policy across every org this user belongs
@@ -3823,9 +4608,8 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
 impl SecuritySettingsRepo<'_> {
     pub async fn get(&self) -> Result<SecuritySettings> {
         sqlx::query_as(
-            "select virtual_key_required, allowed_origins, allowed_headers, \
-                    required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
-                    dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at \
+            "select allowed_origins, allowed_headers, \
+                    required_headers, auth_bypass_routes, updated_at \
              from security_settings where id = true",
         )
         .fetch_one(self.0)
@@ -3836,45 +4620,31 @@ impl SecuritySettingsRepo<'_> {
     /// `allow_direct_provider_keys` is pinned to `false` in the statement
     /// rather than taken as an argument: the gateway has no
     /// direct-provider-key passthrough, so the column never controlled
-    /// anything and is no longer offered by the API (#1162).
-    #[allow(clippy::too_many_arguments)]
+    /// anything and is no longer offered by the API (#1162). The dashboard
+    /// password columns are likewise left untouched (#2356): they stay in the
+    /// table, unread and unwritten, because migrations are append-only. So is
+    /// `virtual_key_required` (#2357): no gateway decision ever read it, since
+    /// every gateway that received it was managed and already closed.
     pub async fn update(
         &self,
-        virtual_key_required: bool,
         allowed_origins: &[String],
         allowed_headers: &[String],
         required_headers: serde_json::Value,
         auth_bypass_routes: &[String],
-        dashboard_auth_enabled: bool,
-        dashboard_credential_ref: Option<&str>,
-        dashboard_secret: Option<(&[u8], &[u8])>,
     ) -> Result<SecuritySettings> {
-        let (ciphertext, nonce) = match dashboard_secret {
-            Some((ciphertext, nonce)) => (Some(ciphertext), Some(nonce)),
-            None => (None, None),
-        };
         sqlx::query_as(
             "update security_settings set \
-                virtual_key_required = $1, allowed_origins = $2, \
-                allowed_headers = $3, required_headers = $4, auth_bypass_routes = $5, \
-                dashboard_auth_enabled = $6, dashboard_credential_ref = $7, \
-                dashboard_credential_ciphertext = coalesce($8, dashboard_credential_ciphertext), \
-                dashboard_credential_nonce = coalesce($9, dashboard_credential_nonce), \
+                allowed_origins = $1, \
+                allowed_headers = $2, required_headers = $3, auth_bypass_routes = $4, \
                 allow_direct_provider_keys = false, updated_at = now() \
              where id = true \
-             returning virtual_key_required, allowed_origins, allowed_headers, \
-                       required_headers, auth_bypass_routes, dashboard_auth_enabled, dashboard_credential_ref, \
-                       dashboard_credential_ciphertext is not null as dashboard_secret_configured, updated_at",
+             returning allowed_origins, allowed_headers, \
+                       required_headers, auth_bypass_routes, updated_at",
         )
-        .bind(virtual_key_required)
         .bind(allowed_origins)
         .bind(allowed_headers)
         .bind(required_headers)
         .bind(auth_bypass_routes)
-        .bind(dashboard_auth_enabled)
-        .bind(dashboard_credential_ref)
-        .bind(ciphertext)
-        .bind(nonce)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -4074,7 +4844,7 @@ impl AuditLogRepo<'_> {
                  order by at asc, id asc limit $9")
             }
         };
-        let mut entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
             .bind(org_id)
             .bind(filter.actor_user_id)
             .bind(filter.action.as_deref())
@@ -4087,6 +4857,16 @@ impl AuditLogRepo<'_> {
             .fetch_all(self.0)
             .await
             .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Trim the probe row and restore newest-first order after a `Previous`
+    /// scan, shared by the per-org and the deployment-wide read.
+    fn finish_page(
+        mut entries: Vec<AuditLogEntry>,
+        filter: &AuditLogFilter,
+        limit: i64,
+    ) -> AuditLogPage {
         let has_more = entries.len() as i64 > limit;
         if has_more {
             entries.pop();
@@ -4094,7 +4874,70 @@ impl AuditLogRepo<'_> {
         if matches!(filter.direction, AuditLogDirection::Previous) {
             entries.reverse();
         }
-        Ok(AuditLogPage { entries, has_more })
+        AuditLogPage { entries, has_more }
+    }
+
+    /// Query one cursor page across the whole deployment: every row, org-less
+    /// account events included. Same ordering, filters and cursor as
+    /// [`Self::list_page`], minus the org scoping.
+    pub async fn list_page_all(&self, filter: &AuditLogFilter, limit: i64) -> Result<AuditLogPage> {
+        let query = match filter.direction {
+            AuditLogDirection::Next => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) < ($6, $7))
+                 order by at desc, id desc limit $8"
+            }
+            AuditLogDirection::Previous => {
+                "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                 from audit_log
+                 where ($1::uuid is null or actor_user_id = $1)
+                   and ($2::text is null or action = $2)
+                   and ($3::text is null or target_type = $3)
+                   and ($4::timestamptz is null or at >= $4)
+                   and ($5::timestamptz is null or at <= $5)
+                   and ($6::timestamptz is null or (at, id) > ($6, $7))
+                 order by at asc, id asc limit $8"
+            }
+        };
+        let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
+            .bind(filter.actor_user_id)
+            .bind(filter.action.as_deref())
+            .bind(filter.target_type.as_deref())
+            .bind(filter.start_at)
+            .bind(filter.end_at)
+            .bind(filter.cursor.map(|cursor| cursor.at))
+            .bind(filter.cursor.map(|cursor| cursor.id))
+            .bind(limit + 1)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)?;
+        Ok(Self::finish_page(entries, filter, limit))
+    }
+
+    /// Count matching records across the deployment, ignoring the cursor.
+    pub async fn count_all(&self, filter: &AuditLogFilter) -> Result<i64> {
+        sqlx::query_scalar(
+            "select count(*) from audit_log
+             where ($1::uuid is null or actor_user_id = $1)
+               and ($2::text is null or action = $2)
+               and ($3::text is null or target_type = $3)
+               and ($4::timestamptz is null or at >= $4)
+               and ($5::timestamptz is null or at <= $5)",
+        )
+        .bind(filter.actor_user_id)
+        .bind(filter.action.as_deref())
+        .bind(filter.target_type.as_deref())
+        .bind(filter.start_at)
+        .bind(filter.end_at)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Count matching records without applying a cursor. Callers opt in to
@@ -4147,7 +4990,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -4158,7 +5001,7 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "select id, org_id, name, slug, strategy, created_at
+            "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where id = $1",
         )
         .bind(id)
@@ -4174,16 +5017,18 @@ impl ProviderGroupRepo<'_> {
         name: &str,
         slug: &str,
         strategy: &str,
+        project_id: Option<Uuid>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
-            "insert into provider_groups (org_id, name, slug, strategy)
-             values ($1, $2, $3, $4)
-             returning id, org_id, name, slug, strategy, created_at",
+            "insert into provider_groups (org_id, name, slug, strategy, project_id)
+             values ($1, $2, $3, $4, $5)
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -4197,19 +5042,23 @@ impl ProviderGroupRepo<'_> {
         name: Option<&str>,
         slug: Option<&str>,
         strategy: Option<&str>,
+        project_id: Option<Option<Uuid>>,
     ) -> Result<ProviderGroup> {
         sqlx::query_as(
             "update provider_groups set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
-                 strategy = coalesce($4, strategy)
+                 strategy = coalesce($4, strategy),
+                 project_id = case when $5 then $6 else project_id end
              where id = $1
-             returning id, org_id, name, slug, strategy, created_at",
+             returning id, org_id, name, slug, strategy, project_id, created_at",
         )
         .bind(id)
         .bind(name)
         .bind(slug)
         .bind(strategy)
+        .bind(project_id.is_some())
+        .bind(project_id.flatten())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -4761,6 +5610,7 @@ mod tests {
                 Some("OPENAI_API_KEY"),
                 None,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -4852,6 +5702,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limit.rpm, Some(60));
+        // a limit with no positive cap admits everything, so it is never
+        // stored, whichever way the caps are missing (#1903)
+        for (rpm, tpm) in [
+            (None, None),
+            (Some(0), None),
+            (None, Some(-5)),
+            (Some(0), Some(0)),
+        ] {
+            assert!(
+                matches!(
+                    limits.create("project", project.id, rpm, tpm).await,
+                    Err(Error::Config(_))
+                ),
+                "{rpm:?} / {tpm:?} should be refused"
+            );
+        }
+        assert_eq!(
+            limits
+                .list_for_scope("project", project.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         let prices = ModelPriceRepo(&pool);
         let price = prices
@@ -5199,5 +6073,113 @@ mod tests {
             .unwrap();
         assert_eq!(previous.entries[0].id, boundary.id);
         assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn sso_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = OrgRepo(&pool).create("sso", "sso").await.unwrap();
+        let user = UserRepo(&pool)
+            .create("sso@example.com", None, false)
+            .await
+            .unwrap();
+        let repo = SsoRepo(&pool);
+        let provider = repo
+            .create_provider(
+                org.id,
+                "idp",
+                "idp",
+                "https://idp.example.com",
+                "client",
+                None,
+                &[],
+                "groups",
+                None,
+            )
+            .await
+            .unwrap();
+
+        // the oidc nonce is generated, never a literal: a fixed value here reads
+        // to codeql as a hard-coded cryptographic nonce
+        let nonce = Uuid::new_v4().to_string();
+        // three abandoned logins, backdated past the ttl, and one in flight
+        for state in ["old-1", "old-2", "old-3", "live"] {
+            repo.start_login(state, provider.id, "verifier", &nonce, "https://cb")
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "update sso_login_states set created_at = now() - interval '1 hour' \
+             where state like 'old-%'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // two codes nobody redeemed, one already expired
+        repo.issue_exchange("expired-code", user.id, provider.id, &[], 60)
+            .await
+            .unwrap();
+        repo.issue_exchange("live-code", user.id, provider.id, &[], 60)
+            .await
+            .unwrap();
+        sqlx::query(
+            "update sso_exchange_codes set expires_at = now() - interval '1 second' \
+             where code_hash = 'expired-code'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let states = || async {
+            sqlx::query_scalar::<_, String>("select state from sso_login_states order by state")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        };
+        // the batch bound holds: one pass of two leaves the third expired row
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 2);
+        assert_eq!(states().await.len(), 2);
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 1);
+        assert_eq!(states().await, vec!["live".to_string()]);
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 0);
+
+        assert_eq!(repo.sweep_exchange_codes(10).await.unwrap(), 1);
+        let codes: Vec<String> = sqlx::query_scalar("select code_hash from sso_exchange_codes")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(codes, vec!["live-code".to_string()]);
+
+        // the live rows are still usable after a sweep
+        assert!(repo.consume_login("live", 600).await.unwrap().is_some());
+        assert!(repo.redeem_exchange("live-code").await.unwrap().is_some());
+
+        // an expired state is refused even when the bounded sweep stops short
+        // of it: a full batch of older rows sits in front, and the row is
+        // spent all the same
+        repo.start_login("stale", provider.id, "verifier", &nonce, "https://cb")
+            .await
+            .unwrap();
+        sqlx::query("update sso_login_states set created_at = now() - interval '1 hour'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into sso_login_states (state, provider_id, code_verifier, nonce, redirect_uri, created_at) \
+             select 'backlog-' || n, $1, 'v', 'n', 'https://cb', now() - interval '2 hours' \
+             from generate_series(1, $2) as n",
+        )
+        .bind(provider.id)
+        .bind(SSO_SWEEP_BATCH as i32)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(repo.consume_login("stale", 600).await.unwrap().is_none());
+        assert!(states().await.is_empty());
     }
 }

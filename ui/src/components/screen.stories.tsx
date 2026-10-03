@@ -12,6 +12,7 @@ import {
   ListHeaderCell,
   ListLoadingRow,
   ListRow,
+  ListStateRow,
   ListSummary,
   ListTable,
   PageBody,
@@ -23,8 +24,16 @@ import {
   useSort,
 } from "./screen";
 import { ListSkeleton } from "./LoadingState";
+import { LoadError } from "./LoadError";
 import { ANSWERED, type ReadState } from "@/lib/read-state";
-import { expectAllowed, expectListTable, Harness, routes } from "@/pages/story-harness";
+import { atMobile, expectInViewport } from "@/lib/story-viewport";
+import {
+  expectAllowed,
+  expectListStateInViewport,
+  expectListTable,
+  Harness,
+  routes,
+} from "@/pages/story-harness";
 
 // the grid every list screen is assembled from: a template shared by the
 // header and the rows, so a column cannot drift between the two
@@ -300,7 +309,8 @@ export const SummaryWaitsForTheData: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("unread")).toBeEmptyDOMElement();
+    // the live region is there from the first paint and says nothing
+    await expect(canvas.getByTestId("unread")).toHaveTextContent(/^$/);
     await expect(canvas.getByTestId("unread-with-fallback")).toHaveTextContent(
       /^upstreams the gateway routes to$/,
     );
@@ -340,6 +350,112 @@ export const NarrowViewportScrollsSideways: Story = {
     await expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
       document.documentElement.clientWidth,
     );
+  },
+};
+
+/**
+ * Below its column floor the table scrolls sideways, and what the body shows in
+ * place of rows is as wide as the frame the reader sees, not as the floor
+ * (#2362). The row was the floor's width, so at 375px the empty message and the
+ * skeleton were centred in a 760px band that began past the card's right edge.
+ */
+export const EmptyRowFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <ProviderList rows={[]} />,
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Providers", { says: /No providers yet/ });
+  },
+};
+
+export const LoadingRowFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <ProviderList rows={[]} read={IN_FLIGHT} />,
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Providers");
+  },
+};
+
+/**
+ * The same row holds anything a screen puts in it, so an error the screen chose
+ * to draw inside the table is on screen as well, with the button that retries.
+ */
+export const LoadErrorInTheStateRowFitsThePhone: Story = {
+  ...atMobile,
+  render: () => (
+    <PageBody>
+      <ListTable label="Providers">
+        <ListHeader grid={GRID}>
+          <ListHeaderCell>Provider</ListHeaderCell>
+          <ListHeaderCell>Kind</ListHeaderCell>
+          <ListHeaderCell>p95</ListHeaderCell>
+          <ListActionsHeader />
+        </ListHeader>
+        <ListStateRow>
+          <LoadError
+            error={new Error("store unavailable")}
+            resource="providers"
+            target="providers"
+            onRetry={() => {}}
+          />
+        </ListStateRow>
+      </ListTable>
+    </PageBody>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await within(canvasElement).findByRole("table", { name: "Providers" });
+    await expectListTable(canvasElement, "Providers");
+    await expectInViewport(within(table).getByRole("alert"));
+    await expectInViewport(within(table).getByRole("button", { name: /try again/i }));
+  },
+};
+
+/**
+ * The header band and the rows keep the column floor, so the columns stay
+ * aligned when the table scrolls; only the state row is held to the frame. It
+ * sticks to the frame's left edge, so a reader who scrolls the table sideways
+ * to the end still has the message in front of them.
+ */
+export const StateRowStaysInFrameWhenTheTableScrolls: Story = {
+  ...atMobile,
+  render: () => <ProviderList rows={[]} />,
+  play: async ({ canvasElement }) => {
+    const table = await within(canvasElement).findByRole("table", { name: "Providers" });
+    const [header, body] = Array.from(table.children) as HTMLElement[];
+    const row = within(table).getAllByRole("row")[1];
+    const frame = table.getBoundingClientRect().left + table.clientLeft;
+
+    await expect(header.getBoundingClientRect().width).toBe(760);
+    await expect(body.getBoundingClientRect().width).toBe(760);
+    await expect(row.getBoundingClientRect().width).toBeCloseTo(table.clientWidth, 0);
+
+    table.scrollLeft = table.scrollWidth;
+    await expect(table.scrollLeft).toBeGreaterThan(0);
+    // the band has moved under the frame and the state has not
+    await expect(header.getBoundingClientRect().left).toBeLessThan(frame);
+    await expect(row.getBoundingClientRect().left).toBeCloseTo(frame, 0);
+    await expectInViewport(within(table).getByText("No providers yet"));
+  },
+};
+
+/**
+ * Where the table is wider than its floor nothing scrolls, and the state row is
+ * the width of the header band and of the rows: the same left edge, the same
+ * right edge, so the state sits centred under the columns it stands in for.
+ */
+export const StateRowSpansTheTableAtDesktopWidth: Story = {
+  render: () => <ProviderList rows={[]} />,
+  play: async ({ canvasElement }) => {
+    const table = await within(canvasElement).findByRole("table", { name: "Providers" });
+    const [header, body] = Array.from(table.children) as HTMLElement[];
+    const row = within(table).getAllByRole("row")[1];
+    await expect(table.scrollWidth).toBe(table.clientWidth);
+    for (const box of [header, body, row]) {
+      await expect(box.getBoundingClientRect().left).toBeCloseTo(
+        header.getBoundingClientRect().left,
+        0,
+      );
+      await expect(box.getBoundingClientRect().width).toBeCloseTo(table.clientWidth, 0);
+    }
   },
 };
 
@@ -433,5 +549,33 @@ export const RowIconButtonAllowed: Story = {
     await expectAllowed(canvasElement, "Delete openai-prod");
     const button = within(canvasElement).getByRole("button", { name: "Delete openai-prod" });
     await expect(button).not.toHaveAttribute("title");
+  },
+};
+
+/**
+ * The count is a polite live region (#2005, WCAG 4.1.3): a screen reader user
+ * who types a query hears "1 provider" without moving focus. The region is in
+ * the document before its text changes, which is what makes it announce.
+ */
+export const SummaryIsAPoliteLiveRegion: Story = {
+  render: function Render() {
+    const [rows, setRows] = React.useState<ProviderRow[]>([]);
+    return (
+      <PageBody>
+        <ListSummary data={rows}>{(held) => `${held.length} providers`}</ListSummary>
+        <button type="button" onClick={() => setRows([{} as ProviderRow])}>
+          Search
+        </button>
+      </PageBody>
+    );
+  },
+  play: async ({ canvas }) => {
+    const region = canvas.getByRole("status");
+    await expect(region).toHaveAttribute("aria-live", "polite");
+    await expect(region).toHaveTextContent("0 providers");
+    await userEvent.click(canvas.getByRole("button", { name: "Search" }));
+    // the same node, so the change is announced rather than the node being new
+    await expect(canvas.getByRole("status")).toBe(region);
+    await expect(region).toHaveTextContent("1 providers");
   },
 };

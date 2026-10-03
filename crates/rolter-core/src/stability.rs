@@ -138,10 +138,11 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
     SubsystemStability {
         id: "realtime",
         stability: Stability::Experimental,
-        note: "guardrails, the PII sanitizer and plugins do not run on \
-               /v1/realtime session events: a session meets budgets and rate \
-               limits and its usage is recorded, but what it carries reaches \
-               the provider without a content check (#1880)",
+        note: "guardrails, the guardrail webhook and pre_upstream plugins run \
+               on /v1/realtime text events and function-call arguments, but \
+               the PII sanitizer and pre_route / post_response plugins do \
+               not; a fail_closed PII sanitizer refuses the session, a \
+               fail_open one admits it unsanitized (#2489)",
         nav_keys: &[],
     },
     SubsystemStability {

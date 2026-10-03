@@ -102,7 +102,8 @@ after eight seconds is a navigation mistake, backing out after four minutes is a
 dead end.
 
 `empty_state` is emitted by the shared placeholder component, so every zero-data
-screen reports itself.
+screen reports itself. `error_state` is emitted the same way, by the shared
+alert a screen shows when a read fails, once each time it appears.
 
 Three actions record what the operator could _not_ do. `retry_submit` is a save
 attempted again after one failed — the moment somebody did not understand the
@@ -114,7 +115,7 @@ refused it, such as `provider-new:provider:create`, and it carries no label and
 no message — the row says which permission boundary is in somebody's way, not
 what the control said or who pressed it.
 
-`time_to_interactive`, `error_state` and the form lifecycle (`form_submit`,
+`time_to_interactive` and the form lifecycle (`form_submit`,
 `form_abandon`, `abandon_dirty`, `retry_submit`, `validation_error`,
 `save_confirmed`) are per-screen, because
 only the screen knows which of its several requests is the one the user is

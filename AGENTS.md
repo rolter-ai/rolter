@@ -12,7 +12,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - `cargo nextest run --workspace` — run tests (as CI does; install with `cargo install cargo-nextest`). Add `cargo test --doc --workspace` for doc tests, or run both via `just test`. Plain `cargo test --workspace` also works.
 - `cargo fmt --all` — format (run before committing)
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint (must be clean)
-- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` — the `cargo doc (warnings = errors)` step of the `rust lint` job. Run it before pushing: it is the one CI check nothing local reproduces, and it fails on things clippy is silent about — most often a `[`Link`]` from a public item to a private one (`rustdoc::private_intra_doc_links`), which is easy to write while documenting _why_ a public thing exists in terms of the internals it wraps
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` — the `cargo doc (warnings = errors)` step of the `rust lint` job. Run it before pushing: it is the one CI check nothing local reproduces, and it fails on things clippy is silent about — most often a `[`Link`]` from a public item to a private one (`rustdoc::private_intra_doc_links`), which is easy to write while documenting _why_ a public thing exists in terms of the internals it wraps
 - `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane (add `--snapshot-url http://control:4001/internal/snapshot` to hot-reload config from the control plane without a restart)
 - `cargo run -p rolter-control` — run the control plane + UI host (add `--database-url`/`ROLTER_DATABASE_URL` for the postgres-backed store, CRUD API and `/internal/snapshot`)
 - `cargo run -p rolter-control --features postgres --bin rolter-seed -- --import rolter.example.toml` — idempotent DB bootstrap (org/team/project, optional admin user, providers/routes). The `--import` file is the **desired state**: re-importing an edited file updates the rows it already created, so the database ends up matching the file. It never overwrites a credential sealed through the dashboard, never changes a provider's slug, and never deletes rows the file no longer mentions
@@ -34,43 +34,6 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - Worktrunk is the lifecycle layer only. Commit and push with standard Git, publish and merge with `gh`/GitHub, and keep hosted `ci-ok` authoritative.
 - Do not use `wt merge`, `wt step commit`, `wt step squash`, or `wt step push`. Do not use `--force` or `--force-delete` in automated cleanup.
 - Preserve branches with `wt remove --no-delete-branch` whenever merge state is uncertain. Never clean another agent's dirty worktree.
-
-## Two build stations
-
-Two machines run Claude sessions against this repository at the same time:
-
-| Station       | Hardware                             | Owns                                                                                       |
-| ------------- | ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `station:mac` | macOS laptop                         | the dashboard (`ui/`), UI-facing docs, small control-plane glue a UI change needs          |
-| `station:rtx` | Linux, RTX 3090 + Ryzen 5900X, 64 GB | Rust crates, migrations, CI/infra, perf and load work, real-engine (vllm) integration runs |
-
-The split exists so two sessions never edit the same files or race the same
-branch. Every open issue and pull request carries exactly one of the two
-labels, or none when it is Ilya's alone (release PRs).
-
-- **Never start work on an issue or PR labelled for the other station.** Not a
-  branch, not a worktree, not a comment saying "I'll take this". The label is
-  the lock.
-- **Claim before you branch.** An unlabelled issue is unclaimed: add your
-  station's label, set Status to `In Progress`, then create the branch. Check
-  the label again right before pushing — a hand-over may have happened in
-  between.
-- **New issues get a label at filing time.** Decide from the "Owns" column;
-  when an issue has both a backend and a dashboard half, label it `station:rtx`
-  and let the rtx session open a child issue labelled `station:mac` for the UI
-  once the backend PR is up.
-- **Hand-over is explicit.** Swap the label, post one comment saying why and
-  where the branch is, and leave the branch pushed. The receiving session
-  continues that branch rather than starting a new one.
-- **PRs inherit the label of the issue they close.** A PR with no label is
-  fair game for either station to review, but only its station merges it.
-- **Merging is per-station too.** Each station merges only its own labelled
-  PRs; both rebase their queue on `master` after the other station lands
-  something.
-
-A session learns which station it is from its per-machine memory, not from
-the repo: on first use of a machine, tell the session "this machine is
-`station:mac`" (or `rtx`) and ask it to remember that.
 
 ## Code standards
 
@@ -103,7 +66,7 @@ When you change the thing in bold, the entries after it must change with it.
 - **Added a balancing strategy** — implement `rolter_balancer::LoadBalancer` in `crates/rolter-balancer/src/`; wire it into `build()` and `build_with_stats()` (`lib.rs:108`, `:115`); add the `BalancingStrategy` variant in `crates/rolter-core/src/config.rs`; add a migration allowing the new value (see `0019_cache_aware_strategies.sql`); add it to `STRATEGIES` in `ui/src/lib/api.ts` and give it a tone in `ui/src/lib/strategies.ts`, plus an entry in that file's `READS_WEIGHTS` if `build_with_stats()` hands it the weights (the dashboard states a traffic split only for those); document it in `docs/dev-docs/architecture/load-balancing.md`
 - **Added a provider / adapter kind** — add the `ProviderKind` variant in `crates/rolter-core/src/config.rs`; add dialect handling in `crates/rolter-proxy`; add a migration widening the stored enum (see `0027_provider_adapter_kinds.sql`); update `ui/src/components/ProviderSheet.tsx` and `ui/src/pages/Providers.tsx`; add a row to `rolter.example.toml`; document it under `docs/user-docs/configuration/`
 - **Added a control-plane endpoint module** — create `crates/rolter-control/src/<module>.rs` exposing `router()`; `.merge()` it into the router in `lib.rs` (~line 374); add the capability to `CAPABILITIES` in `rbac_matrix.rs` (the `the_matrix_lists_every_capability_exactly_once` test enforces coverage); add a row per `(path, method)` to `operations()` in `crates/rolter-control/src/openapi.rs` so it appears in the served `GET /openapi.json` (the `every_registered_route_is_documented` test enforces coverage and names what is missing); call it from `ui/src/lib/api.ts`; document it in `docs/user-docs/api/`
-- **Added a capability to `crates/rolter-control/src/rbac_matrix.rs`** — regenerate the dashboard's copy with `bun run gen:rbac` in `ui/` and commit `ui/src/lib/rbac-capabilities.json` — the gating stories derive their roles from it, and `ui/scripts/rbac-matrix-source.test.ts` fails the build while the two disagree; gate the new control per `docs/dev-docs/development/rbac-gating.md`
+- **Added a capability to `crates/rolter-control/src/rbac_matrix.rs`** — run `just gen-rbac` and commit both `crates/rolter-control/rbac-matrix.json` and the dashboard's copy `ui/src/lib/rbac-capabilities.json` — a rolter-control unit test fails while the artifact disagrees with `CAPABILITIES`, the gating stories derive their roles from the copy, and `ui/scripts/rbac-matrix-artifact.test.ts` fails the build while the copy differs from the artifact; gate the new control per `docs/dev-docs/development/rbac-gating.md`
 - **Added a row to a dashboard sheet form** — compose it from the shared form primitives in `ui/src/components/ui/` — `FieldLabel`, `FieldError` + `describedBy`, `FormSection`, `Segmented`, `LockButton`, `ChipGroup`, `SwitchRow`, `SettingsPanel` — never a second copy inside the sheet's own file; a screen row is still `Field`, and a titled group of settings controls is `SettingsPanel` rather than a local component called `Card` (#1682); `bun run check:primitives` fails on a component re-declared under a name `ui/` already exports, unless the file imports the shared one and composes it; see `docs/dev-docs/development/form-primitives.md`
 - **Added a column sealed with the KEK** — add the `(table, ciphertext, nonce)` entry to `SEALED_COLUMNS` in `crates/rolter-store/src/postgres/kek_audit.rs`, or `rolter kek verify` will report a restored store as healthy while that secret is unreadable; add the row to the table in `docs/dev-docs/deployment/backup-and-restore.md` and `docs/user-docs/deployment/backup-and-restore.mdx`
 - **Added a table the data plane reads** — a `NNNN_*.sql` migration **plus** a `bump_config_version()` trigger migration; extend the store traits in `crates/rolter-store/src/` and the postgres impl; extend the snapshot payload in `crates/rolter-control` and its consumer in `crates/rolter-gateway`; update `docs/dev-docs/architecture/data-model.md`
@@ -112,6 +75,7 @@ When you change the thing in bold, the entries after it must change with it.
 - **Changed configuration keys** — `crates/rolter-core/src/config.rs`, `rolter.example.toml`, `.env.example`, `charts/` values, `docker/docker-compose.yml`, `docs/user-docs/configuration/`
 - **Marked a subsystem experimental, or graduated one** — add, edit or remove the `SubsystemStability` row in `crates/rolter-core/src/stability.rs` (keep it sorted by `id`; an `id` is published and never renamed); update the table in `docs/dev-docs/development/stability-markers.md` — the `the_docs_page_lists_exactly_these_subsystems` test compares them row for row; put the note at the top of the subsystem's `docs/user-docs/` page; `nav_keys` are leaf keys from `NAV` in `ui/src/lib/nav.tsx` and are checked against it; add or drop the dashboard's translated note as `stability.notes.<id>` in **every** catalog in `ui/src/lib/i18n/locales/` (`ui/scripts/stability-notes.test.ts` checks the `en` keys against the ids). Graduating belongs in the PR that closes the gap the note names, never in a sweep
 - **Added a markdown, MDX, JSON or YAML file outside `ui/`** — run `just fmt-docs` before committing — the `docs formatting (prettier)` step of `quality.yml`'s `ui, storybook, docs` job and the `prettier (markdown / json / yaml outside ui/)` prek hook both check it; if the file genuinely cannot be formatted, exclude it in `.prettierignore` with the reason, never by loosening the config
+- **Pinned a new `uvx` tool** — add `<tool>==x.y.z` to `.github/tool-pins/requirements.txt` (dependabot's `pip` ecosystem bumps it) and run it as `uvx --from "$(bash scripts/tool-pin.sh <tool>)" <tool>`; never write `uvx <tool>@<version>` inline — `scripts/check-tool-pins.sh` rejects it
 - **Added a doc page** — add it to `docs/dev-docs/SUMMARY.md` (mdBook nav) or to the matching `"pages"` group in `docs/user-docs/docs.json` (Mintlify nav) — an unlisted page is invisible
 - **Added an ADR** — `docs/dev-docs/adr/NNNN-*.md` plus its line in `docs/dev-docs/adr/README.md`; English only; commit as plain `docs:` since `adr` is not an allowed scope
 - **Added or changed a workflow** — pin new actions to a full commit SHA; add a least-privilege `permissions:` block; keep `uvx zizmor` and `actionlint` clean; if it is a merge gate, add it to `ci-ok`'s `needs:` in `.github/workflows/ci.yml`
@@ -154,8 +118,10 @@ docs(architecture): document reload-free config propagation
   authoring tool — the footer is injected on create only, so a direct patch
   sticks. Strip it as soon as you see it: `ci-ok` reads the live body after the
   gate, so the PR's opening run goes green on its own once the line is gone.
-  The `edited` run the strip starts may go red first with _gate still running_;
-  leave it, the opening run's newer `ci-ok` supersedes it. This is a
+  The `edited` run the strip starts waits for the opening run's gate and then
+  reports its verdict, so it ends green with it; a red `ci-ok` is never
+  superseded by a newer green one on the same sha, so a red one left over from
+  a failed gate has to be re-run (`gh run rerun <id> --failed`). This is a
   workaround for tooling this repo does not control; the check itself never
   gets a carve-out for it. See
   [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).
@@ -165,26 +131,28 @@ docs(architecture): document reload-free config propagation
 
 Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre-commit` hook in `prek.toml`.
 
-### Merging through the queue
+### Merging (the merge queue is not on yet)
 
-`master` is behind a **merge queue** ([ADR-0033](docs/dev-docs/adr/2026-09-18-merge-queue.md)).
-`gh pr merge` on a PR targeting `master` _enqueues_ it rather than merging it:
-GitHub builds `master` + the queued entries, runs `ci-ok` against that tree, and
-merges only if it passes. So a PR is not merged when the command returns — check
-with `gh pr view <n> --json state,mergedAt` before reporting it landed. If the
-merge-group run fails, the PR is dequeued with a comment and `master` is
-untouched; fix the branch and requeue. Details, including what the queue means
-for the `merge_group` trigger in `ci.yml`, are in
+`master` is **not** behind a merge queue today. [ADR-0033](docs/dev-docs/adr/2026-09-18-merge-queue.md)
+decided on one and the repository side (`merge_group:` in `ci.yml`) shipped, but
+the branch-protection setting was never switched on, so that trigger has never
+fired. `gh pr merge` on a PR targeting `master` merges it directly once its
+`ci-ok` is green, and nothing re-runs `ci-ok` against the combined tree first: a
+semantic conflict between two green PRs is only caught by `master`'s own push
+run, after the merge. Watch that run after you merge, and do not assume a failing
+combination was dequeued. Details, and the admin steps that would turn the queue
+on, are in
 [`docs/dev-docs/development/merge-protection.md`](docs/dev-docs/development/merge-protection.md).
+Tracked in #2029.
 
 ### Merging a stacked PR
 
 GitHub's stacked pull requests are enabled on this repository, and they change
-how a chain of dependent PRs must be merged. The queue does not change any of
-this: a stacked child targets its parent's branch, which is neither protected nor
-queued, so children merge exactly as below. Only the bottom PR of a stack targets
-`master`, and it goes through the queue like anything else — which means the
-children retarget onto `master` a few minutes later than they used to. Both rules below cost a PR when
+how a chain of dependent PRs must be merged. A stacked child targets its
+parent's branch, which is neither protected nor queued, so children merge exactly
+as below; only the bottom PR of a stack targets `master`. (If the queue is ever
+switched on, the bottom PR goes through it and the children retarget onto
+`master` a few minutes later.) Both rules below cost a PR when
 they are broken, and the loss is silent and irreversible.
 
 - **`gh pr merge` does not work on a stacked PR.** Both the GraphQL path and
@@ -267,7 +235,7 @@ by #123`, `Child of #456`) so it survives for whoever can.
 
 ## CI
 
-- `ci-ok` is the single required status check. It needs `quality` and `codeql`, and runs the PR-title and agent-session-url checks as its own steps, so a title or body edit costs one job. The heavy gate lives in the reusable `.github/workflows/quality.yml`; the release paths do not re-run it, they publish a commit only once its `ci-ok` is green. It is also the check the merge queue asks for, which is why enabling the queue needed no second name anywhere.
+- `ci-ok` is the single required status check. It needs `quality` and `codeql`, and runs the PR-title and agent-session-url checks as its own steps, so a title or body edit costs one job. The heavy gate lives in the reusable `.github/workflows/quality.yml`; the release paths do not re-run it, they publish a commit only once its `ci-ok` is green. It is also the check a merge queue would ask for, which is why enabling the queue needs no second name anywhere.
 - Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows, both blocking — a zizmor finding at `medium` or above fails `ci-ok` (#1456), so fix it rather than suppressing it; see [`docs/dev-docs/development/testing.md`](docs/dev-docs/development/testing.md). `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
 - PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs only `ci-ok` (its title and body steps) and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/dev-docs/development/ci-gating.md`](docs/dev-docs/development/ci-gating.md).
 

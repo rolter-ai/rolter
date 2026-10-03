@@ -4,14 +4,18 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Providers from "./Providers";
 import {
   Harness,
+  adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectEmptyState,
+  expectAllowed,
   expectNoUxEvent,
+  expectRefused,
   expectSheetClosed,
   expectUxEvent,
   expectLoadError,
+  expectListStateInViewport,
   expectListTable,
   expectNoFalseEmpty,
   expectSkeleton,
@@ -25,9 +29,18 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  withDocsBase,
 } from "./story-harness";
-import type { LabelRow, ProviderRow } from "@/lib/api";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  atMobile,
+  atTablet,
+  expectInFrame,
+  expectNoHorizontalOverflow,
+  phoneFits,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: ProviderRow[] = [
@@ -57,7 +70,7 @@ const PROVIDERS: ProviderRow[] = [
 
 const loaded = routes([
   ["/providers", () => PROVIDERS],
-  ["/config/problems", () => []],
+  ["/config/problems", () => ({ problems: [] })],
 ]);
 
 const meta = {
@@ -109,6 +122,37 @@ export const Empty: Story = {
   },
 };
 
+// the empty state and the skeleton sit in the part of the table a phone shows,
+// not in the row's 760px floor past the right edge of the card (#2362)
+export const EmptyIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={routes([["/providers", () => []]])}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Model Providers", {
+      says: /No providers yet/,
+      cta: /Add provider/,
+    });
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const LoadingIsOnScreenAtPhoneWidth: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={pending}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectListStateInViewport(canvasElement, "Model Providers");
+    await expectNoHorizontalOverflow();
+  },
+};
+
 // a search that matched nothing is not the same answer as an empty org: the
 // copy blames the query and offers to clear it rather than to create a row
 export const NoSearchMatch: Story = {
@@ -122,7 +166,7 @@ export const NoSearchMatch: Story = {
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await userEvent.type(canvas.getByLabelText("Search providers"), "cohere");
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -270,7 +314,7 @@ export const DeleteIsConfirmedAndReported: Story = {
     expectNoUxEvent("form_submit", "provider-delete");
 
     await clickWhenEnabled(canvasElement, "Delete provider openai-prod");
-    await confirmDestructive(/openai-prod/, "Delete provider");
+    await confirmDestructive("Delete provider openai-prod?", "Delete provider");
     await deleted.expectSent("DELETE", "/providers/p-1");
     const submit = await expectUxEvent("form_submit", "provider-delete");
     await expect(submit.outcome).toBe("ok");
@@ -380,7 +424,7 @@ export const NoLabelMatch: Story = {
     await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
     // clearing puts both back, so the button really cleared both narrowings
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
   },
 };
@@ -449,20 +493,6 @@ export const LabelsUnavailable: Story = {
 };
 
 /**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
-
-/**
  * Open the add-provider sheet, where the provider-key field explains which of
  * the three credentials it wants (#943).
  */
@@ -505,3 +535,465 @@ export const ProviderKeyHintHasNoLinkWithoutADocsHost: Story = {
     await expect(sheet.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
   },
 };
+
+// ------------------------------------------------------------------ sorting (#2143)
+
+const SPARE: ProviderRow = {
+  id: "p-3",
+  org_id: "org-1",
+  name: "mistral-fr",
+  slug: "mistral-fr",
+  kind: "mistral",
+  api_base: "https://api.mistral.ai/v1",
+  api_key_env: null,
+  egress_proxies: [],
+  created_at: "2026-01-12T00:00:00Z",
+};
+
+const THREE = routes([
+  ["/providers", () => [...PROVIDERS, SPARE]],
+  ["/config/problems", () => ({ problems: [] })],
+]);
+
+/** the first cell of every body row, in the order the list shows them */
+const firstCells = (canvas: ReturnType<typeof within>) =>
+  canvas
+    .getAllByRole("row")
+    .slice(1)
+    .map((row: HTMLElement) => within(row).getAllByRole("cell")[0]?.textContent);
+
+/**
+ * Every column sorts, as Provider Groups does. A click sorts ascending, a
+ * second descending and a third goes back to the order the control plane sent,
+ * and the direction is the header's `aria-sort`, not only an arrow.
+ */
+export const EveryColumnSorts: Story = {
+  render: () => (
+    <Harness fetchStub={THREE}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("mistral-fr").length).toBeGreaterThan(0));
+    await expectListTable(canvasElement, "Model Providers");
+    for (const name of ["Name", "Type", "API base", "Slug", "Key env"]) {
+      const header = canvas.getByRole("columnheader", { name });
+      await expect(within(header).getByRole("button")).toBeVisible();
+      await expect(header).toHaveAttribute("aria-sort", "none");
+    }
+    await expect(firstCells(canvas)).toEqual(["openai-prod", "anthropic-eu", "mistral-fr"]);
+
+    const header = canvas.getByRole("columnheader", { name: "Name" });
+    const button = within(header).getByRole("button");
+    await userEvent.click(button);
+    await expect(header).toHaveAttribute("aria-sort", "ascending");
+    await expect(firstCells(canvas)).toEqual(["anthropic-eu", "mistral-fr", "openai-prod"]);
+    await userEvent.click(button);
+    await expect(header).toHaveAttribute("aria-sort", "descending");
+    await expect(firstCells(canvas)).toEqual(["openai-prod", "mistral-fr", "anthropic-eu"]);
+    await userEvent.click(button);
+    await expect(header).toHaveAttribute("aria-sort", "none");
+    await expect(firstCells(canvas)).toEqual(["openai-prod", "anthropic-eu", "mistral-fr"]);
+
+    // another column takes over the sort: type reads anthropic, mistral, openai
+    const type = canvas.getByRole("columnheader", { name: "Type" });
+    await userEvent.click(within(type).getByRole("button"));
+    await expect(type).toHaveAttribute("aria-sort", "ascending");
+    await expect(firstCells(canvas)).toEqual(["anthropic-eu", "mistral-fr", "openai-prod"]);
+  },
+};
+
+// ------------------------------------------------ test right after a create (#2142)
+
+const CREATED: ProviderRow = {
+  id: "p-new",
+  org_id: "org-1",
+  name: "vllm-eu",
+  slug: "vllm-eu",
+  kind: "openai",
+  api_base: "http://vllm.internal:8000",
+  api_key_env: null,
+  egress_proxies: [],
+  created_at: "2026-09-30T10:00:00Z",
+};
+
+const PROBE: ProviderTestResult = {
+  reachable: true,
+  probed_url: "http://vllm.internal:8000/v1/models",
+  status: 200,
+  latency_ms: 38,
+  credential: "none",
+  models_found: 2,
+  error: null,
+};
+
+let created: Recorder;
+
+/**
+ * Create leaves the sheet open on the new provider with the connection test
+ * one click away, instead of closing over it and sending the operator to find
+ * the row and open Edit. The list behind already holds the row, and the test is
+ * not run until it is asked for.
+ */
+export const CreateThenTest: Story = {
+  render: () => {
+    let stored = [...PROVIDERS];
+    created = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.endsWith("/test")) return json(PROBE);
+        if (init?.method === "POST") {
+          stored = [...stored, CREATED];
+          return json(CREATED);
+        }
+        if (url.includes("/config/problems")) return json({ problems: [] });
+        if (url.includes("/providers")) return json(stored);
+        return json([]);
+      }),
+    );
+    return (
+      <Harness fetchStub={created.stub}>
+        <Providers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await clickWhenEnabled(canvasElement, "+ Add provider");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(await dialog.findByLabelText("Name"), "vllm-eu");
+    await userEvent.type(dialog.getByLabelText("API base"), "http://vllm.internal:8000");
+    await userEvent.click(dialog.getByRole("button", { name: "Create provider" }));
+
+    await dialog.findByText(/vllm-eu is created but not tested yet/);
+    await waitFor(() => expect(canvas.getAllByText("vllm-eu").length).toBeGreaterThan(0));
+    created.expectNotSent("POST", "/test");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Test connection" }));
+    await created.expectSent("POST", "/providers/p-new/test");
+    await waitFor(() => expect(dialog.getByText(/Reachable · 2 models/)).toBeVisible());
+
+    // Done closes it, with nothing unsaved to confirm
+    await userEvent.click(dialog.getByRole("button", { name: "Done" }));
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * A probe belongs to the provider it ran against. The sheet stays mounted on
+ * this screen, so a result that outlived the closing would greet the next
+ * provider opened and read as that one's health.
+ */
+export const ATestResultDoesNotFollowToTheNextProvider: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "POST" && String(input).endsWith("/test")
+          ? json(PROBE)
+          : loaded(input, init),
+      )}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit provider openai-prod");
+    const first = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(await first.findByRole("button", { name: "Test connection" }));
+    await waitFor(() => expect(first.getByText(/Reachable · 2 models/)).toBeVisible());
+    await userEvent.click(first.getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+
+    await clickWhenEnabled(canvasElement, "Edit provider anthropic-eu");
+    const second = within(await within(document.body).findByRole("dialog"));
+    await second.findByRole("button", { name: "Test connection" });
+    await expect(second.queryByText(/Reachable/)).toBeNull();
+  },
+};
+
+// ------------------------------------------- what uses the provider being deleted (#2143)
+
+const GROUPS: ProviderGroupRow[] = [
+  {
+    id: "g-1",
+    org_id: "org-1",
+    name: "eu-fleet",
+    slug: "eu-fleet",
+    strategy: "round_robin",
+    created_at: "2026-01-20T00:00:00Z",
+    members: [
+      {
+        group_id: "g-1",
+        provider_id: "p-1",
+        provider_name: "openai-prod",
+        weight: 1,
+        position: 0,
+      },
+      {
+        group_id: "g-1",
+        provider_id: "p-2",
+        provider_name: "anthropic-eu",
+        weight: 1,
+        position: 1,
+      },
+    ],
+  },
+];
+
+const target = (provider: string) => ({ provider, weight: 1 });
+
+const EFFECTIVE = {
+  providers: [],
+  virtual_keys: [],
+  routes: [
+    { model: "gpt-4o", strategy: "weighted", targets: [target("openai-prod")] },
+    {
+      model: "chat",
+      strategy: "weighted",
+      targets: [target("openai-prod"), target("anthropic-eu")],
+    },
+    { model: "claude", strategy: "weighted", targets: [target("anthropic-eu")] },
+  ],
+};
+
+/** the screen's reads plus the two the delete confirm makes, each overridable */
+const withUsage = (over: { config?: () => Promise<Response> } = {}) =>
+  scoped(async (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/config/problems")) return json({ problems: [] });
+    if (url.pathname.endsWith("/config")) return over.config ? over.config() : json(EFFECTIVE);
+    if (url.pathname.endsWith("/provider-groups")) return json(GROUPS);
+    if (url.pathname.endsWith("/providers")) return json([...PROVIDERS, SPARE]);
+    return loaded(input, init);
+  });
+
+const openDeleteFor = async (canvasElement: HTMLElement, name: string) => {
+  await clickWhenEnabled(canvasElement, `Delete provider ${name}`);
+  return within(await within(document.body).findByRole("dialog"));
+};
+
+/**
+ * The confirm names what still points at the provider: the routes that target
+ * it, flagging the one it is the only target of, and the groups it belongs to.
+ * It also says what the delete does to a client addressing it directly, and
+ * leaves the confirm pressable, since the control plane has the last word.
+ */
+export const DeleteNamesTheRoutesAndGroupsThatUseTheProvider: Story = {
+  render: () => (
+    <Harness fetchStub={withUsage()}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "openai-prod");
+    await dialog.findByText("Target of 2 routes");
+    await expect(dialog.getByText("gpt-4o")).toBeVisible();
+    await expect(dialog.getByText("chat")).toBeVisible();
+    // the route the provider is the whole of is marked, the other is not
+    await expect(dialog.getAllByText("only target")).toHaveLength(1);
+    await expect(dialog.getByText("gpt-4o").parentElement).toHaveTextContent("only target");
+    await expect(dialog.queryByText("claude")).toBeNull();
+    await expect(dialog.getByText("Member of 1 group")).toBeVisible();
+    await expect(dialog.getByText("eu-fleet")).toBeVisible();
+    await expect(dialog.getByText(/take it out of those first/)).toBeVisible();
+    await expect(dialog.getByText("openai-prod/model")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Delete provider" })).toBeEnabled();
+  },
+};
+
+/** a provider nothing points at says so, in place of a list */
+export const DeleteSaysWhenNothingUsesTheProvider: Story = {
+  render: () => (
+    <Harness fetchStub={withUsage()}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "mistral-fr");
+    await dialog.findByText("No route or group uses it.");
+    await expect(dialog.queryByText(/Target of/)).toBeNull();
+    await expect(dialog.queryByText(/Member of/)).toBeNull();
+  },
+};
+
+/**
+ * While the reads are out the space is held and nothing is claimed: "no route
+ * uses it" on an answer that has not arrived is how a delete gets confirmed on
+ * a provider that is still in use.
+ */
+export const DeleteDoesNotClaimUnusedWhileChecking: Story = {
+  render: () => (
+    <Harness fetchStub={withUsage({ config: () => new Promise<Response>(() => {}) })}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "mistral-fr");
+    await waitFor(() => expect(dialog.getByRole("status")).toBeVisible());
+    await expect(dialog.queryByText("No route or group uses it.")).toBeNull();
+    await expect(dialog.getByRole("button", { name: "Delete provider" })).toBeEnabled();
+  },
+};
+
+/**
+ * A failed read says so, with a retry, and does not read as "unused" either.
+ * The retry asks again and the answer that follows is the one shown.
+ */
+export const DeleteDoesNotClaimUnusedWhenTheReadFailed: Story = {
+  render: () => {
+    let asked = 0;
+    return (
+      <Harness
+        fetchStub={withUsage({
+          config: async () =>
+            asked++ === 0
+              ? json({ error: { message: "config store is down" } }, 500)
+              : json(EFFECTIVE),
+        })}
+      >
+        <Providers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "mistral-fr");
+    const alert = await dialog.findByRole("alert");
+    await expect(alert).toHaveTextContent(/failed to return the routes and groups that use it/);
+    await expect(alert).toHaveTextContent(/config store is down/);
+    await expect(dialog.queryByText("No route or group uses it.")).toBeNull();
+    await expect(dialog.getByRole("button", { name: "Delete provider" })).toBeEnabled();
+
+    await userEvent.click(dialog.getByRole("button", { name: "Try again" }));
+    await dialog.findByText("No route or group uses it.");
+    await expect(dialog.queryByRole("alert")).toBeNull();
+  },
+};
+
+/**
+ * A provider behind a dozen routes, one of them with a name that never breaks:
+ * the confirm lists eight, says how many more there are, and does not push the
+ * page sideways on a phone.
+ */
+export const DeleteUsageHandlesManyAndLongNames: Story = {
+  ...atMobile,
+  render: () => {
+    const long = "Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4-long-context-eu-west-production-primary";
+    const many = {
+      ...EFFECTIVE,
+      routes: [
+        { model: long, strategy: "weighted", targets: [target("openai-prod")] },
+        ...Array.from({ length: 11 }, (_, i) => ({
+          model: `route-${String(i).padStart(2, "0")}`,
+          strategy: "weighted",
+          targets: [target("openai-prod"), target("anthropic-eu")],
+        })),
+      ],
+    };
+    return (
+      <Harness fetchStub={withUsage({ config: async () => json(many) })}>
+        <Providers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDeleteFor(canvasElement, "openai-prod");
+    await dialog.findByText("Target of 12 routes");
+    await expect(dialog.getByText("and 4 more")).toBeVisible();
+    // eight routes and the "more" line, then the one group it belongs to
+    await expect(dialog.getAllByRole("listitem")).toHaveLength(10);
+    await expectNoHorizontalOverflow();
+    const panel = within(document.body).getByRole("dialog");
+    await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
+  },
+};
+
+/**
+ * A provider scoped to a project says so (#1919). The name comes from the org's
+ * project list, and an org-wide row says it is org-wide rather than leaving the
+ * cell empty, so the column reads as a statement about every row.
+ */
+export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Project: Gateway")).toBeVisible();
+    await expect(canvas.getByText("Organization-wide")).toBeVisible();
+    await expect(canvas.getByRole("columnheader", { name: /Scope/ })).toBeVisible();
+    // the badge sits in the scoped provider's own row
+    const row = canvas.getAllByText("openai-prod")[0].closest('[role="row"]') as HTMLElement;
+    await expect(within(row).getByText("Project: Gateway")).toBeVisible();
+    await expectListTable(canvasElement, "Model Providers");
+  },
+};
+
+/**
+ * A project admin looking at a mixed list (#2522).
+ *
+ * `provider` is a project capability, so asked at their own project the
+ * effective answer grants the writes, and a page-level gate would offer Edit
+ * and Delete on the org-wide row too — which `crud.rs` refuses, because it
+ * checks such a row at the org. Each row is gated at its own scope instead: the
+ * project's row is theirs, the org-wide one names the role it takes.
+ */
+export const ProjectAdminOnAMixedList: Story = {
+  render: () => (
+    <Harness
+      role={adminOfProject("project-1")}
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit provider openai-prod");
+    await expectAllowed(canvasElement, "Delete provider openai-prod");
+    await expectRefused(canvasElement, "Edit provider anthropic-eu");
+    await expectRefused(canvasElement, "Delete provider anthropic-eu");
+  },
+};
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const providersFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  ready: async (canvas, locale) => {
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    // the list scrolls sideways, but a row's buttons stay at the frame's edge:
+    // they sat at x=663 on a 375px phone, a scroll away from being pressed
+    const frame = canvas.getByRole("table");
+    const copy = (locale === "ru" ? ru : en).pages.providers.editOne;
+    const edit = canvas.getByRole("button", { name: copy.replace("{{name}}", "openai-prod") });
+    await expectInFrame(edit, frame);
+  },
+});
+export const MobileInRussian: Story = providersFit("mobile", "ru");
+export const ActionsStayInReachAtMobile: Story = providersFit("mobile", "en");

@@ -8,7 +8,16 @@ import {
   shellStub,
   shellStubWithStability,
 } from "./pages/shell-harness";
-import { expectForbidden, withCapabilities } from "./pages/story-harness";
+import {
+  TEAM,
+  confirmation,
+  expectForbidden,
+  json,
+  recording,
+  withCapabilities,
+  type FetchStub,
+} from "./pages/story-harness";
+import type { InvocationRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -82,6 +91,126 @@ export const Desktop: Story = {
     // is out of the accessibility tree entirely — there is nothing to reach a
     // rail that is already on screen
     await expect(canvas.queryByRole("button", { name: OPEN_NAV })).toBeNull();
+  },
+};
+
+/**
+ * The rail's account block goes by the display name when the account has one and
+ * by the email when it has not; the email is never lost, it moves under the name
+ * in the account menu (#2434).
+ */
+export const AccountMenuShowsTheDisplayName: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([
+        [
+          "/api/v1/auth/me",
+          () => ({
+            user: {
+              id: "user-1",
+              email: "anya@acme.co",
+              display_name: "Anya Petrova",
+              bio: null,
+              is_superadmin: true,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+            memberships: [],
+            display_name_managed: false,
+          }),
+        ],
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const account = await within(rail).findByText("Anya Petrova");
+    await expect(account).toBeVisible();
+    await expect(within(rail).queryByText("anya@acme.co")).toBeNull();
+    await userEvent.click(account);
+    // the menu names the person and keeps the address as the second line
+    const menu = within(document.body);
+    await expect((await menu.findAllByText("Anya Petrova")).length).toBeGreaterThan(1);
+    await expect(await menu.findByText("anya@acme.co")).toBeVisible();
+  },
+};
+
+/** With no display name the rail falls back to the email, as it always did. */
+export const AccountMenuFallsBackToTheEmail: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await expect(await within(rail).findByText("anya@acme.co")).toBeVisible();
+  },
+};
+
+/**
+ * The landing screen's reference render is one day of traffic, not figures
+ * over empty charts. The shell's stub answered the summary and nothing else, so
+ * the tiles said 132 requests beside a spend chart, a donut, bars and a request
+ * log that said there was nothing (#1994), and the latency tile read "0 ms"
+ * from a summary with no average.
+ */
+export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const figures = await canvas.findByTestId("dashboard-figures");
+    await expect(await within(figures).findByText("132")).toBeVisible();
+    await expect(figures).toHaveTextContent(/215\s*ms/);
+    await expect(
+      await canvas.findByRole("img", {
+        name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),
+      }),
+    ).toBeVisible();
+    await expect(
+      await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),
+    ).toBeVisible();
+    await expect(
+      await within(canvas.getByTestId("dashboard-recent")).findByText("gpt-4o", {
+        selector: "td span",
+      }),
+    ).toBeVisible();
+    await expect(canvas.queryByText(en.analytics.noRowsYet)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.nothingLogged)).toBeNull();
+  },
+};
+
+/**
+ * The shell's team has no project yet. The shared chain answers the project list
+ * before a story's own routes, so this answers it first.
+ */
+function withoutProjects(): FetchStub {
+  const shell = shellStub();
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === `/api/v1/teams/${TEAM.id}/projects` && init?.method !== "POST") return json([]);
+    return shell(input, init);
+  };
+}
+
+/**
+ * Getting started opens the create-project dialog from the Dashboard with the
+ * account menu closed (#2611). The scope switcher lives in that menu and is not
+ * in the document while it is shut, so this is the story that fails if the
+ * dialog ever moves back into it.
+ */
+export const GettingStartedOpensCreateProject: Story = {
+  // the dismissal is persisted per browser, and a card another story put away
+  // would leave nothing here to click
+  beforeEach: () => localStorage.removeItem("rolter.getting-started.dismissed"),
+  render: () => <AppShell route="/dashboard" fetchStub={withoutProjects()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const create = await canvas.findByRole("button", {
+      name: en.pages.gettingStarted.createProject,
+    });
+    // the switcher, and its own + beside Project, are not mounted
+    await expect(canvas.queryByRole("button", { name: en.scope.addProject })).toBeNull();
+    await userEvent.click(create);
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await expect(dialog.getByText(en.scope.newProjectHint)).toBeVisible();
   },
 };
 
@@ -271,6 +400,90 @@ export const CommandPaletteShortcut: Story = {
     await waitFor(() =>
       expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull(),
     );
+  },
+};
+
+// the one request the palette story looks up: a failed call whose id a client
+// quoted, from outside the log's default window
+const LOGGED: InvocationRow = {
+  ts: "2025-01-15T09:30:00.000Z",
+  request_id: "3f2c9a1e-7b4d-4f10-9c2e-0a1b2c3d4e5f",
+  trace_id: "",
+  org_id: "org-1",
+  team_id: "team-1",
+  project_id: "project-1",
+  virtual_key_id: "vk-1",
+  business_unit_id: "",
+  customer_id: "",
+  model: "gpt-4o",
+  provider: "openai",
+  target: "openai/gpt-4o",
+  variant: "",
+  status: 502,
+  stream: 0,
+  cache_hit: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+  prompt_tokens: 800,
+  completion_tokens: 0,
+  total_tokens: 800,
+  cost_usd: 0,
+  unpriced: 0,
+  latency_ms: 842,
+  ttft_ms: 0,
+  error: "upstream reset the connection",
+};
+const logged = recording(
+  shellStub([["/api/v1/analytics/invocations", () => ({ data: [LOGGED] })]]),
+);
+
+/**
+ * A request id pasted into the palette (#1861) goes through the whole shell: the
+ * palette offers the lookup, Enter navigates to `/logs?request_id=…`, the screen
+ * reads its lookup from that address, asks the control plane for the id with no
+ * window, and opens the row it finds. The palette and the screen are two
+ * components that only meet here.
+ */
+export const APastedIdInThePaletteOpensLlmLogs: Story = {
+  render: () => <AppShell route="/dashboard" fetchStub={logged.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    await railOf(canvasElement);
+
+    await userEvent.keyboard("{Meta>}k{/Meta}");
+    const field = await body.findByRole("combobox", { name: en.shell.palette.label });
+    await waitFor(() => expect(field).toHaveFocus());
+    await userEvent.paste(LOGGED.request_id);
+    await body.findByRole("option", {
+      name: new RegExp(en.shell.palette.openRequest.replace("{{id}}", LOGGED.request_id)),
+    });
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(canvas.getByRole("heading", { level: 1, name: screens.logs.title })).toBeVisible(),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(within(panel).getByText(LOGGED.request_id)).toBeVisible());
+    await expect(canvas.getByRole("textbox", { name: en.pages.logs.lookup.label })).toHaveValue(
+      LOGGED.request_id,
+    );
+    await waitFor(() =>
+      expect(body.queryByRole("combobox", { name: en.shell.palette.label })).toBeNull(),
+    );
+
+    // the dashboard the shell booted on asked for its own recent rows before the
+    // palette was opened; the reads that count are the log screen's, which name
+    // a status class
+    const reads = logged.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams)
+      .filter((q) => q.has("status"));
+    await expect(reads.length).toBeGreaterThan(0);
+    for (const sent of reads) {
+      await expect(sent.get("request_id")).toBe(LOGGED.request_id);
+      await expect(sent.has("since")).toBe(false);
+    }
   },
 };
 

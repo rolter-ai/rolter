@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Login from "./Login";
@@ -13,7 +14,7 @@ import {
   recording,
   type FetchStub,
 } from "./story-harness";
-import { AuthProvider } from "@/lib/auth";
+import { AuthProvider, useAuth } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import { withPageA11y } from "@/lib/story-a11y";
 
@@ -835,5 +836,275 @@ export const AnAnnouncedRequirementIsSaidOnTheWayIn: Story = {
     await signIn(canvasElement);
     await expectToast(canvasElement, /required from/i);
     localStorage.removeItem(TOKEN_STORAGE_KEY);
+  },
+};
+
+// --- ending a browser sign-in (#2411) -------------------------------------
+//
+// the callback redirects to `/login?sso_code=…` or `/login?sso_error=…`; the
+// stories put that query on the iframe's own address and restore it after
+
+// a session left in storage by an earlier story would read as signed in
+function clearSession() {
+  for (const key of ["token", "email", "user"]) localStorage.removeItem(`rolter.session.${key}`);
+}
+
+function atQuery(query: string) {
+  return () => {
+    const original = window.location.search;
+    const params = new URLSearchParams(original);
+    for (const [k, v] of new URLSearchParams(query)) params.set(k, v);
+    window.history.replaceState(null, "", `?${params.toString()}`);
+    clearSession();
+    return () => {
+      window.history.replaceState(null, "", original || window.location.pathname);
+      clearSession();
+    };
+  };
+}
+
+/** what the shell would render once the session is stored */
+function SignedInProbe({ children }: { children: React.ReactNode }) {
+  const { email } = useAuth();
+  // a page of its own, as the shell would be: landmark and heading (#1353)
+  return email ? (
+    <main>
+      <h1>shell</h1>
+      <p role="status">signed in as {email}</p>
+    </main>
+  ) : (
+    <>{children}</>
+  );
+}
+
+const SSO_METHODS = {
+  password: true,
+  sso: [{ slug: "okta", name: "Okta", start_url: "/auth/sso/okta/start" }],
+};
+
+function ssoStub(exchange: () => Response): FetchStub {
+  return async (input) => {
+    const url = String(input);
+    if (url.includes("/auth/methods")) return json(SSO_METHODS);
+    if (url.includes("/auth/sso/exchange")) return exchange();
+    return json({});
+  };
+}
+
+let exchangeCalls = recording(ssoStub(() => json({})));
+// delegates to whichever recorder is current when the call lands: a render pass
+// can run before `beforeEach` has made this run's recorder, and twice
+const viaExchangeCalls: FetchStub = (input, init) => exchangeCalls.stub(input, init);
+
+/** The code is redeemed, the session stored, the address bar cleaned. */
+export const SsoCodeSignsIn: Story = {
+  beforeEach: () => {
+    // made once per run, not in `render`, which a render pass may call twice
+    exchangeCalls = recording(ssoStub(() => json({ ...SESSION, granted_roles: [] })));
+    return atQuery("sso_code=one-time-example-code")();
+  },
+  render: () => {
+    return (
+      <Harness fetchStub={viaExchangeCalls}>
+        <AuthProvider>
+          <SignedInProbe>
+            <Login />
+          </SignedInProbe>
+        </AuthProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText(/signed in as anya@acme.co/)).toBeVisible();
+    const body = await exchangeCalls.expectSentBody<{ code: string }>("POST", "/auth/sso/exchange");
+    await expect(body.code).toBe("one-time-example-code");
+    await expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe(SESSION.token);
+    await expect(window.location.search).toBe("");
+  },
+};
+
+/**
+ * The code is single use, so the exchange must run once even though
+ * `React.StrictMode` runs the screen's effects twice. The screen mounts in a
+ * later commit, under a StrictMode that is already there (#1744).
+ */
+function LateLogin() {
+  const [mounted, setMounted] = React.useState(false);
+  return (
+    <>
+      <button onClick={() => setMounted(true)}>open the login</button>
+      {mounted && (
+        <AuthProvider>
+          <SignedInProbe>
+            <Login />
+          </SignedInProbe>
+        </AuthProvider>
+      )}
+    </>
+  );
+}
+
+export const SsoCodeIsRedeemedOnceUnderStrictMode: Story = {
+  beforeEach: () => {
+    exchangeCalls = recording(ssoStub(() => json({ ...SESSION, granted_roles: [] })));
+    return atQuery("sso_code=one-time-example-code")();
+  },
+  render: () => {
+    return (
+      <React.StrictMode>
+        <Harness fetchStub={viaExchangeCalls}>
+          <LateLogin />
+        </Harness>
+      </React.StrictMode>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "open the login" }));
+    // the sign-in landing can only follow the remount, so the count is read after it
+    await expect(await within(canvasElement).findByText(/signed in as/)).toBeVisible();
+    await expect(
+      exchangeCalls.calls.filter((c) => c.url.includes("/auth/sso/exchange")),
+    ).toHaveLength(1);
+  },
+};
+
+/** A spent or expired code says so, keeps the form, and signs nobody in. */
+export const SsoCodeRefused: Story = {
+  beforeEach: atQuery("sso_code=spent-example-code"),
+  render: () => (
+    <Harness
+      fetchStub={ssoStub(() =>
+        json({ error: { message: "invalid", code: "invalid_exchange_code" } }, 400),
+      )}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/expired before it finished/i);
+    await expect(canvas.getByRole("button", { name: /sign in/i })).toBeVisible();
+    await expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+    await expect(window.location.search).toBe("");
+  },
+};
+
+/** The exchange could not be reached: the form stays and the outage is named. */
+export const SsoCodeExchangeUnreachable: Story = {
+  beforeEach: atQuery("sso_code=any-example-code"),
+  render: () => (
+    <Harness
+      fetchStub={async (input) => {
+        if (String(input).includes("/auth/methods")) return json(SSO_METHODS);
+        throw new TypeError("network error");
+      }}
+    >
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(
+      /could not be reached/i,
+    );
+  },
+};
+
+const SSO_MESSAGES: Record<string, RegExp> = {
+  idp_error: /declined the sign-in/i,
+  state_expired: /took too long or was already used/i,
+  sso_disabled: /turned off for this organization/i,
+  unknown_provider: /no longer available/i,
+  no_mapped_group: /not in any group/i,
+  account_deactivated: /has been deactivated/i,
+  idp_verification_failed: /could not be reached or its response/i,
+  not_configured: /cannot finish a single sign-on/i,
+  internal_error: /failed on our side/i,
+};
+
+const refusalRender: Story["render"] = () => (
+  <Harness fetchStub={ssoStub(() => json({}))}>
+    <AuthProvider>
+      <Login />
+    </AuthProvider>
+  </Harness>
+);
+
+/** the message, the cleaned address bar, and the form still there to try again */
+function refusalPlay(message: RegExp, provider?: string): Story["play"] {
+  return async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(message);
+    if (provider) await expect(await canvas.findByText(provider)).toBeVisible();
+    await expect(window.location.search).toBe("");
+    await expect(await canvas.findByLabelText(/^password/i)).toBeVisible();
+  };
+}
+
+export const SsoErrorIdpError: Story = {
+  beforeEach: atQuery("sso_error=idp_error"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.idp_error),
+};
+export const SsoErrorStateExpired: Story = {
+  beforeEach: atQuery("sso_error=state_expired"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.state_expired),
+};
+export const SsoErrorDisabled: Story = {
+  beforeEach: atQuery("sso_error=sso_disabled"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.sso_disabled),
+};
+export const SsoErrorUnknownProvider: Story = {
+  beforeEach: atQuery("sso_error=unknown_provider"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.unknown_provider),
+};
+export const SsoErrorNoMappedGroup: Story = {
+  beforeEach: atQuery("sso_error=no_mapped_group&sso=okta"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.no_mapped_group, "Identity provider: Okta"),
+};
+export const SsoErrorAccountDeactivated: Story = {
+  beforeEach: atQuery("sso_error=account_deactivated"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.account_deactivated),
+};
+export const SsoErrorVerificationFailed: Story = {
+  beforeEach: atQuery("sso_error=idp_verification_failed"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.idp_verification_failed),
+};
+export const SsoErrorNotConfigured: Story = {
+  beforeEach: atQuery("sso_error=not_configured"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.not_configured),
+};
+export const SsoErrorInternal: Story = {
+  beforeEach: atQuery("sso_error=internal_error"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.internal_error),
+};
+
+/** A code this dashboard has no wording for falls back to the internal error. */
+export const SsoErrorUnknownCode: Story = {
+  beforeEach: atQuery("sso_error=something_new"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.internal_error),
+};
+
+/** The slug is looked up, never printed: one methods does not list is ignored. */
+export const SsoErrorUnknownProviderIsNotRendered: Story = {
+  beforeEach: atQuery("sso_error=idp_error&sso=%3Cb%3Eevil%3C%2Fb%3E"),
+  render: refusalRender,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(SSO_MESSAGES.idp_error);
+    await expect(canvas.queryByText(/evil/)).toBeNull();
+    await expect(canvas.queryByText(/identity provider:/i)).toBeNull();
   },
 };

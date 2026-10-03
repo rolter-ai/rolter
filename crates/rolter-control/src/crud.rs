@@ -19,19 +19,20 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::{AdvancedModelConfig, Error};
+use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
-    AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, Skill, SkillVersion, Team, User,
-    VirtualKey,
+    AuditLogEntry, Budget, BusinessUnit, BusinessUnitListing, Customer, CustomerListing,
+    Membership, ModelPrice, Org, OrgProject, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, Skill, SkillVersion, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
-    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogRepo, BudgetRepo, BusinessUnitRepo,
-    CustomerRepo, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo, ProjectRepo,
-    PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo, RateLimitRepo, RouteRepo,
-    RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
+    BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -205,6 +206,7 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/memberships/{id}", delete(delete_membership))
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
+        .route("/api/v1/audit-log", get(list_deployment_audit_log))
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -216,13 +218,33 @@ pub(crate) fn pool(state: &ControlState) -> &PgPool {
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
+    /// An error from the store, the core or a dependency. A `4xx` renders its
+    /// own message, which is validation written for the caller. A `500` renders
+    /// only [`INTERNAL_ERROR`] and logs the rest: `Error::Store` in particular
+    /// carries raw driver text from every `e.to_string()` call site, which can
+    /// name hosts, ports, schemas or query fragments (#2268).
     Core(Error),
+    /// A server-side failure (500) whose message was written for the caller on
+    /// purpose, such as a store that is not configured or a write it refused.
+    /// Rendered verbatim, so it must never carry anything a driver said.
+    Curated(String),
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
+    /// a 409 a client can branch on: `code` is part of the API and never
+    /// renamed, `message` is for the person reading it
+    CodedConflict { code: &'static str, message: String },
+    /// a 400 for one field of the request, rendered with the stable code
+    /// [`INVALID_FIELD`] and the field's path, so a client can translate the
+    /// refusal and point at the input it came from (#2567)
+    InvalidField { field: String, message: String },
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
     Forbidden,
+    /// a 403 that is about policy rather than the caller's role, with a `code`
+    /// a client can branch on. Same contract as [`ApiError::CodedConflict`]:
+    /// `code` is part of the API and never renamed
+    CodedForbidden { code: &'static str, message: String },
     /// the client has spent its budget of rejected attempts on a token
     /// endpoint and is locked for a while (429, #1079). Carries the remaining
     /// lock, which is rendered as `Retry-After`
@@ -235,6 +257,10 @@ impl From<Error> for ApiError {
     }
 }
 
+/// What a `500` says when its cause is not one of the [`ApiError::Curated`]
+/// messages. The cause itself goes to the log, not the response.
+pub(crate) const INTERNAL_ERROR: &str = "internal server error";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // read before the match consumes `self`
@@ -242,16 +268,41 @@ impl IntoResponse for ApiError {
             Self::TooManyAttempts(remaining) => Some(*remaining),
             _ => None,
         };
+        let code = match &self {
+            Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
+            Self::InvalidField { .. } => Some(INVALID_FIELD),
+            Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
+            _ => None,
+        };
+        let field = match &self {
+            Self::InvalidField { field, .. } => Some(field.clone()),
+            _ => None,
+        };
         let (status, message) = match self {
-            Self::Core(err) => {
-                let status = match &err {
-                    Error::NotFound(_) => StatusCode::NOT_FOUND,
-                    Error::Config(_) | Error::Unauthorized => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                };
-                (status, err.to_string())
+            Self::Core(err) => match &err {
+                Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
+                Error::Config(_) | Error::Unauthorized => {
+                    (StatusCode::BAD_REQUEST, err.to_string())
+                }
+                // the store's text names the constraint, not the field; the
+                // caller only needs to know the value is taken
+                Error::AlreadyExists(_) => {
+                    tracing::debug!(error = %err, "control-plane write hit a unique constraint");
+                    (StatusCode::CONFLICT, ALREADY_EXISTS_MESSAGE.to_string())
+                }
+                _ => {
+                    tracing::error!(error = %err, "control-plane request failed");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        INTERNAL_ERROR.to_string(),
+                    )
+                }
+            },
+            Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            Self::InvalidField { message, .. } => (StatusCode::BAD_REQUEST, message),
+            Self::Conflict(message) | Self::CodedConflict { message, .. } => {
+                (StatusCode::CONFLICT, message)
             }
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
                 "missing or invalid credentials".to_string(),
@@ -260,16 +311,20 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN,
                 "insufficient role for this resource".to_string(),
             ),
+            Self::CodedForbidden { message, .. } => (StatusCode::FORBIDDEN, message),
             Self::TooManyAttempts(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many rejected attempts; try again later".to_string(),
             ),
         };
-        let mut response = (
-            status,
-            Json(serde_json::json!({"error": {"message": message}})),
-        )
-            .into_response();
+        let mut error = serde_json::json!({"message": message});
+        if let Some(code) = code {
+            error["code"] = code.into();
+        }
+        if let Some(field) = field {
+            error["field"] = field.into();
+        }
+        let mut response = (status, Json(serde_json::json!({ "error": error }))).into_response();
         // say what the lock reads, so a client waits rather than polling. rounded
         // up, so a sub-second remainder never renders as `0`
         if let Some(retry_after) = retry_after {
@@ -285,6 +340,46 @@ impl IntoResponse for ApiError {
 }
 
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
+
+/// stable code of a 400 refusing one field of the request (#2567). The body
+/// also carries `field`, the field's path (`name`, `metadata.team`, `tags[2]`)
+pub(crate) const INVALID_FIELD: &str = "invalid_field";
+
+/// stable code of the 409 for a name, slug, email or key that another record
+/// already holds (#2567). Raised by the explicit checks and, as the backstop for
+/// a concurrent write or an unchecked constraint, by every unique violation the
+/// store reports
+pub(crate) const NAME_TAKEN: &str = "name_taken";
+
+/// stable code of the 409 for a delete refused because other records still
+/// depend on the one being removed (#2567)
+pub(crate) const REFERENCED: &str = "referenced";
+
+/// stable code of the 409 for a write that would use a resource from outside
+/// the scope it is confined to, such as a project-scoped provider from another
+/// project (#2567)
+pub(crate) const SCOPE_MISMATCH: &str = "scope_mismatch";
+
+/// what a unique violation from the store says. the driver's own text names a
+/// constraint and a table, which is schema detail the caller has no use for
+const ALREADY_EXISTS_MESSAGE: &str =
+    "a record with that name or identifier already exists; choose another";
+
+/// the 400 for one field of the request, with the stable [`INVALID_FIELD`] code
+pub(crate) fn invalid_field(field: impl Into<String>, message: impl Into<String>) -> ApiError {
+    ApiError::InvalidField {
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+/// a 409 with the stable [`NAME_TAKEN`] code
+pub(crate) fn name_taken(message: impl Into<String>) -> ApiError {
+    ApiError::CodedConflict {
+        code: NAME_TAKEN,
+        message: message.into(),
+    }
+}
 
 /// Reject control characters anywhere in a CRUD body's strings.
 ///
@@ -305,10 +400,13 @@ fn reject_control_chars(value: &serde_json::Value, path: &str) -> ApiResult<()> 
                 .find(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
             {
                 let field = if path.is_empty() { "body" } else { path };
-                return Err(ApiError::Core(Error::Config(format!(
-                    "{field} must not contain control characters (found U+{:04X})",
-                    bad as u32
-                ))));
+                return Err(invalid_field(
+                    field,
+                    format!(
+                        "{field} must not contain control characters (found U+{:04X})",
+                        bad as u32
+                    ),
+                ));
             }
             Ok(())
         }
@@ -408,9 +506,7 @@ where
 /// Reject a required field that's empty after trimming.
 pub(crate) fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().is_empty() {
-        return Err(ApiError::Core(Error::Config(format!(
-            "{field} must not be empty"
-        ))));
+        return Err(invalid_field(field, format!("{field} must not be empty")));
     }
     Ok(())
 }
@@ -501,12 +597,47 @@ async fn list_audit_log(
         cap!("audit_log", Read),
     )
     .await?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page(org_id, &filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count(org_id, &filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Every audit row in the deployment, org-less account events included. Those
+/// are the ones no org read returns: a superadmin's own sign-ins, attempts
+/// against an unregistered address and the events of someone removed from
+/// every org (#1858).
+// a security-auditor role (#1834) would be admitted here alongside superadmin
+async fn list_deployment_audit_log(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(query): Query<AuditLogQuery>,
+) -> ApiResult<Json<AuditLogPageResponse>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_audit_log", Read))?;
+    let (filter, limit) = audit_log_filter(&query)?;
+    let repo = AuditLogRepo(pool(&state));
+    let page = repo.list_page_all(&filter, limit).await?;
+    let total = if query.include_total {
+        Some(repo.count_all(&filter).await?)
+    } else {
+        None
+    };
+    Ok(Json(audit_log_response(page, &filter, total)))
+}
+
+/// Parse the audit-log query string into a store filter and a clamped page
+/// size; shared by the per-org and the deployment-wide read.
+fn audit_log_filter(query: &AuditLogQuery) -> ApiResult<(AuditLogFilter, i64)> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let direction = query.direction.unwrap_or_default();
     let filter = AuditLogFilter {
         actor_user_id: query.actor,
-        action: normalized_filter(query.action, "action")?,
-        target_type: normalized_filter(query.target_type, "target_type")?,
+        action: normalized_filter(query.action.clone(), "action")?,
+        target_type: normalized_filter(query.target_type.clone(), "target_type")?,
         start_at: query.start_at,
         end_at: query.end_at,
         cursor: query
@@ -514,7 +645,7 @@ async fn list_audit_log(
             .as_deref()
             .map(parse_audit_cursor)
             .transpose()?,
-        direction: direction.into(),
+        direction: query.direction.unwrap_or_default().into(),
     };
     if filter
         .start_at
@@ -524,16 +655,24 @@ async fn list_audit_log(
             "start_at must be before or equal to end_at".to_string(),
         )));
     }
-    let page = AuditLogRepo(pool(&state))
-        .list_page(org_id, &filter, limit)
-        .await?;
-    let has_next = match direction {
-        AuditLogQueryDirection::Next => page.has_more,
-        AuditLogQueryDirection::Previous => !page.entries.is_empty(),
+    Ok((filter, limit))
+}
+
+fn audit_log_response(
+    page: AuditLogPage,
+    filter: &AuditLogFilter,
+    total: Option<i64>,
+) -> AuditLogPageResponse {
+    let previous = matches!(filter.direction, AuditLogDirection::Previous);
+    let has_next = if previous {
+        !page.entries.is_empty()
+    } else {
+        page.has_more
     };
-    let has_previous = match direction {
-        AuditLogQueryDirection::Next => filter.cursor.is_some(),
-        AuditLogQueryDirection::Previous => page.has_more,
+    let has_previous = if previous {
+        page.has_more
+    } else {
+        filter.cursor.is_some()
     };
     let next_cursor = has_next
         .then(|| page.entries.last().map(encode_audit_cursor))
@@ -541,19 +680,14 @@ async fn list_audit_log(
     let previous_cursor = has_previous
         .then(|| page.entries.first().map(encode_audit_cursor))
         .flatten();
-    let total = if query.include_total {
-        Some(AuditLogRepo(pool(&state)).count(org_id, &filter).await?)
-    } else {
-        None
-    };
-    Ok(Json(AuditLogPageResponse {
+    AuditLogPageResponse {
         items: page.entries,
         next_cursor,
         previous_cursor,
         has_next,
         has_previous,
         total,
-    }))
+    }
 }
 
 #[derive(Deserialize)]
@@ -803,7 +937,7 @@ async fn list_business_units(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<BusinessUnit>>> {
+) -> ApiResult<Json<Vec<BusinessUnitListing>>> {
     authorize(
         &state,
         &principal,
@@ -811,7 +945,13 @@ async fn list_business_units(
         cap!("business_unit", Read),
     )
     .await?;
-    Ok(Json(BusinessUnitRepo(pool(&state)).list(org_id).await?))
+    // the live key count rides along so a zero-spend card can say whether any
+    // key is attributed to the unit at all (#2581)
+    Ok(Json(
+        BusinessUnitRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -938,7 +1078,7 @@ async fn list_customers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Customer>>> {
+) -> ApiResult<Json<Vec<CustomerListing>>> {
     authorize(
         &state,
         &principal,
@@ -946,7 +1086,12 @@ async fn list_customers(
         cap!("customer", Read),
     )
     .await?;
-    Ok(Json(CustomerRepo(pool(&state)).list(org_id).await?))
+    // see list_business_units for why the count is part of the listing
+    Ok(Json(
+        CustomerRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1277,6 +1422,41 @@ struct CreatePromptTemplateVersion {
     decorators: serde_json::Value,
 }
 
+/// Refuse version content `PromptTemplatesConfig::validate` would reject.
+///
+/// The same check the snapshot's config validation runs, so a version the
+/// gateway could never be served is refused here instead of stored (#2279).
+/// The placeholder id only has to be non-empty; the problems name the content.
+fn check_prompt_template_version(
+    id: Uuid,
+    variables: &serde_json::Value,
+    decorators: &serde_json::Value,
+) -> ApiResult<()> {
+    let malformed = |what: &str, e: serde_json::Error| {
+        ApiError::Core(Error::Config(format!("{what} are malformed: {e}")))
+    };
+    let candidate = rolter_core::prompt_templates::PromptTemplate {
+        id: id.to_string(),
+        version: 1,
+        routes: Vec::new(),
+        scopes: Vec::new(),
+        variables: serde_json::from_value(variables.clone())
+            .map_err(|e| malformed("variables", e))?,
+        decorators: serde_json::from_value(decorators.clone())
+            .map_err(|e| malformed("decorators", e))?,
+    };
+    let problems =
+        rolter_core::prompt_templates::PromptTemplatesConfig::template_problems(&candidate);
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::Core(Error::Config(format!(
+            "invalid prompt template version: {}",
+            problems.join("; ")
+        ))))
+    }
+}
+
 async fn create_prompt_template_version(
     principal: Principal,
     State(state): State<ControlState>,
@@ -1293,6 +1473,7 @@ async fn create_prompt_template_version(
             "decorators must be a JSON array".to_string(),
         )));
     }
+    check_prompt_template_version(id, &body.variables, &body.decorators)?;
     let repo = PromptTemplateRepo(pool(&state));
     let template = repo.get_template(id).await?;
     authorize(
@@ -1363,6 +1544,16 @@ async fn set_prompt_template_version(
         cap!("prompt_template", Update),
     )
     .await?;
+    // a version stored before create-time validation may still be malformed;
+    // publishing it would only get it pruned from the snapshot
+    if let Some(stored) = repo
+        .list_versions(id)
+        .await?
+        .into_iter()
+        .find(|v| v.version == version)
+    {
+        check_prompt_template_version(id, &stored.variables, &stored.decorators)?;
+    }
     let template = repo.publish_version(id, version).await?;
     log_audit(
         state,
@@ -1993,6 +2184,33 @@ async fn create_team(
     Ok(Json(team))
 }
 
+/// Refuse deleting a project, or a team holding it, while a provider or group
+/// is scoped to it (#1919). The database refuses too, with a foreign-key error;
+/// this says what to move first.
+async fn require_no_scoped_resources(
+    state: &ControlState,
+    project_ids: &[Uuid],
+    what: &str,
+) -> ApiResult<()> {
+    if project_ids.is_empty() {
+        return Ok(());
+    }
+    let held = ProjectRepo(pool(state))
+        .scoped_resources(project_ids)
+        .await?;
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(ApiError::CodedConflict {
+        code: REFERENCED,
+        message: format!(
+            "this {what} still owns {}; delete them or make them org-wide first, since \
+             deleting the project would otherwise widen their access or destroy them",
+            held.join(", ")
+        ),
+    })
+}
+
 async fn delete_team(
     principal: Principal,
     State(state): State<ControlState>,
@@ -2001,6 +2219,13 @@ async fn delete_team(
     let chain = ScopeChain::from_team(pool(&state), id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("team", Delete)).await?;
+    let project_ids: Vec<Uuid> = ProjectRepo(pool(&state))
+        .list(id)
+        .await?
+        .into_iter()
+        .map(|project| project.id)
+        .collect();
+    require_no_scoped_resources(&state, &project_ids, "team").await?;
     TeamRepo(pool(&state)).delete(id).await?;
     log_audit(
         &state,
@@ -2124,6 +2349,7 @@ async fn delete_project(
     let chain = ScopeChain::from_project(pool(&state), id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("project", Delete)).await?;
+    require_no_scoped_resources(&state, &[id], "project").await?;
     ProjectRepo(pool(&state)).delete(id).await?;
     log_audit(
         &state,
@@ -2335,7 +2561,7 @@ async fn test_provider(
 
     let parsed_kind: rolter_core::ProviderKind =
         serde_json::from_value(serde_json::Value::String(kind.clone()))
-            .map_err(|_| Error::Store(format!("unknown provider kind '{kind}'")))?;
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
 
     // same precedence the snapshot uses: a sealed key wins over the env var
     let sealed: Option<(Vec<u8>, Vec<u8>)> =
@@ -2377,19 +2603,8 @@ async fn test_provider(
     }
 
     let (url, headers) = rolter_core::probe_request(parsed_kind, &api_base, "/");
-    let mut req = state
-        .http
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(10));
-    for (k, v) in headers {
-        req = req.header(k, v);
-    }
-    if let Some(secret) = &secret {
-        req = req.bearer_auth(secret);
-    }
-
     let started = std::time::Instant::now();
-    let outcome = req.send().await;
+    let outcome = send_provider_probe(&state.egress, &url, headers, secret.as_deref()).await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     let result = match outcome {
@@ -2429,19 +2644,170 @@ async fn test_provider(
     Ok(Json(result))
 }
 
+/// Send the probe request through the connect-time egress client.
+///
+/// Not `ControlState::http`: that client classifies only IP literals and
+/// follows redirects, so a name that resolves to link-local, or an upstream
+/// answering `302 Location: http://169.254.169.254/`, would reach a denied
+/// address. The probe has never used the provider's `egress_proxy`, and still
+/// does not, so there is no proxy path to keep.
+async fn send_provider_probe(
+    egress: &std::sync::Arc<rolter_core::EgressPolicy>,
+    url: &str,
+    headers: impl IntoIterator<Item = (String, String)>,
+    secret: Option<&str>,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let client = crate::egress_client::builder(egress)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let mut req = client.get(url);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Some(secret) = secret {
+        req = req.bearer_auth(secret);
+    }
+    req.send().await
+}
+
+/// A provider as the API returns it: the row plus whether a sealed key is
+/// stored for it.
+///
+/// The flag is derived from `provider_keys` and says nothing else about the
+/// credential; the key, its ciphertext and its nonce never leave the store.
+#[derive(Serialize)]
+struct ProviderView {
+    #[serde(flatten)]
+    provider: Provider,
+    /// a row exists in `provider_keys`; an `api_key_env` is not a stored key
+    has_stored_key: bool,
+}
+
 async fn list_providers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Provider>>> {
-    authorize(
+) -> ApiResult<Json<Vec<ProviderView>>> {
+    let rows = ProviderRepo(pool(&state)).list(org_id).await?;
+    let visible = visible_in_scope(
         &state,
         &principal,
-        ScopeChain::org(org_id),
         cap!("provider", Read),
+        org_id,
+        rows,
+        |row| row.project_id,
     )
     .await?;
-    Ok(Json(ProviderRepo(pool(&state)).list(org_id).await?))
+    // after the scope filter so only rows the caller may see are looked up
+    let ids: Vec<Uuid> = visible.iter().map(|row| row.id).collect();
+    let stored = ProviderKeyRepo(pool(&state)).stored_among(&ids).await?;
+    let views = visible
+        .into_iter()
+        .map(|provider| ProviderView {
+            has_stored_key: stored.contains(&provider.id),
+            provider,
+        })
+        .collect();
+    Ok(Json(views))
+}
+
+/// The rows of an org listing the caller may see, where a row may be scoped to
+/// one project (#1919).
+///
+/// Holding the read role at the org shows every row. Below it, a caller who
+/// holds a role somewhere in the org sees the org-wide rows, which every
+/// project may use, plus the rows scoped to a project they hold the role in;
+/// a caller with no role in the org at all is refused, as the listing always
+/// did.
+async fn visible_in_scope<T>(
+    state: &ControlState,
+    principal: &Principal,
+    requirement: Requirement,
+    org_id: Uuid,
+    rows: Vec<T>,
+    project_of: impl Fn(&T) -> Option<Uuid>,
+) -> ApiResult<Vec<T>> {
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(rows);
+    }
+    let reach = filter.reach(pool(state)).await?;
+    if !reaches_org(&reach, org_id) {
+        return Err(ApiError::Forbidden);
+    }
+    let mut chains: HashMap<Uuid, ScopeChain> = HashMap::new();
+    let mut visible = Vec::new();
+    for row in rows {
+        let Some(project) = project_of(&row) else {
+            visible.push(row);
+            continue;
+        };
+        let chain = match chains.get(&project) {
+            Some(chain) => *chain,
+            None => {
+                let chain = ScopeChain::from_project(pool(state), project).await?;
+                chains.insert(project, chain);
+                chain
+            }
+        };
+        if filter.allows(chain) {
+            visible.push(row);
+        }
+    }
+    Ok(visible)
+}
+
+/// The project a provider or group is being scoped to, checked against the org
+/// it lives in: a project of another org is refused, and so is an unknown one,
+/// with the same message so neither confirms what exists elsewhere (#1919).
+async fn require_scope_project(
+    state: &ControlState,
+    org_id: Uuid,
+    project_id: Uuid,
+) -> ApiResult<()> {
+    if ProjectRepo(pool(state)).in_org(project_id, org_id).await? {
+        return Ok(());
+    }
+    Err(invalid_field(
+        "project_id",
+        "project_id must name a project of this organization",
+    ))
+}
+
+/// Refuse a route or group owned by `owner` (a route's project, a group's
+/// scope, `None` for an org-wide group) using a provider scoped to a different
+/// project, since the provider would then be reachable from outside its
+/// project through it (#1919).
+async fn require_providers_usable_from(
+    state: &ControlState,
+    provider_ids: &[Uuid],
+    owner: Option<Uuid>,
+    what: &str,
+) -> ApiResult<()> {
+    let outside = ProviderRepo(pool(state))
+        .scoped_outside(provider_ids, owner)
+        .await?;
+    if outside.is_empty() {
+        return Ok(());
+    }
+    let owner_note = if owner.is_some() {
+        "a different project"
+    } else {
+        "a project, and an org-wide group would expose it to every project"
+    };
+    Err(ApiError::CodedConflict {
+        code: SCOPE_MISMATCH,
+        message: format!(
+            "{what} cannot use provider{} {}: scoped to {owner_note}; use org-wide providers \
+             or ones scoped to the same project",
+            if outside.len() == 1 { "" } else { "s" },
+            outside
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
 }
 
 #[derive(Deserialize)]
@@ -2459,6 +2825,11 @@ struct CreateProvider {
     egress_proxy: Option<String>,
     #[serde(default)]
     egress_proxies: Vec<String>,
+    /// scope the provider to one project of the org: only keys minted in it may
+    /// reach the provider, through a route or `provider-slug/model`. Omit for an
+    /// org-wide provider, usable by every project
+    #[serde(default)]
+    project_id: Option<Uuid>,
 }
 
 const PROVIDER_KINDS: [&str; 48] = [
@@ -2520,8 +2891,12 @@ fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     require_non_empty(api_key, "api_key")?;
     let Some(kek) = Kek::from_env() else {
         return Err(ApiError::Core(Error::Config(format!(
+            // only the control plane holds the KEK: it unseals provider keys
+            // when it builds the snapshot, and gateways receive them over the
+            // token-guarded /internal/snapshot, so naming the gateway here
+            // would send operators to copy the KEK where it is not needed
             "storing provider keys requires the {KEK_ENV} environment variable on the \
-             control plane (and the gateway, to decrypt snapshots)"
+             control plane to seal them at rest"
         ))));
     };
     Ok(kek.encrypt(api_key)?)
@@ -2740,12 +3115,12 @@ pub(crate) fn resolve_new_slug(name: &str, slug: Option<&str>) -> ApiResult<Stri
 
 fn validate_slug(slug: &str) -> ApiResult<()> {
     if !is_valid_slug(slug) {
-        return Err(ApiError::Core(Error::Config(
+        return Err(invalid_field(
+            "slug",
             "slug must match ^[a-z0-9][a-z0-9-]{0,62}$ (lowercase alphanumerics and \
              hyphens, 1-63 chars, not starting with a hyphen); a name with no ascii \
-             letters or digits needs an explicit slug"
-                .to_string(),
-        )));
+             letters or digits needs an explicit slug",
+        ));
     }
     Ok(())
 }
@@ -2778,14 +3153,25 @@ async fn create_provider(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProvider>,
-) -> ApiResult<Json<Provider>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("provider", Create),
-    )
-    .await?;
+) -> ApiResult<Json<ProviderView>> {
+    // a project-scoped provider is authorised at its project, so a project admin
+    // may create one for their own project. Naming an environment variable is
+    // a read of the control plane's environment, which is an org admin's call
+    // whatever the scope, so that half is checked at the org
+    if let Some(project_id) = body.project_id {
+        require_scope_project(&state, org_id, project_id).await?;
+        let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+        authorize(&state, &principal, chain, cap!("provider", Create)).await?;
+    }
+    if body.project_id.is_none() || has_env_name(&body.api_key_env) {
+        authorize(
+            &state,
+            &principal,
+            ScopeChain::org(org_id),
+            cap!("provider", Create),
+        )
+        .await?;
+    }
     require_non_empty(&body.name, "name")?;
     require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
@@ -2810,8 +3196,10 @@ async fn create_provider(
             body.api_key_env.as_deref(),
             body.egress_proxy.as_deref(),
             &body.egress_proxies,
+            body.project_id,
         )
         .await?;
+    let has_stored_key = sealed.is_some();
     if let Some((ciphertext, nonce)) = sealed {
         ProviderKeyRepo(pool(&state))
             .set(row.id, &ciphertext, &nonce)
@@ -2825,10 +3213,15 @@ async fn create_provider(
         "provider.create",
         "provider",
         row.id,
-        serde_json::json!({"name": row.name, "slug": row.slug, "kind": row.kind}),
+        serde_json::json!({
+            "name": row.name, "slug": row.slug, "kind": row.kind, "project_id": row.project_id
+        }),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -2853,6 +3246,15 @@ struct UpdateProvider {
     egress_proxy: Option<String>,
     /// omit to leave unchanged; an empty array clears
     egress_proxies: Option<Vec<String>>,
+    /// omit to leave the scope unchanged; a project id scopes the provider to
+    /// that project; `null` makes it org-wide again
+    #[serde(default, deserialize_with = "explicit_null")]
+    project_id: Option<Option<Uuid>>,
+}
+
+/// Whether a request names an environment variable to read a credential from.
+fn has_env_name(field: &Option<String>) -> bool {
+    field.as_deref().is_some_and(|name| !name.trim().is_empty())
 }
 
 /// Map an optional string field to the repo's tri-state: omitted = unchanged,
@@ -2868,17 +3270,47 @@ async fn update_provider(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateProvider>,
-) -> ApiResult<Json<Provider>> {
+) -> ApiResult<Json<ProviderView>> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
     let org_id = existing.org_id;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider", Update),
-    )
-    .await?;
+    // an org-wide provider is an org admin's, and so is any change of scope or
+    // of the environment variable a credential is read from. Only edits inside
+    // a provider already scoped to a project are the project admin's (#1919)
+    match existing.project_id {
+        Some(project_id) if body.project_id.is_none() && !has_env_name(&body.api_key_env) => {
+            let chain = ScopeChain::from_project(pool(&state), project_id).await?;
+            authorize(&state, &principal, chain, cap!("provider", Update)).await?;
+        }
+        _ => {
+            authorize(
+                &state,
+                &principal,
+                ScopeChain::org(existing.org_id),
+                cap!("provider", Update),
+            )
+            .await?;
+        }
+    }
     require_not_config_owned(&state.config_owned.providers, &existing.name, "provider")?;
+    if let Some(Some(project_id)) = body.project_id {
+        require_scope_project(&state, org_id, project_id).await?;
+    }
+    if let Some(scope) = body.project_id {
+        let dependents = ProviderRepo(pool(&state))
+            .dependents_outside(id, scope)
+            .await?;
+        if !dependents.is_empty() {
+            return Err(ApiError::CodedConflict {
+                code: SCOPE_MISMATCH,
+                message: format!(
+                    "provider '{}' is used by {}, which belong to other projects; remove it \
+                     from them before scoping it to one project",
+                    existing.name,
+                    dependents.join(", ")
+                ),
+            });
+        }
+    }
     if let Some(kind) = &body.kind {
         validate_kind(kind)?;
     }
@@ -2909,6 +3341,7 @@ async fn update_provider(
             tri_state(&body.api_key_env),
             tri_state(&body.egress_proxy),
             body.egress_proxies.as_deref(),
+            body.project_id,
         )
         .await?;
     match sealed {
@@ -2920,6 +3353,8 @@ async fn update_provider(
                 .await?
         }
     }
+    // read back after the write so an omitted `api_key` reports what is stored
+    let has_stored_key = ProviderKeyRepo(pool(&state)).exists(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -2928,10 +3363,13 @@ async fn update_provider(
         "provider.update",
         "provider",
         id,
-        serde_json::json!({"slug": row.slug}),
+        serde_json::json!({"slug": row.slug, "project_id": row.project_id}),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 async fn delete_provider(
@@ -2940,14 +3378,18 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider", Delete),
-    )
-    .await?;
-    ProviderRepo(pool(&state)).delete(id).await?;
+    let chain = match existing.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider", Delete)).await?;
+    if let ProviderDeletion::InUse(dependents) = ProviderRepo(pool(&state)).delete(id).await? {
+        return Err(ApiError::Conflict(format!(
+            "provider '{}' is used by {}; remove it from them before deleting it",
+            existing.name,
+            dependents.join(", ")
+        )));
+    }
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -2992,7 +3434,7 @@ fn default_member_weight() -> i32 {
 /// It says only that the name is taken, never where: an org may not learn
 /// what another one calls its routes or providers from the refusal (#1845).
 fn taken_in_deployment(what: &str, name: &str) -> ApiError {
-    ApiError::Conflict(format!(
+    name_taken(format!(
         "{what} '{name}' is already in use in this deployment; choose another"
     ))
 }
@@ -3043,7 +3485,7 @@ async fn require_route_name_free(
     model: &str,
 ) -> ApiResult<()> {
     if model == rolter_core::FAKE_LLM_MODEL {
-        return Err(ApiError::Conflict(format!(
+        return Err(name_taken(format!(
             "'{model}' is the gateway's built-in model and cannot be a route name; choose another"
         )));
     }
@@ -3055,7 +3497,7 @@ async fn require_route_name_free(
         if state.config_owned.holds_slug(slug)
             || routes.name_takes_address_outside_org(model, org_id).await?
         {
-            return Err(ApiError::Conflict(format!(
+            return Err(name_taken(format!(
                 "route name '{model}' is a provider or provider group address in this \
                  deployment ('{slug}/…'); choose another"
             )));
@@ -3125,14 +3567,16 @@ async fn list_provider_groups(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<ProviderGroupView>>> {
-    authorize(
+    let groups = ProviderGroupRepo(pool(&state)).list(org_id).await?;
+    let groups = visible_in_scope(
         &state,
         &principal,
-        ScopeChain::org(org_id),
         cap!("provider_group", Read),
+        org_id,
+        groups,
+        |group| group.project_id,
     )
     .await?;
-    let groups = ProviderGroupRepo(pool(&state)).list(org_id).await?;
     let mut views = Vec::with_capacity(groups.len());
     for group in groups {
         views.push(view_of(&state, group).await?);
@@ -3150,6 +3594,11 @@ struct CreateProviderGroup {
     strategy: String,
     #[serde(default)]
     members: Vec<GroupMemberInput>,
+    /// scope the group to one project of the org, as for a provider. A scoped
+    /// group may hold that project's providers and org-wide ones; an org-wide
+    /// group may hold only org-wide providers. Omit for an org-wide group
+    #[serde(default)]
+    project_id: Option<Uuid>,
 }
 
 async fn create_provider_group(
@@ -3158,13 +3607,14 @@ async fn create_provider_group(
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProviderGroup>,
 ) -> ApiResult<Json<ProviderGroupView>> {
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("provider_group", Create),
-    )
-    .await?;
+    let chain = match body.project_id {
+        Some(project_id) => {
+            require_scope_project(&state, org_id, project_id).await?;
+            ScopeChain::from_project(pool(&state), project_id).await?
+        }
+        None => ScopeChain::org(org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Create)).await?;
     require_non_empty(&body.name, "name")?;
     validate_strategy(&body.strategy)?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
@@ -3174,8 +3624,9 @@ async fn create_provider_group(
     require_address_slug_free(&state, "provider group slug", &slug, None).await?;
     let member_providers: Vec<Uuid> = body.members.iter().map(|m| m.provider_id).collect();
     require_providers_in_org(&state, org_id, &member_providers).await?;
+    require_providers_usable_from(&state, &member_providers, body.project_id, "this group").await?;
     let group = repo
-        .create(org_id, &body.name, &slug, &body.strategy)
+        .create(org_id, &body.name, &slug, &body.strategy, body.project_id)
         .await?;
     repo.set_members(group.id, &to_member_tuples(&body.members))
         .await?;
@@ -3187,7 +3638,10 @@ async fn create_provider_group(
         "provider_group.create",
         "provider_group",
         group.id,
-        serde_json::json!({"name": group.name, "slug": group.slug, "strategy": group.strategy}),
+        serde_json::json!({
+            "name": group.name, "slug": group.slug, "strategy": group.strategy,
+            "project_id": group.project_id
+        }),
     )
     .await;
     Ok(Json(view_of(&state, group).await?))
@@ -3203,6 +3657,10 @@ struct UpdateProviderGroup {
     strategy: Option<String>,
     /// when present, replaces the entire membership; omit to leave unchanged
     members: Option<Vec<GroupMemberInput>>,
+    /// omit to leave the scope unchanged; a project id scopes the group to that
+    /// project; `null` makes it org-wide again
+    #[serde(default, deserialize_with = "explicit_null")]
+    project_id: Option<Option<Uuid>>,
 }
 
 async fn update_provider_group(
@@ -3213,14 +3671,19 @@ async fn update_provider_group(
 ) -> ApiResult<Json<ProviderGroupView>> {
     let repo = ProviderGroupRepo(pool(&state));
     let existing = repo.get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider_group", Update),
-    )
-    .await?;
+    // changing the scope is an org admin's call; edits inside a scoped group
+    // are its project admin's
+    let chain = match existing.project_id {
+        Some(project_id) if body.project_id.is_none() => {
+            ScopeChain::from_project(pool(&state), project_id).await?
+        }
+        _ => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Update)).await?;
     require_group_not_config_owned(&state, &existing.slug)?;
+    if let Some(Some(project_id)) = body.project_id {
+        require_scope_project(&state, existing.org_id, project_id).await?;
+    }
     if let Some(name) = &body.name {
         require_non_empty(name, "name")?;
     }
@@ -3236,12 +3699,28 @@ async fn update_provider_group(
         let member_providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
         require_providers_in_org(&state, existing.org_id, &member_providers).await?;
     }
+    // the rule is checked against the group as it will be: its new scope, or
+    // the old one, over its new members, or the ones it already has
+    if body.members.is_some() || body.project_id.is_some() {
+        let scope = body.project_id.unwrap_or(existing.project_id);
+        let member_providers: Vec<Uuid> = match &body.members {
+            Some(members) => members.iter().map(|m| m.provider_id).collect(),
+            None => repo
+                .members(id)
+                .await?
+                .into_iter()
+                .map(|m| m.provider_id)
+                .collect(),
+        };
+        require_providers_usable_from(&state, &member_providers, scope, "this group").await?;
+    }
     let group = repo
         .update(
             id,
             body.name.as_deref(),
             slug_change.as_deref(),
             body.strategy.as_deref(),
+            body.project_id,
         )
         .await?;
     if let Some(members) = &body.members {
@@ -3255,7 +3734,7 @@ async fn update_provider_group(
         "provider_group.update",
         "provider_group",
         id,
-        serde_json::json!({"slug": group.slug}),
+        serde_json::json!({"slug": group.slug, "project_id": group.project_id}),
     )
     .await;
     Ok(Json(view_of(&state, group).await?))
@@ -3268,13 +3747,11 @@ async fn delete_provider_group(
 ) -> ApiResult<StatusCode> {
     let repo = ProviderGroupRepo(pool(&state));
     let existing = repo.get(id).await?;
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(existing.org_id),
-        cap!("provider_group", Delete),
-    )
-    .await?;
+    let chain = match existing.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(existing.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider_group", Delete)).await?;
     require_group_not_config_owned(&state, &existing.slug)?;
     repo.delete(id).await?;
     publish_config_change(&state).await?;
@@ -3479,7 +3956,7 @@ async fn set_route_complexity(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    Json(value): Json<serde_json::Value>,
+    SafeJson(value): SafeJson<serde_json::Value>,
 ) -> ApiResult<Json<Route>> {
     let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
     let policy: rolter_balancer::complexity::ComplexityPolicy = serde_json::from_value(value)
@@ -3723,6 +4200,15 @@ async fn create_route_target(
     if let Some(org_id) = org_id {
         require_providers_in_org(&state, org_id, &[body.provider_id]).await?;
     }
+    // a route may use its own project's providers and org-wide ones (#1919)
+    let route = RouteRepo(pool(&state)).get(route_id).await?;
+    require_providers_usable_from(
+        &state,
+        &[body.provider_id],
+        Some(route.project_id),
+        "this route",
+    )
+    .await?;
     let row = RouteTargetRepo(pool(&state))
         .create(
             route_id,
@@ -3947,9 +4433,10 @@ async fn set_virtual_key_attribution(
         NullableUuid::Value(customer_id) => {
             let customer = CustomerRepo(pool(&state)).get(customer_id).await?;
             if Some(customer.org_id) != org_id {
-                return Err(ApiError::Core(Error::Config(
-                    "customer_id must belong to the same org".to_string(),
-                )));
+                return Err(invalid_field(
+                    "customer_id",
+                    "customer_id must belong to the same org",
+                ));
             }
             Some(customer_id)
         }
@@ -3960,9 +4447,10 @@ async fn set_virtual_key_attribution(
             .business_unit_id
             .is_some_and(|owner| owner != unit_id)
         {
-            return Err(ApiError::Core(Error::Config(
-                "customer_id belongs to a different business unit".to_string(),
-            )));
+            return Err(invalid_field(
+                "customer_id",
+                "customer_id belongs to a different business unit",
+            ));
         }
     }
     let row = repo
@@ -4094,6 +4582,39 @@ fn validate_scope(scope_type: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Authorize reading the caps set at one scope.
+///
+/// A cap applies to everything beneath the scope it is set on, so the caller
+/// may read the rows at their own scope and at the team and org above it, which
+/// is what throttles their keys (#2527). Holding the role at the scope itself
+/// passes as always. Otherwise the scope must be the team or org of a place the
+/// caller holds the role at; another project's rows, a sibling team's, a
+/// customer's or a business unit's stay refused, and writes never come through
+/// here.
+async fn authorize_scope_read(
+    state: &ControlState,
+    principal: &Principal,
+    scope: &ScopeQuery,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    match authorize(state, principal, chain, requirement).await {
+        Err(ApiError::Forbidden) if matches!(scope.scope_type.as_str(), "org" | "team") => {}
+        other => return other,
+    }
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    for held in filter.reach(pool(state)).await? {
+        let above = match scope.scope_type.as_str() {
+            "org" => held.org == Some(scope.scope_id),
+            _ => held.team == Some(scope.scope_id),
+        };
+        if above && filter.allows(held) {
+            return Ok(());
+        }
+    }
+    Err(ApiError::Forbidden)
+}
+
 async fn list_budgets(
     principal: Principal,
     State(state): State<ControlState>,
@@ -4101,7 +4622,7 @@ async fn list_budgets(
 ) -> ApiResult<Json<Vec<Budget>>> {
     validate_scope(&scope.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
-    authorize(&state, &principal, chain, cap!("budget", Read)).await?;
+    authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
     Ok(Json(
         BudgetRepo(pool(&state))
             .list_for_scope(&scope.scope_type, scope.scope_id)
@@ -4154,18 +4675,17 @@ async fn create_budget(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("budget", Create)).await?;
-    if body.limit_usd.trim().parse::<f64>().is_err() {
-        return Err(ApiError::Core(Error::Config(
-            "limit_usd must be numeric".into(),
-        )));
-    }
+    // the same checks an edit gets (#1903): a cap the gateway would read as
+    // no cap, or as already spent, is refused here rather than stored
+    validate_limit_usd(&body.limit_usd)?;
+    validate_period(&body.period)?;
     validate_unpriced_policy(body.unpriced_policy.as_deref())?;
     let row = BudgetRepo(pool(&state))
         .create(
             &body.scope_type,
             body.scope_id,
-            &body.limit_usd,
-            &body.period,
+            body.limit_usd.trim(),
+            body.period.trim(),
             body.unpriced_policy.as_deref(),
         )
         .await?;
@@ -4214,11 +4734,11 @@ struct UpdateBudget {
 /// cost is a sliver just below the boundary that parses to the same float.
 const LIMIT_USD_CEILING: f64 = 99_999_999.999_95;
 
-/// Validate a budget cap on the update path.
+/// Validate a budget cap, on create and on update.
 ///
-/// Stricter than the bare `f64` parse `create_budget` does: `NaN` parses as a
-/// float and is a valid `numeric`, but the gateway reads it back as no cap at
-/// all, and a negative cap refuses every request as already exhausted. A cap
+/// Stricter than a bare `f64` parse: `NaN` parses as a float and is a valid
+/// `numeric`, but the gateway reads it back as no cap at all, and a negative
+/// cap refuses every request as already exhausted. A cap
 /// too large for the column would pass a parse and then fail in the store as
 /// a 500 carrying the database's own message, so it is refused here as a 400
 /// naming the range. A cap of zero stays legal, since it is how a scope is
@@ -4231,6 +4751,27 @@ fn validate_limit_usd(value: &str) -> ApiResult<()> {
             "limit_usd must be a finite number from 0 to 99999999.9999".into(),
         ))),
     }
+}
+
+/// Validate a budget period, on create and on update (#1902).
+///
+/// The column is free text, and the snapshot loader reads anything it does not
+/// recognise as monthly, so a `7d` budget, which the dashboard itself used to
+/// suggest, was enforced as a calendar-month cap without a word. Refusing the
+/// value here, with every spelling the gateway does recognise, is what stops a
+/// new row from being misread. Rows stored before this check are reported by
+/// `GET /api/v1/config/problems` instead of being rewritten.
+fn validate_period(value: &str) -> ApiResult<()> {
+    if BudgetPeriod::parse(value).is_some() {
+        return Ok(());
+    }
+    let accepted: Vec<&str> = BudgetPeriod::SPELLINGS
+        .iter()
+        .map(|(spelling, _)| *spelling)
+        .collect();
+    Err(ApiError::Core(Error::Config(format!(
+        "period must be one of {accepted:?}; there are no rolling windows such as 7d"
+    ))))
 }
 
 /// What an edit actually moved, field by field, for the audit row.
@@ -4285,7 +4826,7 @@ async fn update_budget(
         validate_limit_usd(limit)?;
     }
     if let Some(period) = &body.period {
-        require_non_empty(period, "period")?;
+        validate_period(period)?;
     }
     validate_unpriced_policy(body.unpriced_policy.as_ref().and_then(|p| p.as_deref()))?;
     if body.limit_usd.is_none() && body.period.is_none() && body.unpriced_policy.is_none() {
@@ -4357,7 +4898,7 @@ async fn list_rate_limits(
 ) -> ApiResult<Json<Vec<RateLimit>>> {
     validate_scope(&scope.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
-    authorize(&state, &principal, chain, cap!("rate_limit", Read)).await?;
+    authorize_scope_read(&state, &principal, &scope, chain, cap!("rate_limit", Read)).await?;
     Ok(Json(
         RateLimitRepo(pool(&state))
             .list_for_scope(&scope.scope_type, scope.scope_id)
@@ -4383,6 +4924,9 @@ async fn create_rate_limit(
     let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("rate_limit", Create)).await?;
+    // each cap sent has to limit something, and the store refuses a limit
+    // left with none, as it does for an edit (#1903)
+    validate_rate_limit_caps(body.rpm, body.tpm)?;
     let row = RateLimitRepo(pool(&state))
         .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
         .await?;
@@ -4411,18 +4955,20 @@ struct UpdateRateLimit {
     tpm: Option<Option<i32>>,
 }
 
-/// Check each cap a rate-limit edit sets.
+/// Check each cap a rate-limit create or edit sets.
 ///
-/// A cap the patch sets has to be at least 1: the snapshot loader reads zero
-/// and below as "no cap", so storing one would look like a limit while
-/// admitting everything. Whether the caps left behind still limit anything
-/// depends on the row as it stands when the edit lands, so that half is
-/// [`RateLimitRepo::update`]'s to check, under its row lock.
-fn validate_rate_limit_caps(patch: &UpdateRateLimit) -> ApiResult<()> {
-    for (field, value) in [("rpm", patch.rpm), ("tpm", patch.tpm)] {
-        if matches!(value, Some(Some(cap)) if cap < 1) {
+/// `None` is a cap that is not being set: absent or null on a create, absent or
+/// lifted on an edit. A cap that is set has to be at least 1, since the
+/// snapshot loader reads zero and below as "no cap", so storing one would look
+/// like a limit while admitting everything. Whether any cap is left at all is
+/// the store's to check: on an edit that depends on the row as it stands when
+/// the edit lands, so [`RateLimitRepo::update`] checks it under its row lock,
+/// and [`RateLimitRepo::create`] applies the same rule to a new row.
+fn validate_rate_limit_caps(rpm: Option<i32>, tpm: Option<i32>) -> ApiResult<()> {
+    for (field, value) in [("rpm", rpm), ("tpm", tpm)] {
+        if matches!(value, Some(cap) if cap < 1) {
             return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be at least 1, or null to lift the cap"
+                "{field} must be at least 1, or null for no cap"
             ))));
         }
     }
@@ -4447,7 +4993,7 @@ async fn update_rate_limit(
         // nothing asked for, so nothing written, bumped or audited
         return Ok(Json(existing));
     }
-    validate_rate_limit_caps(&body)?;
+    validate_rate_limit_caps(body.rpm.flatten(), body.tpm.flatten())?;
     let edit = RateLimitRepo(pool(&state))
         .update(id, body.rpm, body.tpm)
         .await?;
@@ -4564,9 +5110,7 @@ fn require_known_currency(state: &ControlState, currency: &str) -> ApiResult<()>
 
 fn require_numeric(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().parse::<f64>().is_err() {
-        return Err(ApiError::Core(Error::Config(format!(
-            "{field} must be numeric"
-        ))));
+        return Err(invalid_field(field, format!("{field} must be numeric")));
     }
     Ok(())
 }
@@ -4713,18 +5257,17 @@ pub(crate) fn validate_email(email: &str) -> ApiResult<String> {
         None => false,
     };
     if !ok {
-        return Err(ApiError::Core(Error::Config(
-            "email must be a valid address".to_string(),
-        )));
+        return Err(invalid_field("email", "email must be a valid address"));
     }
     Ok(email.to_string())
 }
 
 pub(crate) fn validate_role(role: &str) -> ApiResult<()> {
     if !matches!(role, "admin" | "member" | "viewer") {
-        return Err(ApiError::Core(Error::Config(
-            "role must be one of admin, member, viewer".to_string(),
-        )));
+        return Err(invalid_field(
+            "role",
+            "role must be one of admin, member, viewer",
+        ));
     }
     Ok(())
 }
@@ -4802,7 +5345,7 @@ async fn create_user(
 
     let pool = pool(&state);
     if UserRepo(pool).find_by_email(&email).await?.is_some() {
-        return Err(ApiError::Conflict(format!(
+        return Err(name_taken(format!(
             "a user with email '{email}' already exists"
         )));
     }
@@ -4837,6 +5380,89 @@ struct UpdateUser {
     deactivated: Option<bool>,
 }
 
+/// stable code of the 409 for a write that would leave the deployment with no
+/// active superadmin account (#2344)
+pub(crate) const LAST_SUPERADMIN: &str = "last_superadmin";
+
+/// the refusal for a write that would leave no active superadmin. the admin
+/// token is not an account, so it never counts as the one that remains
+pub(crate) fn last_superadmin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_SUPERADMIN,
+        message: "this is the last active superadmin; make another account superadmin first"
+            .to_string(),
+    }
+}
+
+/// stable code of the 409 for a write that would leave an org with no active
+/// org-scoped admin (#2311)
+pub(crate) const LAST_ORG_ADMIN: &str = "last_org_admin";
+
+/// the refusal for revoking an org's last admin grant. a superadmin is exempt
+pub(crate) fn last_org_admin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_ORG_ADMIN,
+        message: "this is the organization's last admin grant; grant admin to another person \
+                  first, or ask a superadmin"
+            .to_string(),
+    }
+}
+
+/// Revoke a grant an identity provider produced and no longer implies (SSO
+/// group reconciliation on login, SCIM group sync), unless it is the org's last
+/// active admin grant (#2558).
+///
+/// The revoke goes through `MembershipRepo::delete_guarded`, so the count and
+/// the delete share one transaction under the org's admin lock. A refused
+/// revoke is not an error: the sign-in or the sync still succeeds, the grant
+/// stays, and a `membership.last_admin_kept` audit row plus a warning name the
+/// org. Both callers derive the wanted set from the IdP every time, so the
+/// next login or sync revokes the grant once the org has another admin.
+/// Returns whether the grant was kept.
+///
+/// `protect` is false only when a superadmin's operator action triggered the
+/// reconciliation (deleting a SCIM group mapping), matching
+/// `delete_membership`, where a superadmin may revoke an org's last admin
+/// grant. Login and IdP sync always pass true (#2673).
+pub(crate) async fn revoke_idp_grant(
+    state: &ControlState,
+    stale: &Membership,
+    protect: bool,
+) -> ApiResult<bool> {
+    if MembershipRepo(pool(state))
+        .delete_guarded(stale.id, protect)
+        .await?
+        != LockoutGuard::WouldLockOut
+    {
+        return Ok(false);
+    }
+    tracing::warn!(
+        org_id = ?stale.org_id,
+        user_id = %stale.user_id,
+        membership_id = %stale.id,
+        source = %stale.source,
+        "kept an identity-provider admin grant: revoking it would leave the org without an admin"
+    );
+    if let Err(err) = AuditLogRepo(pool(state))
+        .create(
+            stale.org_id,
+            None,
+            "membership.last_admin_kept",
+            Some("membership"),
+            Some(stale.id),
+            Some(serde_json::json!({
+                "user_id": stale.user_id,
+                "role": stale.role,
+                "source": stale.source,
+            })),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "failed to write audit log entry");
+    }
+    Ok(true)
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -4862,26 +5488,32 @@ async fn update_user(
     if let Some(ref new_email) = email {
         if let Some(existing) = UserRepo(pool).find_by_email(new_email).await? {
             if existing.id != id {
-                return Err(ApiError::Conflict(format!(
+                return Err(name_taken(format!(
                     "a user with email '{new_email}' already exists"
                 )));
             }
         }
     }
 
-    let mut user = UserRepo(pool)
-        .update(
+    // one transaction under the superadmin lock, so the guard and the write
+    // cannot be split by a concurrent demotion (#2344)
+    let user = match UserRepo(pool)
+        .update_account(
             id,
             email.as_deref(),
             password_hash.as_deref(),
             body.is_superadmin,
+            body.deactivated,
         )
-        .await?;
+        .await?
+    {
+        LockoutGuard::Done(user) => user,
+        LockoutGuard::WouldLockOut => return Err(last_superadmin()),
+    };
 
     let mut sessions_revoked = 0;
     let mut detail = serde_json::json!({"email": user.email, "deactivated": body.deactivated});
     if let Some(deactivated) = body.deactivated {
-        user = UserRepo(pool).set_deactivated(id, deactivated).await?;
         if deactivated {
             // cut existing access immediately, not just at token expiry
             sessions_revoked = SessionRepo(pool).delete_for_user_except(id, None).await?;
@@ -4935,7 +5567,9 @@ async fn delete_user(
         .into_iter()
         .filter_map(|(_membership, org, _team)| org)
         .collect();
-    UserRepo(pool(&state)).delete(id).await?;
+    if UserRepo(pool(&state)).delete(id).await? == LockoutGuard::WouldLockOut {
+        return Err(last_superadmin());
+    }
     let detail = serde_json::json!({"personal_keys": personal_keys});
     // an account that belonged to no org still gets its row, with none
     let scopes: Vec<Option<Uuid>> = if orgs.is_empty() {
@@ -5083,7 +5717,15 @@ async fn delete_membership(
     };
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("membership", Delete)).await?;
-    MembershipRepo(pool).delete(id).await?;
+    // a superadmin can always repair an org, so only the other callers are
+    // kept from leaving it without an admin (#2311)
+    if MembershipRepo(pool)
+        .delete_guarded(id, !matches!(principal, Principal::Superadmin))
+        .await?
+        == LockoutGuard::WouldLockOut
+    {
+        return Err(last_org_admin());
+    }
     log_audit(
         &state,
         &principal,
@@ -5101,8 +5743,12 @@ async fn delete_membership(
 mod slug_tests {
     use super::*;
 
+    /// a 400 refusal, coded per field or not
     fn is_config_err(res: ApiResult<impl std::fmt::Debug>) -> bool {
-        matches!(res, Err(ApiError::Core(Error::Config(_))))
+        matches!(
+            res,
+            Err(ApiError::Core(Error::Config(_)) | ApiError::InvalidField { .. })
+        )
     }
 
     #[test]
@@ -5204,8 +5850,12 @@ mod control_char_tests {
 
     fn message(value: serde_json::Value) -> String {
         match check(value) {
-            Err(ApiError::Core(Error::Config(problem))) => problem,
-            other => panic!("expected a config error, got {other:?}"),
+            Err(ApiError::InvalidField { field, message }) => {
+                // the field is the head of the message, so the two never disagree
+                assert!(message.starts_with(&field), "{field}: {message}");
+                message
+            }
+            other => panic!("expected an invalid_field error, got {other:?}"),
         }
     }
 
@@ -5321,8 +5971,12 @@ mod unknown_field_tests {
 mod user_tests {
     use super::*;
 
+    /// a 400 refusal, coded per field or not
     fn is_config_err<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
-        matches!(res, Err(ApiError::Core(Error::Config(_))))
+        matches!(
+            res,
+            Err(ApiError::Core(Error::Config(_)) | ApiError::InvalidField { .. })
+        )
     }
 
     #[test]
@@ -5489,22 +6143,78 @@ mod cap_edit_tests {
         let patch = |body: serde_json::Value| -> UpdateRateLimit {
             serde_json::from_value(body).expect("patch body")
         };
+        let check = |patch: UpdateRateLimit| {
+            validate_rate_limit_caps(patch.rpm.flatten(), patch.tpm.flatten())
+        };
         for ok in [
             serde_json::json!({}),
             serde_json::json!({"rpm": 1}),
             serde_json::json!({"rpm": null, "tpm": 10}),
         ] {
-            assert!(validate_rate_limit_caps(&patch(ok.clone())).is_ok(), "{ok}");
+            assert!(check(patch(ok.clone())).is_ok(), "{ok}");
         }
         for bad in [
             serde_json::json!({"rpm": 0}),
             serde_json::json!({"tpm": -5}),
             serde_json::json!({"rpm": 10, "tpm": 0}),
         ] {
-            assert!(
-                refused(validate_rate_limit_caps(&patch(bad.clone()))),
-                "{bad}"
-            );
+            assert!(refused(check(patch(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1903: a create is held to the per-cap rule an edit already was. The
+    /// "at least one cap" half is the store's, and is covered there.
+    #[test]
+    fn a_cap_a_create_sets_has_to_be_positive() {
+        let body = |caps: serde_json::Value| -> CreateRateLimit {
+            let mut body = serde_json::json!({
+                "scope_type": "org",
+                "scope_id": "00000000-0000-0000-0000-000000000001",
+            });
+            body.as_object_mut()
+                .expect("object")
+                .extend(caps.as_object().expect("object").clone());
+            serde_json::from_value(body).expect("create body")
+        };
+        let check = |create: CreateRateLimit| validate_rate_limit_caps(create.rpm, create.tpm);
+        for ok in [
+            serde_json::json!({"rpm": 1}),
+            serde_json::json!({"tpm": 1000}),
+            serde_json::json!({"rpm": null, "tpm": 10}),
+        ] {
+            assert!(check(body(ok.clone())).is_ok(), "{ok}");
+        }
+        for bad in [
+            serde_json::json!({"rpm": 0}),
+            serde_json::json!({"tpm": -5}),
+            serde_json::json!({"rpm": 60, "tpm": 0}),
+        ] {
+            assert!(refused(check(body(bad.clone()))), "{bad}");
+        }
+    }
+
+    /// #1902: `7d` used to be stored and enforced as monthly. A period is
+    /// accepted only when the gateway reads it as the window it names, and the
+    /// refusal lists every spelling that would have been accepted.
+    #[test]
+    fn a_period_is_one_the_gateway_recognises() {
+        for ok in [
+            "daily", "1d", "24h", "monthly", "30d", "total", "lifetime", "all", " Daily ",
+        ] {
+            assert!(validate_period(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in ["7d", "weekly", "dialy", "", "  ", "1w", "month"] {
+            match validate_period(bad) {
+                Err(ApiError::Core(Error::Config(message))) => {
+                    for (spelling, _) in BudgetPeriod::SPELLINGS {
+                        assert!(
+                            message.contains(spelling),
+                            "{message} should name {spelling}"
+                        );
+                    }
+                }
+                other => panic!("{bad:?} should be refused, got {other:?}"),
+            }
         }
     }
 
@@ -5514,5 +6224,131 @@ mod cap_edit_tests {
             serde_json::from_value(serde_json::json!({"rpm": null})).expect("patch body");
         assert_eq!(lifted.rpm, Some(None), "null lifts the cap");
         assert_eq!(lifted.tpm, None, "absent leaves it alone");
+    }
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use super::*;
+
+    async fn rendered(err: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Driver text as `store_err` and every `e.to_string()` call site pass it
+    /// on: it names the host, the credentials in the url and the schema (#2268).
+    fn driver_text(password: &str) -> String {
+        format!(
+            "error returned from database: relation \"tenant_a.users\" \
+             does not exist (postgres://rolter:{password}@db.internal:5432/rolter)"
+        )
+    }
+
+    #[tokio::test]
+    async fn a_raw_server_error_never_reaches_a_500_body() {
+        let password = format!("pw-{}", uuid::Uuid::new_v4());
+        let driver_text = driver_text(&password);
+        for err in [
+            Error::Store(driver_text.clone()),
+            Error::Upstream(driver_text.clone()),
+            Error::Io(std::io::Error::other(driver_text.clone())),
+        ] {
+            let (status, body) = rendered(ApiError::Core(err)).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(body["error"]["message"], INTERNAL_ERROR);
+            let text = body.to_string();
+            for fragment in ["db.internal", "tenant_a"] {
+                assert!(!text.contains(fragment), "{fragment} reached the body");
+            }
+            assert!(!text.contains(&password), "the password reached the body");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_curated_message_still_reaches_a_500_body() {
+        let (status, body) = rendered(ApiError::Curated(
+            crate::ingest_failure::INSERT_FAILED.to_string(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"]["message"],
+            crate::ingest_failure::INSERT_FAILED
+        );
+    }
+
+    /// Validation and lookups are written for the caller, and stay as they are.
+    #[tokio::test]
+    async fn a_4xx_keeps_its_own_message() {
+        let (status, body) = rendered(ApiError::Core(Error::Config(
+            "slug must be lowercase".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("slug must be lowercase"));
+        let (status, body) = rendered(ApiError::Core(Error::NotFound("team 42".into()))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("team 42"));
+    }
+}
+
+#[cfg(test)]
+mod probe_egress_tests {
+    use super::*;
+
+    /// #2392: a name that resolves only to a denied address is never dialled.
+    #[tokio::test]
+    async fn a_provider_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let outcome = send_provider_probe(
+            &crate::egress_client::testing::deny_loopback(),
+            &listener.url("/v1/models"),
+            Vec::new(),
+            None,
+        )
+        .await;
+        assert!(outcome.is_err_and(|e| e.is_connect()));
+        assert_eq!(listener.accepted(), 0);
+    }
+
+    /// #2392: an upstream that passes the check cannot bounce the probe on.
+    #[tokio::test]
+    async fn a_redirect_from_the_provider_is_not_followed() {
+        let target = crate::egress_client::testing::Counter::start().await;
+        let location = format!("http://127.0.0.1:{}/", target.port);
+        let app = axum::Router::new().fallback(move || {
+            let location = location.clone();
+            async move {
+                (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, location)],
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let base = format!(
+            "http://{}/v1/models",
+            listener.local_addr().expect("an address")
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let response = send_provider_probe(&Default::default(), &base, Vec::new(), None)
+            .await
+            .expect("the upstream answers");
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(target.accepted(), 0);
     }
 }

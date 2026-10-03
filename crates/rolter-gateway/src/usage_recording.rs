@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use crate::budgets::SpendRecorder;
 use crate::metrics::Metrics;
 use crate::rate_limits::TokenRecorder;
+use crate::sink_drain::SinkTasks;
 
 /// One unit of post-response accounting.
 pub enum UsageRecord {
@@ -53,6 +54,8 @@ impl UsageRecord {
 pub struct UsageRecorderSink {
     tx: Option<mpsc::Sender<UsageRecord>>,
     metrics: Option<Arc<Metrics>>,
+    /// stop handle for the workers; `None` on an inert sink
+    tasks: Option<Arc<SinkTasks>>,
 }
 
 impl UsageRecorderSink {
@@ -64,20 +67,47 @@ impl UsageRecorderSink {
         // queues use: each worker takes the next record and releases the lock
         // before awaiting its Redis round trip, so the workers overlap
         let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let tasks = Arc::new(SinkTasks::default());
         for _ in 0..workers.max(1) {
             let rx = rx.clone();
-            tokio::spawn(async move {
+            let stop = tasks.token();
+            tasks.track(tokio::spawn(async move {
                 loop {
-                    let Some(record) = ({ rx.lock().await.recv().await }) else {
-                        break; // every sender dropped
+                    let next = async { rx.lock().await.recv().await };
+                    let record = tokio::select! {
+                        // stop first: with a backlog both branches are ready,
+                        // and an unbiased pick would keep taking records from
+                        // an open queue, so a send racing the drain could land
+                        // and the queue would close only once it ran dry
+                        biased;
+                        // shutdown: close the shared receiver so the workers
+                        // apply what is queued and then see `None`. a worker
+                        // stopped mid-wait loses nothing, `recv` is cancel-safe
+                        _ = stop.cancelled() => {
+                            rx.lock().await.close();
+                            rx.lock().await.recv().await
+                        }
+                        record = next => record,
+                    };
+                    let Some(record) = record else {
+                        break; // every sender dropped, or drained at shutdown
                     };
                     record.apply().await;
                 }
-            });
+            }));
         }
         Self {
             tx: Some(tx),
             metrics: Some(metrics),
+            tasks: Some(tasks),
+        }
+    }
+
+    /// Apply every record still queued and stop the workers. Returns once they
+    /// have exited; the caller bounds the wait. A no-op on an inert sink.
+    pub async fn shutdown(&self) {
+        if let Some(tasks) = &self.tasks {
+            tasks.stop().await;
         }
     }
 
@@ -142,6 +172,189 @@ mod tests {
         // a routable-but-dead address: connecting hangs rather than failing fast
         let enforcer = crate::budgets::BudgetEnforcer::new("redis://192.0.2.1:6379");
         SpendRecorder::new(enforcer, budgets(), scope())
+    }
+
+    /// A Redis stand-in that speaks just enough RESP for the budget recorder:
+    /// every command is answered `+OK` except `INCRBYFLOAT`, which is held for
+    /// `latency` before it is counted and answered. The count is what reached
+    /// "Redis", so a record the sink lost never shows up in it.
+    async fn slow_redis(
+        latency: std::time::Duration,
+    ) -> (String, Arc<std::sync::atomic::AtomicU64>) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the redis stand-in");
+        let addr = listener.local_addr().expect("stand-in address");
+        let applied = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = applied.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let mut stream = BufReader::new(stream);
+                    let mut line = String::new();
+                    loop {
+                        // a command is `*<n>` followed by n `$<len>` bulk strings
+                        line.clear();
+                        if stream.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let Some(argc) = line.trim_end().strip_prefix('*') else {
+                            return;
+                        };
+                        let argc: usize = argc.parse().unwrap_or(0);
+                        let mut args = Vec::with_capacity(argc);
+                        for _ in 0..argc {
+                            line.clear();
+                            if stream.read_line(&mut line).await.unwrap_or(0) == 0 {
+                                return;
+                            }
+                            let len: usize = line
+                                .trim_end()
+                                .strip_prefix('$')
+                                .and_then(|n| n.parse().ok())
+                                .unwrap_or(0);
+                            let mut arg = vec![0; len + 2];
+                            if stream.read_exact(&mut arg).await.is_err() {
+                                return;
+                            }
+                            arg.truncate(len);
+                            args.push(arg);
+                        }
+                        let reply: &[u8] = if args
+                            .first()
+                            .is_some_and(|cmd| cmd.eq_ignore_ascii_case(b"INCRBYFLOAT"))
+                        {
+                            tokio::time::sleep(latency).await;
+                            counter.fetch_add(1, Relaxed);
+                            b"$1\r\n1\r\n"
+                        } else {
+                            b"+OK\r\n"
+                        };
+                        if stream.get_mut().write_all(reply).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (format!("redis://{addr}"), applied)
+    }
+
+    /// A recorder against `url` whose single applicable budget makes each
+    /// record exactly one `INCRBYFLOAT`.
+    fn spend_recorder(url: &str) -> SpendRecorder {
+        SpendRecorder::new(crate::budgets::BudgetEnforcer::new(url), budgets(), scope())
+    }
+
+    /// The shutdown drain applies every record still queued rather than
+    /// dropping the workers' backlog with the runtime (#2374). The stand-in
+    /// answers slowly enough that nearly the whole batch is still queued when
+    /// the drain starts, and the drain is driven through `drain_sinks`, the
+    /// call `run()` makes after `SIGTERM`.
+    #[tokio::test]
+    async fn the_shutdown_drain_applies_every_queued_record() {
+        const RECORDS: u64 = 16;
+        // well under the 500 ms response timeout even with both workers'
+        // commands pipelined on the one multiplexed connection
+        let (url, applied) = slow_redis(std::time::Duration::from_millis(40)).await;
+        let metrics = Arc::new(Metrics::default());
+        let sink = UsageRecorderSink::spawn(64, 2, metrics.clone());
+        let recorder = spend_recorder(&url);
+        for _ in 0..RECORDS {
+            sink.record(UsageRecord::Spend {
+                recorder: recorder.clone(),
+                cost: 0.01,
+            });
+        }
+        assert!(
+            applied.load(Relaxed) < RECORDS,
+            "every record was applied before the drain, so it proves nothing"
+        );
+
+        let mut state = crate::state::AppState::new(&rolter_core::GatewayConfig::default());
+        state.log = state.log.clone().with_usage_recorders(sink.clone());
+        let drained = state.drain_sinks(std::time::Duration::from_secs(10)).await;
+
+        assert!(drained, "drain_sinks ran out of grace");
+        assert_eq!(
+            applied.load(Relaxed),
+            RECORDS,
+            "the drain returned before every queued record reached redis"
+        );
+        assert_eq!(metrics.usage_records_dropped_total.load(Relaxed), 0);
+    }
+
+    /// The drain closes the queue on a worker's first turn after the stop, so
+    /// a record offered while the workers are still applying the backlog is
+    /// refused and counted like a full queue — never silently lost, and never
+    /// stretching the drain past what was queued when it began.
+    #[tokio::test]
+    async fn a_send_racing_the_shutdown_close_is_counted_as_dropped() {
+        let (url, applied) = slow_redis(std::time::Duration::from_millis(100)).await;
+        let metrics = Arc::new(Metrics::default());
+        let sink = UsageRecorderSink::spawn(16, 1, metrics.clone());
+        let recorder = spend_recorder(&url);
+        for _ in 0..4 {
+            sink.record(UsageRecord::Spend {
+                recorder: recorder.clone(),
+                cost: 0.01,
+            });
+        }
+        // let the worker take the first record, so the stop lands mid-apply
+        for _ in 0..1_000 {
+            if sink.queued() == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(sink.queued(), 3, "the worker never took a record");
+
+        let draining = tokio::spawn({
+            let sink = sink.clone();
+            async move { sink.shutdown().await }
+        });
+        // wait for the close itself, not for the drain to finish
+        let tx = sink.tx.clone().expect("a spawned sink has a channel");
+        for _ in 0..1_000 {
+            if tx.is_closed() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert!(tx.is_closed(), "the drain never closed the queue");
+        // the worker took one record before the stop and must close the queue
+        // on its very next turn, not once the rest of the backlog ran dry
+        assert_eq!(
+            applied.load(Relaxed),
+            1,
+            "the queue stayed open while the backlog was applied"
+        );
+
+        sink.record(UsageRecord::Spend {
+            recorder: recorder.clone(),
+            cost: 0.01,
+        });
+        assert_eq!(metrics.usage_records_dropped_total.load(Relaxed), 1);
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), draining)
+            .await
+            .expect("the drain finished")
+            .expect("the drain task did not panic");
+        assert_eq!(
+            applied.load(Relaxed),
+            4,
+            "only the queued backlog is applied"
+        );
+
+        // and once the workers have exited, a send still counts
+        sink.record(UsageRecord::Spend {
+            recorder,
+            cost: 0.01,
+        });
+        assert_eq!(metrics.usage_records_dropped_total.load(Relaxed), 2);
     }
 
     /// The default sink is inert: no channel, no workers, no counting.

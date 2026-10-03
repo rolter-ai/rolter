@@ -126,22 +126,30 @@ curl http://localhost:4000/v1/chat/completions \
 
 ## Deployment-wide ingress policy
 
-**Settings → Security** carries three rules that every gateway in the fleet
+**Settings → Security** carries two rules that every gateway in the fleet
 picks up on its next config poll — no restart, no redeploy.
 
+<Note>
+  There is no **Enforce virtual keys on inference** switch on this screen any
+  more. A gateway that holds virtual keys always requires one, outside the
+  auth bypass routes below. A gateway that
+  holds none decides from how it was started: one managed by a control plane
+  (started with `--snapshot-url`) refuses every request with `401`, and one
+  running from its own config file stays open for local development. Only a
+  `require_auth` line in that gateway's own config file changes this, in either
+  direction — `require_auth = false` is the one way to open a managed gateway
+  that holds no keys, and it belongs to whoever runs the process rather than
+  to the dashboard.
+
+The switch only ever reached managed gateways, which were already closed, so
+it changed nothing and was removed. Saving from an older dashboard that still
+sends the field is accepted; the field is ignored. A config file that still
+sets `[security] virtual_key_required = true` is read as
+`[server] require_auth = true`, with a warning to move it.
+
+</Note>
+
 <AccordionGroup>
-  <Accordion title="Enforce virtual keys on inference">
-    Refuses an unauthenticated request even on a gateway that holds no virtual
-    keys at all. Without it, a deployment that has had every key revoked — or
-    that has not minted its first one — decides based on how it was started.
-    Turn it on and the answer is always `401`.
-
-    A `require_auth` line in a gateway's own config file still wins, in either
-    direction. That is deliberate: the file belongs to whoever runs the
-    process, who may not be the person holding the dashboard.
-
-  </Accordion>
-
   <Accordion title="Required headers">
     Name/value pairs every request must carry — a service-mesh identity header,
     a WAF marker, a tenant tag. A request missing one, or carrying a different
@@ -165,6 +173,31 @@ picks up on its next config poll — no restart, no redeploy.
 
   </Accordion>
 </AccordionGroup>
+
+### Editing the lists
+
+Allowed origins, allowed headers, required headers and auth bypass routes are edited one entry per line. A comma is not a separator, so a required header value can contain commas (`x-ids: 1,2,3`).
+
+The dashboard checks every line against the rules the control plane applies when you save. An entry that fails stays in the field with its line number named under it, Save stays off until every entry passes, and nothing is sent in the meantime. An entry is never dropped to make a save go through.
+
+| List               | Each line must be                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| Allowed origins    | an exact `http://` or `https://` origin, with no wildcard, path, query, fragment or user info   |
+| Allowed headers    | a header name: letters, digits and the punctuation RFC 9110 allows in a token, no spaces        |
+| Required headers   | `name: value`, split at the first colon, with a valid header name and a value that is not empty |
+| Auth bypass routes | an exact path under `/v1/`, with no wildcard, placeholder, query, fragment or spaces            |
+
+One rule is the dashboard's own. The control plane stores required headers as a map, so a header named on two lines would keep only one of the two values. The dashboard refuses the second line instead of choosing for you, and compares names without regard to case, as the gateway does.
+
+### Saving a change that loosens security
+
+A save that adds an **Auth bypass route** asks first. The dialog lists exactly the routes added, says what each one means, and nothing is sent until you confirm. Cancelling keeps your edits in the form. A save that only tightens, such as a route removed or a header required, goes out at once.
+
+Save is enabled only while something differs from what was loaded. The cards you edited are marked **Edited**, and **Discard changes** puts every field back.
+
+### After you save
+
+The footer states when the save landed and which gateways run it. The control plane compares the config version each gateway last reported with the current one, the same `converged` flag the Cluster screen shows, and the footer counts the live gateways that match. A gateway applies a save on its next config poll, every 5 seconds by default and at once when Redis is configured. A gateway that has never identified itself to the control plane cannot be counted, and the footer says that instead of claiming it picked the change up.
 
 ## Error responses
 

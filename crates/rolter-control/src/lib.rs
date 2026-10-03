@@ -36,6 +36,8 @@ mod cluster;
 mod collector_config;
 #[cfg(feature = "postgres")]
 mod compatibility_policy;
+#[cfg(feature = "postgres")]
+mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
 // secret-stripping are covered by the default-feature test run too; only the
 // route it backs needs postgres
@@ -56,6 +58,7 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
+// not reachable from any sign-in route yet (#1826); see the module docs
 pub mod ldap;
 #[cfg(feature = "postgres")]
 mod logging_settings;
@@ -71,6 +74,8 @@ mod mcp_oauth_discovery;
 mod mcp_oauth_flow;
 #[cfg(feature = "postgres")]
 mod me;
+#[cfg(feature = "postgres")]
+mod me_saved_views;
 /// TOTP second factor for local accounts (#1078). `pub` for the break-glass
 /// reset the `rolter` launcher's `mfa reset` subcommand runs.
 #[cfg(feature = "postgres")]
@@ -82,6 +87,9 @@ mod openapi;
 #[cfg(feature = "postgres")]
 mod plugins;
 mod proxy;
+// a record for the guard tests; no request path reads it
+#[cfg(test)]
+mod public_routes;
 #[cfg(feature = "postgres")]
 mod public_url;
 #[cfg(feature = "postgres")]
@@ -98,6 +106,7 @@ mod scim_groups;
 mod security;
 #[cfg(feature = "postgres")]
 pub mod seed;
+mod session_guard;
 #[cfg(feature = "postgres")]
 mod sso;
 #[cfg(feature = "postgres")]
@@ -526,6 +535,13 @@ struct ControlState {
     mfa_without_kek: bool,
 }
 
+/// Log that a datastore endpoint is in use. Every startup line that names a
+/// redis or clickhouse url goes through here so the password in it cannot reach
+/// the log (#2406).
+fn log_endpoint(what: &str, url: &str) {
+    tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
+}
+
 /// Run the control plane to completion. The caller owns argument parsing and
 /// telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
@@ -545,7 +561,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let redis = match &args.redis_url {
         Some(url) => match redis::Client::open(url.as_str()) {
             Ok(client) => {
-                tracing::info!(%url, "publishing config bumps to redis");
+                log_endpoint("publishing config bumps to redis", url);
                 Some(client)
             }
             Err(err) => {
@@ -557,7 +573,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
 
     let clickhouse = args.clickhouse_url.as_deref().map(|url| {
-        tracing::info!(%url, "usage/cost analytics enabled");
+        log_endpoint("usage/cost analytics enabled", url);
         analytics::ClickHouseClient::new(url)
     });
 
@@ -643,7 +659,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             tokio::spawn(async move { sample_pool_acquire(pool, metrics).await });
         }
     }
-    let http = reqwest::Client::new();
+    let http = proxy::gateway_client();
 
     // the throttle shares redis with config pub/sub when there is one, so every
     // replica counts against the same budget. without redis it is process-local
@@ -792,7 +808,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
 
     let Some(internal_addr) = args.internal_addr else {
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
         return Ok(());
     };
 
@@ -802,10 +820,51 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // both listeners share the process: if either dies the control plane is
     // degraded (no config propagation, or no dashboard), so exit rather than
     // limp on with half a control plane
-    tokio::try_join!(async { axum::serve(listener, app).await }, async {
-        axum::serve(internal_listener, internal).await
-    },)?;
+    tokio::try_join!(
+        async {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+        async {
+            axum::serve(internal_listener, internal)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        },
+    )?;
     Ok(())
+}
+
+/// Resolve once the process receives a shutdown signal (Ctrl-C on all
+/// platforms, or `SIGTERM` on Unix, which is what orchestrators send).
+///
+/// Every caller installs its own listener; tokio broadcasts a signal to all of
+/// them, so this coexists with the gateway's own handler when both planes share
+/// a process under `rolter easy-up`.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => {
+                tracing::warn!(%err, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
+        _ = terminate => tracing::info!("received SIGTERM, draining"),
+    }
 }
 
 /// Everything the API did not match falls through to the built SPA.
@@ -953,15 +1012,20 @@ async fn readyz(State(state): State<ControlState>) -> Response {
                             json!(format!("{} pending", pending.len())),
                         );
                     }
-                    Err(err) => {
+                    Err(error) => {
                         ready = false;
-                        checks.insert("migrations".into(), json!(err.to_string()));
+                        // the driver's message can name the database host and
+                        // port, and this probe answers anyone (#1840); the
+                        // operator reads the detail in the log instead
+                        tracing::warn!(%error, "readiness: could not read the migration table");
+                        checks.insert("migrations".into(), json!("unavailable"));
                     }
                 }
             }
-            Ok(Err(err)) => {
+            Ok(Err(error)) => {
                 ready = false;
-                checks.insert("database".into(), json!(err.to_string()));
+                tracing::warn!(%error, "readiness: the database did not hand out a connection");
+                checks.insert("database".into(), json!("unavailable"));
                 checks.insert("migrations".into(), json!("unknown"));
             }
             Err(_) => {
@@ -1054,6 +1118,11 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         // renew MCP OAuth sessions before they lapse, so a user consents once
         // rather than every hour (#707)
         mcp_oauth_flow::start_refresher(state.clone());
+        // abandoned sso logins and unredeemed exchange codes are otherwise
+        // only removed when the same flow returns, which it never does (#2414)
+        if let Some(pool) = state.pool.clone() {
+            sso::start_state_sweeper(pool);
+        }
         api = api
             .merge(access_control::router())
             .merge(alerting::router())
@@ -1259,6 +1328,24 @@ pub async fn test_app_with_bootstrap(
     rolter_store::postgres::run_migrations(&pool).await?;
     let mut state = test_state(pool, None, None);
     state.config_owned = Arc::new(ConfigOwned::from_config(bootstrap));
+    Ok(build_app_with(state, true))
+}
+
+/// [`test_app_with_admin_token`] whose snapshot also carries `file_config`, the
+/// way a control plane started with `--config` does.
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_file_config(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    file_config: GatewayConfig,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool.clone(), admin_token, None);
+    state.config_owned = Arc::new(ConfigOwned::from_config(&file_config));
+    state.store = Arc::new(MergedConfigStore::new(
+        file_config,
+        Arc::new(rolter_store::PostgresConfigStore::new(pool)),
+    ));
     Ok(build_app_with(state, true))
 }
 
@@ -1637,7 +1724,7 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
     if config.provider_defaults.is_empty() {
         return Ok(());
     }
-    let Some((_project_id, org_id)) = default_project(pool).await? else {
+    let Some((project_id, org_id)) = default_project(pool).await? else {
         tracing::warn!(
             "providers.default was not seeded: create the default org/team/project first with rolter-seed"
         );
@@ -1683,6 +1770,8 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 provider.api_key_env_name(),
                 provider.egress_proxy.as_deref(),
                 &provider.egress_proxies,
+                // `project_scoped` means the default project here (#1919)
+                provider.project_scoped.then_some(project_id),
             )
             .await?;
         if provider.surplus_api_key_count() > 0 {
@@ -1729,7 +1818,7 @@ async fn seed_default_provider_groups(
     if config.provider_group_defaults.is_empty() {
         return Ok(());
     }
-    let Some((_project_id, org_id)) = default_project(pool).await? else {
+    let Some((project_id, org_id)) = default_project(pool).await? else {
         tracing::warn!(
             "provider_groups.default was not seeded: create the default org/team/project first with rolter-seed"
         );
@@ -1762,10 +1851,23 @@ async fn seed_default_provider_groups(
             continue;
         }
         let strategy = balancing_strategy_str(group.strategy);
-        let created = groups.create(org_id, &group.name, &slug, strategy).await?;
+        let scope = group.project_scoped.then_some(project_id);
+        let created = groups
+            .create(org_id, &group.name, &slug, strategy, scope)
+            .await?;
         let mut members = Vec::with_capacity(group.members.len());
         for member in &group.members {
             match providers.iter().find(|p| p.name == member.provider) {
+                // a provider scoped to a project the group does not share
+                // would be reachable from outside it through the group (#1919)
+                Some(provider) if provider.project_id.is_some() && provider.project_id != scope => {
+                    tracing::warn!(
+                        group = %group.name,
+                        provider = %member.provider,
+                        "provider_groups.default member skipped: the provider is scoped to a \
+                         project the group is not"
+                    )
+                }
                 Some(provider) => members.push((
                     provider.id,
                     member.model.clone(),
@@ -1816,21 +1918,49 @@ async fn build_store(
     Ok((Arc::new(InMemoryConfigStore::new(config)), None))
 }
 
-async fn list_roles() -> Json<Value> {
+async fn list_roles(_: session_guard::AnySession) -> Json<Value> {
     let roles = [Role::Admin, Role::Member, Role::Viewer];
     Json(serde_json::to_value(roles).unwrap_or_default())
 }
 
-async fn get_config(State(state): State<ControlState>) -> Json<GatewayConfig> {
-    let mut config = state.store.load().await.unwrap_or_default();
+/// Load the store for a dashboard read. A failure is a 500 in the usual error
+/// shape with the driver text logged, not echoed: it can name hosts or schemas.
+async fn load_for_read(state: &ControlState) -> Result<GatewayConfig, StoreReadError> {
+    state.store.load().await.map_err(|err| {
+        tracing::error!(%err, "failed to load config for a dashboard read");
+        StoreReadError
+    })
+}
+
+/// A store that could not be read, rendered as a 500 that says nothing a
+/// driver said.
+struct StoreReadError;
+
+impl IntoResponse for StoreReadError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": {"message": "internal server error"}})),
+        )
+            .into_response()
+    }
+}
+
+async fn get_config(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Result<Json<GatewayConfig>, StoreReadError> {
+    // a failed load is a 5xx, never an empty config: defaults would read as a
+    // deployment with no providers or routes. `ApiError` redacts driver text
+    let mut config = load_for_read(&state).await?;
     redact_config_for_dashboard(&mut config);
-    Json(config)
+    Ok(Json(config))
 }
 
 /// Strip everything a caller of the dashboard's config view must not learn.
 ///
-/// This endpoint sits on the open router, so it answers without a session or
-/// the admin token. It used to blank only the provider credentials, and shipped
+/// This endpoint needs a session (any role), the admin token, or open mode
+/// (#1840); before that it answered anyone. It used to blank only the provider credentials, and shipped
 /// the rest of the snapshot as-is: the plaintext of every `[[virtual_keys]]`
 /// entry from `rolter.toml`, every live MCP OAuth access token, the peppered
 /// digests of the database keys, and any userinfo embedded in the ClickHouse
@@ -1843,9 +1973,12 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
         for key in &mut provider.api_keys {
             key.key = None;
         }
-        provider.egress_proxy = provider.egress_proxy.as_deref().map(strip_userinfo);
+        provider.egress_proxy = provider
+            .egress_proxy
+            .as_deref()
+            .map(rolter_core::redact::redact_url);
         for proxy in &mut provider.egress_proxies {
-            *proxy = strip_userinfo(proxy);
+            *proxy = rolter_core::redact::redact_url(proxy);
         }
     }
     for provider in &mut config.provider_defaults {
@@ -1862,9 +1995,14 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     // with its digest blanked the list maps every tenant and its people
     config.db_virtual_keys.clear();
     config.mcp_oauth_sessions.clear();
+    // a postgres store holding the KEK unseals every static mcp credential into
+    // this list for the snapshot, and a file config carries them in the clear
+    // (#1938). The whole list goes rather than just `credential`: each row also
+    // names its tenant's org and upstream url, and the dashboard reads none of it
+    config.mcp_servers.clear();
     // which org owns a row is the gateway's business (#1844). the rows
     // themselves, every org's providers, routes and groups, are still listed:
-    // whether this anonymous document may describe that topology at all is #1840
+    // the document itself is now session-gated (#1840)
     for provider in &mut config.providers {
         provider.tenancy = None;
     }
@@ -1874,20 +2012,11 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     for group in &mut config.provider_groups {
         group.tenancy = None;
     }
-    config.logging.clickhouse_url = config.logging.clickhouse_url.as_deref().map(strip_userinfo);
-}
-
-/// `scheme://user:pass@host/…` -> `scheme://host/…`; anything unparsable is
-/// returned untouched, since a URL the gateway could not use leaks nothing.
-fn strip_userinfo(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
-            let _ = parsed.set_username("");
-            let _ = parsed.set_password(None);
-            parsed.to_string()
-        }
-        _ => url.to_string(),
-    }
+    config.logging.clickhouse_url = config
+        .logging
+        .clickhouse_url
+        .as_deref()
+        .map(rolter_core::redact::redact_url);
 }
 
 /// What the dashboard needs to know about a provider kind to configure it.
@@ -1908,7 +2037,7 @@ struct ProviderKindInfo {
 ///
 /// Derived from `ProviderKind::ALL` rather than re-listed, so a kind added to
 /// core shows up here without a second edit.
-async fn get_provider_kinds() -> Json<Vec<ProviderKindInfo>> {
+async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKindInfo>> {
     Json(
         rolter_core::ProviderKind::ALL
             .iter()
@@ -1946,10 +2075,12 @@ struct CurrencySettings {
 
 /// The currency table the dashboard drives its chooser from.
 ///
-/// Unauthenticated alongside `/api/v1/config` and `/api/v1/roles`: an operator's
-/// rate table is deployment configuration the pricing screens already display,
-/// not a credential.
-async fn get_currency(State(state): State<ControlState>) -> Json<CurrencySettings> {
+/// Needs a session like `/api/v1/config`: an operator's rate table is
+/// deployment configuration, not something an anonymous caller should read.
+async fn get_currency(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Json<CurrencySettings> {
     let codes = state.currency.codes();
     // report rates under the same normalized spelling as `codes`, so the
     // dashboard can look one up by the code it was handed
@@ -1981,17 +2112,48 @@ async fn get_currency(State(state): State<ControlState>) -> Json<CurrencySetting
 /// until someone wondered why a change never took effect. This is the same
 /// computation the snapshot runs, so the two cannot report different things.
 ///
-/// Unguarded, alongside [`get_config`]: it carries no credentials, only the
-/// names and reasons an operator needs to fix their own config.
-async fn get_config_problems(State(state): State<ControlState>) -> Json<Value> {
-    let mut config = state.store.load().await.unwrap_or_default();
-    let mut problems = config.sanitize_for_snapshot();
+/// Session-gated like [`get_config`] (#1840): it carries no credentials, but
+/// the names and reasons it lists are the deployment's topology.
+async fn get_config_problems(
+    _: session_guard::AnySession,
+    State(state): State<ControlState>,
+) -> Result<Json<Value>, StoreReadError> {
+    // an unreadable store must not render as "no problems"
+    let mut config = load_for_read(&state).await?;
+    let mut problems = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
-    if let Err(fatal) = config.validate() {
+    if let Err(fatal) = config.validate_snapshot() {
         problems.extend(fatal);
     }
-    Json(json!({ "problems": problems }))
+    // rows the loader could only serve by guessing, such as a budget period it
+    // does not recognise and enforces as monthly (#1902). the snapshot carries
+    // the guess, not the row, so only the store can say where one was made
+    match state.store.load_problems().await {
+        Ok(guessed) => problems.extend(guessed),
+        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
+    }
+    Ok(Json(json!({ "problems": problems })))
+}
+
+/// [`GatewayConfig::sanitize_for_snapshot`](rolter_core::GatewayConfig::sanitize_for_snapshot)
+/// plus the one rule that depends on how this control plane is deployed.
+///
+/// The public example key travels in the image's baked `rolter.toml`, so a
+/// control plane started with no config of its own would hand it to every
+/// gateway (#2408). Open mode (no admin token, no `require_auth`) keeps serving
+/// it because that is `easy-up`'s whole point; anything that has turned auth on
+/// does not. Gateways polling a snapshot fail closed on an empty key set, so
+/// dropping the only key locks the data plane rather than opening it.
+fn sanitize_snapshot(state: &ControlState, config: &mut rolter_core::GatewayConfig) -> Vec<String> {
+    let mut problems = config.sanitize_for_snapshot();
+    let auth_enforced = state.admin_token.is_some() || config.server.require_auth == Some(true);
+    if auth_enforced {
+        if let Some(problem) = config.prune_public_example_key() {
+            problems.push(problem);
+        }
+    }
+    problems
 }
 
 #[derive(Debug, Deserialize)]
@@ -2130,7 +2292,7 @@ async fn build_snapshot(
             let sanitize = rolter_core::stage_span!("snapshot.sanitize");
             let omitted = {
                 let _entered = sanitize.enter();
-                config.sanitize_for_snapshot()
+                sanitize_snapshot(&state, &mut config)
             };
             if !omitted.is_empty() {
                 tracing::warn!(
@@ -2160,7 +2322,7 @@ async fn build_snapshot(
             // served — dropping one of two colliding rows would be a guess —
             // so they still refuse. Row-local defects were pruned above and
             // ride out in `problems` instead of withholding the fleet (#926)
-            if let Err(problems) = config.validate() {
+            if let Err(problems) = config.validate_snapshot() {
                 tracing::error!(?problems, "refusing to serve invalid config snapshot");
                 return BuiltSnapshot::error(
                     (
@@ -2318,6 +2480,79 @@ mod pool_config_tests {
 }
 
 #[cfg(test)]
+mod startup_log_tests {
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!("{}={value:?} ", field.name()));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+
+    /// A throwaway secret built at run time, so no credential-shaped literal
+    /// sits in the source for secret scanners to flag
+    fn throwaway_secret(tag: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        format!("{tag}{}x{nanos}", std::process::id())
+    }
+
+    #[test]
+    fn startup_lines_keep_the_redis_and_clickhouse_passwords_out() {
+        let redis_secret = throwaway_secret("r");
+        let user_secret = throwaway_secret("u");
+        let query_secret = throwaway_secret("q");
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            super::log_endpoint(
+                "publishing config bumps to redis",
+                &format!("redis://:{redis_secret}@cache:6379/0"),
+            );
+            super::log_endpoint(
+                "usage/cost analytics enabled",
+                &format!("http://default:{user_secret}@ch:8123/?password={query_secret}"),
+            );
+        });
+        let seen = captured.0.lock().join("\n");
+        for secret in [&redis_secret, &user_secret, &query_secret] {
+            // the message names neither the secret nor the captured line, so a
+            // failure cannot itself print the credential
+            assert!(
+                !seen.contains(secret.as_str()),
+                "a test credential reached the startup log"
+            );
+        }
+        assert!(seen.contains("cache:6379"), "{seen}");
+        assert!(seen.contains("ch:8123"), "{seen}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2422,7 +2657,8 @@ mod tests {
     #[test]
     fn dashboard_config_carries_no_secrets() {
         use rolter_core::config::{
-            McpOAuthSessionConfig, ProviderConfig, VirtualKeyConfig, VirtualKeyRecord,
+            McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ProviderConfig, VirtualKeyConfig,
+            VirtualKeyRecord,
         };
         let mut config = GatewayConfig::default();
         config.providers.push(ProviderConfig {
@@ -2453,6 +2689,17 @@ mod tests {
             .unwrap(),
         );
         config.logging.clickhouse_url = Some("http://ch:pass@clickhouse:8123".into());
+        // as `PostgresConfigStore::load` hands it over once the KEK has unsealed
+        // it for the snapshot (#1938)
+        config.mcp_servers.push(McpServerConfig {
+            id: "srv".into(),
+            org_id: "org-of-an-mcp-tenant".into(),
+            slug: "tools".into(),
+            url: "https://mcp.tenant.internal/sse".into(),
+            auth_kind: McpAuthKind::Bearer,
+            credential: Some("mcp-bearer-secret".into()),
+            ..Default::default()
+        });
 
         redact_config_for_dashboard(&mut config);
 
@@ -2469,6 +2716,9 @@ mod tests {
             "user:pw",
             "u:p@",
             "ch:pass",
+            "mcp-bearer-secret",
+            "org-of-an-mcp-tenant",
+            "mcp.tenant.internal",
         ] {
             // the message names the seed, not the serialised document: a
             // failing run must not print the very thing it is guarding
@@ -2480,23 +2730,51 @@ mod tests {
         }
         assert_eq!(
             config.providers[0].egress_proxy.as_deref(),
-            Some("http://proxy.internal:3128/")
+            Some("http://***@proxy.internal:3128/")
         );
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
+        assert!(config.mcp_servers.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
-            Some("http://clickhouse:8123/")
+            Some("http://***@clickhouse:8123/")
         );
     }
 
     #[test]
-    fn strip_userinfo_leaves_plain_urls_alone() {
+    fn config_view_url_redaction_masks_userinfo_query_and_unparsable() {
+        use rolter_core::redact::{redact_url, INVALID_URL_PLACEHOLDER};
         assert_eq!(
-            strip_userinfo("http://clickhouse:8123"),
+            redact_url("http://clickhouse:8123"),
             "http://clickhouse:8123"
         );
-        assert_eq!(strip_userinfo("not a url"), "not a url");
+        let secret = format!("sec-{}", uuid::Uuid::new_v4());
+        let masked = redact_url(&format!(
+            "http://u:{secret}@ch:8123/?password={secret}&db=x"
+        ));
+        assert!(!masked.contains(&secret), "the secret survived redaction");
+        assert!(
+            masked.contains("db=x"),
+            "a non-secret query value was dropped"
+        );
+        let junk = redact_url(&format!("not a url {secret}"));
+        assert!(!junk.contains(&secret), "an unparsable url kept the secret");
+        assert_eq!(junk, INVALID_URL_PLACEHOLDER);
+    }
+
+    #[test]
+    fn config_view_masks_unparsable_and_query_secret_urls() {
+        let secret = format!("sec-{}", uuid::Uuid::new_v4());
+        let mut config = GatewayConfig::default();
+        config.logging.clickhouse_url = Some(format!("http://ch:8123/?token={secret}"));
+        config.providers.push(rolter_core::config::ProviderConfig {
+            egress_proxy: Some(format!("pa ss:{secret}@proxy")),
+            egress_proxies: vec![format!("http://p:{secret}@proxy:3128")],
+            ..Default::default()
+        });
+        redact_config_for_dashboard(&mut config);
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains(&secret), "{json}");
     }
 
     /// A scratch `ui_dir`, removed when the guard drops. No `tempfile` in this
@@ -3068,6 +3346,55 @@ mod tests {
         assert_eq!(body["problems"].as_array().unwrap().len(), 0, "{body}");
     }
 
+    /// A store whose rows the loader could only map by guessing, or which
+    /// cannot say whether it had to (#1902).
+    struct GuessingConfigStore {
+        problems: Option<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for GuessingConfigStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            Ok(GatewayConfig::default())
+        }
+        async fn save(&self, _config: GatewayConfig) -> rolter_core::Result<()> {
+            Ok(())
+        }
+        async fn load_problems(&self) -> rolter_core::Result<Vec<String>> {
+            self.problems
+                .clone()
+                .ok_or_else(|| rolter_core::Error::Store("budgets query failed".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_the_loader_misread_are_config_problems() {
+        async fn problems(store: GuessingConfigStore) -> Value {
+            let mut state = state_with_token(None);
+            state.store = Arc::new(store);
+            let addr = serve(build_app_with_internal(state)).await;
+            let response = reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/config/problems"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json().await.unwrap()
+        }
+
+        let line = "budget 'b' on org 'o' has period '7d', which the gateway does not recognise";
+        let body = problems(GuessingConfigStore {
+            problems: Some(vec![line.to_string()]),
+        })
+        .await;
+        assert_eq!(body["problems"], json!([line]), "{body}");
+
+        // a store that cannot list them does not take the rest of the answer
+        // with it: the endpoint still answers, with what it could compute
+        let body = problems(GuessingConfigStore { problems: None }).await;
+        assert_eq!(body["problems"], json!([]), "{body}");
+    }
+
     struct FailingConfigStore;
 
     #[async_trait::async_trait]
@@ -3084,6 +3411,21 @@ mod tests {
             Err(rolter_core::Error::Store(
                 "version query failed secret_db_details".into(),
             ))
+        }
+    }
+
+    #[tokio::test]
+    async fn config_reads_fail_on_a_store_error_instead_of_answering_defaults() {
+        let mut state = state_with_token(None);
+        state.store = Arc::new(FailingConfigStore);
+        let addr = serve(build_app_with_internal(state)).await;
+        for path in ["/api/v1/config", "/api/v1/config/problems"] {
+            let response = reqwest::get(format!("http://{addr}{path}")).await.unwrap();
+            assert_eq!(response.status(), 500, "{path}");
+            let body: Value = response.json().await.unwrap();
+            let message = body["error"]["message"].as_str().unwrap();
+            assert_eq!(message, "internal server error", "{path}");
+            assert!(!body.to_string().contains("secret_db_details"), "{body}");
         }
     }
 
@@ -3127,7 +3469,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_requires_admin_token_when_configured() {
-        let addr = serve(build_app_with_internal(state_with_token(Some("sekrit")))).await;
+        let token = format!("tok-{}", uuid::Uuid::new_v4());
+        let addr = serve(build_app_with_internal(state_with_token(Some(&token)))).await;
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/internal/snapshot");
 
@@ -3137,7 +3480,7 @@ mod tests {
         let wrong = client.get(&url).bearer_auth("nope").send().await.unwrap();
         assert_eq!(wrong.status(), 401);
 
-        let ok = client.get(&url).bearer_auth("sekrit").send().await.unwrap();
+        let ok = client.get(&url).bearer_auth(&token).send().await.unwrap();
         assert_eq!(ok.status(), 200);
 
         // the rest of the api stays open (dashboard reads, health)
@@ -3242,6 +3585,37 @@ mod tests {
         );
     }
 
+    /// #1951: the ClickHouse client had no timeout, so a server that took the
+    /// connection and stopped answering hung the dashboard request forever.
+    #[tokio::test]
+    async fn an_analytics_read_against_a_stalled_clickhouse_answers_an_error() {
+        let stalled = analytics::testing::Stalled::start().await;
+        let mut state = state_with_token(None);
+        state.clickhouse = Some(analytics::ClickHouseClient::with_timeouts(
+            &stalled.url,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(300),
+        ));
+        let addr = serve(build_app_with(state, false)).await;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            reqwest::Client::new()
+                .get(format!("http://{addr}/api/v1/analytics/summary"))
+                .send(),
+        )
+        .await
+        .expect("the request must not hang")
+        .unwrap();
+        assert_eq!(response.status(), 504);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("analytics_query_timeout"), "{body}");
+        assert!(
+            !body.contains(crate::analytics::testing::STALLED_USERINFO_SECRET)
+                && !body.contains("127.0.0.1"),
+            "the response body names the stalled server's userinfo or host"
+        );
+    }
+
     #[tokio::test]
     async fn a_control_plane_without_analytics_publishes_no_destination() {
         // absent, not empty-string: a gateway must be able to tell "nobody told
@@ -3314,6 +3688,214 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(echoed, "hello gateway");
+    }
+
+    /// the dashboard's config view names every provider, `api_base` and route,
+    /// which is topology even with the credentials gone (#1840)
+    #[tokio::test]
+    async fn the_config_view_needs_a_credential_once_the_control_plane_is_not_open() {
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "internal-vllm".to_string(),
+            kind: rolter_core::ProviderKind::Openai,
+            api_base: "http://10.1.2.3:8000".to_string(),
+            ..Default::default()
+        });
+        let state = ControlState {
+            store: Arc::new(InMemoryConfigStore::new(config)),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+
+        for path in [
+            "/api/v1/config",
+            "/api/v1/config/problems",
+            "/api/v1/currency",
+            "/api/v1/provider-kinds",
+            "/api/v1/roles",
+        ] {
+            let url = format!("http://{addr}{path}");
+            let anonymous = client.get(&url).send().await.unwrap();
+            assert_eq!(
+                anonymous.status(),
+                401,
+                "{path} answered an anonymous caller"
+            );
+            let body = anonymous.text().await.unwrap();
+            assert!(
+                !body.contains("10.1.2.3") && !body.contains("internal-vllm"),
+                "{path} leaked topology in its refusal: {body}"
+            );
+
+            let wrong = client
+                .get(&url)
+                .bearer_auth("not-the-token")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(wrong.status(), 401, "{path} accepted a wrong token");
+
+            let admin = client
+                .get(&url)
+                .bearer_auth("admin-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(admin.status(), 200, "{path} refused the admin token");
+        }
+    }
+
+    /// a deployment with no admin token is open by declaration, so its
+    /// dashboard keeps reading the config view without a login
+    #[tokio::test]
+    async fn the_config_view_stays_readable_in_open_mode() {
+        let addr = serve(build_app_with(state_with_token(None), true)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    /// the proxy's error body answers callers with no session, so it must not
+    /// name the address it failed to reach (#1840)
+    #[tokio::test]
+    async fn the_gateway_proxy_does_not_echo_the_gateway_address() {
+        let state = ControlState {
+            gateway_url: Arc::new("http://127.0.0.1:1".to_string()),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{addr}/gw/v1/models"))
+            .bearer_auth("admin-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("127.0.0.1"), "address leaked: {body}");
+    }
+
+    /// stand-in gateway that answers with the credentials it was handed
+    async fn credential_echo_gateway() -> std::net::SocketAddr {
+        async fn echo(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
+            let get = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+            };
+            axum::Json(serde_json::json!({
+                "authorization": get("authorization"),
+                "cookie": get("cookie"),
+                "carrier": get("x-rolter-gateway-key"),
+            }))
+        }
+        serve(Router::new().route("/v1/echo", axum::routing::any(echo))).await
+    }
+
+    /// without a session `/gw` reached the gateway for anyone who could reach
+    /// the control plane (#2463)
+    #[tokio::test]
+    async fn the_gateway_proxy_refuses_an_anonymous_caller() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/gw/v1/echo");
+        for method in [
+            reqwest::Method::GET,
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let anonymous = client.request(method.clone(), &url).send().await.unwrap();
+            assert_eq!(anonymous.status(), 401, "{method} reached the gateway");
+            // a virtual key alone is not a session
+            let key_only = client
+                .request(method.clone(), &url)
+                .bearer_auth("sk-virtual")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(key_only.status(), 401, "{method} took a key as a session");
+            let carrier_only = client
+                .request(method.clone(), &url)
+                .header("x-rolter-gateway-key", "sk-virtual")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(carrier_only.status(), 401, "{method} took the key carrier");
+        }
+    }
+
+    /// the session authenticates to the control plane and the key to the
+    /// gateway; neither may stand in for the other, and the session must not
+    /// reach the gateway at all
+    #[tokio::test]
+    async fn the_gateway_proxy_forwards_the_key_and_drops_the_session() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(Some("admin-secret"))
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/gw/v1/echo");
+
+        let seen: serde_json::Value = client
+            .post(&url)
+            .bearer_auth("admin-secret")
+            .header("x-rolter-gateway-key", "sk-virtual")
+            .header("cookie", "rolter_session=cookie-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(seen["authorization"], "Bearer sk-virtual");
+        assert!(seen["carrier"].is_null(), "carrier forwarded: {seen}");
+        assert!(seen["cookie"].is_null(), "cookie forwarded: {seen}");
+
+        // no key: the gateway sees no Authorization, not the session
+        let seen: serde_json::Value = client
+            .get(&url)
+            .bearer_auth("admin-secret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(seen["authorization"].is_null(), "session forwarded: {seen}");
+    }
+
+    #[tokio::test]
+    async fn the_gateway_proxy_stays_open_in_open_mode() {
+        let up_addr = credential_echo_gateway().await;
+        let state = ControlState {
+            gateway_url: Arc::new(format!("http://{up_addr}")),
+            ..state_with_token(None)
+        };
+        let addr = serve(build_app_with(state, true)).await;
+        let seen: serde_json::Value = reqwest::Client::new()
+            .get(format!("http://{addr}/gw/v1/echo"))
+            .header("x-rolter-gateway-key", "sk-virtual")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(seen["authorization"], "Bearer sk-virtual");
     }
 
     #[tokio::test]
@@ -3580,6 +4162,7 @@ mod tests {
                 weight: 1,
             }],
             tenancy: None,
+            ..Default::default()
         };
         let route = |model: &str| -> ModelRoute {
             serde_json::from_value(json!({

@@ -11,21 +11,25 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
-use rolter_store::postgres::repo::{RouteRepo, VirtualKeyRepo};
+use rolter_store::postgres::repo::{
+    AuditLogRepo, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo, UserRepo,
+    VirtualKeyRepo,
+};
 
 use crate::analytics::{client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
 use crate::auth::CurrentUser;
 use crate::crud::{
     generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult, SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
 use crate::time_bounds::Query;
 use crate::ControlState;
@@ -47,6 +51,442 @@ pub fn router() -> Router<ControlState> {
             axum::routing::delete(delete_my_key),
         )
         .route("/api/v1/me/usage", get(my_usage))
+        .route("/api/v1/me/profile", patch(update_my_profile))
+        .route(
+            "/api/v1/me/preferences",
+            get(get_my_preferences).put(put_my_preferences),
+        )
+        .merge(crate::me_saved_views::router())
+}
+
+/// longest display name, in characters; matches `users_display_name_shape`
+pub(crate) const MAX_DISPLAY_NAME_LEN: usize = 80;
+/// longest bio, in characters; matches `users_bio_shape`
+pub(crate) const MAX_BIO_LEN: usize = 500;
+
+/// Keep "field omitted" apart from "field sent as null": a plain `Option`
+/// collapses both to `None`, and a PATCH must leave the first alone while the
+/// second clears the value.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+struct ProfilePatch {
+    #[serde(default, deserialize_with = "present")]
+    display_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    bio: Option<Option<String>>,
+}
+
+/// Normalise one profile field: `None` and `""` clear it, anything else is
+/// trimmed and bounded. A value that is only whitespace is refused rather than
+/// quietly cleared, since a client that sent it did not mean "remove".
+fn normalise_field(
+    field: &str,
+    raw: Option<String>,
+    max: usize,
+    allow_newlines: bool,
+) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw else { return Ok(None) };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(bad_request(&format!(
+            "{field} must not be only whitespace; send an empty string or null to clear it"
+        )));
+    }
+    if let Some(bad) = trimmed
+        .chars()
+        .find(|c| c.is_control() && !(allow_newlines && matches!(c, '\n' | '\r' | '\t')))
+    {
+        return Err(bad_request(&format!(
+            "{field} must not contain control characters (found U+{:04X})",
+            bad as u32
+        )));
+    }
+    if trimmed.chars().count() > max {
+        return Err(bad_request(&format!(
+            "{field} must be at most {max} characters"
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// Coerce an IdP-supplied name into something `users.display_name` accepts.
+/// Unlike [`normalise_field`] this never refuses: a directory owns the value,
+/// and a provisioning call must not fail because of how a name is spelled.
+pub(crate) fn sanitise_directory_name(raw: &str) -> Option<String> {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let trimmed: String = cleaned.trim().chars().take(MAX_DISPLAY_NAME_LEN).collect();
+    let trimmed = trimmed.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// What `PATCH /me/profile` returns: the editable fields and whether the
+/// name is owned by a directory.
+#[derive(Serialize)]
+struct ProfileResponse {
+    display_name: Option<String>,
+    bio: Option<String>,
+    display_name_managed: bool,
+}
+
+/// Whether a SCIM-provisioned identity owns this account's display name.
+///
+/// SCIM is the only source treated as authoritative: its `displayName` is
+/// written into `users.display_name` on every provision and replace, so a
+/// local edit would be overwritten on the next sync. OIDC's claim is read at
+/// login but never persisted, and LDAP is not wired to any sign-in route
+/// (#1826), so those accounts keep an editable name.
+pub(crate) async fn display_name_managed(
+    state: &ControlState,
+    user_id: Uuid,
+) -> Result<bool, rolter_core::Error> {
+    ScimIdentityRepo(pool(state)).exists_for_user(user_id).await
+}
+
+/// change the caller's own profile. any signed-in account may do this at any
+/// role: it writes only the caller's row, so it needs no capability and does
+/// not widen `user:update`.
+async fn update_my_profile(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<ProfilePatch>,
+) -> ApiResult<Json<ProfileResponse>> {
+    let user: &User = &current.user;
+    let managed = display_name_managed(&state, user.id).await?;
+
+    let display_name = match body.display_name {
+        Some(raw) => Some(normalise_field(
+            "display_name",
+            raw,
+            MAX_DISPLAY_NAME_LEN,
+            false,
+        )?),
+        None => None,
+    };
+    let bio = match body.bio {
+        Some(raw) => Some(normalise_field("bio", raw, MAX_BIO_LEN, true)?),
+        None => None,
+    };
+
+    // only fields that actually change count, so a form that resubmits both
+    // values still works for a directory-managed name it did not touch
+    let name_changes = display_name
+        .as_ref()
+        .is_some_and(|new| *new != user.display_name);
+    let bio_changes = bio.as_ref().is_some_and(|new| *new != user.bio);
+    if managed && name_changes {
+        return Err(ApiError::Conflict(
+            "display_name is managed by your identity provider (SCIM) and cannot be changed here"
+                .to_string(),
+        ));
+    }
+
+    let mut changed = Vec::new();
+    if name_changes {
+        changed.push("display_name");
+    }
+    if bio_changes {
+        changed.push("bio");
+    }
+    let updated = if changed.is_empty() {
+        user.clone()
+    } else {
+        let updated = UserRepo(pool(&state))
+            .set_profile(
+                user.id,
+                display_name
+                    .as_ref()
+                    .filter(|_| name_changes)
+                    .map(|v| v.as_deref()),
+                bio.as_ref().filter(|_| bio_changes).map(|v| v.as_deref()),
+            )
+            .await?;
+        // field names only: a bio is free text the user may not want in a log
+        if let Err(err) = AuditLogRepo(pool(&state))
+            .create(
+                None,
+                Some(user.id),
+                "user.profile.update",
+                Some("user"),
+                Some(user.id),
+                Some(serde_json::json!({ "fields": changed })),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "failed to write profile audit entry");
+        }
+        updated
+    };
+    Ok(Json(ProfileResponse {
+        display_name: updated.display_name,
+        bio: updated.bio,
+        display_name_managed: managed,
+    }))
+}
+
+/// dashboard locale codes a preference may name. one per catalog in
+/// `ui/src/lib/i18n/locales/*.json`; add a code here in the same change that
+/// adds its catalog
+pub(crate) const LANGUAGES: &[&str] = &["en", "ru"];
+/// longest default playground model name, in characters
+pub(crate) const MAX_MODEL_LEN: usize = 200;
+/// longest IANA zone name accepted; the longest real ones are under 40
+const MAX_TIME_ZONE_LEN: usize = 64;
+
+/// The preferences document. A key that is `null` or absent means "use the
+/// deployment default", so the stored object simply omits it.
+///
+/// `PUT` replaces the whole document, which is why this same shape is both the
+/// request body and (plus `effective_default_scope`) the response.
+#[derive(Deserialize, Serialize, Default, Clone, PartialEq, Debug)]
+#[serde(deny_unknown_fields)]
+struct Preferences {
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    default_org_id: Option<Uuid>,
+    #[serde(default)]
+    default_team_id: Option<Uuid>,
+    #[serde(default)]
+    default_project_id: Option<Uuid>,
+    #[serde(default)]
+    default_playground_model: Option<String>,
+    #[serde(default)]
+    chart_time_zone: Option<String>,
+}
+
+/// a scope the caller can read right now, computed on every `GET`
+#[derive(Serialize, PartialEq, Debug)]
+struct EffectiveScope {
+    org_id: Option<Uuid>,
+    team_id: Option<Uuid>,
+    project_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct PreferencesResponse {
+    #[serde(flatten)]
+    preferences: Preferences,
+    /// the stored default scope if the caller can still read it, else the first
+    /// scope they can read, else `null`. The dashboard uses this and never the
+    /// raw `default_*_id` fields, which can name a scope access was lost to
+    effective_default_scope: Option<EffectiveScope>,
+}
+
+impl Preferences {
+    /// refuse what the dashboard could not render; trims the free-text fields
+    fn validated(mut self) -> Result<Self, ApiError> {
+        if let Some(lang) = &self.language {
+            if !LANGUAGES.contains(&lang.as_str()) {
+                return Err(bad_request(&format!(
+                    "language must be one of: {}",
+                    LANGUAGES.join(", ")
+                )));
+            }
+        }
+        if let Some(model) = self.default_playground_model.take() {
+            self.default_playground_model = normalise_field(
+                "default_playground_model",
+                Some(model),
+                MAX_MODEL_LEN,
+                false,
+            )?;
+        }
+        if let Some(zone) = &self.chart_time_zone {
+            if !is_known_zone(zone) {
+                return Err(bad_request(
+                    "chart_time_zone must be an IANA time zone name such as Europe/Berlin or UTC",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// keys set to a value, as the stored object; unset keys are omitted
+    fn to_document(&self) -> serde_json::Value {
+        let mut doc = serde_json::to_value(self).unwrap_or_default();
+        if let Some(map) = doc.as_object_mut() {
+            map.retain(|_, v| !v.is_null());
+        }
+        doc
+    }
+}
+
+/// Whether `zone` is a name in the IANA tz database (`chrono-tz` with default
+/// features off, so no serde or regex pulled in). The shape
+/// check runs first so an oversized or malformed string never reaches the
+/// lookup. The dashboard offers the browser's `Intl` list, a subset of this one
+/// plus aliases, so every zone it can pick is accepted.
+fn is_known_zone(zone: &str) -> bool {
+    is_iana_zone_shape(zone) && zone.parse::<chrono_tz::Tz>().is_ok()
+}
+
+/// Whether `zone` has the shape of an IANA name: `UTC`, `Europe/Berlin`,
+/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`.
+fn is_iana_zone_shape(zone: &str) -> bool {
+    if zone.is_empty() || zone.len() > MAX_TIME_ZONE_LEN {
+        return false;
+    }
+    let segments: Vec<&str> = zone.split('/').collect();
+    segments.len() <= 3
+        && segments.iter().all(|seg| {
+            !seg.is_empty()
+                && seg.starts_with(|c: char| c.is_ascii_alphabetic())
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
+        })
+}
+
+/// The scope the dashboard should open on, from what the caller can read now.
+///
+/// Preferences never widen access: the stored ids are only ever a hint, and a
+/// scope is returned only if the caller's memberships and custom roles still
+/// reach it, the same check the org/team/project listings use. The most
+/// specific stored id that is still readable wins; failing that the first
+/// scope the caller holds a role at (membership order); failing that `None`.
+/// A stored id whose row was deleted counts as unreadable.
+async fn effective_default_scope(
+    state: &ControlState,
+    user: &User,
+    prefs: &Preferences,
+) -> ApiResult<Option<EffectiveScope>> {
+    let principal = Principal::for_user(user.clone());
+    let filter = ScopeFilter::load(state, &principal, cap!("project", Read)).await?;
+    let pool = pool(state);
+
+    let stored_chain = async {
+        if let Some(project) = prefs.default_project_id {
+            if let Ok(chain) = ScopeChain::from_project(pool, project).await {
+                if filter.allows(chain) {
+                    return Some(chain);
+                }
+            }
+        }
+        if let Some(team) = prefs.default_team_id {
+            if let Ok(chain) = ScopeChain::from_team(pool, team).await {
+                if filter.allows(chain) {
+                    return Some(chain);
+                }
+            }
+        }
+        if let Some(org) = prefs.default_org_id {
+            let chain = ScopeChain::org(org);
+            // the listings let a caller who only holds a role below the org
+            // navigate to it, so reach counts here too; a superadmin reaches
+            // only orgs that exist
+            let reachable = if filter.is_superadmin() {
+                OrgRepo(pool).get(org).await.is_ok()
+            } else {
+                filter.allows(chain)
+                    || filter
+                        .reach(pool)
+                        .await
+                        .is_ok_and(|reach| crate::rbac::reaches_org(&reach, org))
+            };
+            if reachable {
+                return Some(chain);
+            }
+        }
+        None
+    }
+    .await;
+
+    let chain = match stored_chain {
+        Some(chain) => Some(chain),
+        None if filter.is_superadmin() => {
+            let first = OrgRepo(pool).list().await?.into_iter().next();
+            first.map(|org| ScopeChain::org(org.id))
+        }
+        None => filter.reach(pool).await?.into_iter().next(),
+    };
+    Ok(chain.map(|c| EffectiveScope {
+        org_id: c.org,
+        team_id: c.team,
+        project_id: c.project,
+    }))
+}
+
+async fn preferences_response(
+    state: &ControlState,
+    user: &User,
+    preferences: Preferences,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let effective_default_scope = effective_default_scope(state, user, &preferences).await?;
+    Ok(Json(PreferencesResponse {
+        preferences,
+        effective_default_scope,
+    }))
+}
+
+/// the caller's own preferences. there is no route to read anyone else's: the
+/// row is keyed by the session's user and nothing in the request names one
+async fn get_my_preferences(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let stored = UserPreferencesRepo(pool(&state))
+        .get(current.user.id)
+        .await?;
+    // a document this build cannot read (written by a newer one, say) reads as
+    // empty rather than failing the dashboard's first paint
+    let preferences = stored
+        .and_then(|doc| serde_json::from_value::<Preferences>(doc).ok())
+        .unwrap_or_default();
+    preferences_response(&state, &current.user, preferences).await
+}
+
+/// replace the caller's whole preferences document. keys left out are cleared.
+/// a default scope the caller cannot read is stored all the same, since access
+/// can change later; it is [`effective_default_scope`] that keeps it harmless
+async fn put_my_preferences(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<Preferences>,
+) -> ApiResult<Json<PreferencesResponse>> {
+    let new = body.validated()?;
+    let repo = UserPreferencesRepo(pool(&state));
+    let old = repo.get(current.user.id).await?.unwrap_or_default();
+    let new_doc = new.to_document();
+
+    let empty = serde_json::Map::new();
+    let old_map = old.as_object().unwrap_or(&empty);
+    let new_map = new_doc.as_object().unwrap_or(&empty);
+    let mut changed: Vec<&str> = old_map
+        .keys()
+        .chain(new_map.keys())
+        .map(String::as_str)
+        .filter(|key| old_map.get(*key) != new_map.get(*key))
+        .collect();
+    changed.sort_unstable();
+    changed.dedup();
+
+    if !changed.is_empty() {
+        repo.put(current.user.id, &new_doc).await?;
+        // key names only: a model name or zone is the user's own business
+        if let Err(err) = AuditLogRepo(pool(&state))
+            .create(
+                None,
+                Some(current.user.id),
+                "user.preferences.update",
+                Some("user"),
+                Some(current.user.id),
+                Some(serde_json::json!({ "keys": changed })),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "failed to write preferences audit entry");
+        }
+    }
+    preferences_response(&state, &current.user, new).await
 }
 
 /// the plaintext key is returned once on mint/rotate and never again
@@ -98,7 +538,7 @@ pub(crate) const MAX_KEY_NAME_LEN: usize = 64;
 pub(crate) const MAX_KEY_TTL_DAYS: u32 = 1826;
 
 /// `Error::Config` is what the control plane's error mapping renders as a 400
-fn bad_request(message: &str) -> ApiError {
+pub(crate) fn bad_request(message: &str) -> ApiError {
     ApiError::Core(rolter_core::Error::Config(message.to_string()))
 }
 
@@ -192,10 +632,12 @@ pub(crate) const PLAYGROUND_PURPOSE: &str = "playground";
 /// from the routes configured in the project the caller is minting against,
 /// and the TTL is fixed.
 ///
-/// An empty `models` list on a virtual key means *every* model, so a project
-/// with no routes cannot produce a playground key: minting one would hand out
-/// the widest key in the system to mean "nothing to address". That is a 400,
-/// not an empty list.
+/// An empty `models` list on a virtual key means *every* model, so the list is
+/// never left empty. A project with no routes yet gets a key scoped to the
+/// built-in `fake-llm` alone (#2300): that is the one model a fresh deployment
+/// can answer, and it is what the first step of Getting started sends, so the
+/// Playground works before any provider or route exists without the key
+/// reaching anything else.
 async fn mint_playground_key(
     current: CurrentUser,
     State(state): State<ControlState>,
@@ -208,16 +650,17 @@ async fn mint_playground_key(
     // by hand, so it cannot be the thing that lets a viewer create credentials
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
-    let models: Vec<String> = RouteRepo(pool(&state))
+    let mut models: Vec<String> = RouteRepo(pool(&state))
         .list(project_id)
         .await?
         .into_iter()
         .map(|route| route.model)
         .collect();
     if models.is_empty() {
-        return Err(bad_request(
-            "this project has no routes, so there is nothing a playground key could address",
-        ));
+        // an empty list would be the widest key in the system, and a managed
+        // gateway refuses a keyless call even for the builtin, so a routeless
+        // project is scoped to exactly the model it can already be answered by
+        models.push(rolter_core::FAKE_LLM_MODEL.to_string());
     }
 
     let expires_at = Utc::now() + chrono::Duration::minutes(PLAYGROUND_KEY_TTL_MINUTES);
@@ -348,6 +791,80 @@ async fn my_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_zone_shape_accepts_iana_names_and_nothing_else() {
+        for ok in [
+            "UTC",
+            "Europe/Berlin",
+            "America/Argentina/Buenos_Aires",
+            "Etc/GMT+5",
+        ] {
+            assert!(is_iana_zone_shape(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "/",
+            "Europe/",
+            "../etc",
+            "a/b/c/d",
+            "Europe Berlin",
+            "5/x",
+            "Europe/Berlin\n",
+        ] {
+            assert!(!is_iana_zone_shape(bad), "{bad}");
+        }
+        assert!(!is_iana_zone_shape(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn time_zone_must_exist_in_the_tz_database() {
+        for ok in ["UTC", "Europe/Berlin", "Asia/Kolkata", "Etc/GMT+5"] {
+            assert!(is_known_zone(ok), "{ok}");
+        }
+        for bad in ["Foo/Bar", "Europe/Berlinn", "", "../etc"] {
+            assert!(!is_known_zone(bad), "{bad}");
+        }
+        let prefs = Preferences {
+            chart_time_zone: Some("Foo/Bar".into()),
+            ..Default::default()
+        };
+        let err = prefs.validated().unwrap_err();
+        assert!(format!("{err:?}").contains("chart_time_zone"), "{err:?}");
+    }
+
+    /// every catalog under `ui/src/lib/i18n/locales` must be an accepted
+    /// language and the reverse, so adding a catalog without the code (or the
+    /// code without a catalog) fails here rather than at a user's `PUT`
+    #[test]
+    fn languages_match_the_dashboard_locale_catalogs() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/lib/i18n/locales");
+        let mut catalogs: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .filter_map(|e| {
+                let path = e.ok()?.path();
+                (path.extension()? == "json")
+                    .then(|| path.file_stem()?.to_str().map(String::from))?
+            })
+            .collect();
+        catalogs.sort();
+        let mut langs: Vec<String> = LANGUAGES.iter().map(|l| l.to_string()).collect();
+        langs.sort();
+        assert_eq!(
+            catalogs, langs,
+            "LANGUAGES in me.rs and the locale catalogs in ui/src/lib/i18n/locales have drifted"
+        );
+    }
+
+    #[test]
+    fn unset_keys_are_left_out_of_the_stored_document() {
+        let prefs = Preferences {
+            language: Some("en".into()),
+            ..Default::default()
+        };
+        assert_eq!(prefs.to_document(), serde_json::json!({"language": "en"}));
+    }
 
     #[test]
     fn a_key_cannot_be_minted_without_a_name() {

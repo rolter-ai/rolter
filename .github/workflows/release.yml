@@ -34,103 +34,66 @@ jobs:
   # check out an arbitrary dispatch-supplied ref in a default-branch context —
   # cache poisoning, flagged by CodeQL, and a real one.
   #
-  # asserting instead of re-running settles both. every commit on master already
-  # carries a `ci-ok` check-run from ci.yml, and release-plz tags only after its
-  # `release-gate` job has seen `ci-ok` succeed on the ci.yml push run for the
-  # release commit, so the tagged commit is verified by construction. checking
-  # the recorded result binds the gate to the *tagged* SHA — which re-running
-  # never did — costs no duplicate 20-minute run, and checks out nothing.
+  # asserting instead of re-running settles both: it binds the gate to the
+  # *tagged* sha, which re-running never did, and costs no duplicate run.
   #
-  # release-gate reads the ci-ok *job* of the ci.yml push run on the sha
-  # (scripts/wait-for-ci-gate.sh), because any workflow can post a check-run
-  # called `ci-ok` on a master commit. the loop below still matches check-run
-  # names: a different mechanism, not a copy of that script, and moving it onto
-  # the run-bound one needs the checkout this job avoids.
+  # what is asserted is the ci.yml *push* run on that sha, not a check-run name
+  # (#2034). this job used to keep the newest check-run per name, and any run can
+  # post one called `ci-ok`: the `tag` input resolves any ref, so a tag pushed on
+  # a pull request head was judged by that pr's own run, whose ci.yml the pr can
+  # edit, and a pr from a branch at a master sha into another base reports its
+  # ci-ok on that master sha. scripts/wait-for-ci-gate.sh, the same script
+  # release-plz.yml's `release-gate` runs, first requires the sha to be on master
+  # (`compare/<sha>...master` is ahead or identical), then waits for the newest
+  # ci.yml push run on it and requires its `ci-ok` job and every `codeql (*)`
+  # leg to have succeeded. on the release-plz path it passes on its first poll,
+  # since release-gate already saw that run go green before the tag existed.
   #
-  # these are exact check-run *names*, so they rot when a scanner is renamed or
-  # reconfigured — and because the job is fail-closed, a stale name blocks every
-  # release rather than failing loudly at the source. that is the second half of
-  # #903: the default below used to read `CodeQL,GitGuardian Security Checks`
-  # and the repo variable `Analyze (rust),…`, both of which are default-setup
-  # names that stopped existing when CodeQL moved to advanced setup. no release
-  # could have published even once the tag dispatch was fixed. the default now
-  # tracks the advanced-setup names, and a missing check prints the names that
-  # *do* exist so the fix is obvious from the log.
+  # the checkout is the workflow's own commit (github.sha), never `inputs.tag`:
+  # it reads one script and runs it, so it trusts nothing this workflow file
+  # does not already trust. the job names in RELEASE_REQUIRED_JOBS are job names
+  # of that run, and `*` keeps a renamed codeql leg from blocking every release
+  # the way the old exact check-run names did (#903)
   verify-external-checks:
     name: assert external checks green
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # the wait's own deadline is 90 minutes; this only catches a hung step
+    timeout-minutes: 100
     permissions:
-      checks: read
-      contents: read
+      contents: read # check out the gate script and resolve the tag
+      actions: read # list ci.yml runs on the tagged sha and read their jobs
     steps:
-      - name: assert required check-runs succeeded
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/wait-for-ci-gate.sh
+          sparse-checkout-cone-mode: false
+      - name: resolve the release tag to a commit
+        id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF: ${{ inputs.tag || github.sha }}
-          REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'ci-ok,codeql (rust),codeql (actions-js-python)' }}
         run: |
           set -euo pipefail
-          # resolve the ref (tag on dispatch, sha on push) to a commit sha
-          SHA="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
-          IFS=',' read -ra names <<< "$REQUIRED"
-
-          # a release-plz dispatch normally passes on the first poll: its
-          # release-gate saw ci-ok finish on the commit before tagging it, and
-          # ci-ok needs every codeql leg. a tag dispatched by hand, or a check
-          # re-run after tagging, can still leave a required check *pending*,
-          # which is expected rather than a failure. wait for a verdict; only a
-          # real non-success, or the timeout, is fatal.
-          deadline=$(( $(date -u +%s) + 45 * 60 ))
-          while :; do
-            # "<timestamp>\t<name>\t<status>\t<conclusion>" per check-run. the
-            # timestamp is completed_at, falling back to started_at while a run
-            # has not finished, so an in-flight re-run still sorts above the
-            # attempt it replaces
-            all="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
-              -q '.check_runs[]
-                  | [(.completed_at // .started_at // ""), .name, .status, (.conclusion // "")]
-                  | @tsv')"
-            # a sha can carry several check-runs under one name — a re-run, or
-            # the duplicate `ci-ok` of #1328 — and `grep -F -m1` used to take
-            # whichever the api listed first, so the gate could be decided by a
-            # stale verdict. group by name, newest first, and keep one row per
-            # name. sort and awk both drain their input, so nothing here closes
-            # a pipe early the way `| head -1` does (#1306)
-            runs="$(printf '%s\n' "$all" \
-              | LC_ALL=C sort -t$'\t' -k2,2 -k1,1r \
-              | awk -F'\t' 'NF && !seen[$2]++')"
-            fail=0; pending=""
-            for name in "${names[@]}"; do
-              name="$(echo "$name" | sed 's/^ *//;s/ *$//')"
-              [ -z "$name" ] && continue
-              # exact match on the name field; a substring grep would let
-              # "ci-ok" be answered by a check called "extra ci-ok"
-              line="$(awk -F'\t' -v want="$name" '$2 == want { print; exit }' <<< "$runs")"
-              if [ -z "$line" ]; then
-                pending="$pending $name(absent)"; continue
-              fi
-              status="$(echo "$line" | cut -f3)"; conclusion="$(echo "$line" | cut -f4)"
-              if [ "$status" != "completed" ]; then
-                pending="$pending $name($status)"; continue
-              fi
-              if [ "$conclusion" != "success" ]; then
-                echo "::error::required check '$name' concluded '$conclusion' for $SHA (need success)"; fail=1
-              fi
-            done
-            [ "$fail" -ne 0 ] && { echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"; exit 1; }
-            [ -z "$pending" ] && break
-            if [ "$(date -u +%s)" -ge "$deadline" ]; then
-              echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
-              echo "::error::still waiting on:$pending after 45m (fail-closed). if a scanner was renamed or reconfigured, update the RELEASE_REQUIRED_CHECKS repo variable to match the check-run names listed above"
-              exit 1
-            fi
-            echo "waiting on:$pending"
-            sleep 30
-          done
-
-          echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
-          echo "all required checks succeeded for $SHA"
+          # the tag on a dispatch, the sha on a tag push. the gate script
+          # refuses anything that is not a full sha, so an empty answer fails
+          # there rather than here
+          sha="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
+          echo "release ref $REF is commit $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: wait for ci-ok and codeql on the tagged commit's ci.yml push run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          # ci-ok is always required whatever this says; the variable is an
+          # emergency override for the rest. no job name may contain a comma
+          REQUIRED_JOBS: ${{ vars.RELEASE_REQUIRED_JOBS || 'ci-ok,codeql (*)' }}
+        # the bare call, so the step's exit status is the gate's
+        # (check-release-handoff.py holds it to that)
+        run: bash scripts/wait-for-ci-gate.sh
 
   # ── build maturin wheels ────────────────────────────────────────────────────
   build-wheels:
@@ -138,7 +101,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,7 +109,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: build wheels (linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
@@ -155,7 +118,7 @@ jobs:
           target: x86_64
 
       - name: build wheels (linux aarch64)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         env:
           # the manylinux2014 aarch64 cross toolchain drives ring's perlasm
@@ -169,7 +132,7 @@ jobs:
           target: aarch64
 
       - name: build wheels (macos / windows)
-        if: matrix.os != 'ubuntu-latest'
+        if: matrix.os != 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
@@ -191,7 +154,7 @@ jobs:
       # no candidate at all and `pip install rolter` fails outright rather than
       # building from source. built once, on linux.
       - name: build sdist
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist
@@ -215,7 +178,7 @@ jobs:
     # and a skipped dependency would otherwise skip this job too (#992)
     if: ${{ !cancelled() && !failure() && vars.PYPI_PUBLISH_ENABLED == 'true' }}
     needs: [verify-external-checks, build-wheels, build-image, smoke-wheels, smoke-image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/project/rolter/
@@ -256,7 +219,7 @@ jobs:
     name: build image (${{ matrix.arch }})
     if: vars.DOCKER_PUBLISH_ENABLED == 'true'
     needs: [verify-external-checks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -341,7 +304,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - name: download wheels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -376,7 +339,7 @@ jobs:
     name: smoke image (${{ matrix.arch }})
     if: vars.DOCKER_PUBLISH_ENABLED == 'true'
     needs: build-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -468,12 +431,16 @@ jobs:
     # dependency would otherwise skip this job too
     if: ${{ !cancelled() && !failure() && vars.DOCKER_PUBLISH_ENABLED == 'true' }}
     needs: [verify-external-checks, build-wheels, build-image, smoke-wheels, smoke-image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write # push to GHCR under the repo owner
     env:
       REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+    # the manifest list's own digest, for sign-images: it signs exactly what this
+    # job published, never whatever the tag resolves to by the time it runs
+    outputs:
+      digest: ${{ steps.published.outputs.digest }}
     steps:
       - name: download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -542,9 +509,232 @@ jobs:
             $(printf "$REGISTRY_IMAGE@sha256:%s " *)
 
       - name: inspect published manifest
+        id: published
         env:
           VERSION: ${{ steps.ver.outputs.version }}
-        run: docker buildx imagetools inspect "$REGISTRY_IMAGE:$VERSION"
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$REGISTRY_IMAGE:$VERSION"
+          digest="$(docker buildx imagetools inspect "$REGISTRY_IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r '.digest')"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::could not read the manifest-list digest of $REGISTRY_IMAGE:$VERSION (got '$digest')"
+            exit 1
+          fi
+          echo "published $REGISTRY_IMAGE:$VERSION as $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # ── sign the published images (stage 4: signature, provenance, sbom) ────────
+  # every image this release published gets (#1080):
+  #   - a keyless cosign signature on the manifest list and, `--recursive`, on
+  #     each platform image in it. the fulcio certificate names this workflow at
+  #     the ref it ran on, so no long-lived key exists to manage or leak
+  #   - a slsa build provenance attestation on the manifest list
+  #     (actions/attest), pushed next to the image and recorded in github's
+  #     attestation api
+  #   - a cyclonedx sbom per platform image, attested with cosign: syft over the
+  #     image layers merged with the tagged Cargo.lock and ui/bun.lock
+  #     (scripts/image-sbom.sh says why the image alone is not enough)
+  # then scripts/verify-image.sh, the command the user docs hand readers, runs
+  # against what was just signed, so the documented check cannot rot.
+  #
+  # a job of its own, after publish-docker, so a sigstore outage cannot fail the
+  # job that makes the image public, and a failed signing run is re-run on its
+  # own ("re-run failed jobs") without republishing anything: publish-docker's
+  # digest output survives the re-run. it is the only job that holds id-token:
+  # write besides publish-pypi, and the only one with attestations: write.
+  #
+  # Docker Hub, when DOCKERHUB_IMAGE mirrors there, is signed and attested too.
+  # imagetools pushed the same manifest list to both registries, so the digest
+  # is identical, but cosign and the registry referrers store a signature per
+  # repository: a ghcr signature verifies nothing pulled from docker.io.
+  #
+  # the tools are pinned release binaries checked against a sha256 recorded
+  # here, not third-party actions (the gitleaks precedent in quality.yml).
+  # bumping one: take the release's published checksum for the linux_amd64
+  # asset, and check that release's own signature before trusting it
+  sign-images:
+    name: sign images, attest provenance and sbom
+    needs: [publish-docker]
+    if: ${{ !cancelled() && needs.publish-docker.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read # check out the scripts and the tagged lockfiles
+      packages: write # push signatures and attestations next to the image in GHCR
+      id-token: write # the OIDC token fulcio certifies for keyless signing
+      attestations: write # record the build provenance in github's attestation api
+    env:
+      REGISTRY_IMAGE: ghcr.io/${{ github.repository }}
+      DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+      DIGEST: ${{ needs.publish-docker.outputs.digest }}
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 # cosign-linux-amd64
+      SYFT_VERSION: 1.54.0
+      SYFT_SHA256: 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860 # syft_1.54.0_linux_amd64.tar.gz
+    steps:
+      # the scripts from the workflow's own commit, like smoke-image's smoke
+      # script, so an older tag is held to the current contract
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/image-sbom.sh
+            scripts/verify-image.sh
+          sparse-checkout-cone-mode: false
+
+      # the lockfiles from the tag, since they describe what was built. only
+      # those two files, so the sbom's directory scan sees nothing else
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+          path: release-src
+          sparse-checkout: |
+            Cargo.lock
+            ui/bun.lock
+          sparse-checkout-cone-mode: false
+
+      - name: install cosign and syft (checksum-pinned)
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -sSfL --retry 3 -o "$bin/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $bin/cosign" | sha256sum -c -
+          chmod +x "$bin/cosign"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/syft.tar.gz" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  $RUNNER_TEMP/syft.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/syft.tar.gz" -C "$bin" syft
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/cosign" version
+          "$bin/syft" version
+
+      - name: log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: log in to Docker Hub
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: resolve version and platform digests
+        id: ver
+        env:
+          REF: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::publish-docker handed over no manifest-list digest (got '$DIGEST')"
+            exit 1
+          fi
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          manifest="$(docker buildx imagetools inspect --raw "$REGISTRY_IMAGE@$DIGEST")"
+          for arch in amd64 arm64; do
+            d="$(jq -r --arg a "$arch" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest] | if length == 1 then .[0] else empty end' <<<"$manifest")"
+            if [ -z "$d" ]; then
+              echo "::error::$REGISTRY_IMAGE@$DIGEST has no single linux/$arch image"
+              exit 1
+            fi
+            echo "linux/$arch: $d"
+            echo "$arch=$d" >> "$GITHUB_OUTPUT"
+          done
+
+      # sigstore is a network service; a short blip should cost a retry, not a
+      # release. a repeated signature on one digest is harmless
+      - name: sign the manifest lists and every platform image
+        run: |
+          set -euo pipefail
+          retry() {
+            local n
+            for n in 1 2 3; do
+              if "$@"; then return 0; fi
+              echo "::warning::attempt $n of 3 failed: $*"
+              [ "$n" = 3 ] || sleep $((n * 30))
+            done
+            return 1
+          }
+          images=("$REGISTRY_IMAGE")
+          if [ -n "$DOCKERHUB_IMAGE" ]; then images+=("$DOCKERHUB_IMAGE"); fi
+          for image in "${images[@]}"; do
+            retry cosign sign --yes --recursive "$image@$DIGEST"
+          done
+
+      - name: build and attest an sbom per platform image
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          AMD64: ${{ steps.ver.outputs.amd64 }}
+          ARM64: ${{ steps.ver.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          retry() {
+            local n
+            for n in 1 2 3; do
+              if "$@"; then return 0; fi
+              echo "::warning::attempt $n of 3 failed: $*"
+              [ "$n" = 3 ] || sleep $((n * 30))
+            done
+            return 1
+          }
+          images=("$REGISTRY_IMAGE")
+          if [ -n "$DOCKERHUB_IMAGE" ]; then images+=("$DOCKERHUB_IMAGE"); fi
+          mkdir -p sbom
+          for pair in "amd64=$AMD64" "arm64=$ARM64"; do
+            arch="${pair%%=*}"
+            digest="${pair#*=}"
+            sbom="sbom/rolter-${VERSION}-linux-${arch}.cdx.json"
+            bash scripts/image-sbom.sh "$REGISTRY_IMAGE@$digest" release-src "$sbom"
+            for image in "${images[@]}"; do
+              retry cosign attest --yes --type cyclonedx --predicate "$sbom" "$image@$digest"
+            done
+          done
+
+      - name: attest build provenance (GHCR)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+          # a storage record needs `artifact-metadata: write`; the attestation
+          # and its registry copy do not, so this job does without both
+          create-storage-record: false
+
+      # actions/attest wants docker hub spelled `docker.io/<owner>/<name>`,
+      # which is the form DOCKERHUB_IMAGE documents
+      - name: attest build provenance (Docker Hub)
+        if: vars.DOCKERHUB_IMAGE != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ vars.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: upload the sboms
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
+          if-no-files-found: error
+
+      # the exact command the user docs give, against the tag a user pulls
+      - name: verify with the documented command
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/verify-image.sh "$REGISTRY_IMAGE:$VERSION"
+          if [ -n "$DOCKERHUB_IMAGE" ]; then
+            bash scripts/verify-image.sh "$DOCKERHUB_IMAGE:$VERSION"
+          fi
 
   # ── release parity gate ─────────────────────────────────────────────────────
   # #903 shipped five releases where the github release and crates.io advanced
@@ -565,8 +755,9 @@ jobs:
         smoke-image,
         publish-pypi,
         publish-docker,
+        sign-images,
       ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read # read back the GHCR manifest we just pushed
@@ -586,6 +777,7 @@ jobs:
           SMOKE_IMAGE_RESULT: ${{ needs.smoke-image.result }}
           PYPI_RESULT: ${{ needs.publish-pypi.result }}
           DOCKER_RESULT: ${{ needs.publish-docker.result }}
+          SIGN_RESULT: ${{ needs.sign-images.result }}
         run: |
           set -euo pipefail
           VERSION="${REF#v}"
@@ -673,6 +865,9 @@ jobs:
             require_job build-image "$IMAGE_RESULT"
             require_job smoke-image "$SMOKE_IMAGE_RESULT"
             require_job publish-docker "$DOCKER_RESULT"
+            # an unsigned image is published but not released: the run goes red
+            # so it is noticed, and sign-images is re-run on its own (#1080)
+            require_job sign-images "$SIGN_RESULT"
             echo "${GH_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
             if docker manifest inspect "ghcr.io/${REPO}:${VERSION}" > /dev/null 2>&1; then
               note "- ✅ ghcr \`${REPO}:${VERSION}\`"

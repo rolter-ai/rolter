@@ -21,6 +21,7 @@ stories are grouped under **Forms/** in Storybook.
 | `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                       |
 | `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                    |
 | `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block               |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note      |
 
 ## Which one to reach for
 
@@ -44,6 +45,14 @@ stories are grouped under **Forms/** in Storybook.
   `CardContent` parts you compose yourself; `SettingsPanel` is the settings
   shape — title, one explanatory line, and a control row that dims as a unit.
 
+- A value someone copies out of the dashboard and can copy again (an address,
+  an id) is `CopyableValue`, or `CopyableText` where the label is already
+  there (`variant="inline"` inside a description list). A value shown once is
+  `SecretValue`, which composes the same box (#2418). An address built on the
+  control plane's public base is `PublicUrlValue`
+  (`ui/src/components/PublicUrlValue.tsx`), which says the pending, failed and
+  unset-`ROLTER_PUBLIC_URL` states once for every screen (#2366).
+
 ## What they already guarantee
 
 Each primitive owns an accessibility detail that is invisible on screen and
@@ -66,8 +75,11 @@ easy to lose when the shape is retyped in the next sheet:
   available_ rather than rendering an empty row.
 - `SwitchRow` names its switch after the row title. Handed a `gate`, it is
   refused the way `GatedSwitch` is and must name itself with `control` (#1820).
-- `SettingsPanel` groups its controls in a `<fieldset disabled>` rather than a
-  faded `<div>`. Fading a live div drags its labels and hints below 4.5:1 while
+- `SettingsPanel` titles itself with a real heading (`<h2>`, `headingLevel` for
+  a deeper panel), caps its description at `65ch`, and takes the switch that
+  governs it in `action`, outside the fieldset so a switched-off panel can be
+  switched back on. It groups its controls in a `<fieldset disabled>` rather
+  than a faded `<div>`, and never sets `opacity` (#2213). Fading a live div drags its labels and hints below 4.5:1 while
   telling assistive tech nothing (#1181), and a reader who tabs into a group
   that looks off should find it genuinely off.
 
@@ -121,12 +133,14 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-six things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+seven things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a
 `DialogFooter` holding a `"destructive"` button, which is a confirmation
 assembled by hand rather than taken from `ConfirmDialog` (see
-[destructive actions](destructive-actions.md)). The fourth is this page's rule
+[destructive actions](destructive-actions.md)), and a bare `animate-spin` /
+`animate-pulse`, which must be `motion-safe:` so `prefers-reduced-motion` stops
+it (#2006). The fourth is this page's rule
 — #1044 sat undiscovered for months because nothing looked, and seven
 primitives stayed trapped in one sheet's file.
 
@@ -196,6 +210,30 @@ because an unexplained waiver is indistinguishable from the bug. Waivers live at
 the point of use rather than in a central allow-list file so they cannot outlive
 the code they excuse, and every one is printed on every run so the set stays
 visible instead of growing quietly.
+
+## Draft state for a settings form
+
+A settings screen saves its fields as one request, so it cannot tell a pristine form from an edited
+one by looking at the Save button. `useDraft` (`ui/src/lib/use-draft.ts`) holds the two copies such a
+screen needs, what the server held at the last load or save and what is being edited, and answers
+the questions Save, the field markers and Discard ask:
+
+```tsx
+const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQUALS);
+```
+
+- `source` is the query's data mapped into the form's shape. The first load seeds both copies, and a
+  refetch behind an edit never takes the edit away.
+- `changed` names the fields whose value differs from `saved`. `EQUALS` is a module constant that
+  gives a field its own comparison, so a blank line in a list, or the space around a colon, is not
+  an edit. A field left out is compared with `Object.is`.
+- `commit(next)` adopts what the server answered as both copies after a save, and `reset()` is
+  Discard.
+
+The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
+React test renderer. The Security screen is the first consumer. The leave guard, the shared field
+errors and the saved-at line that #2214 asks every settings screen to carry are not here yet; they
+belong beside this hook rather than in each screen.
 
 ## Still to do
 

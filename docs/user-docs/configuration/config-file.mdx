@@ -172,6 +172,15 @@ allow_custom_api_base = true
 
 </ParamField>
 
+<ParamField path="project_scoped" type="bool" default="false">
+  Keep this provider to one project. By default a provider is org-wide: every project of the organization can use it, which is how projects share fallbacks. With `project_scoped = true`, only virtual keys minted in the project can reach it, whether by a route or as `provider-slug/model`, and a key from another project gets `404 model_not_found`.
+
+A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. It logs a startup warning naming each flagged provider or group, and `rolter check` reports the same as a warning; `rolter-seed --import` never warns. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
+
+In the dashboard and API, the provider's `project_id` is the same scope. See [Project-scoped providers](/concepts/providers-and-routes#project-scoped-providers).
+
+</ParamField>
+
 <ParamField path="also_track_via_llm_call" type="bool" default="false">
   Make active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **Costs a few tokens on every sweep** — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events` and fed through the same failure/recovery thresholds as free probes. See [Health checks](/reliability/health-checks).
 </ParamField>
@@ -539,6 +548,36 @@ max_secs = 300
 
 ---
 
+### \[cache\]
+
+Global exact-match response-cache settings. Backed by Redis; off by default. Individual routes must also opt in or carry a virtual-key cache override.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for global response caching.
+</ParamField>
+
+<ParamField path="default_ttl_secs" default="60" type="u64">
+  Default entry time-to-live in seconds, overridable per route.
+</ParamField>
+
+<ParamField path="namespace" default="rolter:cache" type="string">
+  Redis key prefix for cache entries to isolate and flush entries easily.
+</ParamField>
+
+<ParamField path="max_entry_bytes" default="1048576" type="u64">
+  Largest response body in bytes that may be cached (defaults to 1 MiB).
+</ParamField>
+
+```toml
+[cache]
+enabled = true
+default_ttl_secs = 60
+namespace = "rolter:cache"
+max_entry_bytes = 1048576
+```
+
+---
+
 ### \[timeouts\]
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
@@ -625,12 +664,32 @@ When enabled, a background task periodically probes each provider with a lightwe
   The request path appended to each provider's `api_base` when probing. Left at the default `/`, Rolter probes each provider kind's free non-inference liveness endpoint instead (`/v1/models` for `openai`/`openai_compatible`, and `/v1/models` with an `anthropic-version` header for `anthropic`) — no token cost. Set an explicit path (e.g. `/health`) to override this for all providers.
 </ParamField>
 
+<ParamField path="probe_concurrency" default="2" type="usize">
+  Maximum probes in flight at once during a sweep. Each provider also starts at a stable offset of up to a quarter of the interval (at most two seconds), so a sweep never hits every upstream at the same moment. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="consecutive_failure_threshold" default="3" type="u32">
+  Consecutive probe failures before a provider is marked unhealthy and its targets are skipped. One failed probe never removes a provider on its own. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="recovery_success_threshold" default="2" type="u32">
+  Consecutive probe successes before an unhealthy provider returns to rotation, so a flapping upstream does not bounce in and out. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="status_page_interval_secs" default="60" type="u64">
+  Seconds between polls of provider status pages. Only providers with a `status_page_url` are polled, and the poller runs even with `enabled = false`. A status page is a secondary signal: it records a `status_page` event and never changes routing on its own. See [Health checks](/reliability/health-checks).
+</ParamField>
+
 ```toml
 [health]
 enabled = true
 interval_secs = 10
 timeout_secs = 2
 path = "/"
+probe_concurrency = 2
+consecutive_failure_threshold = 3
+recovery_success_threshold = 2
+status_page_interval_secs = 60
 ```
 
 ---
@@ -740,6 +799,32 @@ This section is inert without a Redis URL: with no counter store there is nothin
 [usage_recording]
 queue_capacity = 10000
 workers = 4
+```
+
+---
+
+### \[security\]
+
+Ingress rules applied to every request on the `/v1/*` surface. A gateway managed by the control plane takes these from the dashboard's Security screen; a file-configured gateway reads them from this section. Both keys are optional and the section adds no rules when omitted.
+
+<ParamField path="required_headers" type="table">
+  Lowercase header name to the exact value every request must carry. A request that is missing one,
+  or carries a different value, is refused with `403` before authentication. This is an ingress
+  filter (a mesh identity header, a WAF marker), not an authorization decision. The `/healthz` and `/readyz`
+  probes are exempt.
+</ParamField>
+
+<ParamField path="auth_bypass_routes" type="array of strings">
+  Exact `/v1/...` paths served without authentication. Matching is exact: no prefixes and no
+  wildcards.
+</ParamField>
+
+```toml
+[security]
+auth_bypass_routes = ["/v1/models"]
+
+[security.required_headers]
+x-mesh-identity = "gateway"
 ```
 
 ---

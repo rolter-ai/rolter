@@ -68,6 +68,33 @@ pub struct Customer {
     pub created_at: DateTime<Utc>,
 }
 
+/// A business unit as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it.
+///
+/// A unit that shows no spend may simply have no key pointing at it, and the
+/// dashboard cannot tell those apart from the row alone (#2581). The count
+/// rides along with the row, flattened beside its columns, so the listing
+/// answers it in the same query rather than one request per unit. A key is
+/// live while it is neither disabled nor past its `expires_at`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BusinessUnitListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub unit: BusinessUnit,
+    pub live_key_count: i64,
+}
+
+/// A customer as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it. See [`BusinessUnitListing`] for why the
+/// count is part of the listing and what counts as live.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CustomerListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub customer: Customer,
+    pub live_key_count: i64,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct PromptTemplate {
     pub id: Uuid,
@@ -156,6 +183,9 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
     pub egress_proxies: sqlx::types::Json<Vec<String>>,
+    /// the project the provider is scoped to; `None` is org-wide. Only keys
+    /// minted in that project may reach it (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -198,6 +228,8 @@ pub struct ProviderGroup {
     pub slug: String,
     /// one of the balancing-strategy keys (`round_robin`, `weighted`, …)
     pub strategy: String,
+    /// the project the group is scoped to; `None` is org-wide (#1919)
+    pub project_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -390,7 +422,6 @@ pub struct ClientSettings {
 /// they cannot reach a snapshot by accident (#1162)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecurityPolicyRow {
-    pub virtual_key_required: bool,
     pub required_headers: serde_json::Value,
     pub auth_bypass_routes: Vec<String>,
 }
@@ -469,6 +500,15 @@ pub struct SsoLoginState {
     pub nonce: String,
     pub redirect_uri: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// a redeemed sso exchange code (#2297): who the browser's sign-in was for and
+/// what the mapped groups granted, which is all the session is minted from.
+#[derive(Debug, Clone, FromRow)]
+pub struct SsoExchangeCode {
+    pub user_id: Uuid,
+    pub provider_id: Uuid,
+    pub granted_roles: Vec<String>,
 }
 
 /// a SCIM provisioning token. `token_hash` is peppered sha-256; the plaintext
@@ -761,6 +801,12 @@ pub struct User {
     /// while keeping the row, memberships and audit trail intact
     pub deactivated_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// self-service profile (#1823): 1..=80 chars, trimmed, no control characters
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// self-service profile (#1823): up to 500 chars, trimmed
+    #[serde(default)]
+    pub bio: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among
@@ -871,18 +917,15 @@ pub struct AuditLogEntry {
     pub at: DateTime<Utc>,
 }
 
-/// Global control-plane security settings. Managed dashboard credentials are
-/// encrypted separately and intentionally never appear on this DTO.
+/// Global control-plane security settings. The retired dashboard-password
+/// columns (#2356) and `virtual_key_required` (#2357) still exist in the table
+/// but are not part of this DTO.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    pub virtual_key_required: bool,
     pub allowed_origins: Vec<String>,
     pub allowed_headers: Vec<String>,
     pub required_headers: serde_json::Value,
     pub auth_bypass_routes: Vec<String>,
-    pub dashboard_auth_enabled: bool,
-    pub dashboard_credential_ref: Option<String>,
-    pub dashboard_secret_configured: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -1058,6 +1101,20 @@ pub struct Label {
     pub source: String,
     pub observed_at: Option<DateTime<Utc>>,
     pub observation: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// a named filter preset a user saved on one screen (#1825)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SavedView {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    /// `llm_logs` or `dashboard`
+    pub surface: String,
+    pub name: String,
+    /// a json object; the control plane allow-lists its keys per surface
+    pub filters: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

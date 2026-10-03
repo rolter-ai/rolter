@@ -1,15 +1,18 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, fn, userEvent } from "storybook/test";
+import * as React from "react";
+import { expect, fn, userEvent, waitFor } from "storybook/test";
 
-import { AnalyticsUnavailableError, ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
+import { UxScreenProvider } from "@/lib/ux-react";
+import { expectNoUxEvent, expectUxEvent, recordUxEvents, uxEvents } from "@/pages/story-harness";
 
 import { LoadError } from "./LoadError";
 
 const meta = {
   title: "Components/LoadError",
   component: LoadError,
-  args: { resource: "virtual keys" },
+  args: { resource: "virtual keys", target: "virtual-keys" },
   // the sign-in action only exists when there is a session to sign out of, so
   // the provider has to be present for that branch to be exercised at all
   decorators: [
@@ -126,9 +129,9 @@ export const WithoutRetryHandle: Story = {
 /**
  * Every kind at once, against one resource noun.
  *
- * Five of the eight bodies carry `{{resource}}` and the title of a sixth does
- * not, so the component has to interpolate both halves — before #1362 it filled
- * only the title and the reader saw the raw `{{resource}}` in the body. Catalog
+ * Some bodies carry `{{resource}}` and one title does not, so the component has
+ * to interpolate both halves — before #1362 it filled only the title and the
+ * reader saw the raw `{{resource}}` in the body. Catalog
  * parity cannot see this: the placeholder is in every locale, it was the call
  * site that dropped it. The assertion is therefore on the rendered DOM.
  */
@@ -141,7 +144,6 @@ export const EveryKind: Story = {
         new ApiError("insufficient role", 403),
         new ApiError("no session", 401, "open_mode_no_session"),
         new ApiError("no such endpoint: /api/v1/orgs", 404, "no_such_endpoint"),
-        new AnalyticsUnavailableError("analytics is not configured"),
         new TypeError("Failed to fetch"),
         new ApiError("database connection pool exhausted", 500),
         new ApiError("I'm a teapot", 418),
@@ -152,7 +154,7 @@ export const EveryKind: Story = {
   ),
   play: async ({ canvas }) => {
     const alerts = await canvas.findAllByRole("alert");
-    await expect(alerts).toHaveLength(8);
+    await expect(alerts).toHaveLength(7);
     for (const alert of alerts) {
       // no unresolved interpolation anywhere on screen, in either half
       await expect(alert.textContent).not.toContain("{{");
@@ -197,5 +199,92 @@ export const OnSubtleSurface: Story = {
     for (const alert of alerts) {
       await expect(alert).toHaveTextContent(/this project has no routes/);
     }
+  },
+};
+
+const errorStates = () => uxEvents().filter((e) => e.action === "error_state");
+
+/**
+ * The placeholder records its own `error_state` (#2444), once, under the
+ * region it was given and the screen around it. Screens used to call
+ * `useErrorState` beside it, and a surface that forgot was silent. A retry that
+ * leaves the alert up is the same incident, so it adds no second row.
+ */
+export const RecordsItsErrorState: Story = {
+  args: { error: new ApiError("database connection pool exhausted", 500), onRetry: fn() },
+  beforeEach: recordUxEvents,
+  render: (args) => (
+    <UxScreenProvider screen="keys">
+      <LoadError {...args} />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvas, args }) => {
+    await canvas.findByRole("alert");
+    const failed = await expectUxEvent("error_state", "virtual-keys");
+    await expect(failed.screen).toBe("keys");
+    await expect(failed.outcome).toBe("error");
+    await userEvent.click(canvas.getByRole("button", { name: /try again/i }));
+    await expect(args.onRetry).toHaveBeenCalledTimes(1);
+    await expect(errorStates()).toHaveLength(1);
+  },
+};
+
+// a read that fails, is retried, and fails again: the retry takes the alert
+// down for a skeleton, the way a refetch of a read holding no data does, and
+// the next commit fails it again
+function FailsAgain({ error }: { error: unknown }) {
+  const [attempt, setAttempt] = React.useState(1);
+  const [pending, setPending] = React.useState(false);
+  React.useEffect(() => {
+    if (!pending) return;
+    setPending(false);
+    setAttempt((n) => n + 1);
+  }, [pending]);
+  if (pending) return null;
+  return (
+    <div data-attempt={attempt}>
+      <LoadError
+        error={error}
+        resource="virtual keys"
+        target="virtual-keys"
+        onRetry={() => setPending(true)}
+      />
+    </div>
+  );
+}
+
+/**
+ * Each appearance is an incident: a failure, a retry and a second failure are
+ * two rows, so a retry loop shows up in the data rather than flattening to one.
+ */
+export const EachAppearanceIsOneErrorState: Story = {
+  args: { error: new ApiError("database connection pool exhausted", 500) },
+  beforeEach: recordUxEvents,
+  render: (args) => (
+    <UxScreenProvider screen="keys">
+      <FailsAgain error={args.error} />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvas, canvasElement }) => {
+    await canvas.findByRole("alert");
+    await expectUxEvent("error_state", "virtual-keys");
+    await expect(errorStates()).toHaveLength(1);
+    await userEvent.click(canvas.getByRole("button", { name: /try again/i }));
+    await waitFor(() =>
+      expect(canvasElement.querySelector("[data-attempt='2'] [role='alert']")).not.toBeNull(),
+    );
+    await waitFor(() =>
+      expect(errorStates().map((e) => e.target)).toEqual(["virtual-keys", "virtual-keys"]),
+    );
+  },
+};
+
+/** Outside a screen — Storybook, a test — there is no screen to file it under, so nothing is recorded. */
+export const SilentOutsideAScreen: Story = {
+  args: { error: new ApiError("database connection pool exhausted", 500) },
+  beforeEach: recordUxEvents,
+  play: async ({ canvas }) => {
+    await canvas.findByRole("alert");
+    expectNoUxEvent("error_state");
   },
 };

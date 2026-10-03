@@ -32,7 +32,7 @@ const SUMMARY_OK = {
 };
 
 const RESOURCE = t("errors.resources.mcpLogs");
-const UNAVAILABLE = t("errors.load.noAnalytics.title");
+const UNAVAILABLE = t("pages.mcpLogs.noAnalytics.title");
 const FAILED = t("errors.load.server.title", { resource: RESOURCE });
 const EMPTY = t("pages.mcpLogs.emptyTitle");
 
@@ -75,13 +75,12 @@ test("an absent endpoint reads as unavailable, not as an error", async ({ page }
   await stubList(page, 404, { error: { message: "not found" } });
   await page.goto("/mcp-logs");
 
-  const alert = page.getByRole("alert");
-  await expect(alert.getByText(UNAVAILABLE)).toBeVisible();
-  // and names both causes, so the operator knows where to look
-  await expect(
-    alert.getByText(t("errors.load.noAnalytics.body", { resource: RESOURCE })),
-  ).toBeVisible();
-  await expect(alert).toContainText("CLICKHOUSE_URL");
+  // a deployment shape, so a calm status panel and not the alert a 500 gets
+  // (#2016); it names the setting to change, so the operator knows where to look
+  const panel = page.getByRole("status").filter({ hasText: UNAVAILABLE });
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("CLICKHOUSE_URL");
+  await expect(page.getByRole("alert").filter({ hasText: UNAVAILABLE })).toHaveCount(0);
   await expect(page.getByText(FAILED)).toHaveCount(0);
 });
 
@@ -146,8 +145,9 @@ test("a missing single event does not condemn the whole page", async ({ page }) 
   await expect(page.getByText("read_file")).toBeVisible();
 
   await page.getByText("read_file").click();
-  // the drawer reports the failure; the table behind it is still there
-  await expect(page.getByText(/event not found/)).toBeVisible();
+  // the drawer reports the missing event (#2514 replaced the raw server
+  // message with its own panel); the table behind it is still there
+  await expect(page.getByText(t("pages.mcpLogs.notFoundTitle"))).toBeVisible();
   await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
   await expect(page.getByText("read_file")).toBeVisible();
 });

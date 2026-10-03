@@ -7,15 +7,18 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { serverFieldError } from "@/lib/field-errors";
 import { sampleShare } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   samplePercent: string;
@@ -54,32 +57,57 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
 // field can never save a policy that logs nothing
 const parsePercent = (value: string) => (value.trim() === "" ? Number.NaN : Number(value));
 
+const validMaxBytes = (value: string) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 1_048_576;
+};
+
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // returns a catalog key, translated by the caller
-function validate(form: FormState): string | null {
+// every failing field is reported at once, keyed by field (#2096)
+type FieldKey = "samplePercent" | "maxBytes" | "retentionDays" | "payloadRetentionHours";
+type FieldErrors = Partial<Record<FieldKey, string>>;
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const FIELD_ORDER: FieldKey[] = [
+  "samplePercent",
+  "maxBytes",
+  "retentionDays",
+  "payloadRetentionHours",
+];
+
+// the wire names a 400 opens with, mapped to the field they belong to
+const WIRE_FIELDS: Record<string, FieldKey> = {
+  sample_rate: "samplePercent",
+  payload_capture_max_bytes: "maxBytes",
+  retention_days: "retentionDays",
+  payload_retention_hours: "payloadRetentionHours",
+};
+
+function validate(form: FormState): FieldErrors {
+  const errors: FieldErrors = {};
   const percent = parsePercent(form.samplePercent);
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-    return "pages.logsSettings.errors.sampleRange";
+    errors.samplePercent = "pages.logsSettings.errors.sampleRange";
   }
-  const maxBytes = Number(form.maxBytes);
-  if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > 1_048_576) {
-    return "pages.logsSettings.errors.maxBytes";
+  // the field is disabled while capture is off, so a bad value there could
+  // not be fixed; it is re-checked once capture is switched back on
+  if (form.captureEnabled && !validMaxBytes(form.maxBytes)) {
+    errors.maxBytes = "pages.logsSettings.errors.maxBytes";
   }
   const days = Number(form.retentionDays);
-  if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    return "pages.logsSettings.errors.retentionDays";
-  }
+  const daysOk = Number.isInteger(days) && days >= 1 && days <= 3650;
+  if (!daysOk) errors.retentionDays = "pages.logsSettings.errors.retentionDays";
   const hours = Number(form.payloadRetentionHours);
   if (!Number.isInteger(hours) || hours < 1 || hours > 8760) {
-    return "pages.logsSettings.errors.payloadRetentionHours";
+    errors.payloadRetentionHours = "pages.logsSettings.errors.payloadRetentionHours";
+  } else if (daysOk && hours > days * 24) {
+    // raw bodies are the sensitive half: keeping them past the metadata they
+    // belong to would leak prompt content the operator meant to expire
+    errors.payloadRetentionHours = "pages.logsSettings.errors.payloadOutlivesLog";
   }
-  // raw bodies are the sensitive half: keeping them past the metadata they
-  // belong to would leak prompt content the operator meant to expire
-  if (hours > days * 24) {
-    return "pages.logsSettings.errors.payloadOutlivesLog";
-  }
-  return null;
+  return errors;
 }
 
 // global request-log policy, persisted via /api/v1/logging-settings (superadmin
@@ -99,11 +127,18 @@ function LogsSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "logs-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const sampleHintId = React.useId();
   const sampleWarningId = React.useId();
+  const base = React.useId();
+  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
+  const ids: Record<FieldKey, string> = {
+    samplePercent: `${base}-sample`,
+    maxBytes: "logs-max-bytes",
+    retentionDays: "logs-retention-days",
+    payloadRetentionHours: "logs-payload-retention-hours",
+  };
   React.useEffect(() => {
     if (settings.data && form === null) {
       setForm(fromDto(settings.data));
@@ -115,7 +150,10 @@ function LogsSettingsScreen() {
       updateLoggingSettings({
         sample_rate: Number(f.samplePercent) / 100,
         payload_capture_enabled: f.captureEnabled,
-        payload_capture_max_bytes: Number(f.maxBytes),
+        // an unusable value is only reachable with capture off; keep what is stored
+        payload_capture_max_bytes: validMaxBytes(f.maxBytes)
+          ? Number(f.maxBytes)
+          : (settings.data?.payload_capture_max_bytes ?? 0),
         payload_capture_redact_fields: splitList(f.redactFields),
         payload_capture_models: splitList(f.models),
         payload_capture_virtual_key_ids: splitList(f.virtualKeyIds),
@@ -129,6 +167,7 @@ function LogsSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["logging-settings"] });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -136,6 +175,12 @@ function LogsSettingsScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(ids[named.field])?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.logsSettings") }),
@@ -158,6 +203,7 @@ function LogsSettingsScreen() {
           error={settings.error}
           resource={t("errors.resources.logsSettings")}
           onRetry={() => void settings.refetch()}
+          target="logs-settings"
         />
       </div>
     );
@@ -167,55 +213,89 @@ function LogsSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  // an edit answers the server's complaint about that field
+  const edit = (key: FieldKey, value: string) => {
+    set({ [key]: value });
+    setServerErrors((e) => ({ ...e, [key]: undefined }));
+  };
+  const local = validate(form);
+  const errors: Record<FieldKey, string | undefined> = {
+    samplePercent: local.samplePercent ? t(local.samplePercent) : serverErrors.samplePercent,
+    maxBytes: local.maxBytes ? t(local.maxBytes) : serverErrors.maxBytes,
+    retentionDays: local.retentionDays ? t(local.retentionDays) : serverErrors.retentionDays,
+    payloadRetentionHours: local.payloadRetentionHours
+      ? t(local.payloadRetentionHours)
+      : serverErrors.payloadRetentionHours,
+  };
+  const invalid = FIELD_ORDER.filter((key) => errors[key]);
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2096)
+  const submit = () => {
+    const first = invalid.find((key) => {
+      const node = document.getElementById(ids[key]);
+      return node !== null && !(node as HTMLInputElement).disabled;
+    });
+    if (invalid.length > 0) {
+      if (first) document.getElementById(ids[first])?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
+  const errorId = (key: FieldKey) => `${ids[key]}-error`;
+  const invalidProps = (key: FieldKey) => ({
+    "aria-invalid": errors[key] ? (true as const) : undefined,
+    "aria-describedby": describedBy(!!errors[key] && errorId(key)),
+  });
   const capture = form.captureEnabled;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.logsSettings.sampleRate")}</span>
-          <p id={sampleHintId} className="mt-1 text-sm text-muted-foreground">
-            {t("pages.logsSettings.sampleRateHint")}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      <SettingsPanel
+        title={t("pages.logsSettings.sampleRate")}
+        description={<span id={sampleHintId}>{t("pages.logsSettings.sampleRateHint")}</span>}
+      >
+        <div className="flex w-full flex-wrap items-center gap-2">
           <Input
             className="max-w-[120px]"
             inputMode="decimal"
+            id={ids.samplePercent}
             aria-label={t("pages.logsSettings.sampleRatePercent")}
-            aria-describedby={`${sampleHintId} ${sampleWarningId}`}
+            aria-invalid={errors.samplePercent ? true : undefined}
+            aria-describedby={describedBy(
+              sampleHintId,
+              sampleWarningId,
+              !!errors.samplePercent && errorId("samplePercent"),
+            )}
             value={form.samplePercent}
-            onChange={(e) => set({ samplePercent: e.target.value })}
+            onChange={(e) => edit("samplePercent", e.target.value)}
           />
           <span className="text-sm text-muted-foreground">
             {t("pages.logsSettings.percentOfRequests")}
           </span>
         </div>
+        <FieldError id={errorId("samplePercent")} error={errors.samplePercent} />
         <SampledLogWarning id={sampleWarningId} percent={parsePercent(form.samplePercent)} />
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">{t("pages.logsSettings.capture")}</span>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.logsSettings.captureHint")}
-            </p>
-          </div>
+      <SettingsPanel
+        title={t("pages.logsSettings.capture")}
+        description={t("pages.logsSettings.captureHint")}
+        dimmed={!capture}
+        action={
           <Switch
             checked={form.captureEnabled}
             aria-label={t("pages.logsSettings.captureAria")}
             onCheckedChange={(v) => set({ captureEnabled: v })}
           />
-        </div>
+        }
+      >
         {/* what this switch actually does, said where it is thrown rather than
             three cards further down (#954). the numbers come from the live form
             state, so the summary reflects the edit in progress — including one
             that has not been saved yet */}
         <p
           role="note"
-          className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground"
+          className="w-full rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground"
         >
           {capture
             ? t("pages.logsSettings.captureOnSummary", {
@@ -227,14 +307,7 @@ function LogsSettingsScreen() {
               })
             : t("pages.logsSettings.captureOffSummary")}
         </p>
-        {/* a disabled fieldset rather than a dimmed div: the input inside
-            already carries `disabled`, and fading a live div drags its label and
-            hint below 4.5:1 while telling assistive tech nothing (#1181) */}
-        <fieldset
-          className="flex min-w-0 flex-col gap-1.5"
-          disabled={!capture}
-          style={{ opacity: capture ? 1 : 0.55 }}
-        >
+        <div className="flex min-w-0 flex-col gap-1.5">
           <label
             htmlFor="logs-max-bytes"
             className="text-xs font-medium text-[color:var(--text-secondary)]"
@@ -247,14 +320,16 @@ function LogsSettingsScreen() {
             inputMode="numeric"
             disabled={!capture}
             aria-label={t("pages.logsSettings.maxBytes")}
+            {...invalidProps("maxBytes")}
             value={form.maxBytes}
-            onChange={(e) => set({ maxBytes: e.target.value })}
+            onChange={(e) => edit("maxBytes", e.target.value)}
           />
+          <FieldError id={errorId("maxBytes")} error={errors.maxBytes} />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
             {t("pages.logsSettings.maxBytesHint")}
           </span>
-        </fieldset>
-      </section>
+        </div>
+      </SettingsPanel>
 
       <ListCard
         title={t("pages.logsSettings.redacted")}
@@ -281,13 +356,10 @@ function LogsSettingsScreen() {
         onChange={(v) => set({ virtualKeyIds: v })}
       />
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.logsSettings.retention")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.logsSettings.retentionHint")}
-          </p>
-        </div>
+      <SettingsPanel
+        title={t("pages.logsSettings.retention")}
+        description={t("pages.logsSettings.retentionHint")}
+      >
         <div className="flex flex-wrap gap-4">
           <div className="flex flex-col gap-1.5">
             <label
@@ -301,9 +373,11 @@ function LogsSettingsScreen() {
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.retentionDaysAria")}
+              {...invalidProps("retentionDays")}
               value={form.retentionDays}
-              onChange={(e) => set({ retentionDays: e.target.value })}
+              onChange={(e) => edit("retentionDays", e.target.value)}
             />
+            <FieldError id={errorId("retentionDays")} error={errors.retentionDays} />
           </div>
           <div className="flex flex-col gap-1.5">
             <label
@@ -317,12 +391,17 @@ function LogsSettingsScreen() {
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.payloadRetentionHoursAria")}
+              {...invalidProps("payloadRetentionHours")}
               value={form.payloadRetentionHours}
-              onChange={(e) => set({ payloadRetentionHours: e.target.value })}
+              onChange={(e) => edit("payloadRetentionHours", e.target.value)}
+            />
+            <FieldError
+              id={errorId("payloadRetentionHours")}
+              error={errors.payloadRetentionHours}
             />
           </div>
         </div>
-      </section>
+      </SettingsPanel>
 
       {/* the deployment-level opt-out for the UX stream. before #1748 it was a
           toml-only key that a postgres-backed control plane never read */}
@@ -334,10 +413,17 @@ function LogsSettingsScreen() {
       />
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{t(localError)}</span>
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
+          </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
@@ -408,24 +494,16 @@ function ListCard({
   onChange: (v: string) => void;
 }) {
   return (
-    <fieldset
-      className="flex min-w-0 flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4"
-      disabled={disabled}
-      style={{ opacity: disabled ? 0.55 : 1 }}
-    >
-      <div>
-        <span className="text-sm font-medium">{title}</span>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
+    <SettingsPanel title={title} description={desc} dimmed={disabled}>
       <Textarea
-        className="min-h-[64px] font-mono text-xs"
+        className="min-h-[64px] w-full font-mono text-xs"
         value={value}
         disabled={disabled}
         aria-label={title}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
       />
-    </fieldset>
+    </SettingsPanel>
   );
 }
 

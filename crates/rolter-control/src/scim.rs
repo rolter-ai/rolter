@@ -30,7 +30,8 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo, VirtualKeyRepo,
+    DeactivationGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -142,6 +143,11 @@ impl From<rolter_core::Error> for ScimError {
             // text; the crud api answers the same error with a 400 too
             rolter_core::Error::Config(message) => Self::invalid(message),
             rolter_core::Error::Unauthorized => Self::unauthorized(),
+            rolter_core::Error::AlreadyExists(_) => Self::new(
+                StatusCode::CONFLICT,
+                Some("uniqueness"),
+                "a resource with that identifier already exists",
+            ),
             other => {
                 tracing::warn!(error = %other, "internal scim error");
                 Self::new(
@@ -194,6 +200,15 @@ impl FromRequestParts<ControlState> for ScimPrincipal {
 /// Render a user + identity as a SCIM Users resource. `active` mirrors the
 /// account's deactivation flag, which is the only lifecycle state SCIM and the
 /// dashboard both act on.
+///
+/// `displayName` is echoed from `scim_identities` exactly as the IdP last sent
+/// it, not from the sanitised copy on `users.display_name` (#2731). IdPs
+/// reconcile by comparing what they pushed with what the resource returns, so
+/// echoing a trimmed or control-stripped name would read as drift and be
+/// pushed again on every sync. The account column is also shared by every org
+/// that provisions the same person, and keeps its previous value when a name
+/// sanitises to nothing, so it is not this org's `displayName` to report. The
+/// value only ever leaves as an escaped JSON string to the IdP that sent it.
 fn user_resource(user: &User, identity: &ScimIdentity) -> Value {
     let mut resource = json!({
         "schemas": [USER_SCHEMA],
@@ -361,6 +376,13 @@ async fn create_user(
         Some(existing) => existing,
         None => UserRepo(pool).create(&email, None, false).await?,
     };
+    // deactivate before linking: when the lockout guard refuses it (the
+    // adopted account is the last admin it protects) no identity may be left
+    // behind, or the IdP's retry gets "userName already exists" instead of
+    // the same refusal (#2672)
+    if body.active == Some(false) {
+        deactivate(&state, user.id, true).await?;
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -370,12 +392,10 @@ async fn create_user(
             body.display_name.as_deref().unwrap_or_default(),
         )
         .await?;
+    sync_display_name(pool, user.id, &identity).await?;
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
-    if body.active == Some(false) {
-        deactivate(&state, user.id, true).await?;
-    }
     audit_scim(
         &state,
         &principal,
@@ -387,6 +407,23 @@ async fn create_user(
     .await;
     let user = UserRepo(pool).get(user.id).await?;
     Ok((StatusCode::CREATED, Json(user_resource(&user, &identity))).into_response())
+}
+
+/// Copy the directory's `displayName` onto the account so the dashboard shows
+/// it, and so it is authoritative: `PATCH /api/v1/me/profile` refuses to change
+/// a name a SCIM identity owns. An IdP that sends no name leaves the stored one
+/// as it was rather than blanking a name the user set before being provisioned.
+async fn sync_display_name(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    identity: &ScimIdentity,
+) -> ScimResult<()> {
+    if let Some(name) = crate::me::sanitise_directory_name(&identity.display_name) {
+        UserRepo(pool)
+            .set_profile(user_id, Some(Some(name.as_str())), None)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Grant the provisioned account its org membership if it has none there yet.
@@ -436,6 +473,14 @@ async fn replace_user(
     let (user, identity) = resolve(&state, &principal, &id).await?;
     let pool = pool(&state);
     let user_name = body.user_name.clone().unwrap_or(identity.user_name);
+    let mut detail = json!({});
+    // deactivate before writing: when the lockout guard refuses it (the
+    // account is the last admin it protects) the rename, externalId and
+    // display name must not have been applied, or the IdP's retry sees a
+    // half-applied replace (#2705)
+    if body.active == Some(false) {
+        detail["personal_keys"] = deactivate(&state, user.id, true).await?.into();
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -449,9 +494,10 @@ async fn replace_user(
                 .unwrap_or(&identity.display_name),
         )
         .await?;
-    let mut detail = json!({"user_name": identity.user_name});
-    if let Some(active) = body.active {
-        detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
+    sync_display_name(pool, user.id, &identity).await?;
+    detail["user_name"] = identity.user_name.clone().into();
+    if body.active == Some(true) {
+        detail["personal_keys"] = deactivate(&state, user.id, false).await?.into();
     }
     audit_scim(
         &state,
@@ -484,10 +530,15 @@ pub(crate) struct PatchBody {
     pub(crate) operations: Vec<PatchOp>,
 }
 
-/// The `active` toggle is what every IdP uses to deactivate a leaver, so it is
-/// the operation this slice implements. Other paths are refused explicitly —
-/// an IdP that gets `204 No Content` for an operation nothing applied would
-/// believe a change landed.
+/// `active` is what every IdP uses to deactivate a leaver, and `displayName`
+/// keeps the dashboard's name for the account current. Other paths are refused
+/// explicitly — an IdP that gets a success for an operation nothing applied
+/// would believe a change landed.
+///
+/// Every operation is read before anything is written, so a malformed one
+/// cannot leave an earlier one half applied. `active` is applied before the
+/// name: a deactivation can be refused (the last superadmin), and a refused
+/// request must not have renamed the account either.
 async fn patch_user(
     principal: ScimPrincipal,
     State(state): State<ControlState>,
@@ -500,19 +551,33 @@ async fn patch_user(
         )));
     }
     let (user, identity) = resolve(&state, &principal, &id).await?;
-    let mut applied = false;
-    let mut personal_keys = 0;
+    let mut changes = PatchChanges::default();
     for op in &body.operations {
         let verb = op.op.to_ascii_lowercase();
         if verb != "replace" && verb != "add" {
             return Err(ScimError::invalid(format!("unsupported op '{}'", op.op)));
         }
-        let active = active_from_op(op)?;
-        personal_keys = deactivate(&state, user.id, !active).await?;
-        applied = true;
+        changes.merge(changes_from_op(op)?);
     }
-    if !applied {
+    if changes.active.is_none() && changes.display_name.is_none() {
         return Err(ScimError::invalid("no supported operation in the request"));
+    }
+    let mut personal_keys = 0;
+    if let Some(active) = changes.active {
+        personal_keys = deactivate(&state, user.id, !active).await?;
+    }
+    let mut identity = identity;
+    if let Some(name) = changes.display_name {
+        identity = ScimIdentityRepo(pool(&state))
+            .upsert(
+                user.id,
+                principal.org_id,
+                identity.external_id.as_deref(),
+                &identity.user_name,
+                &name,
+            )
+            .await?;
+        sync_display_name(pool(&state), user.id, &identity).await?;
     }
     audit_scim(
         &state,
@@ -527,24 +592,67 @@ async fn patch_user(
     Ok(Json(user_resource(&user, &identity)))
 }
 
-/// Read the `active` value out of a patch operation, in both the
+/// What a patch asks for, after reading every operation. A later operation on
+/// the same attribute wins, as it would applied one by one.
+#[derive(Debug, Default, PartialEq)]
+struct PatchChanges {
+    active: Option<bool>,
+    display_name: Option<String>,
+}
+
+impl PatchChanges {
+    fn merge(&mut self, other: PatchChanges) {
+        self.active = other.active.or(self.active);
+        self.display_name = other.display_name.or(self.display_name.take());
+    }
+}
+
+/// Read the supported attributes out of a patch operation, in both the
 /// `path: "active"` and the bare `{"active": false}` value forms IdPs send.
-fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
+fn changes_from_op(op: &PatchOp) -> ScimResult<PatchChanges> {
     let value = op
         .value
         .as_ref()
         .ok_or_else(|| ScimError::invalid("operation is missing a value"))?;
-    let candidate = match op.path.as_deref().map(str::trim) {
-        Some("active") => value.clone(),
+    let mut changes = PatchChanges::default();
+    match op.path.as_deref().map(str::trim) {
+        Some("active") => changes.active = Some(active_value(value)?),
+        Some("displayName") => changes.display_name = Some(name_value(value)?),
         Some(other) => {
             return Err(ScimError::invalid(format!("unsupported path '{other}'")));
         }
-        None => value.get("active").cloned().ok_or_else(|| {
-            ScimError::invalid("only the `active` attribute can be patched today")
-        })?,
-    };
+        None => {
+            let object = value
+                .as_object()
+                .ok_or_else(|| ScimError::invalid("a pathless operation needs an object value"))?;
+            for (key, value) in object {
+                match key.as_str() {
+                    "active" => changes.active = Some(active_value(value)?),
+                    "displayName" => changes.display_name = Some(name_value(value)?),
+                    other => {
+                        return Err(ScimError::invalid(format!(
+                            "unsupported attribute '{other}'; only `active` and `displayName` can be patched"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(changes)
+}
+
+fn name_value(value: &Value) -> ScimResult<String> {
+    match value {
+        Value::String(name) => Ok(name.clone()),
+        other => Err(ScimError::invalid(format!(
+            "displayName must be a string, got {other}"
+        ))),
+    }
+}
+
+fn active_value(candidate: &Value) -> ScimResult<bool> {
     match candidate {
-        Value::Bool(active) => Ok(active),
+        Value::Bool(active) => Ok(*active),
         // some IdPs send the string form
         Value::String(s) if s.eq_ignore_ascii_case("true") => Ok(true),
         Value::String(s) if s.eq_ignore_ascii_case("false") => Ok(false),
@@ -564,7 +672,38 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 /// the audit row.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
-    UserRepo(pool).set_deactivated(user_id, deactivated).await?;
+    match UserRepo(pool)
+        .set_deactivated_guarding_org_admins(user_id, deactivated)
+        .await?
+    {
+        DeactivationGuard::Done(_) => {}
+        // an IdP that disables the only superadmin would strand the deployment
+        // with nobody who can administer it (#2344)
+        DeactivationGuard::LastSuperadmin => {
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active superadmin; make another account superadmin first",
+            ));
+        }
+        // the same for an org: the token is not a superadmin who could repair
+        // it afterwards, so the IdP is told and retries once there is another
+        // admin. the org id stays out of the message, since the account may
+        // administer an org this token's tenant cannot see (#2558)
+        DeactivationGuard::LastOrgAdmin(org_id) => {
+            tracing::warn!(
+                %org_id,
+                %user_id,
+                "refused a scim deactivation that would leave an org without an admin"
+            );
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active admin of an organization; grant admin to \
+                 another person first",
+            ));
+        }
+    }
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
         MfaRepo(pool).delete_challenges_for_user(user_id).await?;
@@ -743,10 +882,22 @@ impl From<ApiError> for ScimError {
         match err {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
+            ApiError::CodedForbidden { message, .. } => {
+                Self::new(StatusCode::FORBIDDEN, None, message)
+            }
             ApiError::Core(err) => err.into(),
+            ApiError::Curated(message) => {
+                Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
+            }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }
+            ApiError::CodedConflict { code, message } => {
+                // a taken name is what scim calls a uniqueness conflict
+                let scim_type = (code == crate::crud::NAME_TAKEN).then_some("uniqueness");
+                Self::new(StatusCode::CONFLICT, scim_type, message)
+            }
+            ApiError::InvalidField { message, .. } => Self::invalid(message),
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 None,
@@ -787,6 +938,10 @@ mod tests {
         }
     }
 
+    fn active_of(op: &PatchOp) -> ScimResult<Option<bool>> {
+        changes_from_op(op).map(|c| c.active)
+    }
+
     #[test]
     fn reads_active_from_both_patch_shapes() {
         let with_path = PatchOp {
@@ -794,14 +949,14 @@ mod tests {
             path: Some("active".into()),
             value: Some(json!(false)),
         };
-        assert!(!active_from_op(&with_path).unwrap());
+        assert_eq!(active_of(&with_path).unwrap(), Some(false));
 
         let bare = PatchOp {
             op: "replace".into(),
             path: None,
             value: Some(json!({"active": true})),
         };
-        assert!(active_from_op(&bare).unwrap());
+        assert_eq!(active_of(&bare).unwrap(), Some(true));
 
         // the string form some IdPs send
         let stringly = PatchOp {
@@ -809,7 +964,29 @@ mod tests {
             path: Some("active".into()),
             value: Some(json!("False")),
         };
-        assert!(!active_from_op(&stringly).unwrap());
+        assert_eq!(active_of(&stringly).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn reads_display_name_and_both_attributes_from_one_operation() {
+        let with_path = PatchOp {
+            op: "replace".into(),
+            path: Some("displayName".into()),
+            value: Some(json!("Ada")),
+        };
+        assert_eq!(
+            changes_from_op(&with_path).unwrap().display_name.as_deref(),
+            Some("Ada")
+        );
+
+        let both = PatchOp {
+            op: "replace".into(),
+            path: None,
+            value: Some(json!({"displayName": "Ada", "active": false})),
+        };
+        let changes = changes_from_op(&both).unwrap();
+        assert_eq!(changes.display_name.as_deref(), Some("Ada"));
+        assert_eq!(changes.active, Some(false));
     }
 
     #[test]
@@ -817,13 +994,23 @@ mod tests {
         for op in [
             PatchOp {
                 op: "replace".into(),
-                path: Some("displayName".into()),
+                path: Some("nickName".into()),
                 value: Some(json!("Ada")),
             },
             PatchOp {
                 op: "replace".into(),
                 path: None,
-                value: Some(json!({"displayName": "Ada"})),
+                value: Some(json!({"nickName": "Ada"})),
+            },
+            PatchOp {
+                op: "replace".into(),
+                path: None,
+                value: Some(json!({"displayName": "Ada", "nickName": "A"})),
+            },
+            PatchOp {
+                op: "replace".into(),
+                path: Some("displayName".into()),
+                value: Some(json!(7)),
             },
             PatchOp {
                 op: "replace".into(),
@@ -831,7 +1018,7 @@ mod tests {
                 value: None,
             },
         ] {
-            assert!(active_from_op(&op).is_err());
+            assert!(changes_from_op(&op).is_err(), "accepted {op:?}");
         }
     }
 

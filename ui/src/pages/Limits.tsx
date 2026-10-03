@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gauge, Pencil, Plus, Wallet } from "lucide-react";
+import { AlertTriangle, Gauge, Pencil, Plus, Wallet } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
@@ -10,7 +11,14 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardStack,
+  CardTitle,
+} from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -36,11 +44,25 @@ import {
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
 } from "@/lib/api";
+import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { RowCapabilityScope, type RowScope } from "@/lib/can";
+import { capGateScope } from "@/lib/limit-scope";
+import { useOrgScope } from "@/components/OrgScopePicker";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
+
+// the picker's placeholder per scope type, as catalog keys
+const SCOPE_PLACEHOLDERS: Record<string, string> = {
+  org: "pages.limits.selectOrg",
+  team: "pages.limits.selectTeam",
+  project: "pages.limits.selectProject",
+  virtual_key: "pages.limits.selectVirtualKey",
+  business_unit: "pages.limits.selectBusinessUnit",
+  customer: "pages.limits.selectCustomer",
+};
 
 // budgets and rate limits share a scope (scope_type + scope_id), so this
 // page combines both concerns behind one scope picker. defaults to the
@@ -51,6 +73,7 @@ export default function Limits() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -90,6 +113,8 @@ export default function Limits() {
 
   useScreenReady(!virtualKeys.isLoading);
 
+  // the key list has no `LoadError` of its own to record a failure, so it is
+  // reported here; budgets and rate limits record theirs (#2444)
   useErrorState(!!virtualKeys.error, "limits");
 
   const budgets = useQuery({
@@ -141,6 +166,12 @@ export default function Limits() {
     },
   });
 
+  // the row a delete confirmation is open for. a cap deleted on a misclick
+  // leaves its scope uncapped until someone notices, so neither delete leaves
+  // before the dialog is answered (#1904)
+  const [budgetToDelete, setBudgetToDelete] = React.useState<BudgetRow | null>(null);
+  const [rateLimitToDelete, setRateLimitToDelete] = React.useState<RateLimitRow | null>(null);
+
   const [addBudgetOpen, setAddBudgetOpen] = React.useState(false);
   const [addRateLimitOpen, setAddRateLimitOpen] = React.useState(false);
   // the row being edited outlives its sheet closing, so the closing sheet keeps
@@ -152,17 +183,47 @@ export default function Limits() {
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
 
+  // what the scope picker offers for the chosen type. the same list names the
+  // scope on the cards' controls and in the delete confirmations, so a row is
+  // never introduced by its uuid when the picker already knows its name
+  const scopeOptions = (() => {
+    const named = (rows: { id: string; name: string }[]) =>
+      rows.map((row) => ({ value: row.id, label: row.name }));
+    switch (scopeType) {
+      case "org":
+        return named(scope.orgs);
+      case "team":
+        return named(scope.teams);
+      case "project":
+        return named(scope.projects);
+      case "virtual_key":
+        return (virtualKeys.data ?? []).map((k) => ({
+          value: k.id,
+          label: k.name || k.key_prefix,
+        }));
+      case "business_unit":
+        return named(businessUnits.data ?? []);
+      case "customer":
+        return named(customers.data ?? []);
+      default:
+        return [];
+    }
+  })();
+
   // the scope field is a name picker whenever the scope type has rows to offer
   // and a bare uuid box otherwise; the hint has to say which one it is, since
   // "the project this cap applies to" reads as nonsense over an empty uuid
   // field (#1202)
-  const hasPicker =
-    (scopeType === "org" && scope.orgs.length > 0) ||
-    (scopeType === "team" && scope.teams.length > 0) ||
-    (scopeType === "project" && scope.projects.length > 0) ||
-    (scopeType === "virtual_key" && (virtualKeys.data?.length ?? 0) > 0) ||
-    (scopeType === "business_unit" && (businessUnits.data?.length ?? 0) > 0) ||
-    (scopeType === "customer" && (customers.data?.length ?? 0) > 0);
+  const hasPicker = scopeOptions.length > 0;
+  // a scope typed in as a uuid has no name to show, and is shown as that uuid
+  const scopeName = scopeOptions.find((option) => option.value === scopeId)?.label ?? scopeId;
+  // the delete confirmations open on it, so the type comes with the name
+  const scopeLabel = t("pages.limits.scopeNamed", {
+    type: t(`pages.limits.scopeTypes.${scopeType}`),
+    name: scopeName,
+  });
+  const budgetNames = useBudgetNames(scopeName);
+  const rateLimitCaps = useRateLimitCaps();
 
   return (
     <PageBody className="gap-[22px]">
@@ -197,52 +258,12 @@ export default function Limits() {
               type: t(`pages.limits.scopeTypes.${scopeType}`),
             })}
           >
-            {scopeType === "org" && scope.orgs.length > 0 ? (
+            {hasPicker ? (
               <Combobox
                 value={scopeId}
                 onChange={setScopeId}
-                placeholder={t("pages.limits.selectOrg")}
-                options={scope.orgs.map((o) => ({ value: o.id, label: o.name }))}
-              />
-            ) : scopeType === "team" && scope.teams.length > 0 ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t("pages.limits.selectTeam")}
-                options={scope.teams.map((team) => ({ value: team.id, label: team.name }))}
-              />
-            ) : scopeType === "project" && scope.projects.length > 0 ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t("pages.limits.selectProject")}
-                options={scope.projects.map((p) => ({ value: p.id, label: p.name }))}
-              />
-            ) : scopeType === "virtual_key" && virtualKeys.data && virtualKeys.data.length > 0 ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t("pages.limits.selectVirtualKey")}
-                options={virtualKeys.data.map((k) => ({
-                  value: k.id,
-                  label: k.name || k.key_prefix,
-                }))}
-              />
-            ) : scopeType === "business_unit" &&
-              businessUnits.data &&
-              businessUnits.data.length > 0 ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t("pages.limits.selectBusinessUnit")}
-                options={businessUnits.data.map((u) => ({ value: u.id, label: u.name }))}
-              />
-            ) : scopeType === "customer" && customers.data && customers.data.length > 0 ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t("pages.limits.selectCustomer")}
-                options={customers.data.map((c) => ({ value: c.id, label: c.name }))}
+                placeholder={t(SCOPE_PLACEHOLDERS[scopeType])}
+                options={scopeOptions}
               />
             ) : (
               <Input
@@ -274,12 +295,13 @@ export default function Limits() {
             {t("pages.limits.budgetsAdd")}
           </GatedButton>
         </div>
-        {budgets.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
+        {budgets.isLoading && <CardGridSkeleton cards={3} height={94} min={280} />}
         {budgets.error && (
           <LoadError
             error={budgets.error}
             resource={t("errors.resources.budgets")}
             onRetry={() => budgets.refetch()}
+            target="budgets"
           />
         )}
         {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
@@ -305,12 +327,19 @@ export default function Limits() {
             <BudgetCard
               key={budget.id}
               budget={budget}
+              scope={scopeName}
+              gateAt={capGateScope(budget, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingBudget(budget);
                 setEditBudgetOpen(true);
               }}
-              onDelete={() => removeBudget.mutate(budget.id)}
-              deleting={removeBudget.isPending}
+              onDelete={() => setBudgetToDelete(budget)}
+              // the mutation is shared by every card, so only the one it was
+              // given spins
+              deleting={removeBudget.isPending && budgetToDelete?.id === budget.id}
             />
           ))}
         </div>
@@ -336,12 +365,13 @@ export default function Limits() {
             {t("pages.limits.rateLimitsAdd")}
           </GatedButton>
         </div>
-        {rateLimits.isLoading && <CardGridSkeleton cards={3} height={152} min={280} />}
+        {rateLimits.isLoading && <CardGridSkeleton cards={3} height={94} min={280} />}
         {rateLimits.error && (
           <LoadError
             error={rateLimits.error}
             resource={t("errors.resources.rateLimits")}
             onRetry={() => rateLimits.refetch()}
+            target="rate-limits"
           />
         )}
         {!rateLimits.isLoading && scopeId && rateLimits.data?.length === 0 && (
@@ -367,12 +397,17 @@ export default function Limits() {
             <RateLimitCard
               key={limit.id}
               limit={limit}
+              scope={scopeName}
+              gateAt={capGateScope(limit, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingRateLimit(limit);
                 setEditRateLimitOpen(true);
               }}
-              onDelete={() => removeRateLimit.mutate(limit.id)}
-              deleting={removeRateLimit.isPending}
+              onDelete={() => setRateLimitToDelete(limit)}
+              deleting={removeRateLimit.isPending && rateLimitToDelete?.id === limit.id}
             />
           ))}
         </div>
@@ -383,6 +418,7 @@ export default function Limits() {
         onOpenChange={setAddBudgetOpen}
         scopeType={scopeType}
         scopeId={scopeId}
+        scopeName={scopeName}
         onDone={invalidateBudgets}
       />
       {editingBudget && (
@@ -391,6 +427,7 @@ export default function Limits() {
           onOpenChange={setEditBudgetOpen}
           scopeType={editingBudget.scope_type}
           scopeId={editingBudget.scope_id}
+          scopeName={scopeName}
           budget={editingBudget}
           onDone={invalidateBudgets}
         />
@@ -400,6 +437,7 @@ export default function Limits() {
         onOpenChange={setAddRateLimitOpen}
         scopeType={scopeType}
         scopeId={scopeId}
+        scopeName={scopeName}
         onDone={invalidateRateLimits}
       />
       {editingRateLimit && (
@@ -408,57 +446,177 @@ export default function Limits() {
           onOpenChange={setEditRateLimitOpen}
           scopeType={editingRateLimit.scope_type}
           scopeId={editingRateLimit.scope_id}
+          scopeName={scopeName}
           limit={editingRateLimit}
           onDone={invalidateRateLimits}
         />
       )}
+
+      <ConfirmDialog
+        name="budget-delete"
+        open={!!budgetToDelete}
+        onOpenChange={(open) => {
+          if (open) return;
+          setBudgetToDelete(null);
+          // a refusal for this budget must not greet the next one opened
+          removeBudget.reset();
+        }}
+        title={
+          budgetToDelete ? t("pages.limits.confirm.budgetTitle", budgetNames(budgetToDelete)) : ""
+        }
+        description={
+          budgetToDelete ? t("pages.limits.confirm.budgetBody", { scope: scopeLabel }) : ""
+        }
+        confirmLabel={t("pages.limits.confirm.budgetConfirm")}
+        pending={removeBudget.isPending}
+        error={removeBudget.error}
+        onConfirm={() =>
+          budgetToDelete &&
+          removeBudget.mutate(budgetToDelete.id, { onSuccess: () => setBudgetToDelete(null) })
+        }
+      />
+      <ConfirmDialog
+        name="rate-limit-delete"
+        open={!!rateLimitToDelete}
+        onOpenChange={(open) => {
+          if (open) return;
+          setRateLimitToDelete(null);
+          removeRateLimit.reset();
+        }}
+        title={
+          rateLimitToDelete
+            ? t("pages.limits.confirm.rateLimitTitle", { limit: rateLimitCaps(rateLimitToDelete) })
+            : ""
+        }
+        description={
+          rateLimitToDelete ? t("pages.limits.confirm.rateLimitBody", { scope: scopeLabel }) : ""
+        }
+        confirmLabel={t("pages.limits.confirm.rateLimitConfirm")}
+        pending={removeRateLimit.isPending}
+        error={removeRateLimit.error}
+        onConfirm={() =>
+          rateLimitToDelete &&
+          removeRateLimit.mutate(rateLimitToDelete.id, {
+            onSuccess: () => setRateLimitToDelete(null),
+          })
+        }
+      />
     </PageBody>
+  );
+}
+
+/**
+ * A budget's period in words: `monthly` for `30d`, `daily` for `1d`. A period
+ * the dashboard has no name for is shown as it was stored, since guessing at
+ * `7d` would put words in the operator's mouth (#1902).
+ */
+function usePeriodLabel(): (period: string) => string {
+  const { t } = useTranslation();
+  return (period) => {
+    const kind = periodKind(period);
+    return kind ? t(`pages.limits.periods.${kind}`) : period;
+  };
+}
+
+/**
+ * What tells one budget from another to a person: its cap, its window and its
+ * scope. The card's controls and the delete confirmation name the row the same
+ * way, so the dialog is recognisably about the card that opened it (#1214,
+ * #1904). `scope` is the scope's name, since every card on the screen is the
+ * picked scope's.
+ */
+function useBudgetNames(scope: string): (budget: BudgetRow) => {
+  amount: string;
+  period: string;
+  scope: string;
+} {
+  // budgets are denominated in the deployment's settlement currency, not in
+  // dollars — the `_usd` in the column name is historic (#1182)
+  const fmt = useFormat();
+  const currency = useCurrencyCode();
+  const periodLabel = usePeriodLabel();
+  return (budget) => ({
+    amount: fmt.currency(Number(budget.limit_usd), currency),
+    period: periodLabel(budget.period),
+    scope,
+  });
+}
+
+/**
+ * A rate limit's caps as one phrase, `600 rpm · 150,000 tpm`. They are the only
+ * thing that tells two limits on one scope apart, so the card's controls and
+ * the delete confirmation both carry them (#1214, #1904).
+ */
+function useRateLimitCaps(): (limit: RateLimitRow) => string {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  return (limit) =>
+    [
+      limit.rpm != null ? `${fmt.number(limit.rpm)} ${t("pages.limits.units.rpm")}` : null,
+      limit.tpm != null ? `${fmt.number(limit.tpm)} ${t("pages.limits.units.tpm")}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || t("pages.limits.noCaps");
+}
+
+/**
+ * The frame both cards share: the cap as the figure, with the edit and delete
+ * controls beside it on the first line.
+ *
+ * The controls sit in their own column rather than after the badges, so a card
+ * whose badges wrap, like a budget with an unpriced override, keeps them at the
+ * height every other card has them (#2095).
+ */
+function LimitCard({
+  figure,
+  actions,
+  children,
+}: {
+  figure: React.ReactNode;
+  actions: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <CardStack>
+      <div className="flex items-start gap-2.5">
+        <div className="min-w-0 flex-1">{figure}</div>
+        <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
+      </div>
+      {children}
+    </CardStack>
   );
 }
 
 function BudgetCard({
   budget,
+  scope,
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   budget: BudgetRow;
+  scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
 }) {
-  // budgets are denominated in the deployment's settlement currency, not in
-  // dollars — the `_usd` in the column name is historic (#1182)
   const { t } = useTranslation();
-  const fmt = useFormat();
-  const currency = useCurrencyCode();
+  const periodLabel = usePeriodLabel();
+  // the gateway enforces a period it does not recognise as monthly, which a
+  // budget stored before the control plane checked the value may still hold
+  const recognised = periodKind(budget.period) !== null;
   // the label names the row: the grid is a wall of identical cards otherwise,
   // and "Delete budget" said three times tells a screen reader nothing (#1214)
-  const names = {
-    amount: fmt.currency(Number(budget.limit_usd), currency),
-    period: budget.period,
-    scope: budget.scope_id,
-  };
+  const names = useBudgetNames(scope)(budget);
   const label = t("pages.limits.deleteBudgetAria", names);
   const editLabel = t("pages.limits.editBudgetAria", names);
   return (
-    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <span className="font-mono text-xl font-medium">
-          {fmt.currency(Number(budget.limit_usd), currency)}
-        </span>
-        <Badge tone="outline">{budget.period}</Badge>
-        {/* an override is worth showing on the card because it changes what
-            the gateway will serve, not just what it counts (#996). a budget
-            without one inherits the deployment setting and says nothing */}
-        {budget.unpriced_policy && (
-          <Badge tone={budget.unpriced_policy === "block" ? "danger" : "warning"}>
-            {t("pages.limits.unpricedBadge", {
-              policy: t(`pages.limits.unpriced.${budget.unpriced_policy}`),
-            })}
-          </Badge>
-        )}
-        <div className="ml-auto flex items-center gap-1.5">
+    <LimitCard
+      figure={<span className="block truncate font-mono text-xl font-medium">{names.amount}</span>}
+      actions={
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="budget:update"
             control="budget-edit"
@@ -475,53 +633,74 @@ function BudgetCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </div>
+        </RowCapabilityScope>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={recognised ? "outline" : "warning"}>{periodLabel(budget.period)}</Badge>
+        {/* an override is worth showing on the card because it changes what
+            the gateway will serve, not just what it counts (#996). a budget
+            without one inherits the deployment setting and says nothing */}
+        {budget.unpriced_policy && (
+          <Badge tone={budget.unpriced_policy === "block" ? "danger" : "warning"}>
+            {t("pages.limits.unpricedBadge", {
+              policy: t(`pages.limits.unpriced.${budget.unpriced_policy}`),
+            })}
+          </Badge>
+        )}
       </div>
-      <div className="flex items-center gap-1.5">
-        <Badge tone="neutral">{budget.scope_type}</Badge>
-        <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
-          {budget.scope_id}
-        </span>
-      </div>
-    </div>
+      {/* the card is the one place the row's claim meets what the gateway does
+          with it: a `7d` badge alone reads as a weekly cap (#1902) */}
+      {!recognised && (
+        <p className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
+          <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+          {t("pages.limits.periodUnrecognised", { period: budget.period })}
+        </p>
+      )}
+    </LimitCard>
   );
 }
 
 function RateLimitCard({
   limit,
+  scope,
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   limit: RateLimitRow;
+  scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
 }) {
   const { t } = useTranslation();
-  // the caps are the only thing that tells two limits on one scope apart, so
-  // they are what the accessible name carries (#1214)
-  const caps =
-    [limit.rpm != null ? `${limit.rpm} rpm` : null, limit.tpm != null ? `${limit.tpm} tpm` : null]
-      .filter(Boolean)
-      .join(" · ") || t("pages.limits.noCaps");
-  const label = t("pages.limits.deleteRateLimitAria", {
-    limit: caps,
-    scope: limit.scope_id,
-  });
-  const editLabel = t("pages.limits.editRateLimitAria", {
-    limit: caps,
-    scope: limit.scope_id,
-  });
+  const fmt = useFormat();
+  const caps = useRateLimitCaps()(limit);
+  const label = t("pages.limits.deleteRateLimitAria", { limit: caps, scope });
+  const editLabel = t("pages.limits.editRateLimitAria", { limit: caps, scope });
   return (
-    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {limit.rpm != null && <Badge tone="outline">{limit.rpm} rpm</Badge>}
-        {limit.tpm != null && <Badge tone="outline">{limit.tpm} tpm</Badge>}
-        {limit.rpm == null && limit.tpm == null && (
-          <Badge tone="neutral">{t("pages.limits.noCaps")}</Badge>
-        )}
-        <div className="ml-auto flex items-center gap-1.5">
+    <LimitCard
+      // the caps are the card's figure, set the way the budget's amount is
+      figure={
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          {limit.rpm != null && (
+            <CapFigure value={fmt.number(limit.rpm)} unit={t("pages.limits.units.rpm")} />
+          )}
+          {limit.tpm != null && (
+            <CapFigure value={fmt.number(limit.tpm)} unit={t("pages.limits.units.tpm")} />
+          )}
+          {limit.rpm == null && limit.tpm == null && (
+            <span className="text-sm leading-7 text-muted-foreground">
+              {t("pages.limits.noCaps")}
+            </span>
+          )}
+        </div>
+      }
+      actions={
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="rate_limit:update"
             control="rate-limit-edit"
@@ -538,15 +717,19 @@ function RateLimitCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </div>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <Badge tone="neutral">{limit.scope_type}</Badge>
-        <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
-          {limit.scope_id}
-        </span>
-      </div>
-    </div>
+        </RowCapabilityScope>
+      }
+    />
+  );
+}
+
+/** One cap of a rate limit: its number as the figure, its unit beside it. */
+function CapFigure({ value, unit }: { value: string; unit: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="font-mono text-xl font-medium">{value}</span>
+      <span className="text-xs text-muted-foreground">{unit}</span>
+    </span>
   );
 }
 
@@ -563,6 +746,7 @@ function BudgetSheet({
   onOpenChange,
   scopeType,
   scopeId,
+  scopeName,
   budget,
   onDone,
 }: {
@@ -570,18 +754,27 @@ function BudgetSheet({
   onOpenChange: (open: boolean) => void;
   scopeType: string;
   scopeId: string;
+  /** what the subtitle calls the scope: its name, not the `type:uuid` it is stored as */
+  scopeName: string;
   budget?: BudgetRow;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  // a new budget opens on 100 / 30d; an edit opens on the row as it stands.
+  // the field is in the settlement currency the cards are formatted in, not in
+  // dollars whatever the deployment settles in (#2095)
+  const currency = useCurrencyCode();
+  // a new budget opens on 100 / monthly; an edit opens on the row as it stands.
   // `limit_usd` arrives in the column's `numeric(12,4)` spelling, which reads
-  // as 250.5 in a number field rather than 250.5000
+  // as 250.5 in a number field rather than 250.5000. a stored `30d` opens on
+  // the window it is enforced as, monthly, and since nobody picked it again no
+  // period is sent. one the gateway does not recognise opens on nothing: it is
+  // enforced as monthly whatever the row says, so the form cannot be saved
+  // until the operator picks the window it should count over (#1902)
   const seed = React.useMemo(
     () => ({
       limitUsd: budget ? String(Number(budget.limit_usd)) : "100",
-      period: budget?.period ?? "30d",
+      period: budget ? (periodKind(budget.period) ?? "") : "monthly",
       // "" is the inherit case, which is what the API means by a null override
       unpriced: (budget?.unpriced_policy ?? "") as UnpricedPolicy | "",
     }),
@@ -600,6 +793,10 @@ function BudgetSheet({
   }, [open, seed]);
 
   const dirty = limitUsd !== seed.limitUsd || period !== seed.period || unpriced !== seed.unpriced;
+  // the row being edited holds a period the gateway does not recognise, and no
+  // window has been picked to replace it yet
+  const unrecognised =
+    budget !== undefined && periodKind(budget.period) === null && periodKind(period) === null;
 
   const save = useMutation({
     mutationFn: () => {
@@ -643,16 +840,16 @@ function BudgetSheet({
       open={open}
       onOpenChange={onOpenChange}
       title={t(budget ? "pages.limits.budgetEditTitle" : "pages.limits.budgetSheetTitle")}
-      subtitle={t("pages.limits.budgetSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
+      subtitle={t("pages.limits.budgetSheetSubtitle", { scope: scopeName })}
       dirty={dirty}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={t(budget ? "common.save" : "common.create")}
-      canSave={Boolean(limitUsd.trim() && period.trim()) && (!budget || dirty)}
+      canSave={Boolean(limitUsd.trim() && periodKind(period)) && (!budget || dirty)}
       saving={save.isPending}
       onSave={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.limits.budgetLimitLabel")}>
+        <Field label={t("pages.limits.budgetLimitLabel", { currency })}>
           {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
@@ -663,11 +860,34 @@ function BudgetSheet({
             onChange={(e) => setLimitUsd(e.target.value)}
           />
         </Field>
+        {/* a picker rather than free text: the gateway has no rolling windows,
+            and read any period it did not know as monthly, so the `7d` the old
+            hint suggested was a calendar-month cap (#1902) */}
         <Field
           label={t("pages.limits.budgetPeriodLabel")}
-          hint={t("pages.limits.budgetPeriodHint")}
+          hint={
+            unrecognised ? (
+              <span className="flex items-start gap-1.5 text-[color:var(--status-warning-text)]">
+                <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+                {t("pages.limits.periodUnrecognisedHint", { period: budget.period })}
+              </span>
+            ) : (
+              t("pages.limits.budgetPeriodHint")
+            )
+          }
+          htmlFor="budget-period"
         >
-          <Input value={period} onChange={(e) => setPeriod(e.target.value)} />
+          <Combobox
+            id="budget-period"
+            value={period}
+            onChange={setPeriod}
+            placeholder={t("pages.limits.periodPlaceholder")}
+            options={PERIOD_KINDS.map((kind) => ({
+              value: kind,
+              label: t(`pages.limits.periodOptions.${kind}`),
+              description: t(`pages.limits.periodDescriptions.${kind}`),
+            }))}
+          />
         </Field>
         <Field
           label={t("pages.limits.unpricedLabel")}
@@ -702,6 +922,7 @@ function RateLimitSheet({
   onOpenChange,
   scopeType,
   scopeId,
+  scopeName,
   limit,
   onDone,
 }: {
@@ -709,6 +930,8 @@ function RateLimitSheet({
   onOpenChange: (open: boolean) => void;
   scopeType: string;
   scopeId: string;
+  /** what the subtitle calls the scope: its name, not the `type:uuid` it is stored as */
+  scopeName: string;
   limit?: RateLimitRow;
   onDone: () => void;
 }) {
@@ -774,7 +997,7 @@ function RateLimitSheet({
       open={open}
       onOpenChange={onOpenChange}
       title={t(limit ? "pages.limits.rateLimitEditTitle" : "pages.limits.rateLimitSheetTitle")}
-      subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: `${scopeType}:${scopeId}` })}
+      subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: scopeName })}
       dirty={dirty}
       errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={t(limit ? "common.save" : "common.create")}

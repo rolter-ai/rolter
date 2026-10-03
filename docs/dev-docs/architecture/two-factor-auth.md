@@ -153,7 +153,7 @@ working. It is called out in the operator docs so it does not read as a fault.
 
 Two independent budgets, because they defend different things.
 
-- **The password** is guarded by [`login_throttle`](../../crates/rolter-control/src/login_throttle.rs)
+- **The password** is guarded by [`login_throttle`](../../../crates/rolter-control/src/login_throttle.rs)
   (#1079), unchanged: a wrong password still costs the attacker its escalating
   delay and lockout.
 - **The challenge** carries its own `attempts` counter, capped at three, and
@@ -203,8 +203,12 @@ the first match instead would let a relaxed membership soften a hardened one.
 Under a `required_*` policy the password sign-in never admits an unenrolled
 account unprotected: it gets the enrolment challenge above, or, on a control
 plane with no KEK, a distinct `mfa_enrolment_required` refusal. Telling that
-user to retype their password would be a lie. Invitation acceptance does not
-go through this decision yet and issues a session directly (#1935).
+user to retype their password would be a lie. Invitation acceptance makes the
+same decision for the account it creates: under an enforced policy it answers
+`sign_in_required` with reason `second_factor` instead of a session, and the
+sign-in that follows issues the enrolment challenge. It never mints a session
+for an account that existed before the invitation (#1935; see
+[invitations](invitations.md)).
 
 `mfa_enforce_after` lets an org announce the requirement before it applies.
 `SetPolicy` reads it as a double option: an explicit `null` clears it, an

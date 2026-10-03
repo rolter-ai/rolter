@@ -22,6 +22,8 @@
 //!   string, exactly as the provider path does.
 
 use axum::extract::{Path, State};
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -33,7 +35,7 @@ use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::repo::AuditLogRepo;
 
-use crate::crud::{pool, ApiError, ApiResult};
+use crate::crud::{pool, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -130,11 +132,8 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
             "storing connector credentials requires {KEK_ENV}"
         )));
     };
-    kek.encrypt(secret).map_err(|_| {
-        ApiError::Core(Error::Store(
-            "failed to encrypt connector credential".into(),
-        ))
-    })
+    kek.encrypt(secret)
+        .map_err(|_| ApiError::Curated("failed to encrypt connector credential".into()))
 }
 
 async fn list(
@@ -156,7 +155,7 @@ async fn list(
 async fn create(
     principal: Principal,
     State(state): State<ControlState>,
-    Json(input): Json<ConnectorInput>,
+    SafeJson(input): SafeJson<ConnectorInput>,
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Create))?;
     validate(&input, &state.egress)?;
@@ -178,7 +177,7 @@ async fn create(
     .fetch_one(pool(&state))
     .await
     .map_err(|e| Error::Store(e.to_string()))?;
-    audit(&state, &principal, "connector.create", &connector).await;
+    audit(&state, &principal, "connector.create", &connector, None).await;
     Ok(Json(connector))
 }
 
@@ -186,18 +185,52 @@ async fn update(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    Json(input): Json<ConnectorInput>,
+    SafeJson(input): SafeJson<ConnectorInput>,
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Update))?;
     validate(&input, &state.egress)?;
     let secret = input.managed_auth_secret.as_deref().map(seal).transpose()?;
+    let mut tx = pool(&state)
+        .begin()
+        .await
+        .map_err(|e| Error::Store(e.to_string()))?;
+    let (stored, had_secret): (String, bool) = sqlx::query_as(
+        "select endpoint, auth_ciphertext is not null from observability_connectors \
+         where id=$1 for no key update",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| Error::Store(e.to_string()))?
+    .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
+    // a secret was given for one receiver; repointed at another origin, the
+    // connector would hand it to whoever answers there, so it is dropped
+    // unless this request brings the new receiver's own. An unparsable
+    // stored endpoint counts as moved
+    let origin_changed = match (
+        reqwest::Url::parse(&stored),
+        reqwest::Url::parse(input.endpoint.trim()),
+    ) {
+        (Ok(stored), Ok(new)) => stored.origin() != new.origin(),
+        _ => true,
+    };
+    let clear_secret = origin_changed && secret.is_none();
+    // health describes one endpoint and credential; once either changes the
+    // recorded result is a claim about something that no longer exists, and
+    // a green card over an untried endpoint is the silent no-op the test
+    // delivery guards against. Other edits keep the history
+    let reset_health = stored != input.endpoint.trim() || secret.is_some();
     // coalesce leaves an existing secret in place when the caller does not
-    // resend it, so editing the sampling rate cannot silently drop the
-    // credential the connector needs
+    // resend it on the same origin, so editing the sampling rate cannot
+    // silently drop the credential the connector needs
     let connector: Connector = sqlx::query_as(&format!(
         "update observability_connectors set name=$2, kind=$3, endpoint=$4, enabled=$5, \
          sampling_rate=$6, auth_secret_ref=$7, \
-         auth_ciphertext=coalesce($8, auth_ciphertext), auth_nonce=coalesce($9, auth_nonce), \
+         auth_ciphertext = case when $10 then null else coalesce($8, auth_ciphertext) end, \
+         auth_nonce = case when $10 then null else coalesce($9, auth_nonce) end, \
+         health_status = case when $11 then 'unknown' else health_status end, \
+         health_checked_at = case when $11 then null else health_checked_at end, \
+         health_error = case when $11 then null else health_error end, \
          updated_at=now() where id=$1 returning {}",
         columns()
     ))
@@ -210,11 +243,20 @@ async fn update(
     .bind(input.auth_secret_ref.as_deref())
     .bind(secret.as_ref().map(|(c, _)| c.as_slice()))
     .bind(secret.as_ref().map(|(_, n)| n.as_slice()))
-    .fetch_optional(pool(&state))
+    .bind(clear_secret)
+    .bind(reset_health)
+    .fetch_one(&mut *tx)
     .await
-    .map_err(|e| Error::Store(e.to_string()))?
-    .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
-    audit(&state, &principal, "connector.update", &connector).await;
+    .map_err(|e| Error::Store(e.to_string()))?;
+    tx.commit().await.map_err(|e| Error::Store(e.to_string()))?;
+    audit(
+        &state,
+        &principal,
+        "connector.update",
+        &connector,
+        Some(clear_secret && had_secret),
+    )
+    .await;
     Ok(Json(connector))
 }
 
@@ -285,7 +327,7 @@ async fn test_delivery(
         _ => None,
     };
 
-    let outcome = deliver_probe(&state.http, &kind, &endpoint, token.as_deref()).await;
+    let outcome = deliver_probe(&state.egress, &kind, &endpoint, token.as_deref()).await;
     let checked_at = Utc::now();
     let (status, error) = match &outcome {
         Ok(()) => ("healthy", None),
@@ -318,7 +360,7 @@ async fn test_delivery(
 /// so a test cannot pollute the operator's backend with synthetic records while
 /// still exercising the whole path: DNS, TLS, the URL, and the credential.
 async fn deliver_probe(
-    http: &reqwest::Client,
+    egress: &Arc<rolter_core::EgressPolicy>,
     kind: &str,
     endpoint: &str,
     authorization: Option<&str>,
@@ -326,9 +368,14 @@ async fn deliver_probe(
     if kind != "otlp_http" {
         return Err(format!("unsupported connector kind '{kind}'"));
     }
+    // not `state.http`: that client follows redirects and resolves without the
+    // egress policy, so a sink could bounce the probe to link-local
+    let http = crate::egress_client::builder(egress)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|_| "delivery client unavailable".to_string())?;
     let mut request = http
         .post(endpoint)
-        .timeout(std::time::Duration::from_secs(10))
         .json(&serde_json::json!({ "resourceLogs": [] }));
     if let Some(value) = authorization {
         request = request.header(axum::http::header::AUTHORIZATION, value);
@@ -347,7 +394,16 @@ async fn deliver_probe(
 /// Audit a connector write. Endpoint and credential are deliberately absent:
 /// the endpoint can carry a token in its query string, and the audit log is a
 /// wider-read surface than the connector table.
-async fn audit(state: &ControlState, principal: &Principal, action: &str, connector: &Connector) {
+///
+/// `secret_cleared` records on an update that the stored secret was dropped
+/// because the endpoint moved origin.
+async fn audit(
+    state: &ControlState,
+    principal: &Principal,
+    action: &str,
+    connector: &Connector,
+    secret_cleared: Option<bool>,
+) {
     let actor = match principal {
         Principal::User(user) => Some(user.id),
         Principal::Superadmin => None,
@@ -359,13 +415,19 @@ async fn audit(state: &ControlState, principal: &Principal, action: &str, connec
             action,
             Some("connector"),
             Some(connector.id),
-            Some(serde_json::json!({
-                "name": connector.name,
-                "kind": connector.kind,
-                "enabled": connector.enabled,
-                "sampling_rate": connector.sampling_rate,
-                "auth_secret_configured": connector.auth_secret_configured,
-            })),
+            Some({
+                let mut detail = serde_json::json!({
+                    "name": connector.name,
+                    "kind": connector.kind,
+                    "enabled": connector.enabled,
+                    "sampling_rate": connector.sampling_rate,
+                    "auth_secret_configured": connector.auth_secret_configured,
+                });
+                if let Some(cleared) = secret_cleared {
+                    detail["secret_cleared"] = cleared.into();
+                }
+                detail
+            }),
         )
         .await
     {
@@ -376,6 +438,51 @@ async fn audit(state: &ControlState, principal: &Principal, action: &str, connec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1949: a sink whose name resolves only to an address the policy denies
+    /// is refused before any connection is made.
+    #[tokio::test]
+    async fn a_sink_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let outcome = deliver_probe(
+            &crate::egress_client::testing::deny_loopback(),
+            "otlp_http",
+            &listener.url("/v1/logs"),
+            None,
+        )
+        .await;
+        assert_eq!(outcome, Err("could not connect to the sink".to_string()));
+        assert_eq!(listener.accepted(), 0);
+    }
+
+    /// #1949: the probe used the shared client, which follows ten redirects, so
+    /// a sink that passed the check could bounce it anywhere.
+    #[tokio::test]
+    async fn a_redirect_from_the_sink_is_not_followed() {
+        let target = crate::egress_client::testing::Counter::start().await;
+        let location = format!("http://127.0.0.1:{}/", target.port);
+        let app = axum::Router::new().fallback(move || {
+            let location = location.clone();
+            async move {
+                (
+                    StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, location)],
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let sink = format!(
+            "http://{}/v1/logs",
+            listener.local_addr().expect("an address")
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let outcome = deliver_probe(&Arc::default(), "otlp_http", &sink, None).await;
+        assert_eq!(outcome, Err("sink returned HTTP 302".to_string()));
+        assert_eq!(target.accepted(), 0);
+    }
 
     fn input(endpoint: &str, sampling_rate: f64) -> ConnectorInput {
         ConnectorInput {

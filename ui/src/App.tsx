@@ -10,7 +10,7 @@ import { ListSkeleton } from "@/components/LoadingState";
 import { LocalePicker } from "@/components/LocalePicker";
 import { OpenModeBanner } from "@/components/OpenModeBanner";
 import { Toaster } from "@/components/ui/toaster";
-import { ScopeSwitcher } from "@/components/ScopeSwitcher";
+import { CreateProjectHost, ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { ShortcutHelp } from "@/components/ShortcutHelp";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
@@ -27,6 +27,7 @@ import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/li
 import { logout, ROLES, type MeMembership } from "@/lib/api";
 import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
+import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import {
@@ -108,6 +109,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "oauth-grants": named(() => import("@/pages/McpOAuth"), "OAuthGrants"),
   "mcp-settings": named(() => import("@/pages/McpManagement"), "McpSettings"),
   "api-keys": screen(() => import("@/pages/Account")),
+  preferences: screen(() => import("@/pages/Preferences")),
   security: screen(() => import("@/pages/Security")),
   "effective-config": screen(() => import("@/pages/Config")),
   "client-settings": screen(() => import("@/pages/ClientSettings")),
@@ -226,7 +228,7 @@ function MenuRow({
  * is named by its membership role in the org currently in scope. Before #1196
  * every session read "Admin", including the ones that were not.
  */
-function roleLabel(
+function accountRoleLabel(
   t: TFunction,
   user: SessionUser | null,
   memberships: MeMembership[],
@@ -237,7 +239,7 @@ function roleLabel(
     // an unknown role string from a newer control plane has no label here, so
     // it falls through rather than rendering a raw key
     if (membership && (ROLES as readonly string[]).includes(membership.role)) {
-      return t(`shell.roles.${membership.role}`);
+      return roleLabel(t, membership.role);
     }
   }
   return t("shell.role");
@@ -416,9 +418,11 @@ function Shell() {
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const visible = visibleNav(can);
   const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
-  const roleName = roleLabel(t, user, memberships, scope.orgId);
+  const roleName = accountRoleLabel(t, user, memberships, scope.orgId);
   const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
-  const initials = (email.trim()[0] ?? "?").toUpperCase();
+  // the name the account goes by, else its email (#2434)
+  const shownName = user?.display_name?.trim() || email;
+  const initials = (shownName.trim()[0] ?? "?").toUpperCase();
 
   return (
     // the open-mode warning spans the full width above the shell rather than
@@ -452,9 +456,13 @@ function Shell() {
         onOpenChange={setPaletteOpen}
         nav={visible}
         recent={recent}
-        onNavigate={(k) => navigate(`/${k}`)}
+        onNavigate={(k, search) => navigate(`/${k}${search ?? ""}`)}
       />
       <ShortcutHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      {/* the dialog `openCreateProject()` raises from any screen (#2611). here
+          and not in the switcher, which only exists while the account menu
+          is open */}
+      <CreateProjectHost />
       <div className="flex min-h-0 flex-1">
         <NavSidebar
           groups={navGroups}
@@ -503,7 +511,7 @@ function Shell() {
           version={`v${version}`}
           update={update}
           user={{
-            name: email,
+            name: shownName,
             role,
             initials,
             onClick: handleSignOut,
@@ -515,7 +523,10 @@ function Shell() {
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">{email}</p>
+                  <p className="truncate text-xs font-medium text-foreground">{shownName}</p>
+                  {shownName !== email && (
+                    <p className="truncate text-[0.6875rem] text-muted-foreground">{email}</p>
+                  )}
                   <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
                 </div>
               </div>

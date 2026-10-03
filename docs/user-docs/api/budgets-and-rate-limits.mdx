@@ -38,7 +38,7 @@ A budget row looks like this:
 | Field             | Type             | Meaning                                                                                                                                                                |
 | ----------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `limit_usd`       | decimal, as text | the cap for one window, in the deployment's base currency despite the name. Stored as `numeric(12,4)`, so it comes back with four decimal places                       |
-| `period`          | string           | the window. `daily`, `1d` and `24h` reset daily; `total`, `lifetime` and `all` never reset; anything else is a monthly window                                          |
+| `period`          | string           | the window, as stored. See [Periods](#periods) for the values the gateway reads                                                                                        |
 | `unpriced_policy` | string or null   | this budget's own `ignore`, `warn` or `block` answer to [unpriced traffic](/security/budgets-and-rate-limits#unpriced-traffic); `null` inherits the deployment setting |
 
 ### Create
@@ -50,7 +50,24 @@ curl -s -X POST https://control.example.com/api/v1/budgets \
   -d '{"scope_type": "project", "scope_id": "'"$PROJECT_ID"'", "limit_usd": "500", "period": "30d"}'
 ```
 
-`period` defaults to `30d` and `unpriced_policy` to `null` when omitted.
+`period` defaults to `30d` and `unpriced_policy` to `null` when omitted. A create is checked the same way as an edit, and a refused body is a `400` whose message names the field:
+
+- `limit_usd` has to be a number from 0 to 99999999.9999, the most the `numeric(12,4)` column holds. `NaN`, infinities and negative numbers are refused: the gateway would read the first as no cap at all and a negative one as a cap already spent.
+- `period` has to be one of the values in [Periods](#periods).
+
+### Periods
+
+The gateway resets a budget on a calendar window in UTC. There are no rolling windows, so a `7d` or `1w` budget does not exist.
+
+| Window  | Accepted values            | Resets                                |
+| ------- | -------------------------- | ------------------------------------- |
+| daily   | `daily`, `1d`, `24h`       | every day at 00:00 UTC                |
+| monthly | `monthly`, `30d`           | on the 1st of each month at 00:00 UTC |
+| total   | `total`, `lifetime`, `all` | never, so the cap is a lifetime one   |
+
+The values are case-insensitive, and the row keeps the spelling you sent. `30d` is the calendar month, not the last thirty days; it is the default because budgets have always been stored with it. The dashboard offers the three windows by name and sends `daily`, `monthly` or `total`.
+
+Anything else is refused with a `400` that lists the accepted values. A budget stored by an older release may still hold another value, such as the `7d` the dashboard used to suggest. The gateway enforces such a budget as monthly, and nothing rewrites the row for you: `GET /api/v1/config/problems` lists each one by id and scope, and the dashboard marks its card. Edit the budget and pick a period to clear it.
 
 ### Edit in place
 
@@ -67,7 +84,7 @@ The response is the updated row. A few rules:
 
 - `unpriced_policy: null` drops the override, so the budget inherits the deployment setting again. Leaving the field out does not touch it.
 - `limit_usd` has to be a number from 0 to 99999999.9999, the most the `numeric(12,4)` column holds. Zero is allowed and freezes the scope, because no request is under a cap of zero. More decimal places than four are rounded, so a value that rounds up to 100000000 is refused too.
-- `period` cannot be blank.
+- `period` has to be one of the values in [Periods](#periods).
 - The scope is not editable. A budget on a different scope is a different budget, so sending `scope_type` or `scope_id` is a `400`.
 - A body that changes nothing returns the row as it is and writes nothing: no config version bump and no audit row. That covers an empty body `{}` and one that re-sends the values the row already holds, such as `"limit_usd": "500.0"` on a `500.0000` budget.
 
@@ -101,6 +118,8 @@ curl -s -X POST https://control.example.com/api/v1/rate-limits \
   -H "Content-Type: application/json" \
   -d '{"scope_type": "virtual_key", "scope_id": "'"$KEY_ID"'", "rpm": 600}'
 ```
+
+At least one of `rpm` and `tpm` has to be set, and a cap you set has to be at least 1. The gateway reads a cap of zero or below as "not capped", so `{"rpm": 0}` would store a limit that looks like a hard stop and admits everything; it is refused with a `400` naming the field. A body with neither cap is refused for the same reason. Leave a field out, or send `null`, to leave that dimension uncapped.
 
 ### Edit in place
 

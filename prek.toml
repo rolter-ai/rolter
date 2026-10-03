@@ -159,6 +159,26 @@ language = "system"
 files = "^crates/rolter-store/migrations/"
 pass_filenames = false
 
+# every `uvx` tool version lives in .github/tool-pins/requirements.txt, where
+# dependabot can bump it (#2185); this rejects an inline `uvx tool@x.y.z`
+[[repos.hooks]]
+id = "tool-pins"
+name = "uvx tool pins come from one file"
+entry = "bash scripts/check-tool-pins.sh"
+language = "system"
+files = "^(\\.github/|prek\\.toml$|justfile$|scripts/|docs/dev-docs/development/)"
+pass_filenames = false
+
+# relative links in docs/dev-docs/ must resolve; mdBook does not check the ones
+# that leave the book (#1926)
+[[repos.hooks]]
+id = "dev-docs-links"
+name = "dev-docs relative links resolve"
+entry = "python3 scripts/check-dev-docs-links.py"
+language = "system"
+files = '^docs/dev-docs/|^scripts/check-dev-docs-links\.py$'
+pass_filenames = false
+
 # the other half of the tree ui/'s `format:check` does not reach. it runs the
 # whole set rather than the staged files so the hook and the ci job can never
 # disagree about what "formatted" means
@@ -177,6 +197,15 @@ name = "llms.txt tracks the docs nav"
 entry = "bun scripts/gen-llms-txt.ts --check"
 language = "system"
 files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
+pass_filenames = false
+
+# pinned like the ci step; see #2187 / #2185
+[[repos.hooks]]
+id = "ruff"
+name = "ruff (scripts)"
+entry = "bash -c 'uvx --from \"$(bash scripts/tool-pin.sh ruff)\" ruff check scripts'"
+language = "system"
+files = "^(scripts/.*\\.py|ruff\\.toml)$"
 pass_filenames = false
 
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek
@@ -222,6 +251,16 @@ language = "system"
 files = "^(\\.github/workflows/ci\\.yml|scripts/(check|test)-agent-session-urls\\.sh)$"
 pass_filenames = false
 
+# ci-ok's `edited` fast path reads other ci runs through the api, so its shell
+# only runs on an edited pull request. this runs it against a fake gh and clock
+[[repos.hooks]]
+id = "assert-gate-ran"
+name = "ci-ok fast path against a fake gh"
+entry = "bash scripts/test-assert-gate-ran.sh"
+language = "system"
+files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh)$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "project-automation"
 name = "board automation retry policy"
@@ -230,12 +269,33 @@ language = "system"
 files = "^(\\.github/workflows/project-automation\\.yml|scripts/test-project-automation\\.sh)$"
 pass_filenames = false
 
+# integration/dogfood/*.sh decide what an operator is told to do next from their
+# exit codes and nothing else ran them. this drives them against a stub server
+[[repos.hooks]]
+id = "dogfood-scripts"
+name = "dogfood scripts against a stub server"
+entry = "bash scripts/test-dogfood-scripts.sh"
+language = "system"
+files = "^(integration/dogfood/[^/]+\\.sh|integration/dogfood/creds\\.env|integration/dogfood/signoz/dashboards/.*\\.json|scripts/test-dogfood-scripts\\.sh)$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "chart-appversion"
 name = "chart appVersion tracks the workspace version"
 entry = "python3 scripts/sync-chart-appversion.py"
 language = "system"
 files = "^(Cargo\\.toml|charts/rolter/Chart\\.yaml)$"
+pass_filenames = false
+
+# the same helm lint and strict renders CI runs (scripts/check-helm-chart.sh).
+# without helm on PATH the script skips with a notice rather than failing, as
+# CI is the authority and not every contributor touches the chart
+[[repos.hooks]]
+id = "helm-render"
+name = "helm chart renders strictly"
+entry = "bash scripts/check-helm-chart.sh"
+language = "system"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
 pass_filenames = false
 
 [[repos.hooks]]

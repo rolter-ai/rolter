@@ -11,9 +11,13 @@ Connectors live under **Observability → Connectors** in the dashboard, and on
 `/api/v1/connectors`.
 
 <Note>
-  Connectors are **strictly opt-in and off by default**. A deployment with no
-  connectors has no egress path at all, and creating one does not turn it on —
-  `enabled` is a separate switch. Air-gapped deployments are unaffected.
+  Connectors are **strictly opt-in**. A deployment with no connectors has no
+  egress path at all, and a connector sends nothing until it is enabled. The
+  dashboard creates every connector switched off unless you turn on **Start
+  sending as soon as it is created** in the sheet, and `enabled` is a separate
+  switch on the card afterwards. Through the API `enabled` is a required field,
+  so you choose it when you create the connector. Air-gapped deployments are
+  unaffected.
 </Note>
 
 ## Kinds
@@ -33,11 +37,16 @@ per-tenant routing belongs (see ADR-0026).
 A connector's `endpoint` is never called by Rolter directly. Rolter renders it,
 along with every other enabled connector, into an OpenTelemetry Collector
 config document at `GET /api/v1/connectors/collector-config` — one exporter and
-one set of pipelines per connector. Point a collector at that URL (the OTel
-Collector's confmap HTTP provider accepts `--config=http://...` sources,
-bearer-authenticated the same as any other Rolter API call) and Rolter's own
+one set of pipelines per connector. A connector that is switched off is left out.
+Run a collector with that document as its config file and Rolter's own
 `OTEL_EXPORTER_OTLP_*` export, which already targets that collector, fans out
 from there.
+
+The endpoint answers a superadmin principal only, and a collector has no session
+to sign in with, so do not point a collector at it: that would put the admin token
+in the collector's own deployment. Fetch the document with your own tooling, or
+from the dashboard (below), save it as the collector's config file, and save it
+again after a connector is added, switched on or deleted.
 
 This is why `sampling_rate` is a per-connector knob rather than a single global
 one: each connector gets its own `probabilistic_sampler` processor in the
@@ -58,11 +67,19 @@ You do not have to `curl` for it. **Observability → Connectors** has a
 **Collector config** button beside **Add connector**: it fetches the rendered
 document, shows it in a scrollable pane, and copies it to the clipboard in one
 click. Save it as your collector's config file — `infra/otel/collector.compose.yaml`
-is the one the `docker/docker-compose.observability.yml` overlay mounts — or
-point the collector straight at the URL with `--config` and reload it on a
-schedule. With no connectors defined the panel says so instead of showing a
-document with no exporters in it, because a collector running that would
-deliver nothing.
+is the one the `docker/docker-compose.observability.yml` overlay mounts — and
+save it again after a connector is added, switched on or deleted. Above the
+document the panel shows the endpoint it came from as a full URL you can copy,
+built from the control plane's public base URL (`ROLTER_PUBLIC_URL`). When that
+variable is unset the panel says so, because the default address,
+`http://localhost:4001`, can only be reached from the control plane's own host.
+The panel does not suggest pointing a collector at the URL, since reading it
+takes a superadmin credential. With no connectors defined, or with every
+connector switched off, the panel says so instead of showing a document with no
+exporters in it, because a collector running that would deliver nothing. The
+second case is the one you meet right after adding your first connector, since
+it starts switched off: turn its switch on from its card, then open the panel
+again.
 
 ## Fields
 
@@ -71,10 +88,47 @@ deliver nothing.
 | `name`                | Unique label for the connector                           |
 | `kind`                | `otlp_http`                                              |
 | `endpoint`            | The `http(s)` URL telemetry is POSTed to                 |
-| `enabled`             | Off by default; nothing is sent until this is on         |
+| `enabled`             | Required. `false` sends nothing until it is turned on    |
 | `sampling_rate`       | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything |
 | `auth_secret_ref`     | A reference into your external secret manager            |
 | `managed_auth_secret` | Write-only bearer token, sealed before storage           |
+
+The dashboard's **Add connector** sheet takes sampling as a percentage from 0 to 100 and
+stores it as that rate (25 becomes `0.25`). `0` is kept as `0`: the connector is created and
+sends nothing, which is a way to park one without deleting it. A blank field, text, or a number
+outside 0 to 100 is refused with a message under the field and **Create** stays disabled, rather
+than being read as 100. Fractions are fine, so `0.5` samples one request in two hundred. A
+connector's card reads the stored rate back the same way, for example "0.4% sampled".
+
+The sheet also has a **Start sending as soon as it is created** switch, off by default, which
+is what it sends as `enabled`. Left off, the connector is created switched off: the notification
+says so and points at **Test delivery** and the switch on its card, and the card carries an
+**off** tag beside its health until you turn the switch on. Turn the switch on in the sheet and
+request logs start leaving for the endpoint from the moment you press **Create**.
+
+### Editing a connector
+
+The pencil on a connector's card opens the same sheet filled with its name, endpoint and sampling
+rate, the rate read as a percentage. Saving sends one `PUT` to the connector's own id, so the
+connector is not deleted and re-added and keeps its health and the time of its last test unless the endpoint or secret changes. Sampling
+is checked the way it is on **Add connector**, and a rate you did not touch goes back exactly as it
+is stored. The sheet has no start switch: whether a connector is sending is still the switch on its
+card, and an edit leaves it as it found it.
+
+The secret field is write-only and starts blank. Left blank, the stored secret is kept; typing one
+replaces it. A stored secret cannot be removed yet, in the sheet or through the API: an empty
+`managed_auth_secret` is refused, so a connector that has to lose its credential is deleted and
+added again. As with an alert channel, a secret belongs to the endpoint's origin: pointing the
+connector at another scheme, host or port without typing a new secret drops the stored one, so it is
+never sent to the new endpoint. Type that endpoint's own secret to replace it. An edit that stays on
+the same origin, such as another path, keeps the secret. The audit entry records that the secret was
+dropped, never the endpoint or the secret.
+
+A save that changes neither the endpoint nor the secret, such as a rename or a new sampling rate,
+keeps the health the last test recorded. A save that changes the endpoint or types a new secret
+resets the health to `unknown` and clears the time and error of the last test in the same
+transaction, because that result described the old endpoint or credential. Run **Test delivery**
+on the card to record a new one.
 
 ### Credentials are write-only
 
@@ -84,7 +138,11 @@ entry; responses carry only `auth_secret_configured`, a boolean. Storing one
 requires the KEK environment variable to be set.
 
 Editing a connector without resending the secret leaves the stored one in
-place, so changing a sampling rate cannot silently drop the credential.
+place, so changing a sampling rate cannot silently drop the credential, unless
+the endpoint moves to another scheme, host or port, which drops it. The
+secret is the only field that works this way: `PUT /api/v1/connectors/{id}`
+replaces the whole row, so an update that leaves out `auth_secret_ref` clears
+it. The dashboard sends it back as stored.
 
 If you would rather Rolter never hold the secret at all, use `auth_secret_ref`
 and keep it in your own secret manager.
@@ -112,8 +170,14 @@ timestamp and, on failure, a short reason) and shown in the connector list.
 Failure reasons are the HTTP status or the transport failure class, never the
 sink's response body — an error body can echo the credential it just rejected.
 
+In the dashboard the card reads "checked 3 days ago" and shows the full date and time when you
+hover it. A delivered test also announces itself in a notification, since a connector that was
+already healthy would otherwise show nothing new. A rejected test, a test that could not run, and
+a delete that failed print their reason on the card they belong to.
+
 Test delivery runs whether or not the connector is enabled. That is the point:
-check it before you turn it on.
+check it before you turn it on. It is also the order the dashboard sets up: a new
+connector starts off, so its first test runs before its first request log leaves.
 
 <Tip>
   A connector that has never been tested shows `unknown` health rather than

@@ -45,13 +45,12 @@ await step("S1.2", "an anonymous caller gets nothing the spec doesn't mark publi
   return open.length === 0 ? ["pass", `${checked} non-public GETs without parameters, all 401`] : ["fail", open.slice(0, 6).join("; ")];
 });
 
-await step("S1.3", "the redacted config stays public", async () => {
+await step("S1.3", "the redacted config is not public", async () => {
   const r = await fetch(`${CONTROL}/api/v1/config`);
   const body = await r.text();
   const secret = /sk-[A-Za-z0-9]{16,}|"api_key"\s*:\s*"[^"*]/.test(body);
-  const bases = (body.match(/api_base/g) ?? []).length;
-  assert(!secret, "a secret in the public config");
-  return ["partial", `anonymous ${r.status}: no secrets, but ${bases} api_base values and the route map are readable (#1840)`];
+  assert(!secret, "a secret in the config view");
+  return r.status === 401 ? ["pass", "anonymous 401 (#1840)"] : ["fail", `anonymous ${r.status}: the topology is readable without a session`];
 });
 
 await step("S1.4", "browser origins restricted", async () => {

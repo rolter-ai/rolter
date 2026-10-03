@@ -24,6 +24,12 @@
 //!   session, whoever spent it. With `usage_flush_secs = 0` every turn flushes
 //!   as it finishes, and the budgets are still re-read every second while the
 //!   session is quiet.
+//! - Every tick also looks the session's virtual key up again, so a key
+//!   disabled, expired or deleted, or a narrowed `models` list, closes the
+//!   session within one interval (#1881). A key moved to another team or
+//!   project re-scopes the session for its later turns; a key moved to another
+//!   organization, or into a scope with different content plugins, closes it
+//!   (#2384).
 //! - A gateway shutting down closes every session and waits for its meter's
 //!   last flush, since axum's own drain does not see an upgraded socket.
 //! - A response still in flight when the session ends never reports usage. Its
@@ -38,15 +44,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rolter_core::ModelPriceConfig;
+use rolter_core::PluginStage;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::budgets::ScopeIds;
+use crate::handlers::AccessRevoked;
 use crate::logging::{RequestLog, Usage, CLIENT_DISCONNECT_ERROR, CLIENT_DISCONNECT_STATUS};
 use crate::metrics::Metrics;
-use crate::state::{AppState, Snapshot};
+use crate::state::{AppState, KeyMeta, Snapshot};
 
 /// Finished turns that may wait for the meter before the relay drops them.
 ///
@@ -221,7 +229,7 @@ impl TurnTracker {
 /// a nested `type`, such as an item's, can never sit there. The Realtime API
 /// writes `type` in one of those two places, so this answers from a few dozen
 /// bytes of a frame that may carry tens of kilobytes of audio.
-fn leading_type(frame: &str) -> Option<&str> {
+pub(crate) fn leading_type(frame: &str) -> Option<&str> {
     let rest = frame.trim_start().strip_prefix('{')?.trim_start();
     let rest = match rest.strip_prefix("\"event_id\"") {
         Some(after) => skip_string_member(after)?,
@@ -361,6 +369,15 @@ impl SessionEnd {
         }
     }
 
+    /// the key that opened the session, or its access, was revoked (#1881)
+    pub(crate) fn access_revoked(revoked: &AccessRevoked) -> Self {
+        Self {
+            status: revoked.status.as_u16(),
+            error: revoked.message.clone(),
+            upstream_fault: false,
+        }
+    }
+
     pub(crate) fn upstream_fault(&self) -> bool {
         self.upstream_fault
     }
@@ -403,6 +420,15 @@ impl MeterHandle {
     }
 }
 
+/// Why the meter asks the relay to close a session.
+#[derive(Debug)]
+pub(crate) enum Closure {
+    /// a budget in the session's scope chain is spent; carries the refusal
+    BudgetSpent(String),
+    /// the session's key, or its access to the model, is gone (#1881)
+    AccessRevoked(AccessRevoked),
+}
+
 /// Everything a session's meter needs to attribute and price its turns.
 pub(crate) struct SessionMeter {
     pub(crate) state: AppState,
@@ -420,14 +446,27 @@ pub(crate) struct SessionMeter {
     /// `None` flushes after every turn instead of on a timer, and re-reads
     /// the budgets every [`IDLE_BUDGET_CHECK`] in between
     pub(crate) flush_every: Option<Duration>,
+    /// digest of the key that opened the session, looked up again on every
+    /// tick; `None` when the session was opened without a key
+    pub(crate) key_digest: Option<String>,
+}
+
+/// The relay's view of a running meter.
+pub(crate) struct MeterChannels {
+    pub(crate) handle: MeterHandle,
+    /// resolves with the reason to close when a tick finds the session's key
+    /// revoked or moved out of reach, or a budget in its scope chain spent
+    pub(crate) closure: oneshot::Receiver<Closure>,
+    /// the scope the session bills to, changed when a tick re-scopes it
+    pub(crate) scope: watch::Receiver<ScopeIds>,
 }
 
 impl SessionMeter {
-    /// Start the meter. The receiver resolves with the refusal message when a
-    /// budget in the session's scope chain is found spent after a flush.
-    pub(crate) fn spawn(self) -> (MeterHandle, oneshot::Receiver<String>) {
+    /// Start the meter.
+    pub(crate) fn spawn(self) -> MeterChannels {
         let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
         let (exhausted_tx, exhausted_rx) = oneshot::channel();
+        let (scope_tx, scope_rx) = watch::channel(self.scope.clone());
         let handle = MeterHandle {
             tx,
             metrics: self.state.metrics.clone(),
@@ -438,12 +477,90 @@ impl SessionMeter {
             pending: Vec::new(),
             seq: 0,
             exhausted: Some(exhausted_tx),
+            rescoped: scope_tx,
         };
         // tracked, so a gateway shutting down waits for this meter's last
         // flush before the runtime is dropped under it
         sessions.spawn_meter(runner.run(rx));
-        (handle, exhausted_rx)
+        MeterChannels {
+            handle,
+            closure: exhausted_rx,
+            scope: scope_rx,
+        }
     }
+}
+
+/// What a tick does about the scope the session's key is in now.
+#[derive(Debug, PartialEq, Eq)]
+enum Rescope {
+    /// the key is where the session was opened, or last re-scoped
+    Unchanged,
+    /// the key moved within its organization; later turns bill to this scope
+    Moved(ScopeIds),
+    /// the key moved somewhere the session cannot follow
+    Close(AccessRevoked),
+}
+
+/// Whether `scope` is still the scope `key` resolves to. Compared field by
+/// field rather than through [`crate::handlers::request_scope`], so the tick
+/// that finds nothing changed, which is nearly every tick, allocates nothing.
+fn scope_matches(scope: &ScopeIds, key: &KeyMeta) -> bool {
+    scope.org == key.org_id
+        && scope.team == key.team_id
+        && scope.project == key.project_id
+        && scope.key == key.id
+        && scope.business_unit == key.business_unit_id
+        && scope.customer == key.customer_id
+}
+
+/// Decide whether a session whose key now sits in `key`'s scope can follow it
+/// there (#2384).
+///
+/// Budgets, rate limits and the request log are keyed by scope ids that the
+/// meter reads on every flush, so a key moved to another team or project is
+/// followed: its later turns bill and count against the new chain. Two moves
+/// are not followed, because the session's content policy was built for the
+/// scope it was opened in and cannot be rebuilt mid-session:
+///
+/// - another organization is another tenant, with its own guardrail tenancy,
+///   plugins and provider credentials;
+/// - a project whose pre-upstream plugins differ from the old one's would
+///   leave the session running a plugin set the key no longer selects.
+fn rescope(snap: &Snapshot, current: &ScopeIds, key: &KeyMeta) -> Rescope {
+    if scope_matches(current, key) {
+        return Rescope::Unchanged;
+    }
+    let moved = crate::handlers::request_scope(Some(key));
+    let closed = |message: &str| {
+        Rescope::Close(AccessRevoked {
+            status: axum::http::StatusCode::FORBIDDEN,
+            code: "key_scope_changed",
+            message: message.to_string(),
+        })
+    };
+    if moved.org != current.org {
+        return closed(
+            "the virtual key moved to another organization; open a new realtime session",
+        );
+    }
+    let plugins = |scope: &ScopeIds| {
+        let project = (!scope.project.is_empty()).then_some(scope.project.as_str());
+        snap.plugins
+            .for_stage(PluginStage::PreUpstream, &scope.org, project)
+    };
+    let (before, after) = (plugins(current), plugins(&moved));
+    let same_plugins = before.len() == after.len()
+        && before
+            .iter()
+            .zip(&after)
+            .all(|(old, new)| std::ptr::eq(*old, *new));
+    if !same_plugins {
+        return closed(
+            "the virtual key moved to a project with different plugins; open a new realtime \
+             session",
+        );
+    }
+    Rescope::Moved(moved)
 }
 
 struct Runner {
@@ -452,7 +569,10 @@ struct Runner {
     /// turns logged so far, so every row of the session has its own id
     seq: u64,
     /// taken once a spent budget has been reported
-    exhausted: Option<oneshot::Sender<String>>,
+    exhausted: Option<oneshot::Sender<Closure>>,
+    /// tells the relay the session was re-scoped, so its content policy
+    /// attributes later events to the same tenant the meter bills
+    rescoped: watch::Sender<ScopeIds>,
 }
 
 impl Runner {
@@ -488,7 +608,15 @@ impl Runner {
         }
     }
 
-    /// Flush, then report a spent budget to the relay.
+    /// Flush, then report a revoked key or a spent budget to the relay.
+    ///
+    /// The key is looked up in the snapshot loaded for this tick, so a key
+    /// disabled, expired or deleted, or a `models` list or route access
+    /// narrowed, reaches a live session within one flush interval (#1881).
+    /// A key moved to another team or project re-scopes the session before
+    /// its budgets are read, so a spent budget in the new chain closes it on
+    /// the same tick (#2384). Turns already pending are flushed to the scope
+    /// they were served under first.
     ///
     /// The check runs on every tick, not only after this session spent
     /// something: a budget is shared by the whole scope chain, so another
@@ -500,6 +628,29 @@ impl Runner {
         if self.exhausted.is_none() {
             return;
         }
+        if let Some(digest) = &self.meter.key_digest {
+            let verdict = crate::handlers::recheck_session_access(
+                &snap,
+                digest,
+                &self.meter.model,
+                &self.meter.provider,
+            )
+            .map(|key| rescope(&snap, &self.meter.scope, key));
+            match verdict {
+                Ok(Rescope::Unchanged) => {}
+                Ok(Rescope::Moved(scope)) => {
+                    self.meter.scope = scope.clone();
+                    // the relay is gone only when the session is ending
+                    let _ = self.rescoped.send(scope);
+                }
+                Err(revoked) | Ok(Rescope::Close(revoked)) => {
+                    if let Some(tx) = self.exhausted.take() {
+                        let _ = tx.send(Closure::AccessRevoked(revoked));
+                    }
+                    return;
+                }
+            }
+        }
         let state = &self.meter.state;
         if let Some(spent) = state
             .budgets
@@ -508,7 +659,9 @@ impl Runner {
         {
             state.metrics.budget_blocks_total.fetch_add(1, Relaxed);
             if let Some(tx) = self.exhausted.take() {
-                let _ = tx.send(crate::handlers::budget_exceeded_message(&spent));
+                let _ = tx.send(Closure::BudgetSpent(
+                    crate::handlers::budget_exceeded_message(&spent),
+                ));
             }
         }
     }
@@ -864,6 +1017,87 @@ mod tests {
             None
         );
         assert_eq!(response_id(r#"{"type":"x"}"#), None);
+    }
+
+    fn plugin(slug: &str, org: &str, project: Option<&str>) -> rolter_core::PluginInstanceConfig {
+        serde_json::from_value(serde_json::json!({
+            "slug": slug,
+            "org_id": org,
+            "project_id": project,
+            "stage": "pre_upstream",
+            "position": 0,
+            "failure_mode": "fail_open",
+            "endpoint": "https://plugin.example.com/hook",
+        }))
+        .unwrap()
+    }
+
+    fn snapshot(plugins: Vec<rolter_core::PluginInstanceConfig>) -> Snapshot {
+        let mut config = rolter_core::GatewayConfig::default();
+        config.plugins.instances = plugins;
+        Snapshot::build(&config, &crate::load::LoadTracker::new())
+    }
+
+    fn key(org: &str, team: &str, project: &str) -> KeyMeta {
+        KeyMeta {
+            id: "key-1".into(),
+            org_id: org.into(),
+            team_id: team.into(),
+            project_id: project.into(),
+            ..Default::default()
+        }
+    }
+
+    fn opened_in(org: &str, team: &str, project: &str) -> ScopeIds {
+        crate::handlers::request_scope(Some(&key(org, team, project)))
+    }
+
+    #[test]
+    fn a_key_left_where_it_was_keeps_its_scope() {
+        let snap = snapshot(Vec::new());
+        let scope = opened_in("org", "team", "proj-a");
+        assert_eq!(
+            rescope(&snap, &scope, &key("org", "team", "proj-a")),
+            Rescope::Unchanged
+        );
+    }
+
+    #[test]
+    fn a_key_moved_within_its_org_is_followed() {
+        let snap = snapshot(vec![plugin("org-wide", "org", None)]);
+        let scope = opened_in("org", "team-a", "proj-a");
+        let Rescope::Moved(moved) = rescope(&snap, &scope, &key("org", "team-b", "proj-b")) else {
+            panic!("an in-org move with the same plugins re-scopes");
+        };
+        assert_eq!(moved, opened_in("org", "team-b", "proj-b"));
+    }
+
+    #[test]
+    fn a_key_moved_to_another_org_closes_the_session() {
+        let snap = snapshot(Vec::new());
+        let scope = opened_in("org-a", "team", "proj");
+        let Rescope::Close(revoked) = rescope(&snap, &scope, &key("org-b", "team", "proj")) else {
+            panic!("a cross-org move closes");
+        };
+        assert_eq!(revoked.code, "key_scope_changed");
+        assert_eq!(revoked.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn a_key_moved_into_a_project_with_other_plugins_closes_the_session() {
+        let snap = snapshot(vec![plugin("audit", "org", Some("proj-b"))]);
+        let scope = opened_in("org", "team", "proj-a");
+        assert!(matches!(
+            rescope(&snap, &scope, &key("org", "team", "proj-b")),
+            Rescope::Close(_)
+        ));
+        // and out of one, which would leave the session running a plugin the
+        // key no longer selects
+        let scope = opened_in("org", "team", "proj-b");
+        assert!(matches!(
+            rescope(&snap, &scope, &key("org", "team", "proj-a")),
+            Rescope::Close(_)
+        ));
     }
 
     #[test]

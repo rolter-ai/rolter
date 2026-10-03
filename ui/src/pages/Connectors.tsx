@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cable, FileCode2, FlaskConical, Loader2 } from "lucide-react";
+import { Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -11,11 +13,20 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
-import { ListSummary, PageBody, Pill, StatusDot, Toolbar } from "@/components/screen";
+import { PublicUrlValue } from "@/components/PublicUrlValue";
+import {
+  ListSummary,
+  PageBody,
+  Pill,
+  RowIconButton,
+  StatusDot,
+  Toolbar,
+} from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -24,7 +35,9 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
+  collectorConfigUrl,
   createConnector,
   deleteConnector,
   fetchCollectorConfig,
@@ -34,18 +47,28 @@ import {
   type ConnectorRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { movesOrigin } from "@/lib/origin";
+import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
+
+// the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
+const statusTint = (hue: "success" | "danger" | "info") =>
+  `color-mix(in srgb, var(--status-${hue}) 15%, transparent)`;
 
 // `[label, tint]`: the label colour is the -text half of the hue, because a
 // health pill is a glyph on a tint rather than a shape (#1181)
 const HEALTH_TONE: Record<string, [string, string]> = {
-  healthy: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
-  unhealthy: ["var(--status-danger-text)", "var(--red-tint)"],
+  healthy: ["var(--status-success-text)", statusTint("success")],
+  unhealthy: ["var(--status-danger-text)", statusTint("danger")],
   unknown: ["var(--text-secondary)", "var(--surface-subtle)"],
 };
 
 const healthTone = (status: string) => HEALTH_TONE[status] ?? HEALTH_TONE.unknown;
+
+// the created-off toast carries an instruction, so it stays up as long as an
+// error does rather than the few seconds a plain success gets
+const NEXT_STEP_TOAST_MS = 8000;
 
 const asInput = (c: ConnectorRow) => ({
   name: c.name,
@@ -55,6 +78,38 @@ const asInput = (c: ConnectorRow) => ({
   sampling_rate: c.sampling_rate,
   auth_secret_ref: c.auth_secret_ref,
 });
+
+/**
+ * The address the collector config is served from, and what it takes to read it
+ * (#2106).
+ *
+ * The endpoint answers a superadmin principal and nothing narrower, and a
+ * collector has no session to present one, so pointing a collector at it would
+ * mean putting the admin token in the collector's own deployment. The row shows
+ * the address for the operator's own tooling and says so; the document below it
+ * is what goes into the collector's config file.
+ *
+ * The address is the control plane's public base, never `window.location`:
+ * the dashboard may be open under a different name than the one a script
+ * calls. Pending, failed and an unset `ROLTER_PUBLIC_URL` are
+ * `PublicUrlValue`'s to say, the same way the User Provisioning screen says
+ * them.
+ *
+ * It mounts only while the dialog is open, so the read happens when somebody
+ * asks for the document and not on every visit to the screen.
+ */
+function CollectorEndpoint() {
+  const { t } = useTranslation();
+  return (
+    <PublicUrlValue
+      address={collectorConfigUrl}
+      label={t("pages.connectors.collectorConfig.endpoint")}
+      copyLabel={t("pages.connectors.collectorConfig.copyEndpoint")}
+      hint={t("pages.connectors.collectorConfig.endpointHint")}
+      testId="collector-config-url"
+    />
+  );
+}
 
 /**
  * The document the connectors are actually delivered through (#1195).
@@ -73,16 +128,22 @@ function CollectorConfigDialog({
   open,
   onOpenChange,
   connectorCount,
+  enabledCount,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   connectorCount: number;
+  /** how many of them are switched on: the only ones the document carries */
+  enabledCount: number;
 }) {
   const { t } = useTranslation();
+  // the document is rendered from the enabled rows alone, so a list that is all
+  // switched off has nothing in it to fetch or to show
+  const deliverable = enabledCount > 0;
   const config = useQuery({
     queryKey: ["collector-config"],
     queryFn: fetchCollectorConfig,
-    enabled: open,
+    enabled: open && deliverable,
     gcTime: 0,
     retry: false,
   });
@@ -94,52 +155,64 @@ function CollectorConfigDialog({
         <DialogDescription>{t("pages.connectors.collectorConfig.where")}</DialogDescription>
       </DialogHeader>
 
-      {/* no connectors means no exporters and no pipelines: the document is
-          valid and delivers nothing, which is worth saying rather than
-          rendering as an almost-empty file */}
-      {connectorCount === 0 ? (
-        <EmptyState
-          uxTarget="collector-config"
-          icon={<FileCode2 />}
-          title={t("pages.connectors.collectorConfig.emptyTitle")}
-          description={t("pages.connectors.collectorConfig.emptyBody")}
-        />
-      ) : (
-        <>
-          {config.isLoading && <PanelSkeleton panels={1} height={240} />}
-          {config.isError && (
-            <LoadError
-              error={config.error}
-              resource={t("errors.resources.collectorConfig")}
-              onRetry={() => void config.refetch()}
-            />
-          )}
-          {config.data !== undefined && (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-[color:var(--text-subtle)]">
-                  {t("pages.connectors.collectorConfig.endpoint")}
-                </span>
-              </div>
-              {/* a collector document is YAML an operator pastes into a
+      {/* the body scrolls when the window is short, so the title and Close stay
+          on screen: the address, its note and the document together are taller
+          than a 640 px window (#2003) */}
+      <DialogBody className="space-y-3">
+        {/* no enabled connector means no exporters and no pipelines: the
+            document is valid and delivers nothing, which is worth saying rather
+            than rendering as an almost-empty file. a connector that is switched
+            off is left out of it, so "there are connectors" is not enough, and
+            the two causes have different remedies (#2364) */}
+        {!deliverable ? (
+          <EmptyState
+            uxTarget={connectorCount === 0 ? "collector-config" : "collector-config-all-off"}
+            icon={<FileCode2 />}
+            title={t(
+              connectorCount === 0
+                ? "pages.connectors.collectorConfig.emptyTitle"
+                : "pages.connectors.collectorConfig.allOffTitle",
+            )}
+            description={t(
+              connectorCount === 0
+                ? "pages.connectors.collectorConfig.emptyBody"
+                : "pages.connectors.collectorConfig.allOffBody",
+            )}
+          />
+        ) : (
+          <>
+            <CollectorEndpoint />
+            {config.isLoading && <PanelSkeleton panels={1} height={240} />}
+            {config.isError && (
+              <LoadError
+                error={config.error}
+                resource={t("errors.resources.collectorConfig")}
+                onRetry={() => void config.refetch()}
+                target="collector-config"
+              />
+            )}
+            {config.data !== undefined && (
+              <>
+                {/* a collector document is YAML an operator pastes into a
                   deployment: highlighted, numbered and copyable, because a
                   badly indented exporter is the failure this screen exists to
                   prevent (#949). CodeBlock owns the copy button and the
                   focusable scroll region */}
-              <CodeBlock
-                value={config.data}
-                language="yaml"
-                label={t("pages.connectors.collectorConfig.title")}
-                maxHeight={380}
-                lineNumbers
-              />
-              <p className="text-sm text-muted-foreground">
-                {t("pages.connectors.collectorConfig.deploy")}
-              </p>
-            </>
-          )}
-        </>
-      )}
+                <CodeBlock
+                  value={config.data}
+                  language="yaml"
+                  label={t("pages.connectors.collectorConfig.title")}
+                  maxHeight={380}
+                  lineNumbers
+                />
+                <p className="text-sm text-muted-foreground">
+                  {t("pages.connectors.collectorConfig.deploy")}
+                </p>
+              </>
+            )}
+          </>
+        )}
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -166,7 +239,6 @@ function ConnectorsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `connectors` is the query the user is actually waiting on for this screen
   useScreenReady(!connectors.isLoading);
-  useErrorState(!!connectors.error, "connectors");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["connectors"] });
 
   const toggle = useMutation({
@@ -181,10 +253,33 @@ function ConnectorsScreen() {
       });
     },
   });
-  const test = useMutation({ mutationFn: testConnector, onSuccess: invalidate });
+  // a probe that ran reports its verdict either way. a rejected one is written
+  // on the card it belongs to; one that got through has no card line to appear
+  // on (the pill only changes after the refetch, and not at all for a connector
+  // that was already healthy), so it says so in a toast
+  const test = useMutation({
+    mutationFn: (c: ConnectorRow) => testConnector(c.id),
+    onSuccess: (result, c) => {
+      invalidate();
+      if (result.delivered) {
+        toast.push({
+          tone: "success",
+          title: t("pages.connectors.testDelivered", { name: c.name }),
+        });
+      }
+    },
+  });
   const remove = useMutation({ mutationFn: deleteConnector, onSuccess: invalidate });
 
-  const [addOpen, setAddOpen] = React.useState(false);
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // the connector the sheet edits, or `null` when it adds one. it outlives the
+  // sheet closing, so the title does not flip to "Add connector" while the
+  // sheet is still sliding away
+  const [editTarget, setEditTarget] = React.useState<ConnectorRow | null>(null);
+  const openSheet = (connector: ConnectorRow | null) => {
+    setEditTarget(connector);
+    setSheetOpen(true);
+  };
   const [configOpen, setConfigOpen] = React.useState(false);
   // log shipping stops the moment the connector goes, and the delivery history
   // goes with it — worth saying before the click (#1179)
@@ -195,6 +290,27 @@ function ConnectorsScreen() {
   };
   // a connector has no tenancy scope, so its row controls are the superadmin's
   // exactly as the add button is (#1258)
+
+  // what went wrong with this card's own test or delete, for the line under it.
+  // a failed delete reports in the confirmation while that is open, so the card
+  // takes over once it is closed. the list carries the probe's reason too once
+  // it is refetched, and the same sentence twice says nothing new
+  const problemWith = (c: ConnectorRow): string | null => {
+    const probed = test.variables?.id === c.id;
+    if (probed && test.data && !test.data.delivered) {
+      const reason = test.data.health_error ?? test.data.health_status;
+      return reason === c.health_error
+        ? null
+        : t("pages.connectors.testFailed", { message: reason });
+    }
+    if (probed && test.isError) {
+      return t("pages.connectors.testError", { message: errorDetail(test.error) ?? "" });
+    }
+    if (remove.isError && remove.variables === c.id && !deleteTarget) {
+      return t("pages.connectors.deleteError", { message: errorDetail(remove.error) ?? "" });
+    }
+    return null;
+  };
 
   return (
     <PageBody>
@@ -218,9 +334,10 @@ function ConnectorsScreen() {
         <GatedButton
           gate="connector:create"
           control="connector-new"
-          onClick={() => setAddOpen(true)}
+          onClick={() => openSheet(null)}
         >
-          + {t("pages.connectors.add")}
+          <Plus className="h-4 w-4" aria-hidden />
+          {t("pages.connectors.add")}
         </GatedButton>
       </Toolbar>
 
@@ -233,8 +350,11 @@ function ConnectorsScreen() {
           error={connectors.error}
           resource={t("errors.resources.connectors")}
           onRetry={() => void connectors.refetch()}
+          target="connectors"
         />
       )}
+      {/* the empty state offers the same create as the toolbar, which stays
+          where it sits on every other list */}
       {connectors.data && connectors.data.length === 0 && (
         <EmptyState
           uxTarget="connectors"
@@ -245,7 +365,7 @@ function ConnectorsScreen() {
             <GatedButton
               gate="connector:create"
               control="connector-new-empty"
-              onClick={() => setAddOpen(true)}
+              onClick={() => openSheet(null)}
             >
               {t("pages.connectors.emptyAction")}
             </GatedButton>
@@ -255,18 +375,26 @@ function ConnectorsScreen() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
         {(connectors.data ?? []).map((c) => {
           const tone = healthTone(c.health_status);
+          const problem = problemWith(c);
           return (
-            <div
+            <CardStack
               key={c.id}
-              className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              // named after the connector, so the card's own test, delete and
+              // error line read as belonging to it
+              role="group"
+              aria-label={c.name}
             >
               <div className="flex items-center gap-2.5">
-                <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+                <IconFrame>
                   <Cable className="h-4 w-4" />
-                </span>
+                </IconFrame>
                 <div className="min-w-0 flex-1">
                   <div className="font-mono text-sm font-semibold">{c.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
+                  {/* wraps rather than truncating: at 375 px a cut-off URL has no
+                      other way to be read, and a host is checked by its end */}
+                  <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {c.endpoint}
+                  </div>
                 </div>
                 <GatedSwitch
                   gate="connector:update"
@@ -281,13 +409,27 @@ function ConnectorsScreen() {
                 <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
                   {c.kind}
                 </Pill>
+                {/* health is its own axis: a connector that was never turned
+                    on reads `unknown` because nothing has tested it, and the
+                    switch alone does not say that nothing is being sent */}
+                {!c.enabled && (
+                  <Pill color="var(--text-secondary)" border="var(--border-strong)">
+                    {t("pages.connectors.off")}
+                  </Pill>
+                )}
                 <Pill color={tone[0]} tint={tone[1]}>
                   <StatusDot color={tone[0]} className="h-1.5 w-1.5" />
                   {c.health_status}
                 </Pill>
-                <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
+                {/* the blue is for a rate that is being applied */}
+                <Pill
+                  color={c.enabled ? "var(--status-info-text)" : "var(--text-secondary)"}
+                  tint={c.enabled ? statusTint("info") : "var(--surface-subtle)"}
+                >
+                  {/* a rate is not always a whole percent, and 0.4 % rounded to
+                      "0% sampled" says nothing is sent while something is */}
                   {t("pages.connectors.sampled", {
-                    percent: Math.round(c.sampling_rate * 100),
+                    percent: fmt.number(c.sampling_rate * 100, { maximumFractionDigits: 2 }),
                   })}
                 </Pill>
                 {c.auth_secret_configured && (
@@ -303,14 +445,12 @@ function ConnectorsScreen() {
                   invalidated list comes back. saying why delivery failed at the
                   moment the operator pressed the button is the whole point of
                   the test (#1178) */}
-              {test.data && test.variables === c.id && !test.data.delivered && (
-                <p className="text-xs text-[color:var(--status-danger-text)]">
-                  {t("pages.connectors.testFailed", {
-                    message: test.data.health_error ?? test.data.health_status,
-                  })}
+              {problem && (
+                <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                  {problem}
                 </p>
               )}
-              <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* the probe writes the connector's health back, so the
                     control plane guards it as an update */}
                 <GatedButton
@@ -319,39 +459,53 @@ function ConnectorsScreen() {
                   size="sm"
                   variant="outline"
                   aria-label={t("pages.connectors.testAria", { name: c.name })}
-                  disabled={test.isPending && test.variables === c.id}
-                  onClick={() => test.mutate(c.id)}
+                  disabled={test.isPending && test.variables?.id === c.id}
+                  onClick={() => test.mutate(c)}
                 >
-                  {test.isPending && test.variables === c.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {test.isPending && test.variables?.id === c.id ? (
+                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                   ) : (
                     <FlaskConical className="h-3.5 w-3.5" />
                   )}
                   {t("pages.connectors.testDelivery")}
                 </GatedButton>
+                {/* a probe from last week must not read as one from today, so the
+                    row says how long ago and keeps the full stamp for the hover */}
                 {c.health_checked_at && (
-                  <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-                    {t("pages.connectors.checkedAt", { time: fmt.time(c.health_checked_at) })}
-                  </span>
+                  <time
+                    dateTime={c.health_checked_at}
+                    title={fmt.dateTime(c.health_checked_at)}
+                    className="text-[0.6875rem] text-[color:var(--text-subtle)]"
+                  >
+                    {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
+                  </time>
                 )}
-                <DeleteIconButton
-                  gate="connector:delete"
-                  control="connector-delete"
-                  className="ml-auto"
-                  label={t("pages.connectors.deleteAria", { name: c.name })}
-                  pending={remove.isPending && remove.variables === c.id}
-                  onClick={() => startDelete(c)}
-                />
+                {/* both name the connector: a grid of cards each offering "Edit"
+                    is N buttons a screen reader cannot tell apart */}
+                <div className="ml-auto flex items-center gap-1.5">
+                  <RowIconButton
+                    gate="connector:update"
+                    control="connector-edit"
+                    className="p-1.5"
+                    title={t("pages.connectors.editAria", { name: c.name })}
+                    aria-label={t("pages.connectors.editAria", { name: c.name })}
+                    onClick={() => openSheet(c)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                  <DeleteIconButton
+                    gate="connector:delete"
+                    control="connector-delete"
+                    label={t("pages.connectors.deleteAria", { name: c.name })}
+                    pending={remove.isPending && remove.variables === c.id}
+                    onClick={() => startDelete(c)}
+                  />
+                </div>
               </div>
-            </div>
+            </CardStack>
           );
         })}
       </div>
-      {(test.isError || (remove.isError && !deleteTarget)) && (
-        <p className="text-xs text-[color:var(--status-danger-text)]">
-          {((test.error ?? remove.error) as Error).message}
-        </p>
-      )}
 
       <ConfirmDialog
         name="connector-delete"
@@ -385,52 +539,118 @@ function ConnectorsScreen() {
         open={configOpen}
         onOpenChange={setConfigOpen}
         connectorCount={connectors.data?.length ?? 0}
+        enabledCount={connectors.data?.filter((c) => c.enabled).length ?? 0}
       />
 
-      <AddConnectorDialog open={addOpen} onOpenChange={setAddOpen} onDone={invalidate} />
+      <ConnectorSheet
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        existing={editTarget}
+        onDone={invalidate}
+      />
     </PageBody>
   );
 }
 
-function AddConnectorDialog({
+/**
+ * One sheet for adding a connector and editing one (#2101).
+ *
+ * An edit is a single `PUT` to the same id, so the connector keeps its health
+ * history. The control plane replaces the whole row from the body, which is why
+ * the fields the sheet has no control for go back as found: `enabled` (the
+ * card's switch owns it) and `auth_secret_ref`. The bearer secret is write-only
+ * and a blank field leaves it out of the body, which the control plane reads as
+ * "keep the stored one". It cannot be cleared through the API, so the sheet
+ * offers no clear, and it is not dropped when the endpoint moves to another
+ * origin, which the hint under the field says.
+ */
+function ConnectorSheet({
   open,
   onOpenChange,
+  existing,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** the connector to edit, or `null` to add one */
+  existing: ConnectorRow | null;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
+  // what the sampling field opens on: every request for a new connector, the
+  // stored rate read as a percentage for an edit
+  const openingSampling = existing ? samplingPercentText(existing.sampling_rate) : "100";
   const [name, setName] = React.useState("");
   const [endpoint, setEndpoint] = React.useState("");
-  const [sampling, setSampling] = React.useState("100");
+  const [sampling, setSampling] = React.useState(openingSampling);
+  // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
+  // a connector is an egress path, so it is created switched off unless the
+  // operator says otherwise: the order the docs teach is test it, then turn it
+  // on, and the first request log must not leave before the first test (#2349).
+  // an edit has no such choice, because the card's switch owns `enabled`
+  const [startNow, setStartNow] = React.useState(false);
 
-  React.useEffect(() => {
-    if (open) {
-      setName("");
-      setEndpoint("");
-      setSampling("100");
-      setSecret("");
-    }
-  }, [open]);
+  // the field is read as typed: 0 is a rate (nothing is sent), and a blank,
+  // non-numeric or out-of-range value blocks Save instead of becoming one
+  // (#2104). the control plane accepts 0 to 1 inclusive, so 0 is not refused
+  const parsed = parseSamplingPercent(sampling);
+  const samplingError = parsed.ok
+    ? undefined
+    : t(
+        parsed.problem === "range"
+          ? "pages.connectors.form.samplingRange"
+          : "pages.connectors.form.samplingInvalid",
+      );
 
-  const create = useMutation({
-    mutationFn: () =>
-      createConnector({
-        name,
-        kind: "otlp_http",
-        endpoint,
-        enabled: true,
-        sampling_rate: Math.min(100, Math.max(0, Number(sampling) || 100)) / 100,
-        ...(secret.trim() ? { managed_auth_secret: secret } : {}),
-      }),
-    onSuccess: () => {
+  // the switch is read into the variables, not from state when the request
+  // lands: a flip while it is in flight would otherwise announce a state the
+  // request did not carry
+  const save = useMutation({
+    mutationFn: ({ rate, enabled }: { rate: number; enabled: boolean }) => {
+      // a blank secret is left out, which an update reads as "keep the stored one"
+      const replacement = secret.trim() ? { managed_auth_secret: secret } : {};
+      return existing
+        ? updateConnector(existing.id, {
+            ...asInput(existing),
+            name,
+            endpoint,
+            sampling_rate: rate,
+            ...replacement,
+          })
+        : createConnector({
+            name,
+            kind: "otlp_http",
+            endpoint,
+            enabled,
+            sampling_rate: rate,
+            ...replacement,
+          });
+    },
+    onSuccess: (_row, { enabled }) => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
+      if (existing) {
+        toast.push({
+          tone: "success",
+          title: t("toast.saved"),
+          detail: t("toast.savedDetail", { what: name }),
+        });
+      } else {
+        // one that was left off says so and what to do next, or nothing ever
+        // arrives and nothing says why
+        toast.push(
+          enabled
+            ? { tone: "success", title: t("toast.created", { what: name }) }
+            : {
+                tone: "success",
+                title: t("pages.connectors.createdOff", { name }),
+                detail: t("pages.connectors.createdOffNext"),
+                duration: NEXT_STEP_TOAST_MS,
+              },
+        );
+      }
       onDone();
       onOpenChange(false);
     },
@@ -443,21 +663,64 @@ function AddConnectorDialog({
     },
   });
 
-  const dirty = !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100");
+  React.useEffect(() => {
+    if (open) {
+      setName(existing?.name ?? "");
+      setEndpoint(existing?.endpoint ?? "");
+      setSampling(openingSampling);
+      setSecret("");
+      setStartNow(false);
+      // a refusal for one connector must not greet the next one opened
+      save.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, existing]);
+
+  const dirty = existing
+    ? name !== existing.name ||
+      endpoint !== existing.endpoint ||
+      sampling !== openingSampling ||
+      secret !== ""
+    : !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100" || startNow);
+
+  // what happens to the stored secret on save, said beside the field that
+  // decides it. the control plane drops it when the endpoint moves to another
+  // origin unless a new one is typed
+  const secretHint = !existing
+    ? undefined
+    : !existing.auth_secret_configured
+      ? t("pages.connectors.form.secretNoneHint")
+      : secret.trim()
+        ? t("pages.connectors.form.secretReplaceHint")
+        : movesOrigin(existing.endpoint, endpoint)
+          ? t("pages.connectors.form.secretMovesHint")
+          : t("pages.connectors.form.secretKeepHint");
 
   return (
     <EditorSheet
-      name="connector-create"
+      name={existing ? "connector-edit" : "connector-create"}
       open={open}
       onOpenChange={onOpenChange}
-      title={t("pages.connectors.add")}
-      subtitle={t("pages.connectors.addSubtitle")}
+      title={
+        existing
+          ? t("pages.connectors.editTitle", { name: existing.name })
+          : t("pages.connectors.add")
+      }
+      subtitle={t("pages.connectors.sheetSubtitle")}
       dirty={dirty}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
-      saveLabel={t("common.create")}
-      canSave={!!name.trim() && !!endpoint.trim()}
-      saving={create.isPending}
-      onSave={() => create.mutate()}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      saveLabel={existing ? t("common.save") : t("common.create")}
+      canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
+      saving={save.isPending}
+      onSave={() => {
+        if (!parsed.ok) return;
+        // a field left as it opened sends the stored rate itself: its text is
+        // a reading of the rate, and a rate with more digits than it shows
+        // would come back changed
+        const rate =
+          existing && sampling === openingSampling ? existing.sampling_rate : parsed.rate;
+        save.mutate({ rate, enabled: startNow });
+      }}
     >
       <div className="space-y-3">
         <Field label={t("pages.connectors.form.name")}>
@@ -471,25 +734,44 @@ function AddConnectorDialog({
             placeholder="https://otlp.example.com/v1/logs"
           />
         </Field>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.connectors.form.sampling")}>
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={sampling}
-              onChange={(e) => setSampling(e.target.value)}
-            />
-          </Field>
-          <Field label={t("pages.connectors.form.secret")}>
-            <Input
-              type="password"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              placeholder={t("pages.connectors.form.secretPlaceholder")}
-            />
-          </Field>
-        </div>
+        <Field
+          label={t("pages.connectors.form.sampling")}
+          hint={t("pages.connectors.form.samplingHint")}
+          error={samplingError}
+        >
+          <Input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            max={100}
+            step="any"
+            value={sampling}
+            onChange={(e) => setSampling(e.target.value)}
+          />
+        </Field>
+        <Field
+          label={t(existing ? "pages.connectors.form.secretEdit" : "pages.connectors.form.secret")}
+          hint={secretHint}
+        >
+          <Input
+            type="password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            placeholder={t("pages.connectors.form.secretPlaceholder")}
+          />
+        </Field>
+        {/* said again when it is on, because that is the choice with a
+            consequence: request logs leave for the endpoint as Create lands */}
+        {!existing && (
+          <SwitchRow
+            title={t("pages.connectors.form.start")}
+            hint={t(
+              startNow ? "pages.connectors.form.startOnHint" : "pages.connectors.form.startHint",
+            )}
+            checked={startNow}
+            onChange={setStartNow}
+          />
+        )}
       </div>
     </EditorSheet>
   );

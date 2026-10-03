@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
   GatewayError,
   awaitingMintedKey,
+  chatCompletion,
   fetchGatewayModels,
   gatewayBase,
   getPlaygroundKey,
@@ -73,18 +74,28 @@ describe("the playground key", () => {
   it("clears the key, and its expiry with it", () => {
     setPlaygroundKey("sk-old", { expiresAt: "2026-01-01T00:30:00Z", minted: true });
     setPlaygroundKey("");
-    expect(getPlaygroundKeyState()).toEqual({ key: "", expiresAt: null, minted: false });
+    expect(getPlaygroundKeyState()).toEqual({
+      key: "",
+      expiresAt: null,
+      minted: false,
+      models: [],
+    });
   });
 
   // a pasted key has no expiry the dashboard chose, so it must not inherit the
   // one the minted key it replaced carried
-  it("drops the previous expiry when a pasted key replaces a minted one", () => {
-    setPlaygroundKey("sk-minted", { expiresAt: "2026-01-01T00:30:00Z", minted: true });
+  it("drops the previous expiry and reach when a pasted key replaces a minted one", () => {
+    setPlaygroundKey("sk-minted", {
+      expiresAt: "2026-01-01T00:30:00Z",
+      minted: true,
+      models: ["fake-llm"],
+    });
     setPlaygroundKey("sk-pasted");
     expect(getPlaygroundKeyState()).toEqual({
       key: "sk-pasted",
       expiresAt: null,
       minted: false,
+      models: [],
     });
   });
 
@@ -123,6 +134,25 @@ describe("realtimeUrl", () => {
     setPlaygroundKey("");
     withLocation("http:", "localhost:5173");
     expect(realtimeUrl("m")).toStartWith("ws://localhost:5173/gw/v1/realtime?");
+  });
+
+  // the proxy requires the dashboard session on the upgrade too, and a browser
+  // cannot set a header on it (#2486)
+  it("carries the dashboard session as rolter_session when one exists", () => {
+    globalThis.localStorage = {
+      getItem: (k: string) => (k === "rolter.session.token" ? "sess-1" : null),
+    } as unknown as Storage;
+    setPlaygroundKey("sk-rolter-abc");
+    withLocation("http:", "localhost:5173");
+    const params = new URL(realtimeUrl("m")).searchParams;
+    expect(params.get("rolter_session")).toBe("sess-1");
+    expect(params.get("api_key")).toBe("sk-rolter-abc");
+  });
+
+  it("omits rolter_session in open mode", () => {
+    globalThis.localStorage = { getItem: () => null } as unknown as Storage;
+    withLocation("http:", "localhost:5173");
+    expect(new URL(realtimeUrl("m")).searchParams.has("rolter_session")).toBe(false);
   });
 
   it("omits api_key entirely when no key is set", () => {
@@ -212,48 +242,73 @@ describe("isKeyRefusal", () => {
 });
 
 describe("gatewayBase", () => {
-  const ORIGIN = "https://rolter.example:4001";
-
-  // the control plane serves the gateway only under /gw/*, so the bare origin
-  // would hand out a /v1/… that answers 404 (#2075)
-  it("falls back to the /gw proxy on the dashboard's origin", () => {
-    expect(gatewayBase(null, ORIGIN)).toEqual({
-      url: "https://rolter.example:4001/gw",
-      configured: false,
-    });
-    expect(gatewayBase(undefined, `${ORIGIN}/`).url).toBe("https://rolter.example:4001/gw");
-  });
-
-  it("treats an empty or blank saved value as not saved", () => {
-    expect(gatewayBase("", ORIGIN).configured).toBe(false);
-    expect(gatewayBase("   ", ORIGIN).configured).toBe(false);
-  });
-
-  it("reads the origin from location when none is passed", () => {
-    globalThis.location = { origin: ORIGIN } as unknown as Location;
-    expect(gatewayBase(null).url).toBe("https://rolter.example:4001/gw");
+  // the /gw proxy needs a dashboard session an external client does not have,
+  // so with nothing saved there is no address to hand out (#2486)
+  it("has no address when no public base url is saved", () => {
+    expect(gatewayBase(null)).toBeNull();
+    expect(gatewayBase(undefined)).toBeNull();
+    expect(gatewayBase("")).toBeNull();
+    expect(gatewayBase("   ")).toBeNull();
   });
 
   // the operator's statement of where clients reach the gateway (#2218)
-  it("prefers the saved public base url", () => {
-    expect(gatewayBase("https://gateway.example.com", ORIGIN)).toEqual({
+  it("uses the saved public base url", () => {
+    expect(gatewayBase("https://gateway.example.com")).toEqual({
       url: "https://gateway.example.com",
-      configured: true,
     });
   });
 
   it("strips the trailing slash and one trailing /v1 from a saved value", () => {
-    expect(gatewayBase(" https://gateway.example.com/ ", ORIGIN).url).toBe(
-      "https://gateway.example.com",
-    );
+    expect(gatewayBase(" https://gateway.example.com/ ")?.url).toBe("https://gateway.example.com");
     // the SDKs document their base url with the version on it; kept, every
     // snippet would say /v1/v1/chat/completions
-    expect(gatewayBase("https://gateway.example.com/v1/", ORIGIN).url).toBe(
-      "https://gateway.example.com",
-    );
+    expect(gatewayBase("https://gateway.example.com/v1/")?.url).toBe("https://gateway.example.com");
     // a path prefix in front of the gateway is the operator's to keep
-    expect(gatewayBase("https://edge.example.com/llm", ORIGIN).url).toBe(
-      "https://edge.example.com/llm",
-    );
+    expect(gatewayBase("https://edge.example.com/llm")?.url).toBe("https://edge.example.com/llm");
+  });
+});
+
+describe("the session and the key on /gw calls (#2486)", () => {
+  const withSession = (token: string | null) => {
+    globalThis.localStorage = {
+      getItem: (k: string) => (k === "rolter.session.token" ? token : null),
+    } as unknown as Storage;
+  };
+  const capture = () => {
+    const sent: { url: string; headers: Record<string, string> }[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({ url: String(input), headers: (init?.headers ?? {}) as Record<string, string> });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    return sent;
+  };
+
+  it("sends the session as Authorization and the key as x-rolter-gateway-key", async () => {
+    withSession("sess-1");
+    setPlaygroundKey("sk-rolter-abc");
+    const sent = capture();
+    await chatCompletion("m", []);
+    expect(sent[0]?.headers.Authorization).toBe("Bearer sess-1");
+    expect(sent[0]?.headers["x-rolter-gateway-key"]).toBe("sk-rolter-abc");
+  });
+
+  it("never sends the virtual key as Authorization", async () => {
+    withSession(null);
+    setPlaygroundKey("sk-rolter-abc");
+    const sent = capture();
+    await chatCompletion("m", []);
+    expect(sent[0]?.headers.Authorization).toBeUndefined();
+    expect(sent[0]?.headers["x-rolter-gateway-key"]).toBe("sk-rolter-abc");
+  });
+
+  it("sends no session in open mode", async () => {
+    withSession(null);
+    setPlaygroundKey("");
+    const sent = capture();
+    await chatCompletion("m", []);
+    expect(sent[0]?.headers.Authorization).toBeUndefined();
+    expect(sent[0]?.headers["x-rolter-gateway-key"]).toBeUndefined();
   });
 });

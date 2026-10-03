@@ -12,24 +12,22 @@ This guide takes a deployment from nothing to "our people and our applications c
 
 <Steps>
   <Step title="Generate the deployment secrets">
-    Do this before the control plane is reachable from anywhere but your own machine. `rolter init` writes a production `rolter.toml` and a `.env` holding four generated values:
+    Do this before the control plane is reachable from anywhere but your own machine. `rolter init` writes a production `rolter.toml` and a `.env` holding five generated values:
 
     - `ROLTER_ADMIN_TOKEN` turns on role-based access control and protects the management API. Without it the control plane runs **open**: everyone who reaches it is a superadmin, whatever accounts exist in the database.
     - `ROLTER_INTERNAL_TOKEN` is what the gateways present to fetch their configuration from the control plane.
     - `ROLTER_KEK` seals provider keys at rest.
     - `ROLTER_KEY_PEPPER` peppers the stored digests of virtual keys.
-
-    `rolter init` does not generate `ROLTER_SESSION_PEPPER` yet ([#1889](https://github.com/rolter-ai/rolter/issues/1889)). It peppers the stored digests of sign-in sessions, so add it yourself:
+    - `ROLTER_SESSION_PEPPER` peppers the stored digests of sign-in sessions, invitation links, SCIM tokens and MFA recovery codes.
 
     ```bash
     rolter init --profile production \
                 --database-url postgres://rolter@db.internal:5432/rolter \
                 --redis-url redis://cache.internal:6379 \
                 --clickhouse-url http://clickhouse.internal:8123
-    echo "ROLTER_SESSION_PEPPER=$(openssl rand -hex 32)" >> .env
     ```
 
-    Keep `.env` out of version control and somewhere it outlives a restart: a new KEK strands every stored provider key, and a new pepper invalidates every virtual key or session issued under the old one. Then run `rolter check` with that environment loaded. It fails on a missing KEK, admin token or database URL, and warns on a missing key pepper or a control plane bound to every interface. It does not check the session pepper yet. See [Production](/deployment/production), [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
+    Keep `.env` out of version control and somewhere it outlives a restart: a new KEK strands every stored provider key, and a new pepper invalidates every virtual key or session issued under the old one. Then run `rolter check` with that environment loaded. It fails on a missing KEK, admin token or database URL, and warns on a missing key pepper, a missing session pepper or a control plane bound to every interface. See [Production](/deployment/production), [Environment variables](/configuration/environment-variables) and [Which key do I need?](/security/which-key).
 
   </Step>
   <Step title="Install the stack">
@@ -37,21 +35,32 @@ This guide takes a deployment from nothing to "our people and our applications c
 
     For a team, install the Helm chart (`charts/rolter`) with the values from the previous step as its secret environment. It points every gateway at the control plane and runs `rolter check` in an init container before each pod starts. With the default values that check cannot pass yet: under the chart's `preflight.strict` it fails on the `0.0.0.0` bind the Service needs, and the gateway pod runs the control plane's checks, including the database URL it has no use for. Until [#1939](https://github.com/rolter-ai/rolter/issues/1939) is fixed, install with `--set preflight.enabled=false` and rely on the `rolter check` you ran in the previous step. See [Production](/deployment/production) and [Cluster deployment](/deployment/cluster).
 
-    To try the whole stack on one machine first, Docker Compose brings it up:
+    For one shared host, Docker Compose runs the same stack. Layer `docker/docker-compose.team.yml` over the compose file and pass the `.env` from the previous step. It reads every value `rolter init` wrote, takes three datastore passwords you append to that file, closes the management plane behind the admin token, and points the gateway at the control plane with the internal token and the key pepper. Postgres is published on `127.0.0.1` only, and Redis and ClickHouse are not published at all.
 
     ```bash
-    docker compose -f docker/docker-compose.yml up -d
+    cat >> .env <<EOF
+    ROLTER_PG_PASSWORD=$(openssl rand -hex 24)
+    ROLTER_REDIS_PASSWORD=$(openssl rand -hex 24)
+    ROLTER_CLICKHOUSE_PASSWORD=$(openssl rand -hex 24)
+    EOF
+
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+      --env-file .env --profile preflight run --rm preflight
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+      --env-file .env up -d --wait
     ```
 
+    The preflight service runs `rolter check --strict` on the values the stack will use, and `up` refuses to start while one of them is missing. The dashboard is at `http://127.0.0.1:4001`, so put a reverse proxy that terminates TLS in front of it for everyone else. The [Docker page](/deployment/docker#team-stack) has the details.
+
     <Warning>
-      `docker/docker-compose.yml` is the local stack, and it is open on purpose. It binds the control plane to every interface (`ROLTER_CONTROL_HOST=0.0.0.0`), acknowledges open mode (`ROLTER_ALLOW_OPEN_MODE=1`), publishes port 4001 and sets no `ROLTER_ADMIN_TOKEN`, so anyone who can reach port 4001 is a superadmin. It also publishes every datastore on every interface: Postgres on 5432 with the example `rolter`/`rolter` login, Redis on 6379 with no password, and ClickHouse on 8123 and 9000 with a passwordless default user. Whoever reaches those ports can write an account straight into Postgres, reset budget counters in Redis, or read every tenant's request logs and captured bodies from ClickHouse, whatever the control plane enforces. The file does not read the values from the previous step, and its gateway serves the bundled `rolter.toml` rather than what you configure in the dashboard. Run it only on a machine nobody else can reach. Adding `ROLTER_ADMIN_TOKEN` to it does not make it safe to share; a compose setup for a shared host is tracked in [#1890](https://github.com/rolter-ai/rolter/issues/1890).
+      `docker/docker-compose.yml` on its own is the local stack, and it is open on purpose. It binds the control plane to every interface, acknowledges open mode (`ROLTER_ALLOW_OPEN_MODE=1`), publishes port 4001 and sets no `ROLTER_ADMIN_TOKEN`, so anyone who can reach port 4001 is a superadmin. It also publishes every datastore on every interface: Postgres on 5432 with the example `rolter`/`rolter` login, Redis on 6379 with no password, and ClickHouse on 8123 and 9000 with a passwordless default user. Whoever reaches those ports can write an account straight into Postgres, reset budget counters in Redis, or read every tenant's request logs and captured bodies from ClickHouse, whatever the control plane enforces. Adding `ROLTER_ADMIN_TOKEN` to it by hand does not make it safe to share. Run the local stack only on a machine nobody else can reach, to try Rolter before you set up the team stack.
     </Warning>
 
     See [Installation](/installation).
 
   </Step>
   <Step title="Create the first administrator and sign in">
-    `rolter-seed` creates the account. It does not ship in the image or the Python package yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository with `ROLTER_DATABASE_URL` pointing at the deployment's database:
+    `rolter-seed` creates the account. It does not ship in the image or the Python package yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository with `ROLTER_DATABASE_URL` pointing at the deployment's database (on the Compose team stack, `postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter`):
 
     ```bash
     cargo run -p rolter-control --features postgres --bin rolter-seed -- \
@@ -64,16 +73,12 @@ This guide takes a deployment from nothing to "our people and our applications c
   <Step title="Follow the Getting started card">
     A fresh deployment opens on a **Getting started** card with the four steps between an empty control plane and a client calling Rolter, each ticked from the deployment itself:
 
-    1. **Make a call with no credentials** — the Playground answers with `fake-llm`.
+    1. **Make a call with no credentials** — the Playground answers with `fake-llm`. It mints its own short-lived key, which for a project with no routes yet reaches `fake-llm` alone, so this works before steps 2 and 3. It runs inside a project, so on a deployment with none the card asks you to create one first: its **Create project** button opens the same dialog as the **+** beside Project in the scope switcher.
     2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
     3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add model** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on.
     4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.
 
     Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).
-
-    <Note>
-      The account `rolter-seed` creates is a superadmin with no membership, and the Playground refuses it a session key for now ([#1847](https://github.com/rolter-ai/rolter/issues/1847)). Until then, mint a key under **Governance → Virtual Keys** (step 4) and try the model from `curl`.
-    </Note>
 
   </Step>
   <Step title="Lay out teams and projects">
@@ -83,7 +88,7 @@ This guide takes a deployment from nothing to "our people and our applications c
   <Step title="Bring people in">
     Pick the way your company signs in:
 
-    - **No identity provider:** **Governance → Users → Invite user** at a role and scope. You get a one-time link to send to the person; they choose their own password.
+    - **No identity provider:** **Governance → Users → Invite user** at a role and scope, for the whole organization, a team or a project. You get a one-time link to send to the person; they choose their own password. Someone who already has a rolter account keeps it: the link adds the role, and they sign in as usual. Links not yet accepted are listed under the users table, where you can revoke one sent to the wrong address. See [Inviting people](/security/rbac#inviting-people-on-the-users-screen).
     - **An OIDC identity provider** (Okta, Entra ID, Google, Keycloak): register it under **Governance → Single Sign-On**, map its groups to roles at scopes, and decide whether passwords stay on. See [Single Sign-On](/security/single-sign-on).
     - **Automatic joiners and leavers:** add SCIM provisioning under **Governance → User Provisioning**. See [User Provisioning](/security/user-provisioning).
 
@@ -95,7 +100,7 @@ This guide takes a deployment from nothing to "our people and our applications c
 
   </Step>
   <Step title="Watch the traffic">
-    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Every change anyone made is under **Governance → Audit Logs**. Sign-ins and second-factor changes are recorded too, but that screen doesn't show them yet ([#1854](https://github.com/rolter-ai/rolter/issues/1854)). See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
+    **Observability → Dashboard** shows traffic, spend, latency and errors; **LLM Logs** shows every request with its status, target, tokens and cost. Every change anyone made is under **Governance → Audit Logs**. Sign-ins and second-factor changes are recorded there too. See [Logs & Cost](/observability/logs-and-cost) and [What to look at](/observability/what-to-look-at).
 
   </Step>
 </Steps>

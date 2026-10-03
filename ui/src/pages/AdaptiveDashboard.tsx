@@ -8,8 +8,8 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton, StatGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState } from "@/components/ui/empty-state";
-import { StatCard } from "@/components/ui/stat-card";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import {
   fetchAdaptiveRoutingPolicy,
   fetchAdaptiveRoutingTelemetry,
@@ -19,7 +19,7 @@ import {
   type AdaptiveTargetTelemetryDto,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // scores and weights are read against each other, so they keep three decimals
 const DECIMAL: Intl.NumberFormatOptions = { maximumFractionDigits: 3 };
@@ -93,9 +93,6 @@ function targetName(target: AdaptiveTargetTelemetryDto): string {
 
 // the empty state's call to action, shared by both variants so the two never
 // drift apart on screen
-const EMPTY_ACTION =
-  "text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-
 function AdaptiveDashboardScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -118,7 +115,6 @@ function AdaptiveDashboardScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `telemetry` is the query the user is actually waiting on for this screen
   useScreenReady(!telemetry.isLoading);
-  useErrorState(!!telemetry.error, "adaptive-dashboard");
 
   if (telemetry.isLoading) {
     return (
@@ -136,6 +132,7 @@ function AdaptiveDashboardScreen() {
           error={telemetry.error}
           resource={t("errors.resources.adaptiveTelemetry")}
           onRetry={() => void telemetry.refetch()}
+          target="adaptive-routes"
         />
       </PageBody>
     );
@@ -201,9 +198,9 @@ function AdaptiveDashboardScreen() {
               </>
             }
             actions={
-              <a href="/adaptive-settings" className={EMPTY_ACTION}>
+              <EmptyStateLink to="/adaptive-settings">
                 {t("pages.adaptiveDashboard.disabledAction")}
-              </a>
+              </EmptyStateLink>
             }
           />
         ) : (
@@ -215,15 +212,15 @@ function AdaptiveDashboardScreen() {
               seconds: view?.fresh_window_secs ?? 60,
             })}
             actions={
-              <a href="/routing-rules" className={EMPTY_ACTION}>
+              <EmptyStateLink to="/routing-rules">
                 {t("pages.adaptiveDashboard.emptyAction")}
-              </a>
+              </EmptyStateLink>
             }
           />
         )
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={STAT_GRID}>
             <StatCard
               label={t("pages.adaptiveDashboard.stats.adaptiveRoutes")}
               value={fmt.number(routes.length)}

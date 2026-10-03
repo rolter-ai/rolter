@@ -1,0 +1,20 @@
+# bootstrap config for the compose team shape (docker-compose.team.yml). it is
+# mounted at /app/rolter.toml into the gateway, the control plane and the
+# preflight check, in place of the example config baked into the image.
+#
+# it declares no providers, routes or virtual keys on purpose. in this shape they
+# are created in the dashboard, stored in postgres, and followed by the gateway
+# through the control plane's snapshot. the baked-in example would reach the
+# gateway the same way, because the control plane serves its bootstrap file as
+# part of that snapshot, and it carries the public virtual key `sk-rolter-dev`,
+# which is printed in the docs and allows every model.
+#
+# to manage some providers or routes from a file instead, mount your own copy
+# over this one and keep `[[virtual_keys]]` out of it.
+
+[server]
+host = "0.0.0.0"
+port = 4000
+# a gateway that follows a control plane already refuses every request while no
+# virtual key exists. say so here too, so the shape does not depend on that default
+require_auth = true

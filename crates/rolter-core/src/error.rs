@@ -21,6 +21,12 @@ pub enum Error {
     #[error("store error: {0}")]
     Store(String),
 
+    /// A write the store refused because another record already holds a value
+    /// that must be unique (a name, slug or key). Carries the store's own
+    /// description for the log; an API renders its own message instead.
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
+
     #[error("unauthorized")]
     Unauthorized,
 }

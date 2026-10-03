@@ -12,6 +12,8 @@
 //! `Query`, not axum's, so a `since`/`until` ClickHouse would misread as the
 //! epoch is a `400` before any SQL is built (#1192).
 
+use std::time::Duration;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -30,11 +32,84 @@ pub struct ClickHouseClient {
     client: reqwest::Client,
 }
 
+/// How long a connection to ClickHouse may take to open. A healthy server on
+/// the same network answers in milliseconds, so three seconds already means it
+/// is down or unreachable; failing fast keeps a dashboard request from waiting
+/// on a host that will not answer. Matches the gateway's client (#2373).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Whole-request bound for every ClickHouse call the control plane makes: the
+/// analytics and health reads, the alert signal reads, and the MCP and UX
+/// ingest inserts.
+///
+/// Fifteen seconds is above what an interactive dashboard read over the
+/// indexed `request_logs` window should ever need, yet short enough that the
+/// operator gets an error rather than a spinner, and it stays under the 30s an
+/// alert pass allows one signal query ([`crate::alerting`]). The gateway uses
+/// ten seconds for its inserts; the control plane's inserts are small
+/// single-batch posts of the same shape, so one bound serves them too rather
+/// than a second client. The retention DDL runs under [`DDL_TIMEOUT`] since
+/// `alter table ... modify ttl` is not an interactive read.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long an idle pooled connection to ClickHouse may be reused.
+///
+/// ClickHouse closes an idle keep-alive connection after its own
+/// `keep_alive_timeout` (10 seconds by default, 3 on older releases), and
+/// reqwest's default of 90 seconds kept handing that connection out regardless.
+/// A request written onto a socket the server is closing at the same instant
+/// never gets a response: hyper reports an incomplete message, and the UX and
+/// MCP ingest handlers turn that into a 500 for a batch ClickHouse would have
+/// accepted (#1940). Retiring connections well inside the server's window means
+/// a reused connection is always one the server still holds open; a request
+/// after a longer pause opens a fresh one, which on the same network costs a
+/// millisecond.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+// below the shortest keep_alive_timeout ClickHouse has shipped as a default
+const _: () = assert!(POOL_IDLE_TIMEOUT.as_secs() < 3);
+
+/// Bound for the log-retention `alter table` statements, which may rewrite
+/// table metadata on a large table and are run by an admin, not a dashboard
+/// poll.
+const DDL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Build the one `reqwest` client every ClickHouse call goes through, so a
+/// stalled server can never hold a request, an ingest handler or an alert pass
+/// open (#1951).
+fn build_http(connect: Duration, request: Duration, pool_idle: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(request)
+        .pool_idle_timeout(pool_idle)
+        .build()
+        // building only fails when the TLS backend cannot initialise, which
+        // `Client::new()` would hit as well; fall back to it rather than panic
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl ClickHouseClient {
     pub fn new(url: &str) -> Self {
+        Self::with_timeouts(url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// [`ClickHouseClient::new`] with explicit bounds, so a test can prove a
+    /// stalled server is cut off without waiting out the production values.
+    pub(crate) fn with_timeouts(url: &str, connect: Duration, request: Duration) -> Self {
+        Self::with_pool_idle(url, connect, request, POOL_IDLE_TIMEOUT)
+    }
+
+    /// [`ClickHouseClient::with_timeouts`] with an explicit idle-connection
+    /// bound, so a test can cross it without waiting out the production value.
+    fn with_pool_idle(
+        url: &str,
+        connect: Duration,
+        request: Duration,
+        pool_idle: Duration,
+    ) -> Self {
         Self {
             base: url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: build_http(connect, request, pool_idle),
         }
     }
 
@@ -58,13 +133,13 @@ impl ClickHouseClient {
         for (k, v) in params {
             req = req.query(&[(k.as_str(), v.as_str())]);
         }
-        let resp = req.body(sql.to_string()).send().await?;
+        let resp = req.body(sql.to_string()).send().await.map_err(strip_url)?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("clickhouse query failed ({status}): {body}");
         }
-        let value: Value = resp.json().await?;
+        let value: Value = resp.json().await.map_err(strip_url)?;
         Ok(value
             .get("data")
             .and_then(|d| d.as_array())
@@ -88,8 +163,10 @@ impl ClickHouseClient {
                 .client
                 .post(format!("{}/", self.base))
                 .body(statement.clone())
+                .timeout(DDL_TIMEOUT)
                 .send()
-                .await?;
+                .await
+                .map_err(strip_url)?;
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -116,7 +193,8 @@ impl ClickHouseClient {
             ))
             .body(serde_json::to_vec(event)?)
             .send()
-            .await?;
+            .await
+            .map_err(strip_url)?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -152,7 +230,8 @@ impl ClickHouseClient {
             ))
             .body(body)
             .send()
-            .await?;
+            .await
+            .map_err(strip_url)?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -160,6 +239,14 @@ impl ClickHouseClient {
         let text = response.text().await.unwrap_or_default();
         anyhow::bail!("clickhouse UX event insert failed ({status}): {text}")
     }
+}
+
+/// Drop the request URL from a transport error. `CLICKHOUSE_URL` can carry
+/// userinfo, and reqwest's message quotes the URL, which would put the password
+/// in the warn log and in an alert rule's stored `last_error`. The error keeps
+/// its type, so `is_timeout()` and `is_connect()` still classify it.
+fn strip_url(err: reqwest::Error) -> anyhow::Error {
+    err.without_url().into()
 }
 
 /// Map a bucket name to a ClickHouse start-of-interval function. Whitelisted so
@@ -204,6 +291,68 @@ pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
     ]
 }
 
+/// Query params for the dashboard's summary, timeseries and by-model reads:
+/// the shared time window plus the row filters the LLM Logs screen already
+/// sends to the invocation list (#2453).
+///
+/// The four filters have exactly [`InvocationsQuery`]'s shapes: `model` and
+/// `key` are one exact value, `business_unit` and `customer` a comma-separated
+/// set, and an empty or omitted one applies no filter. They narrow what the
+/// caller's row visibility (#1820) already lets through and never widen it,
+/// because [`DASHBOARD_FILTERS`] is `and`-ed beside `ROW_VISIBLE` rather than
+/// in place of it.
+#[derive(Debug, Deserialize)]
+pub struct DashboardQuery {
+    #[serde(flatten)]
+    pub(crate) window: WindowQuery,
+    /// exact model name to filter to; empty/omitted means all models
+    pub(crate) model: Option<String>,
+    /// exact virtual key id to filter to; empty/omitted means all keys
+    pub(crate) key: Option<String>,
+    /// comma-separated business unit ids to filter to; empty/omitted means
+    /// every unit, and an id nothing was attributed to matches nothing
+    pub(crate) business_unit: Option<String>,
+    /// comma-separated customer ids to filter to; empty/omitted means every
+    /// customer
+    pub(crate) customer: Option<String>,
+}
+
+impl TimeBounds for DashboardQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        self.window.time_bounds()
+    }
+}
+
+impl DashboardQuery {
+    /// The window bindings plus one `param_*` per filter [`DASHBOARD_FILTERS`]
+    /// reads. Every filter is bound, an absent one as the empty string the
+    /// predicate short-circuits on, so the SQL never changes shape with the
+    /// filters a caller happened to send.
+    pub(crate) fn params(&self) -> Vec<(String, String)> {
+        let mut params = window_params(&self.window);
+        for (name, value) in [
+            ("param_model", &self.model),
+            ("param_key", &self.key),
+            ("param_business_unit", &self.business_unit),
+            ("param_customer", &self.customer),
+        ] {
+            params.push((name.to_string(), value.clone().unwrap_or_default()));
+        }
+        params
+    }
+}
+
+/// The row filters of [`DashboardQuery`], every value a bound ClickHouse
+/// parameter and never spliced text. Word for word the predicate the
+/// invocation list applies, so a filter means the same rows on the Dashboard
+/// as on LLM Logs; a unit test holds the two together.
+pub(crate) const DASHBOARD_FILTERS: &str = "({model:String} = '' or model = {model:String}) \
+     and ({key:String} = '' or virtual_key_id = {key:String}) \
+     and ({business_unit:String} = '' \
+          or has(splitByChar(',', {business_unit:String}), business_unit_id)) \
+     and ({customer:String} = '' \
+          or has(splitByChar(',', {customer:String}), customer_id))";
+
 /// `params` plus the caller's scope filter, which every analytics and health
 /// query binds (#1820).
 pub(crate) fn with_access(
@@ -224,6 +373,17 @@ pub(crate) fn with_access(
 /// yields an unused epoch value and the `if` still picks the default bound.
 pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffortOrZero({since:String})) \
      and ts < if({until:String} = '', now64(3), parseDateTime64BestEffortOrZero({until:String}))";
+
+/// The key a captured body is joined to its log row on, evaluated against
+/// whichever table the clause sits in; both carry the same columns it reads.
+///
+/// A keyed row (`log_id` set) is `log_id|org_id|project_id`: the gateway-minted
+/// id, plus the tenancy the gateway copied onto the payload so a body can never
+/// meet a row of another project even if an id were reused. An unkeyed row
+/// predates `log_id` and keeps the `request_id|ts` pair. The two shapes cannot
+/// equal each other (a UUID holds no `|`), so a keyed row never falls back.
+const PAYLOAD_KEY: &str = "if(log_id != '', concat(log_id, '|', org_id, '|', project_id), \
+     concat(request_id, '|', toString(ts)))";
 
 pub fn router() -> Router<crate::ControlState> {
     Router::new()
@@ -352,16 +512,38 @@ pub(crate) fn run(rows: anyhow::Result<Vec<Value>>) -> Response {
 /// host, and it used to be echoed verbatim into the dashboard (#1221). The
 /// operator gets a stable sentence plus a `code` the UI can key on; the detail
 /// goes to the control-plane log, which is where a query failure is debugged.
-pub(crate) fn query_failed(
-    what: &'static str,
-    err: &(impl std::fmt::Display + ?Sized),
-) -> Response {
+///
+/// A read that ran past the client's request timeout answers `504` with
+/// `analytics_query_timeout` instead, so the dashboard can say the query was
+/// slow (narrow the window) rather than that ClickHouse is down.
+pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response {
+    if is_timeout(err) {
+        tracing::warn!(error = %err, "{what}: timed out");
+        return (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({"error": {
+                "message": "analytics query timed out; narrow the time window",
+                "code": "analytics_query_timeout"
+            }})),
+        )
+            .into_response();
+    }
     tracing::warn!(error = %err, "{what}");
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": {"message": what, "code": "analytics_query_failed"}})),
     )
         .into_response()
+}
+
+/// Whether any error in the chain is a `reqwest` timeout, however much context
+/// a caller wrapped around it.
+fn is_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    })
 }
 
 /// Totals over the window: request count, tokens, cost, error count, avg latency.
@@ -375,40 +557,53 @@ pub(crate) fn query_failed(
 async fn summary(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
     let sql = format!(
-        "select count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
+        "select {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
-                countIf(status >= 400) as errors, \
+                {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} format JSON"
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
+         format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
+
+// Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
+// carries `sample_weight` (clickhouse/014) = how many real requests it stands
+// for. Counts and sums are scaled by it so a sampled log does not under-report
+// traffic or spend (#2239); averages and percentiles are left alone, since a
+// uniform sample already estimates them. Rows written unsampled, or before the
+// column existed, weigh 1.
+const REQUESTS: &str = "round(sum(sample_weight))";
+const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
+const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
+const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
+const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
+const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    let bucket = q.bucket.as_deref().unwrap_or("day");
+    let bucket = q.window.bucket.as_deref().unwrap_or("day");
     let Some(bucket_expr) = bucket_fn(bucket) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -418,22 +613,20 @@ async fn timeseries(
     };
     let sql = format!(
         "select {bucket_expr}(ts) as bucket, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
          group by bucket order by bucket format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
 /// Per-model aggregates: requests, tokens, cost, error rate, latency percentiles.
 async fn by_model(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -441,19 +634,17 @@ async fn by_model(
     };
     let sql = format!(
         "select model, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
-                countIf(status >= 400) as errors, \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
          group by model order by cost_usd desc format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -502,12 +693,12 @@ async fn by_attribution(
     };
     let sql = format!(
         "select {column} as id, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(status >= 400) as errors \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {ERRORS} as errors \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by id having {attributed} order by cost_usd desc format JSON"
     );
@@ -544,6 +735,9 @@ pub struct InvocationsQuery {
     pub(crate) request_id: Option<String>,
     /// exact trace id, the W3C trace a request's spans were recorded under
     pub(crate) trace_id: Option<String>,
+    /// `true` narrows the log to requests the gateway recorded as unpriced;
+    /// `false` or omitted applies no filter
+    pub(crate) unpriced: Option<bool>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -591,17 +785,27 @@ impl TimeBounds for InvocationsQuery {
 /// same one. Joining on the id alone let a caller log a bodiless request under
 /// an id they had seen in another project and read that project's prompt
 /// through their own row, which the mask above passes because it is evaluated
-/// against the row, not against the body. The join is therefore on
-/// `(request_id, ts)`: the gateway stamps a payload with its log row's own
-/// `ts`, through the same serializer, so the pair names one request. The
-/// payload side is bounded by the same window as the rows, since a body outside
-/// it has no row to join to, and grouped on the pair so a row never repeats.
+/// against the row, not against the body. Adding the row's `ts` narrowed that
+/// to one millisecond but did not close it: a client that sends a constant id
+/// still collides with itself, and a caller can reproduce a `ts` (#1937).
+///
+/// The join is therefore on `log_id`, a UUID the gateway mints per request and
+/// writes to both tables, together with the row's `org_id` and `project_id`
+/// as defence in depth (see [`PAYLOAD_KEY`]). A row with a `log_id` never falls
+/// back to anything weaker. Only a row written before the key existed, where
+/// it is empty, joins on `(request_id, ts)` as it always did, so old bodies
+/// stay attached until they expire. The payload side is bounded by the same
+/// window as the rows, since a body outside it has no row to join to, and
+/// grouped on the key so a row never repeats.
 ///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
 /// applied at the time, so a caller that instead re-derives it from today's
-/// model prices re-judges old rows against new prices and drifts (#1226).
+/// model prices re-judges old rows against new prices and drifts (#1226). The
+/// `unpriced` filter reads that same recorded flag, in the database, for the
+/// reason the attribution dimensions do: a page cut first and filtered after
+/// would hold fewer rows than `limit` asked for.
 ///
 /// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
@@ -629,10 +833,10 @@ fn invocations_sql(status_expr: &str) -> String {
                     as payload_withheld \
          from request_logs \
          left join ( \
-             select request_id, ts, any(request_payload) as request_payload, \
+             select {PAYLOAD_KEY} as payload_key, any(request_payload) as request_payload, \
                     any(response_payload) as response_payload \
-             from request_payloads where {WHERE_WINDOW} group by request_id, ts \
-         ) as payload using (request_id, ts) \
+             from request_payloads where {WHERE_WINDOW} group by payload_key \
+         ) as payload on payload.payload_key = {PAYLOAD_KEY} \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
            and ({{model:String}} = '' or model = {{model:String}}) \
@@ -643,6 +847,7 @@ fn invocations_sql(status_expr: &str) -> String {
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
+           and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -699,6 +904,10 @@ async fn invocations(
     params.push(("param_request_id".to_string(), request_id));
     params.push(("param_trace_id".to_string(), trace_id));
     params.push((
+        "param_unpriced".to_string(),
+        u8::from(q.unpriced.unwrap_or(false)).to_string(),
+    ));
+    params.push((
         "param_model".to_string(),
         q.model.clone().unwrap_or_default(),
     ));
@@ -741,10 +950,233 @@ fn retention_statements(retention_days: u32, payload_retention_hours: u32) -> [S
     ]
 }
 
+/// Test support: a stand-in for a ClickHouse that has stopped answering.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// A listener that accepts connections and never replies, so a client
+    /// without a request timeout waits forever. The accepted sockets are held
+    /// open (dropping one would be a reset, not a stall).
+    pub(crate) struct Stalled {
+        pub(crate) url: String,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    /// The password in a stalled server's url. Interpolated rather than
+    /// written into a url literal, so secret scanners see no credential
+    pub(crate) const STALLED_USERINFO_SECRET: &str = "stalled-userinfo";
+
+    impl Stalled {
+        pub(crate) async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a local port");
+            let port = listener.local_addr().expect("a local address").port();
+            let task = tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((socket, _)) = listener.accept().await {
+                    held.push(socket);
+                }
+            });
+            Self {
+                // userinfo on purpose: it must never reach an error or a log
+                url: format!("http://ch:{STALLED_USERINFO_SECRET}@127.0.0.1:{port}"),
+                _task: task,
+            }
+        }
+    }
+    /// A server that answers the first request on each connection, keeps the
+    /// connection alive, and drops it unanswered when a second request arrives
+    /// on it — what a client sees when it reuses a connection at the instant
+    /// ClickHouse's `keep_alive_timeout` closes it (#1940).
+    pub(crate) struct ClosesReusedConnections {
+        pub(crate) url: String,
+        pub(crate) connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Read one HTTP/1.1 request (head plus a `content-length` body); `false`
+    /// when the peer closed first.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        while buf.len() < head_end + length {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        true
+    }
+
+    impl ClosesReusedConnections {
+        pub(crate) async fn start() -> Self {
+            use std::sync::atomic::Ordering;
+            use tokio::io::AsyncWriteExt;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a local port");
+            let port = listener.local_addr().expect("a local address").port();
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = connections.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    tokio::spawn(async move {
+                        if !read_request(&mut socket).await {
+                            return;
+                        }
+                        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n";
+                        if socket.write_all(reply).await.is_err() {
+                            return;
+                        }
+                        // the reused connection: closed with the request unanswered
+                        read_request(&mut socket).await;
+                    });
+                }
+            });
+            Self {
+                url: format!("http://127.0.0.1:{port}"),
+                connections,
+                _task: task,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    /// A regression must fail the test, not hang the suite.
+    const CEILING: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn a_stalled_clickhouse_read_times_out_without_leaking_the_url() {
+        let stalled = testing::Stalled::start().await;
+        let ch = ClickHouseClient::with_timeouts(
+            &stalled.url,
+            Duration::from_secs(1),
+            Duration::from_millis(300),
+        );
+        let result = tokio::time::timeout(CEILING, ch.query("select 1 format JSON", &[]))
+            .await
+            .expect("the client bounds the request itself");
+        let err = result.expect_err("a stalled server is an error");
+        let source = err
+            .downcast_ref::<reqwest::Error>()
+            .expect("a transport error");
+        assert!(source.is_timeout(), "{err}");
+        let text = format!("{err:#}");
+        // the message carries neither the error text nor the secret, so a
+        // failure cannot itself print the credential
+        assert!(
+            !text.contains(testing::STALLED_USERINFO_SECRET) && !text.contains("127.0.0.1"),
+            "the error text names the stalled server's userinfo or host"
+        );
+        // the route-level mapping carries no driver text either
+        let response = run(Err(err));
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "analytics_query_timeout");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_clickhouse_insert_times_out() {
+        let stalled = testing::Stalled::start().await;
+        let ch = ClickHouseClient::with_timeouts(
+            &stalled.url,
+            Duration::from_secs(1),
+            Duration::from_millis(300),
+        );
+        let event = json!({"event_id": "e"});
+        let ui = tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("ui-event insert is bounded");
+        assert!(ui.is_err());
+        let mcp = tokio::time::timeout(CEILING, ch.insert_mcp_tool_call(&event))
+            .await
+            .expect("mcp insert is bounded");
+        assert!(mcp.is_err());
+    }
+
+    /// A connection idle past the pool bound is retired rather than reused, so
+    /// a batch sent after a pause never lands on a socket ClickHouse is closing
+    /// (#1940). The fake server drops any second request on a connection, which
+    /// is the race made deterministic: reuse fails the insert, a fresh
+    /// connection succeeds.
+    #[tokio::test]
+    async fn an_idle_connection_is_retired_before_the_server_closes_it() {
+        let server = testing::ClosesReusedConnections::start().await;
+        let pool_idle = Duration::from_millis(200);
+        let ch = ClickHouseClient::with_pool_idle(
+            &server.url,
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+            pool_idle,
+        );
+        let event = json!({"event_id": "e"});
+        tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("bounded")
+            .expect("the first insert is answered");
+        // wall-clock, not paused tokio time: the pool stamps idle connections
+        // with std's clock
+        tokio::time::sleep(pool_idle * 3).await;
+        tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("bounded")
+            .expect("the insert after a pause goes out on a fresh connection");
+        assert_eq!(
+            server.connections.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+    }
+
+    #[test]
+    fn counts_and_sums_scale_by_the_row_sample_weight() {
+        // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
+        // a row once; averages and percentiles stay unweighted
+        for expr in [
+            REQUESTS,
+            TOKENS,
+            PROMPT_TOKENS,
+            COMPLETION_TOKENS,
+            COST,
+            UNPRICED,
+            ERRORS,
+        ] {
+            assert!(expr.contains("sample_weight"), "{expr}");
+        }
+        assert_eq!(REQUESTS, "round(sum(sample_weight))");
+        let src = include_str!("analytics.rs");
+        let handlers = &src[src.find("async fn summary(").unwrap()
+            ..src.find("pub struct InvocationsQuery").unwrap()];
+        assert!(!handlers.contains("count()"), "an unweighted count()");
+        assert!(!handlers.contains("countIf("), "an unweighted countIf()");
+        assert!(handlers.contains("avg(latency_ms)"));
+        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
+    }
 
     #[test]
     fn bucket_fn_whitelists() {
@@ -805,9 +1237,14 @@ mod tests {
         // request_id is whatever the caller sent as x-request-id, so joining on
         // it alone hands one tenant's captured body to another tenant's row
         // under the same id. the log row's own ts is what names the request
-        assert!(sql.contains("as payload using (request_id, ts)"));
-        assert!(!sql.contains("using (request_id)"));
-        assert!(sql.contains("group by request_id, ts"));
+        assert!(sql.contains(&format!("on payload.payload_key = {PAYLOAD_KEY}")));
+        assert!(!sql.contains("using (request_id"));
+        assert!(sql.contains("group by payload_key"));
+        // a keyed row joins on the gateway's own key and its tenancy, and only
+        // an unkeyed (pre-#1937) row falls back to the caller's id and ts
+        assert!(PAYLOAD_KEY.contains("log_id != ''"));
+        assert!(PAYLOAD_KEY.contains("concat(log_id, '|', org_id, '|', project_id)"));
+        assert!(PAYLOAD_KEY.contains("concat(request_id, '|', toString(ts))"));
         // no aggregate may reach across every row that shares an id
         assert!(!sql.contains("argMax(request_payload"));
         assert!(!sql.contains("group by request_id "));
@@ -830,6 +1267,128 @@ mod tests {
             .count();
         assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_dashboard_reads_filter_rows_as_the_invocation_list_does() {
+        // one predicate, word for word, so a filter means the same rows on the
+        // dashboard as on llm logs (#2453)
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        assert!(sql.contains(DASHBOARD_FILTERS), "{sql}");
+    }
+
+    #[test]
+    fn every_dashboard_read_filters_beside_the_callers_visibility() {
+        // and-ed next to ROW_VISIBLE, never in its place: a filter narrows what
+        // the caller may read and cannot reach past it (#1820, #2453)
+        // built with format! so this test's own text never matches itself
+        let source = include_str!("analytics.rs");
+        let table = "request_logs";
+        let filtered = source
+            .matches(&format!(
+                "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{DASHBOARD_FILTERS}}"
+            ))
+            .count();
+        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+    }
+
+    #[test]
+    fn dashboard_filters_bind_every_value_as_a_param() {
+        for param in [
+            "{model:String}",
+            "{key:String}",
+            "{business_unit:String}",
+            "{customer:String}",
+        ] {
+            assert!(DASHBOARD_FILTERS.contains(param), "{param}");
+            // each one short-circuits when empty, so an omitted filter is no filter
+            assert!(
+                DASHBOARD_FILTERS.contains(&format!("{param} = ''")),
+                "{param}"
+            );
+        }
+        assert!(DASHBOARD_FILTERS
+            .contains("has(splitByChar(',', {business_unit:String}), business_unit_id)"));
+        assert!(DASHBOARD_FILTERS.contains("has(splitByChar(',', {customer:String}), customer_id)"));
+        // no quoted literal on the column side of a comparison
+        for column in ["model", "virtual_key_id", "business_unit_id", "customer_id"] {
+            assert!(
+                !DASHBOARD_FILTERS.contains(&format!("{column} = '")),
+                "{column}"
+            );
+        }
+    }
+
+    fn dashboard_query(query: &str) -> DashboardQuery {
+        let uri: axum::http::Uri = format!("/api/v1/analytics/summary?{query}")
+            .parse()
+            .expect("uri");
+        axum::extract::Query::<DashboardQuery>::try_from_uri(&uri)
+            .expect("parses")
+            .0
+    }
+
+    fn param<'a>(params: &'a [(String, String)], name: &str) -> &'a str {
+        params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_else(|| panic!("{name} is bound"))
+    }
+
+    #[test]
+    fn a_dashboard_query_reads_the_filters_beside_the_window() {
+        let q = dashboard_query(
+            "since=2026-01-01T00:00:00Z&bucket=hour&model=gpt-4o&key=k-1\
+             &business_unit=bu-1,bu-2&customer=c-1",
+        );
+        assert_eq!(q.window.bucket.as_deref(), Some("hour"));
+        let params = q.params();
+        assert_eq!(param(&params, "param_since"), "2026-01-01T00:00:00Z");
+        assert_eq!(param(&params, "param_until"), "");
+        assert_eq!(param(&params, "param_model"), "gpt-4o");
+        assert_eq!(param(&params, "param_key"), "k-1");
+        // the set travels as one bound value; splitByChar splits it in sql
+        assert_eq!(param(&params, "param_business_unit"), "bu-1,bu-2");
+        assert_eq!(param(&params, "param_customer"), "c-1");
+    }
+
+    #[test]
+    fn an_absent_or_empty_dashboard_filter_binds_the_empty_string() {
+        for query in ["", "model=&key=&business_unit=&customer="] {
+            let params = dashboard_query(query).params();
+            for name in [
+                "param_model",
+                "param_key",
+                "param_business_unit",
+                "param_customer",
+            ] {
+                assert_eq!(param(&params, name), "", "{name} from {query:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hostile_dashboard_filter_stays_a_value() {
+        let hostile = "x') or 1=1 --";
+        let q = dashboard_query(&format!("model={}", url_escape(hostile)));
+        assert_eq!(param(&q.params(), "param_model"), hostile);
+    }
+
+    fn url_escape(raw: &str) -> String {
+        raw.bytes().map(|b| format!("%{b:02X}")).collect()
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_query_still_refuses_a_malformed_window() {
+        use axum::extract::FromRequestParts;
+        let (mut parts, ()) = axum::http::Request::builder()
+            .uri("/api/v1/analytics/summary?model=gpt-4o&since=yesterday")
+            .body(())
+            .expect("request")
+            .into_parts();
+        let refused = Query::<DashboardQuery>::from_request_parts(&mut parts, &()).await;
+        assert!(refused.is_err(), "a bad since is a 400, filters or not");
     }
 
     #[test]
@@ -868,6 +1427,30 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
+    }
+
+    #[test]
+    fn invocations_sql_filters_unpriced_on_the_recorded_flag_as_a_param() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // the flag the gateway recorded, bound as a value: the filter must not
+        // re-derive "unpriced" from the live catalogue (#1226), and an unset
+        // filter has to let every row through
+        assert!(sql.contains("({unpriced:UInt8} = 0 or unpriced = 1)"));
+    }
+
+    #[test]
+    fn the_unpriced_filter_reads_true_and_nothing_else_narrows() {
+        let read = |query: &str| {
+            let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
+                .parse()
+                .expect("a valid uri");
+            axum::extract::Query::<InvocationsQuery>::try_from_uri(&uri).map(|q| q.0.unpriced)
+        };
+        assert_eq!(read("").expect("no filter"), None);
+        assert_eq!(read("?unpriced=true").expect("on"), Some(true));
+        assert_eq!(read("?unpriced=false").expect("off"), Some(false));
+        // a value that is neither is a refused query, not a filter left off
+        assert!(read("?unpriced=maybe").is_err());
     }
 
     #[test]

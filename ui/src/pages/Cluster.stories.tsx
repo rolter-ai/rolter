@@ -8,6 +8,7 @@ import {
   expectForbidden,
   expectNoFalseEmpty,
   expectSkeleton,
+  expectTableStateInFrame,
   expectToast,
   Harness as ScreenHarness,
   json,
@@ -17,6 +18,8 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { ClusterNodeRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, phoneFits } from "@/lib/story-viewport";
 
 const node = (over: Partial<ClusterNodeRow> = {}): ClusterNodeRow => ({
   id: "gw-1",
@@ -96,6 +99,33 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("No nodes have reported in")).toBeVisible());
+  },
+};
+
+// the table is wider than a phone's card, so it scrolls sideways inside it, and
+// the placeholder was centred on the whole table: the title ran 18px past the
+// card's edge at 375px (#2420)
+export const EmptyFitsThePhone: Story = {
+  ...atMobile,
+  render: () => <Harness fetchStub={async () => json([])} />,
+  play: async ({ canvasElement }) => {
+    await expectTableStateInFrame(canvasElement, {
+      says: /No nodes have reported in/,
+      body: /Nodes appear here once a gateway identifies itself/,
+    });
+  },
+};
+
+export const EmptyFitsThePhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={async () => json([])} />,
+  play: async ({ canvasElement }) => {
+    const { emptyTitle, emptyBody } = ru.pages.cluster;
+    await expectTableStateInFrame(canvasElement, {
+      says: new RegExp(emptyTitle),
+      body: new RegExp(emptyBody.slice(0, 24)),
+    });
   },
 };
 
@@ -251,3 +281,12 @@ export const ForgetRejectedByTheServer: Story = {
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const clusterFits = phoneFits({
+  render: () => <Harness fetchStub={async () => json(FLEET)} />,
+  ready: (canvas) => canvas.findByText("gw-old"),
+});
+export const MobileFits: Story = clusterFits("mobile", "en");
+export const MobileFitsInRussian: Story = clusterFits("mobile", "ru");

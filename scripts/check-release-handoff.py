@@ -22,6 +22,13 @@ The pipeline publishes to crates.io only behind a gate that is just as easy to c
     release-gate  --scripts/wait-for-ci-gate.sh-->  ci-ok of this sha's ci.yml push run
     release-plz-release  runs only when release-gate reports it verified
 
+and release.yml's own gate runs the same script on the commit the tag names, so
+nothing reaches pypi or ghcr from a commit that is not on master or whose push
+run never passed (#2034):
+
+    verify-external-checks  --scripts/wait-for-ci-gate.sh-->  ci-ok and codeql (*)
+                                                               of the tagged sha's push run
+
 release-plz tags with the repo GITHUB_TOKEN, and GitHub suppresses downstream
 events for token-created refs, so release.yml's `push: tags` trigger never fires
 for a real release. `workflow_dispatch` is the documented exception: it always
@@ -55,9 +62,10 @@ import copy
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable
 
 import yaml
 
@@ -158,18 +166,18 @@ def disabled(node: dict) -> bool:
     return cond is False or (isinstance(cond, str) and expression(cond) == "false")
 
 
-def job(wf: Workflow, name: str) -> Optional[dict]:
+def job(wf: Workflow, name: str) -> dict | None:
     found = (wf.get("jobs") or {}).get(name)
     return found if isinstance(found, dict) and not disabled(found) else None
 
 
-def needs(j: Optional[dict]) -> set:
+def needs(j: dict | None) -> set:
     # `needs: a`, `needs: [a, b]` and a block sequence are the same to actions
     value = (j or {}).get("needs") or []
     return {value} if isinstance(value, str) else set(value)
 
 
-def steps(j: Optional[dict]) -> list:
+def steps(j: dict | None) -> list:
     return [s for s in (j or {}).get("steps") or [] if isinstance(s, dict) and not disabled(s)]
 
 
@@ -222,7 +230,7 @@ def shell_commands(script: str) -> Iterator[str]:
             yield line
 
 
-def run_text(j: Optional[dict]) -> str:
+def run_text(j: dict | None) -> str:
     # the shell every step of one job runs, comments removed; textual checks look
     # here and only here. each step is its own script, so a quote left open in
     # one never swallows the next
@@ -277,7 +285,7 @@ def can_dispatch(wf: Workflow, name: str) -> bool:
     return isinstance(grant, dict) and grant.get("actions") == "write"
 
 
-def step_with(j: Optional[dict], key: str, value: str) -> bool:
+def step_with(j: dict | None, key: str, value: str) -> bool:
     return any((s.get("with") or {}).get(key) == value for s in steps(j))
 
 
@@ -288,10 +296,10 @@ def expression(value: Any) -> str:
     return re.sub(r"\s+", "", match.group(1) if match else text)
 
 
-def required_checks_default(j: Optional[dict]) -> set:
-    # the fallback list in `vars.RELEASE_REQUIRED_CHECKS || '<names>'`
+def required_jobs_default(j: dict | None) -> set:
+    # the fallback list in `vars.RELEASE_REQUIRED_JOBS || '<job names>'`
     for text in strings(j):
-        match = re.search(r"vars\.RELEASE_REQUIRED_CHECKS\s*\|\|\s*'([^']*)'", text)
+        match = re.search(r"vars\.RELEASE_REQUIRED_JOBS\s*\|\|\s*'([^']*)'", text)
         if match:
             return {name.strip() for name in match.group(1).split(",")}
     return set()
@@ -573,7 +581,7 @@ def runs_on_verified(cond: Any) -> bool:
     return any(term.strip("()") in VERIFIED for term in expression(cond).split("&&"))
 
 
-def runs_quality(j: Optional[dict]) -> bool:
+def runs_quality(j: dict | None) -> bool:
     return bool(
         re.search(r"\.github/workflows/quality\.ya?ml(?:@|$)", str((j or {}).get("uses", "")))
     )
@@ -658,6 +666,23 @@ def wait_binds_push_run(script: str) -> bool:
     return bound and bool(reads_jobs and ci_ok_job) and "check-runs" not in text
 
 
+# a run can only prove what it ran on. the compare names the sha as the base and
+# master as the head, so `ahead` means master contains the sha; the other order
+# would read a commit that never landed as one master is behind
+@check(
+    WAIT,
+    "wait-for-ci-gate.sh must require the sha to be on master (compare/<sha>...master "
+    "is ahead or identical)",
+)
+def wait_requires_on_master(script: str) -> bool:
+    text = "\n".join(shell_commands(script))
+    compared = re.search(r"compare/\$\{?SHA\}?\.\.\.master\b", text)
+    accepted = re.findall(r"^\s*([\w |]+)\)", text, re.MULTILINE)
+    return bool(compared) and any(
+        {a.strip() for a in arm.split("|")} == {"ahead", "identical"} for arm in accepted
+    )
+
+
 # the receiving end
 
 
@@ -690,7 +715,41 @@ def gate_not_rerun(wf: Workflow) -> bool:
 
 @check(REL, "the release gate must require ci-ok for the tagged commit")
 def gate_requires_ci_ok(wf: Workflow) -> bool:
-    return "ci-ok" in required_checks_default(job(wf, "verify-external-checks"))
+    return "ci-ok" in required_jobs_default(job(wf, "verify-external-checks"))
+
+
+@check(REL, "the release gate must require every codeql leg (`codeql (*)`) for the tagged commit")
+def gate_requires_codeql(wf: Workflow) -> bool:
+    return "codeql (*)" in required_jobs_default(job(wf, "verify-external-checks"))
+
+
+# the release.yml gate used to keep the newest check-run per name, which any run
+# can post (#2034). it now runs the run-bound wait script as one bare command on
+# the sha the tag resolves to, never on the sha the workflow itself runs from,
+# which on a dispatch is master's head rather than the release
+@check(
+    REL,
+    "verify-external-checks must run scripts/wait-for-ci-gate.sh as one bare command on the "
+    "commit inputs.tag resolves to, and never a check-run lookup",
+)
+def release_gate_waits_on_push_run(wf: Workflow) -> bool:
+    j = job(wf, "verify-external-checks")
+    if j is None or "check-runs" in run_text(j) or j.get("continue-on-error") not in (None, False):
+        return False
+    for s in steps(j):
+        if not isinstance(s.get("run"), str) or s.get("continue-on-error") not in (None, False):
+            continue
+        commands = [c.strip() for c in shell_commands(s["run"])]
+        if len(commands) != 1 or not WAIT_COMMAND.fullmatch(commands[0]):
+            continue
+        env = s.get("env") or {}
+        if "vars.RELEASE_REQUIRED_JOBS" not in str(env.get("REQUIRED_JOBS", "")):
+            continue
+        source = re.fullmatch(r"steps\.([\w-]+)\.outputs\.sha", expression(env.get("SHA")))
+        resolver = next((r for r in steps(j) if source and r.get("id") == source.group(1)), None)
+        if resolver is not None and "inputs.tag" in "".join(strings(resolver.get("env"))):
+            return True
+    return False
 
 
 # the parity gate. without it a skipped publish drags the run to green instead of red
@@ -926,7 +985,7 @@ def comment_out(
     return mutate
 
 
-def disable(file: str, name: str, step_mentioning: Optional[str] = None) -> Callable[[Tree], None]:
+def disable(file: str, name: str, step_mentioning: str | None = None) -> Callable[[Tree], None]:
     # `if: false` on the job, or on the step whose shell mentions the given text
     def mutate(tree: Tree) -> None:
         j = jobs_of(tree, file)[name]
@@ -1515,6 +1574,26 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
         "the push-run query left only in a comment",
         replace_in_script(WAIT, 'runs_path="repos/', '# runs_path="repos/'),
     ),
+    (
+        "wait_requires_on_master",
+        "the on-master comparison dropped",
+        replace_in_script(WAIT, "compare/${SHA}...master", "commits/${SHA}"),
+    ),
+    (
+        "wait_requires_on_master",
+        "the on-master comparison turned round",
+        replace_in_script(WAIT, "compare/${SHA}...master", "compare/master...${SHA}"),
+    ),
+    (
+        "wait_requires_on_master",
+        "a diverged commit accepted",
+        replace_in_script(WAIT, "ahead | identical)", "ahead | identical | diverged)"),
+    ),
+    (
+        "wait_requires_on_master",
+        "the on-master comparison left only in a comment",
+        replace_in_script(WAIT, 'api "repos/${REPO}/compare/', '# api "repos/${REPO}/compare/'),
+    ),
     ("ci_ok_job", "ci-ok job deleted", drop_job(CI, "ci-ok")),
     ("ci_ok_job", "ci-ok check renamed", edit_job(CI, "ci-ok", set_key("name", "all green"))),
     (
@@ -1540,13 +1619,79 @@ BREAKS: list[tuple[str, str, Callable[[Tree], None]]] = [
     ),
     (
         "gate_requires_ci_ok",
-        "ci-ok dropped from the default required checks",
+        "ci-ok dropped from the default required jobs",
         replace_in_job(REL, "verify-external-checks", "'ci-ok,", "'"),
     ),
     (
         "gate_requires_ci_ok",
-        "required checks no longer defaulted",
-        replace_in_job(REL, "verify-external-checks", "RELEASE_REQUIRED_CHECKS ||", "REQUIRED ||"),
+        "required jobs no longer defaulted",
+        replace_in_job(REL, "verify-external-checks", "RELEASE_REQUIRED_JOBS ||", "REQUIRED ||"),
+    ),
+    (
+        "gate_requires_codeql",
+        "codeql dropped from the default required jobs",
+        replace_in_job(REL, "verify-external-checks", ",codeql (*)'", "'"),
+    ),
+    (
+        "gate_requires_codeql",
+        "codeql narrowed to one leg",
+        replace_in_job(REL, "verify-external-checks", "codeql (*)", "codeql (rust)"),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate moved back onto check-runs by name",
+        replace_in_job(
+            REL,
+            "verify-external-checks",
+            "bash scripts/wait-for-ci-gate.sh",
+            'gh api "repos/$REPO/commits/$SHA/check-runs" '
+            "-q '.check_runs[] | select(.name == \"ci-ok\") | .conclusion' | grep -qx success",
+        ),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate's wait commented out",
+        comment_out(REL, "verify-external-checks", "scripts/wait-for-ci-gate.sh"),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate's wait made non-fatal",
+        replace_in_job(
+            REL,
+            "verify-external-checks",
+            "bash scripts/wait-for-ci-gate.sh",
+            "bash scripts/wait-for-ci-gate.sh || true",
+        ),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate's wait step allowed to fail",
+        edit_job(
+            REL,
+            "verify-external-checks",
+            lambda j: [s.__setitem__("continue-on-error", True) for s in j["steps"]],
+        ),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate's wait step disabled with if: false",
+        disable(REL, "verify-external-checks", "scripts/wait-for-ci-gate.sh"),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate waits on the workflow's own sha instead of the tag's",
+        replace_in_job(
+            REL, "verify-external-checks", "${{ steps.resolve.outputs.sha }}", "${{ github.sha }}"
+        ),
+    ),
+    (
+        "release_gate_waits_on_push_run",
+        "the release gate handed no required-job list",
+        edit_job(
+            REL,
+            "verify-external-checks",
+            lambda j: [(s.get("env") or {}).pop("REQUIRED_JOBS", None) for s in j["steps"]],
+        ),
     ),
     ("parity_job", "verify-parity deleted", drop_job(REL, "verify-parity")),
     (
@@ -1909,7 +2054,7 @@ def self_test(root: Path) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--self-test",

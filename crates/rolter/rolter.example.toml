@@ -72,6 +72,16 @@ api_key_env = "OPENROUTER_API_KEY"
 # that sets it, and `--strict` fails on it. See ADR-0029.
 # allow_custom_api_base = true
 
+# a provider is org-wide by default: every project of the organization can use
+# it. `project_scoped = true` keeps it (and any route or group behind it) to
+# the project a file is imported into with `rolter-seed --import`; a gateway
+# reading this file directly ignores it, since its keys carry no project.
+# [[providers]]
+# name = "team-vllm"
+# kind = "openai_compatible"
+# api_base = "http://vllm-team:8000"
+# project_scoped = true
+
 # OpenAI-compatible cloud-provider endpoints (uncomment the providers you use).
 # Azure uses `api-key`; Bedrock and Vertex use bearer tokens.
 # [[providers]]
@@ -285,6 +295,9 @@ weight = 1
 # provider = "vllm-msk-2"
 # model = "qwen3-awq"          # optional upstream rewrite; omit for passthrough
 # weight = 1
+# `project_scoped = true` (on the group, before its members) keeps the group to
+# one project. a scoped group may hold that project's providers and org-wide
+# ones; an org-wide group may hold only org-wide providers.
 
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
@@ -425,6 +438,11 @@ disabled = false # revoke without deleting
 # interval_secs = 10   # seconds between probe sweeps
 # timeout_secs = 2     # per-probe timeout
 # path = "/"           # appended to each provider's api_base when probing
+# probe_concurrency = 2               # max probes in flight during a sweep
+# consecutive_failure_threshold = 3   # probe failures before a provider is unhealthy
+# recovery_success_threshold = 2      # probe successes before it recovers
+# status_page_interval_secs = 60      # status-page polls; only providers with a
+#                                     # status_page_url, even with enabled = false
 
 # --- per-target circuit breaker ---
 # complements the short per-failure cooldown with a longer-lived state machine.
@@ -509,6 +527,16 @@ disabled = false # revoke without deleting
 # concurrent writers draining the queue; each record is one Redis round trip, so
 # a single consumer would serialise them
 # workers = 4
+
+# Ingress rules for the /v1/* surface. A control-plane-managed gateway takes these
+# from the dashboard's Security screen instead.
+# [security]
+# exact /v1/... paths served without authentication (no prefixes, no wildcards)
+# auth_bypass_routes = ["/v1/models"]
+# lowercase header name -> exact value every request must carry; a mismatch is
+# refused with 403 before authentication
+# [security.required_headers]
+# x-mesh-identity = "gateway"
 
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;

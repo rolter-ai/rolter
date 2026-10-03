@@ -65,6 +65,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Config Export](/configuration/config-export): Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs.
 - [Env Vars](/configuration/environment-variables): All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values.
 - [Providers](/configuration/providers): How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it.
+- [Egress policy](/configuration/egress): Which destinations Rolter refuses to send to, and every URL the policy covers.
 - [Hot Reload](/configuration/hot-reload): Rolter applies provider, route, and key changes from the dashboard instantly without restarting gateways or dropping in-flight connections.
 - [Feature Flags](/configuration/feature-flags): Toggle the response cache, cache-aware routing, circuit breaker, health checks, complexity routing and guardrails from the dashboard, and have every gateway replica pick the change up without a restart.
 - [Plugins](/configuration/plugins): Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline.
@@ -94,7 +95,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Guardrails](/security/guardrails): Manage in-gateway inspection rules and one active external guardrail service without restarting gateways.
 - [PII sanitizer](/security/pii-sanitizer): Hand request content to an external de-identification service before it reaches a provider, and optionally reverse the substitution on the way back.
 - [Budgets & Rate Limits](/security/budgets-and-rate-limits): Configure USD spend caps and RPM/TPM throughput limits at org, team, project, or key scope to control LLM costs and prevent runaway usage.
-- [Cost Attribution](/security/cost-attribution): Roll teams up into business units and attribute spend to your own customers, without breaking the identity that historical spend was recorded against.
+- [Cost Attribution](/security/cost-attribution): Attribute spend to business units through virtual keys, and to your own customers, without breaking the identity that historical spend was recorded against.
 
 ### Observability
 
@@ -108,10 +109,11 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 ### Deployment
 
-- [Docker](/deployment/docker): Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host.
+- [Docker](/deployment/docker): Run the full Rolter stack with Docker Compose: gateway, control plane, PostgreSQL, Redis and ClickHouse, either open on one machine or closed for a team on one host.
+- [Verify images](/deployment/verify-images): Check that a published Rolter image was built and signed by the Rolter release workflow, and read its SBOM, with cosign and the GitHub CLI.
 - [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
 - [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
-- [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, runtime egress guarantees, an operator checklist, and an offline smoke test.
+- [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, every outbound network path with the setting that controls it, an operator checklist, and an offline smoke test.
 - [Documentation links](/deployment/documentation-links): Point the Rolter dashboard at a documentation site so its screens can deep-link the docs, or leave it unset so an air-gapped deployment renders no links at all.
 - [Backup & restore](/deployment/backup-and-restore): How to back up the Rolter control-plane database, restore it safely, verify that ROLTER_KEK still opens your stored credentials, and rotate the key-encryption key without splitting the fleet.
 - [Upgrading](/deployment/upgrading): How Rolter carries your configuration across a version boundary, how to preview an upgrade before you run it, and why skipping releases is safe.
@@ -138,6 +140,9 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Version](/api/version): GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint.
 - [Public URL](/api/public-url): GET /api/v1/public-url reports the base URL the control plane builds every address it hands an identity provider from, and whether ROLTER_PUBLIC_URL set it or the default is standing in.
 - [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
+- [Providers](/api/providers): Provider rows from the control-plane API carry has_stored_key, a boolean that says whether a sealed key is stored, so a client can tell a stored key from an environment variable or no credential.
+- [Attribution listings](/api/attribution-listings): GET /api/v1/orgs/{org_id}/business-units and /customers return each row with the number of live virtual keys attributed to it, so a unit with no spend can be told apart from one that nothing could bill.
 - [Project settings](/api/project-settings): GET and PUT /api/v1/projects/{id}/settings read and change a project's own settings — today, whether the project's viewers may read the request and response bodies payload capture stored for it.
 - [Budgets & rate limits](/api/budgets-and-rate-limits): List, create, edit in place and delete spend budgets and rate limits through the control plane. PATCH changes a cap without a window where the scope has none.
+- [Dashboard analytics](/api/dashboard-analytics): Read the spend, usage and per-model figures the Dashboard shows, over any time window and narrowed to one model, virtual key, business unit or customer.
 - [Control-plane schema](/api/control-plane-openapi): The rolter control plane serves an OpenAPI 3.1 description of its management API at GET /openapi.json and renders it interactively at GET /docs — generate a client instead of hand-writing one.

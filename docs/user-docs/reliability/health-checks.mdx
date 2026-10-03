@@ -92,7 +92,10 @@ llm_probe_model = "gpt-4o-mini"
 Set a provider's `status_page_url` to a statuspage.io-style `status.json` and rolter polls it on a slow cadence (`health.status_page_interval_secs`, default 60s). A non-operational indicator is recorded as a `status_page` event in `provider_health_events` and increments `rolter_status_page_degraded_total` — so a provider-wide incident surfaces on your dashboard _before_ rolter's own probes start failing.
 
 <Info>
-  This is a **secondary** signal only. It never marks a provider unhealthy or changes routing on its own — it exists to give early visibility. Transport or JSON-parse failures are logged and skipped, never counted as a provider error. The poller runs whenever any provider sets `status_page_url`, even with `health.enabled = false`.
+  The URL is checked against the [egress policy](/configuration/egress) when the configuration loads and before every poll; a denied URL is skipped with a warning. Rolter does not follow redirects from it.
+
+This is a **secondary** signal only. It never marks a provider unhealthy or changes routing on its own — it exists to give early visibility. Transport or JSON-parse failures are logged and skipped, never counted as a provider error. The poller runs whenever any provider sets `status_page_url`, even with `health.enabled = false`.
+
 </Info>
 
 ```toml rolter.toml

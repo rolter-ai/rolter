@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
+import { MemoryRouter, useInRouterContext } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -7,10 +8,16 @@ import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
-import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
+import {
+  effectiveFor as effectiveFromTable,
+  matrixFixture,
+  type Membership,
+} from "@/lib/rbac-capabilities";
+import { expectInFrame, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
+import { STRICT_MOUNT_LABEL, doubleInvokeFailure, strictProbeCounts } from "./story-strict";
 
 // Shared fetch-stub harness for screen stories (#879).
 //
@@ -101,9 +108,12 @@ export function routes(table: [string, () => unknown][], status = 200): FetchStu
 export function Harness({
   fetchStub,
   role,
+  route,
   children,
 }: {
   fetchStub: FetchStub;
+  /** the router's starting path, when a story asserts where a link went */
+  route?: string;
   /**
    * Answer `GET /api/v1/rbac/effective` as this role and mount the screen
    * under a `CapabilityProvider` (#1183).
@@ -112,7 +122,7 @@ export function Harness({
    * un-gated case every other story asserts, because `can()` with no provider
    * above it says "unknown" and every control renders enabled.
    */
-  role?: StoryRole;
+  role?: StoryRole | StoryMemberships;
   children: React.ReactNode;
 }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
@@ -140,7 +150,15 @@ export function Harness({
   ) : (
     children
   );
-  return <QueryClientProvider client={client}>{body}</QueryClientProvider>;
+  // screens link with the router's Link, which throws outside one; a story that
+  // brings its own router keeps it
+  const inRouter = useInRouterContext();
+  const routed = inRouter ? (
+    body
+  ) : (
+    <MemoryRouter initialEntries={route ? [route] : undefined}>{body}</MemoryRouter>
+  );
+  return <QueryClientProvider client={client}>{routed}</QueryClientProvider>;
 }
 
 /**
@@ -178,6 +196,23 @@ function GateProbe() {
 export type StoryRole = Role | "superadmin";
 
 /**
+ * A caller held by memberships rather than one org role (#2522). The stub reads
+ * `org_id`, `team_id` and `project_id` off the query string, the way the
+ * control plane does, and decides each capability at the part of that chain
+ * its scope names (#2376) — so a project admin is an admin on their project's
+ * rows and holds nothing more on an org-scoped one.
+ */
+export type StoryMemberships = Membership[];
+
+/** An admin of `projectId` who is a viewer of the story's org. */
+export function adminOfProject(projectId: string): StoryMemberships {
+  return [
+    { role: "viewer", orgId: ORG.id },
+    { role: "admin", projectId },
+  ];
+}
+
+/**
  * What the control plane would answer for a caller holding `role`, derived
  * from its own capability table (#1298).
  *
@@ -186,8 +221,11 @@ export type StoryRole = Role | "superadmin";
  * both are deployment-wide catalogs a superadmin alone writes, which let two
  * screens gate on capabilities the control plane does not define while their
  * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
- * generated copy of `CAPABILITIES` instead, and a test fails the build when
- * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ * copy of `crates/rolter-control/rbac-matrix.json` instead — the matrix the
+ * rolter-control test suite writes from `CAPABILITIES` (#1369) — and a test
+ * fails the build when that copy and the artifact disagree.
+ *
+ * A bare role is one org membership, which every row of every chain reaches.
  */
 export function effectiveFor(role: StoryRole): RbacEffective {
   return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
@@ -197,10 +235,23 @@ export function effectiveFor(role: StoryRole): RbacEffective {
 export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
-export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub {
+export function withCapabilities(
+  role: StoryRole | StoryMemberships,
+  handler: FetchStub,
+): FetchStub {
   return async (input, init) => {
-    const path = new URL(String(input), "http://localhost").pathname;
-    if (path === "/api/v1/rbac/effective") return json(effectiveFor(role));
+    const url = new URL(String(input), "http://localhost");
+    const path = url.pathname;
+    if (path === "/api/v1/rbac/effective") {
+      const q = url.searchParams;
+      if (typeof role === "string") return json(effectiveFor(role));
+      const chain = {
+        orgId: q.get("org_id"),
+        teamId: q.get("team_id"),
+        projectId: q.get("project_id"),
+      };
+      return json(effectiveFromTable({ memberships: role, chain }));
+    }
     if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
     return handler(input, init);
   };
@@ -309,6 +360,50 @@ export async function answerDiscardPrompt(discard: boolean): Promise<void> {
     within(prompt).getByRole("button", { name: discard ? "Discard" : "Cancel" }),
   );
   await waitFor(() => expect(prompt).not.toBeInTheDocument());
+}
+
+/**
+ * The question a one-time secret asks before it closes uncopied (#2217).
+ *
+ * Found by its accessible name for the same reason `discardPrompt` is: the
+ * reveal is still mounted behind it, so there are two `role="dialog"` nodes
+ * and a bare lookup cannot tell them apart.
+ */
+export async function secretClosePrompt(): Promise<HTMLElement> {
+  return within(document.body).findByRole("dialog", { name: en.common.secret.closeTitle });
+}
+
+/**
+ * Answer it: `true` closes the reveal over the value nobody copied, `false`
+ * keeps the reveal and the value on screen.
+ */
+export async function answerSecretClosePrompt(close: boolean): Promise<void> {
+  const prompt = await secretClosePrompt();
+  await userEvent.click(
+    within(prompt).getByRole("button", {
+      name: close ? en.common.secret.closeConfirm : en.common.cancel,
+    }),
+  );
+  await waitFor(() => expect(prompt).not.toBeInTheDocument());
+}
+
+/**
+ * A clipboard the story owns, put back when it ends, for a `beforeEach`.
+ *
+ * The real one is unavailable in a headless browser, and withheld by the
+ * platform on a plain-http dashboard, so neither a copy that lands nor one
+ * that is refused can be observed without standing one in. Pass a `writeText`
+ * that rejects for the refusal.
+ */
+export function stubClipboard(writeText: (value: string) => Promise<void>): () => () => void {
+  return () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    return () => {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    };
+  };
 }
 
 /**
@@ -520,6 +615,34 @@ export async function expectLoadError(canvasElement: HTMLElement, says: RegExp):
   );
 }
 
+/**
+ * Assert the `AnalyticsUnavailable` panel is on screen under `title`, and that
+ * it is not the failure a 500 is (#2016).
+ *
+ * A deployment with no analytics store answered, and no retry changes the
+ * answer, so the panel is a `status` and nothing on the screen is an `alert`.
+ * The setting to change is in monospace, the control plane's own words (`says`)
+ * stay under it, and there is no retry. Returns the panel for the caller's own
+ * assertions about what sits beside it.
+ */
+export async function expectAnalyticsUnavailable(
+  canvasElement: HTMLElement,
+  title: string,
+  says: string,
+): Promise<HTMLElement> {
+  const canvas = within(canvasElement);
+  const heading = await canvas.findByText(title, undefined, { timeout: 6000 });
+  const panel = heading.closest<HTMLElement>('[role="status"]');
+  await expect(panel).not.toBeNull();
+  await waitFor(() => expect(panel).toBeVisible());
+  await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+  const names = within(panel!).getAllByText("CLICKHOUSE_URL");
+  for (const name of names) await expect(name.tagName).toBe("CODE");
+  await expect(within(panel!).getByText(says)).toBeVisible();
+  await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+  return panel!;
+}
+
 /** The `forbidden` LoadError, which is what a non-superadmin gets. */
 export async function expectForbidden(canvasElement: HTMLElement): Promise<void> {
   await expectLoadError(canvasElement, /You do not have access to/);
@@ -591,6 +714,90 @@ export async function expectListTable(canvasElement: HTMLElement, name: string):
     await expect(cells).toEqual(cells.map(() => "cell"));
     if (cells.length !== 1) await expect(cells.length).toBe(columns.length);
   }
+}
+
+/**
+ * Assert what the `ListTable` named `name` shows in place of rows is on screen
+ * at the width the story runs at (#2362).
+ *
+ * `toBeVisible` cannot say so: it reads `display` and `opacity`, not whether a
+ * scroll container has pushed the box past its own edge, and the table scrolls
+ * sideways below its column floor. The state row once took the width of that
+ * floor, so at 375px the empty title and its button were "visible" 400px to the
+ * right of anything the reader could see. The boxes are measured instead:
+ * `says` and `cta` are the empty state's title and its button, read inside the
+ * table because the toolbar repeats the same action; with neither, the loading
+ * skeleton is what gets measured.
+ *
+ * The table is scrolled into view and the state is not: scrolling the title
+ * into view would slide the table sideways until the title showed, and the
+ * story would pass on the very fault it exists to catch. A second table lower
+ * down the screen (Users' pending invitations) is then measured where a reader
+ * would land on it, not below the fold.
+ */
+export async function expectListStateInViewport(
+  canvasElement: HTMLElement,
+  name: string,
+  { says, cta }: { says?: RegExp; cta?: RegExp } = {},
+): Promise<void> {
+  const table = await within(canvasElement).findByRole("table", { name });
+  table.scrollIntoView({ block: "start" });
+  await expect(table.scrollLeft).toBe(0);
+  const inTable = within(table);
+  if (!says) {
+    await waitFor(() => expect(inTable.getByRole("status")).toBeVisible());
+    await expectInViewport(inTable.getByRole("status"));
+    return;
+  }
+  await waitFor(() => expect(inTable.getByText(says)).toBeVisible());
+  await expectInViewport(inTable.getByText(says));
+  if (cta) await expectInViewport(inTable.getByRole("button", { name: cta }));
+}
+
+/**
+ * The native `Table` counterpart of `expectListStateInViewport` (#2420): assert
+ * what the table shows in place of rows sits inside the frame its scroller
+ * shows, and is centred in it.
+ *
+ * A native table has no accessible name to look it up by, so the empty title is
+ * the way in: `says` is that title, `body` the description under it and `cta`
+ * the button, which is read inside the table because the toolbar repeats the
+ * same action. They are measured against the scroller's own frame and not the
+ * window (`expectInViewport`): the frame is narrower than the window by the page
+ * gutters, so an empty title the card's edge had clipped still sat inside the
+ * window. The title and the description are measured by their text, through a
+ * `Range`, because the block that holds a line of centred text is as wide as
+ * its row whether or not the text fits.
+ *
+ * Centred is asserted as well, since a placeholder that was merely inside the
+ * frame could sit off to one side of it: it was centred on the whole table, so
+ * a narrower frame left it where the reader's eye is not. The scroller is
+ * scrolled into view and never the state, for the reason
+ * `expectListStateInViewport` gives.
+ */
+export async function expectTableStateInFrame(
+  canvasElement: HTMLElement,
+  { says, body, cta }: { says: RegExp; body?: RegExp; cta?: RegExp },
+): Promise<void> {
+  const table = (await within(canvasElement).findByText(says)).closest("table");
+  if (!table?.parentElement) throw new Error(`no native table holds the text ${says}`);
+  const frame = table.parentElement;
+  frame.scrollIntoView({ block: "start" });
+  await expect(frame.scrollLeft).toBe(0);
+  const inTable = within(table);
+  await waitFor(() => expect(inTable.getByText(says)).toBeVisible());
+  const textOf = (el: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range;
+  };
+  const title = textOf(inTable.getByText(says));
+  await expectInFrame(title, frame);
+  const { left: from, right: to } = title.getBoundingClientRect();
+  const centre = frame.getBoundingClientRect().left + frame.clientLeft + frame.clientWidth / 2;
+  await expect(Math.abs((from + to) / 2 - centre)).toBeLessThanOrEqual(1.5);
+  if (body) await expectInFrame(textOf(inTable.getByText(body)), frame);
+  if (cta) await expectInFrame(inTable.getByRole("button", { name: cta }), frame);
 }
 
 /** The open editor sheet. Sheets portal to the body, not into the canvas. */
@@ -832,4 +1039,42 @@ export async function expectUxEvent(action: UiEvent["action"], target?: string):
  */
 export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
   expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
+}
+
+/**
+ * Wait until the probe beside a `StrictModeHost` subject has seen StrictMode's
+ * simulated unmount and remount: two mounts and one cleanup. A story whose
+ * StrictMode doubled nothing fails here, with the reason, instead of going
+ * green against a lifecycle that never ran (#1887).
+ */
+export async function expectDoubleInvoked(): Promise<void> {
+  await waitFor(() => {
+    const failure = doubleInvokeFailure(strictProbeCounts());
+    if (failure !== null) throw new Error(failure);
+  });
+}
+
+/**
+ * Mount a `StrictModeHost`'s subject in a later commit and prove the
+ * double-invoke ran on it. Everything the play function does after this runs
+ * against a subject that has already been mounted, unmounted and remounted.
+ */
+export async function mountStrictly(label = STRICT_MOUNT_LABEL): Promise<void> {
+  await userEvent.click(within(document.body).getByRole("button", { name: label }));
+  await expectDoubleInvoked();
+}
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the linked and unlinked states cannot leak into each
+ * other.
+ */
+export function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
 }

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 
 import { Badge } from "./badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./card";
+import { Card, CardContent, CardDescription, CardHeader, CardStack, CardTitle } from "./card";
 
 const meta = {
   title: "Display/Card",
@@ -26,5 +26,14 @@ export const Default: Story = {
         <span className="text-sm text-muted-foreground">342 ms p95</span>
       </CardContent>
     </Card>
+  ),
+};
+
+export const Stack: Story = {
+  render: () => (
+    <CardStack className="max-w-md">
+      <span className="text-sm font-medium">openai / gpt-4o</span>
+      <span className="text-sm text-muted-foreground">input 2.50, output 10.00 per 1M tokens</span>
+    </CardStack>
   ),
 };

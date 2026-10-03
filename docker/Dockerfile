@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1
 
+# the distroless release the runtime layout sits on: debian12 for every image
+# that is built or published. CI's image smoke passes debian13 for the
+# `runtime-prebuilt` target only, because its binaries come from an ubuntu 24.04
+# runner whose glibc headers make aws-lc link `__isoc23_*` symbols (glibc 2.38),
+# which debian 12's glibc 2.36 does not have (#2037)
+ARG RUNTIME_DISTRO=debian12
+
 # --- build the rust binaries ---
 FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
@@ -8,10 +15,13 @@ COPY crates ./crates
 # ui/ is a workspace member (rolter-ui marker crate for release-plz changelog
 # tracking); copy its manifest + stub lib so cargo can resolve the workspace
 COPY ui/Cargo.toml ui/changelog.rs ./ui/
-# optional workspace features (empty by default, so the shipping image is
-# unchanged). set CARGO_FEATURES=postgres to build the control plane with its
-# postgres-backed store, CRUD API and migrations (the e2e harness does this).
-ARG CARGO_FEATURES=""
+# workspace features, `postgres` by default so the published image, compose and
+# the Helm chart all get a control plane with its postgres-backed store, CRUD
+# API and migrations, plus the launcher's `config export`, `mfa reset` and
+# `kek verify` (#2405). `--workspace --features postgres` enables the feature
+# on every member that declares it. pass --build-arg CARGO_FEATURES= to build
+# the in-memory-only variant
+ARG CARGO_FEATURES="postgres"
 # the crate registry, the git checkouts and the target directory are buildkit
 # cache mounts, so a rebuild reuses downloaded crates and compiled dependency
 # artifacts instead of starting from nothing. without them a one-line source
@@ -44,19 +54,26 @@ COPY ui/ ./
 COPY Cargo.toml /Cargo.toml
 RUN bun run build
 
-# --- runtime ---
+# --- runtime layout ---
+# everything about the runtime image except where its binaries and dashboard
+# come from: base, working directory, bundled config, environment, ports and
+# default command. both `runtime` (compiled above) and `runtime-prebuilt`
+# (copied in) build on it, so the image smoke in quality.yml checks the same
+# layout the published image has (#2037).
+#
 # distroless: no shell, no package manager, and crucially no `perl-base`, which
 # on debian carries unfixed CVEs (CVE-2026-12087 et al) that a base bump cannot
 # resolve. the binaries link only glibc (libc/libm/libgcc), and reqwest uses
 # rustls with bundled webpki roots, so no system openssl or ca-certificates is
 # needed. runs as the built-in nonroot user (uid 65532). pinned by index digest
-# (multi-arch: amd64 + arm64).
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151 AS runtime
+# (multi-arch: amd64 + arm64). the debian13 pin exists only for the CI image
+# smoke described above; bump the two together.
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151 AS distroless-debian12
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS distroless-debian13
+# a stage named above, pinned there, so there is no tag for hadolint to see
+# hadolint ignore=DL3006
+FROM distroless-${RUNTIME_DISTRO} AS runtime-base
 WORKDIR /app
-COPY --from=rust-builder /out/rolter /usr/local/bin/rolter
-COPY --from=rust-builder /out/rolter-gateway /usr/local/bin/rolter-gateway
-COPY --from=rust-builder /out/rolter-control /usr/local/bin/rolter-control
-COPY --from=ui-builder /ui/dist /app/ui/dist
 COPY rolter.example.toml /app/rolter.toml
 ENV ROLTER_CONFIG=/app/rolter.toml \
     ROLTER_UI_DIR=/app/ui/dist \
@@ -70,3 +87,34 @@ EXPOSE 4000 4001
 # reopen #970: with no ROLTER_ADMIN_TOKEN, easy-up and the control plane under
 # it refuse a non-loopback bind unless ROLTER_ALLOW_OPEN_MODE=1 acknowledges it
 CMD ["/usr/local/bin/rolter", "easy-up", "--host", "0.0.0.0", "--config", "/app/rolter.toml", "--ui-dir", "/app/ui/dist"]
+
+# --- runtime from prebuilt artifacts (ci image smoke) ---
+# the runtime layout around binaries and a dashboard built outside docker, so CI
+# can smoke the image without a cold release build of the workspace on every
+# call (#2037). the two stages below are placeholders that the build overrides
+# with named contexts; a build that forgets them fails on a missing file rather
+# than pulling an image called `rolter-bin` from a registry:
+#
+#   docker build -f docker/Dockerfile --target runtime-prebuilt \
+#     --build-arg RUNTIME_DISTRO=debian13 \
+#     --build-context rolter-bin=<dir with rolter, rolter-gateway, rolter-control> \
+#     --build-context rolter-ui=ui/dist -t rolter:dev .
+#
+# the binaries must run on the base's glibc: 2.36 on debian12, 2.41 on
+# debian13, hence RUNTIME_DISTRO=debian13 for binaries built on a newer host.
+# the release image is never built this way: it is `runtime`, the last stage
+FROM scratch AS rolter-bin
+FROM scratch AS rolter-ui
+FROM runtime-base AS runtime-prebuilt
+COPY --from=rolter-bin /rolter /usr/local/bin/rolter
+COPY --from=rolter-bin /rolter-gateway /usr/local/bin/rolter-gateway
+COPY --from=rolter-bin /rolter-control /usr/local/bin/rolter-control
+COPY --from=rolter-ui / /app/ui/dist
+
+# --- runtime ---
+# the published image, and the default target since it is the last stage
+FROM runtime-base AS runtime
+COPY --from=rust-builder /out/rolter /usr/local/bin/rolter
+COPY --from=rust-builder /out/rolter-gateway /usr/local/bin/rolter-gateway
+COPY --from=rust-builder /out/rolter-control /usr/local/bin/rolter-control
+COPY --from=ui-builder /ui/dist /app/ui/dist

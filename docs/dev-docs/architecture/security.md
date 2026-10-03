@@ -6,6 +6,7 @@
 - In the **bootstrap file**, prefer `api_key_env` over inline `api_key` so secrets stay in the environment, not on disk.
 - **Virtual keys** are stored as hashes with a short display prefix; the raw key is shown once at creation.
 - Secrets are never logged. The gateway redacts auth headers from traces.
+- **Logs never carry datastore credentials (#2406).** A Redis, ClickHouse, snapshot or Postgres URL can hold a password as userinfo (`redis://:pw@host`) or in a query parameter (`?password=`). Every startup line that names one, and every error that quotes one, goes through `rolter_core::redact` (`crates/rolter-core/src/redact.rs`): `redact_url` keeps scheme, host, port and path and prints userinfo and credential-named query values as `***`, `redact_urls_in_text` does the same for URLs inside an error string, and a URL that does not parse prints as `<invalid url>` rather than being echoed. Use it for any new log line or error that embeds a URL.
 
 ## Transport
 
@@ -64,11 +65,10 @@ Only the **policy** columns are selected. The dashboard credential ciphertext
 and nonce are not named by the query at all — the migration promised snapshots
 would never carry them, and a query that cannot see a column cannot leak it.
 
-| Setting                | Effect on the gateway                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------- |
-| `virtual_key_required` | an unauthenticated request is refused even where the gateway holds no keys                  |
-| `required_headers`     | a request missing any name/value pair is refused at ingress, before routing and before auth |
-| `auth_bypass_routes`   | the named paths answer without a key                                                        |
+| Setting              | Effect on the gateway                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `required_headers`   | a request missing any name/value pair is refused at ingress, before routing and before auth |
+| `auth_bypass_routes` | the named paths answer without a key                                                        |
 
 Load-bearing properties, each with a test that fails if it stops holding:
 
@@ -76,9 +76,15 @@ Load-bearing properties, each with a test that fails if it stops holding:
   which an operator writes out path by path. The default for the whole struct
   is "no extra rules", so a store that cannot be read leaves the deployment
   where it was rather than opening one that was closing.
-- **`server.require_auth` in the config file still wins, in both directions.**
-  A file is a deliberate local override by whoever runs the process, who may
-  not be the person holding the dashboard.
+- **Nothing in the snapshot decides whether a keyless gateway is open.**
+  `authenticate` reads `server.require_auth` when the gateway's own config file
+  sets it, and otherwise `AppState::managed_auth` (true when the gateway polls a
+  snapshot url): a managed gateway holding no keys refuses every request, a
+  file-configured one stays open for local development. A file is a deliberate
+  local override by whoever runs the process, who may not be the person holding
+  the dashboard, so `require_auth = false` is the only way to open a managed
+  gateway with no keys. See the next section for the switch that used to sit
+  here.
 - **Bypass matching is exact.** `/v1/models` does not open
   `/v1/models/gpt-4o`, and `validate_bypass_route` already refuses wildcards
   and non-`/v1` paths at write time. The MCP surface passes a literal `/mcp`
@@ -91,11 +97,77 @@ Load-bearing properties, each with a test that fails if it stops holding:
   put a shared secret in a required header, and echoing it would hand it to the
   one caller who did not know it.
 
+### Retired settings
+
+`virtual_key_required` is **gone from the API, the snapshot and the dashboard**
+(#2357). The Security screen offered it as "Enforce Virtual Keys on Inference",
+and `authenticate` read it as `virtual_key_required || managed_auth` for a
+gateway with an empty key set. The policy reaches a gateway only through
+`/internal/snapshot`, so every gateway that received it was managed, and
+`managed_auth` already made the answer "closed": the switch never changed a
+decision. Giving it a meaning would have meant letting its off position open a
+managed gateway, which is the one direction a dashboard toggle should not be
+able to move a fleet, and every stored row already says `false`, so that
+meaning would have opened every deployment that never touched it. The pieces:
+
+- `PUT /api/v1/security-settings` ignores the field when an older client sends
+  it, and neither `GET` nor the snapshot returns it. The column stays in
+  `security_settings`, unread and unwritten, because migrations are
+  append-only.
+- `SecurityPolicyConfig` no longer has the field. A snapshot from an older
+  control plane still parses; the field is ignored and the gateway decides as
+  above (`a_retired_snapshot_field_never_opens_a_managed_gateway`,
+  `a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_it`).
+- A config file that sets `[security] virtual_key_required = true` used to
+  close a file-configured gateway. `GatewayConfig::from_toml_str` carries that
+  forward as `server.require_auth = true` unless the file sets `require_auth`
+  itself, and warns either way; `config_lint` does not also report the key as
+  silently ignored (`a_retired_virtual_key_required_still_closes_a_file_gateway`).
+
 `allow_direct_provider_keys` is **gone from the API and the dashboard.** The
 gateway has no direct-provider-key passthrough, so the column controlled
 nothing; the store now pins it to its default. A toggle that reads like a
 security control and does nothing is worse than an absent one, because it
 converts into a false belief during exactly the review where it matters.
+
+## The Security screen (#2103, #2114)
+
+The dashboard's Security screen (`ui/src/pages/Security.tsx`) saves every field in one
+`PUT /api/v1/security-settings`, and the control plane refuses the whole save when one entry breaks a
+rule in `validate_settings`. Three pieces of the screen exist to keep that refusal from being the
+first the operator hears of it.
+
+- **The list rules are mirrored in `ui/src/lib/security-lists.ts`.** Every list is one entry per
+  line, and an entry that does not parse is kept in the field and named with its line, never
+  dropped. The functions accept what `validate_settings` accepts and refuse what it refuses, no
+  stricter and no looser. The one extra rule is a required header named twice, since the store
+  keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
+  `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
+  rule widened on one side shows up as a red test rather than as a toast.
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only one edit loosens:
+  a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
+  and a save that only tightens goes out without a dialog (see
+  [destructive actions](../development/destructive-actions.md)).
+- **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
+  (the table's trigger), each gateway reports the version it runs on its snapshot poll, and
+  `GET /api/v1/cluster/nodes` compares the two as `converged`. The screen asks for the inventory
+  under a key of its own per save, so an answer read before the save is never taken for one after it,
+  and counts the live gateways that converged. With no live gateway on record, or a failed read, it
+  says pickup cannot be confirmed and when a gateway applies it (next poll, `ROLTER_SNAPSHOT_POLL_SECS`,
+  5 s by default; at once with Redis pub/sub).
+
+### No shared dashboard password
+
+The dashboard is protected by per-user sessions: local password login, SSO and optional MFA, each
+session bound to a user and a role. There is no shared dashboard password. The Security screen used
+to offer a "Password protect the dashboard" switch (`dashboard_auth_enabled`, plus a credential
+reference or a sealed managed secret); it was stored and returned but no code path read it, so it
+read as a control and was not one (#2356, the same shape as the direct-provider-key toggle removed
+in #1162). It is removed from the API, and the store no longer reads or writes the columns. They stay
+in `security_settings` because migrations are append-only. `dashboard_credential_ciphertext` stays in
+`SEALED_COLUMNS` so `rolter kek verify` still checks any secret sealed before the removal. A client
+that still sends the old fields is not rejected; `PUT /api/v1/security-settings` ignores unknown
+fields.
 
 ## Egress policy (SSRF)
 
@@ -158,13 +230,75 @@ left with nothing is refused — which is exactly what rebinding to a denied
 address produces. The resolver reads the policy from a live handle, so a hot
 reload re-tunes enforcement without discarding pooled connections.
 
-The control plane's own requests to operator-supplied URLs (the connector test
-probe, alert channel delivery, MCP OAuth discovery) check the same policy on
-the stored URL when it is saved and again before each request. Alert delivery
-and MCP OAuth discovery also refuse redirects, so a `3xx` cannot hand the
-request to a host the check never saw. None of them has a connect-time
-resolver yet, and the connector probe still follows redirects; both are
-tracked in #1949.
+The control plane enforces the policy at connect time too. Its own requests to
+operator-supplied URLs (the provider and connector test probes, alert channel
+delivery, and MCP OAuth discovery and token exchange) check the stored URL when it is saved
+and again before each request, and every one of them is sent through the client
+built by `crates/rolter-control/src/egress_client.rs`. That builder installs a
+resolver that drops the addresses `EgressPolicy::filter_resolved` denies, the
+same function the gateway's `EgressResolver` calls, so the two planes cannot
+disagree about an address. It also refuses redirects, so a `3xx` cannot hand a
+request to a host the check never saw; the provider and connector probes used to
+send through the shared `ControlState::http` client, which follows up to ten and
+classifies only IP literals. The client is
+built per request from the deployment's policy rather than pooled, since these
+calls are rare. The provider probe has never used a provider's `egress_proxy`,
+and still sends direct.
+
+Two paths intentionally keep the plain `ControlState::http` client: the `/gw/*`
+reverse proxy, and the ClickHouse client in `analytics.rs`. Both target an
+address the operator configured for the deployment (the gateway address and the
+ClickHouse URL), not a per-row URL a tenant can write, so there is no
+attacker-chosen destination to classify.
+
+One caveat applies to every connect-time check: when `HTTP_PROXY` or
+`HTTPS_PROXY` is configured for outbound traffic, the proxy resolves the target
+name, not the egress resolver, so the check covers only direct connections.
+Enforce the policy on the proxy itself in that deployment.
+
+### Every path, and where it is checked (#2383)
+
+Each operator-written URL is checked when it is saved and again before it is
+sent. A denied provider URL in a snapshot is pruned per row in
+`GatewayConfig::sanitize_for_snapshot` with a problem line (shown by
+`/api/v1/config/problems`), while `validate()` stays strict for file configs.
+
+A denied guardrail webhook, PII sanitizer or plugin URL is **not** pruned or
+switched off: dropping a fail-closed control would make it silently fail open.
+The snapshot keeps it, records the problem, and `validate_snapshot()` (used by
+the control plane and the gateway watcher) does not repeat the check. At
+request time the `EgressClient` refuses the call, which is an ordinary call
+failure, so the block's own `failure_mode` decides: fail-closed refuses the
+request, fail-open lets it through. Each has a gateway test.
+
+| URL                                                                          | Save time                                               | Request time                                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| provider `api_base`, egress proxy                                            | `require_allowed_egress` (400); `provider_problems`     | `rolter-proxy` `EgressResolver` on every upstream client                          |
+| provider `status_page_url`                                                   | `provider_problems` (file config; provider row dropped) | `gateway::egress_client::EgressClient` (literal check and resolver, no redirects) |
+| provider `lmcache.endpoint`                                                  | `provider_problems`                                     | `EgressClient` on every refresh                                                   |
+| provider `kv_events.endpoint`                                                | `provider_problems`                                     | `kv_endpoint_permitted` before each connect (see the gap below)                   |
+| MCP server URL, MCP OAuth URLs                                               | `validate`; `require_allowed_egress`                    | `rolter-control` `egress_client::builder`                                         |
+| alert channel and connector endpoints                                        | `require_allowed_egress`-style check in each module     | `egress_client::builder` plus `url_deny_reason`                                   |
+| SSO issuer; discovery `authorization_endpoint`, `token_endpoint`, `jwks_uri` | `require_allowed_egress` on create and update           | `sso::idp_client` (`egress_client::builder`) and `check_idp_url` on every fetch   |
+| guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)    | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
+
+The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
+same live policy handle as the upstream forwarder, so a reload re-tunes it. It
+carries two checks because neither covers the other: the resolver sees what DNS
+returned for a name, but `reqwest` never resolves an IP literal, so the literal
+check (`url_deny_reason`) runs on each request.
+
+Gaps that remain:
+
+- **`kv_events` rebinding.** The subscription is ZeroMQ, not HTTP, so there is
+  no resolver to install. The endpoint is checked, and a hostname is resolved
+  and filtered, before each connect, but the transport resolves again itself,
+  so a rebind in the gap between the two is not caught.
+- **Process-level URLs.** The datastore, snapshot and similar URLs a process
+  is started with are written by whoever runs it, not by a tenant or an admin
+  surface, and are not checked.
 
 ## Control-plane input validation
 
@@ -185,6 +319,32 @@ Tab, newline and carriage return stay allowed — multi-line values are
 legitimate, a PEM CA bundle being the obvious one. Malformed JSON now also
 comes back in the same OpenAI-style error envelope as every other failure
 instead of axum's default rejection body.
+
+## What a 500 says (#2268)
+
+A control-plane `500` answers `{"error": {"message": "internal server error"}}`
+and logs its cause at `error`, unless the message was written for the caller on
+purpose. Most server-side failures reach the response as `rolter_core::Error`,
+and `Error::Store` carries whatever the driver said: every
+`map_err(|e| Error::Store(e.to_string()))` and the store's own `store_err` pass
+sqlx text on, which can name relations, schemas, hosts and the credentials in a
+connection URL.
+
+A message that is safe and useful to show goes through `ApiError::Curated`
+instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
+
+| Message                                               | Where                                            |
+| ----------------------------------------------------- | ------------------------------------------------ |
+| `INSERT_FAILED`, the "requires CLICKHOUSE_URL" family | `ingest_failure.rs` (the store's text is logged) |
+| the reason an alert rule's signal read failed         | `alerting.rs`, worded by `read_signal`           |
+| failed to encrypt a connector or channel credential   | `connectors.rs`, `alerting.rs`                   |
+| failed to query observability connectors              | `collector_config.rs`                            |
+| unknown provider kind in a stored row                 | `crud.rs`                                        |
+
+`4xx` answers are untouched: validation (`Error::Config`) and lookups
+(`Error::NotFound`) are written for the caller. A new message that has to reach
+a `500` body is a `Curated` one, and must never interpolate anything a driver or
+upstream returned.
 
 ## Open mode (no admin token)
 
@@ -226,11 +386,144 @@ to the co-hosted control plane. The bind is a flag on that command, not an
 image-wide variable, so a `rolter-gateway` or `rolter-control` run from the
 image keeps its own default.
 
+## What the dashboard's config view strips (#1938, #1840)
+
+A store that cannot be read is a `500` with the redacted `{"error": {"message": "internal server error"}}` body on both `GET /api/v1/config` and `GET /api/v1/config/problems` (#2248), never an empty default configuration: the dashboard shows its load error rather than a deployment with no providers.
+
+`GET /api/v1/config` answers a signed-in caller of any role (or the admin
+token, or anyone in open mode) and nobody else; see [The public route
+allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
+screen. It serializes the same `GatewayConfig` the store loads for the gateway's
+`/internal/snapshot`, and on a Postgres store holding `ROLTER_KEK` that load has
+already unsealed every sealed secret. So `redact_config_for_dashboard`
+(`crates/rolter-control/src/lib.rs`) removes each secret by name before the
+document leaves the control plane:
+
+| What                                          | Treatment                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------- |
+| provider and provider-default keys            | `api_key` and every `api_keys[].key` blanked                                |
+| provider egress proxies                       | `user:password@` stripped from the URL                                      |
+| static virtual keys                           | the key replaced with `[redacted]`                                          |
+| database virtual-key records                  | the list cleared: each names its org, team, project and creator             |
+| MCP OAuth sessions                            | the list cleared: they carry per-user access tokens                         |
+| static MCP servers                            | the list cleared: each carries its bearer or header credential, URL and org |
+| the `tenancy` of providers, routes and groups | cleared (#1844)                                                             |
+| the ClickHouse URL                            | `user:password@` stripped                                                   |
+
+`dashboard_config_carries_no_secrets` seeds one of each and fails if any
+survives, so a new secret-bearing field belongs in that test as well as in the
+function. The topology that survives redaction (provider names, `api_base`
+hosts and ports, routes, groups, problem strings) is why the document is behind
+a session at all.
+
+## The public route allowlist (#1840)
+
+`GET /api/v1/config` and `GET /api/v1/config/problems` used to sit on the open
+router. Redaction removed every credential, but the document still named each
+provider, the internal hostname and port in its `api_base`, every route and
+group, and `/config/problems` repeated those names in prose. Anyone who could
+reach the control plane's port could map the deployment's upstreams.
+
+**Decision.** Both endpoints, and the three other static reads that had no
+reason to be anonymous (`/api/v1/currency`, `/api/v1/provider-kinds`,
+`/api/v1/roles`), require a session of any role. They take the `AnySession`
+extractor (`crates/rolter-control/src/session_guard.rs`), which resolves a
+caller exactly as the analytics routes do: open mode passes everyone, the admin
+token passes, and with a database a live session of any role passes. Without a
+database the admin token is the only credential that exists. An anonymous
+caller gets `401`, and the refusal body names nothing.
+
+The router has no blanket auth layer: a handler is protected only because it
+takes an extractor. A route added without one is open and nothing says so,
+which is how the config view stayed open. So the routes that are _meant_ to be
+anonymous are one list, `PUBLIC_ROUTES` in
+`crates/rolter-control/src/public_routes.rs`, each with a reason that says what
+the route reveals and why that is acceptable. Today:
+
+| Route                                                                   | Why it is open                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below) |
+| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                              |
+| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                |
+| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                          |
+| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                              |
+| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                              |
+| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                           |
+| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes         |
+| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`             |
+
+Routes with their own non-session credential (the `/internal/*` token, the
+SCIM bearer) are not on the list: anonymously they answer `401`, and the guard requires exactly that.
+
+**How the guard works.** Three tests in `public_routes.rs`:
+
+- `no_route_answers_an_anonymous_caller_unless_it_is_allowlisted` builds the
+  real router with an admin token set (so it is not open mode), takes every
+  `(method, path)` from the served OpenAPI document, which
+  `every_registered_route_is_documented` already pins to the `.route(...)` calls
+  in the source, and sends each one with no credentials. Anything not `401` must
+  be in `PUBLIC_ROUTES`, and the failure names the route. It also fails on an
+  allowlist entry whose route answers `404`, so the list cannot outlive a
+  route. It runs without a database (a lazy pool that never connects) in both
+  feature sets; the default build skips routes that need a database, the
+  `postgres` build covers them all.
+- `openapi_public_marking_matches_the_allowlist` requires `Op::public()` in
+  `openapi.rs` (rendered as `security: []`) and `PUBLIC_ROUTES` to agree in both
+  directions.
+- `the_allowlist_is_sorted_unique_and_explained` rejects duplicates and an
+  empty-looking reason.
+
+That is the one anonymous-route guard. It replaced a GET-only sweep in
+`tests/control_integration.rs` (#1820) that read `.public()` from the document
+and exempted `/gw`; the allowlist guard covers every method, needs no
+database, and `/gw` takes a session since #2463 (#2464).
+
+What stays in `tests/control_integration.rs` is the one case the guard cannot
+reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
+bearer that is present but is not the admin token is looked up as a session
+token, and that lookup needs a real database, so against the guard's
+never-connecting pool it would answer an error rather than `401`. The test
+sends every operation not marked `.public()` with a forged bearer against a
+real database and requires `401` from each.
+
+To open a route deliberately: add it to `PUBLIC_ROUTES` with a reason, and mark
+the operation `.public()` in `openapi.rs`. To close one: take `AnySession`,
+`Principal` or `CurrentUser` in the handler, and drop both.
+
+**Trimmed with it.** `/readyz` answered the sqlx error text on failure, which
+can name the database host and port to anyone; it now answers `unavailable` and
+logs the detail. The `/gw` proxy's `502` body echoed the reqwest error, which
+names the gateway's internal address; it now says `gateway unreachable` and logs.
+
+**The `/gw` proxy takes a session (#2463).** It used to stay anonymous on the
+argument that the gateway authenticates every call, which is only true while the
+gateway is as reachable as the control plane's port. A gateway kept private
+while the control plane is public would still answer anyone through `/gw`
+(`fake-llm`, a keyless route), so the proxy now takes `AnySession`: open mode
+and the admin token pass, and with a database a live session of any role does.
+
+The session rides in `Authorization: Bearer`, which is also where a client puts
+the virtual key, so the key has its own carrier:
+
+- the **virtual key** goes in `x-rolter-gateway-key` and is forwarded to the
+  gateway as `Authorization: Bearer <key>`;
+- the inbound `Authorization` (the session) and `Cookie` are never forwarded;
+- a browser cannot set headers on a WebSocket, so a realtime upgrade may carry
+  the session as a `rolter_session` query parameter, removed before the request
+  goes upstream. The key keeps riding as `api_key` there. A query string can end
+  up in an access log, so treat that session like any URL-borne credential;
+- the status pill's `/gw/readyz` needs no exemption: the header is only drawn
+  inside the signed-in app, so the call is made with a session.
+
+Clients that call `/gw` without the dashboard (a snippet built on the proxy
+because no gateway base URL is saved) must therefore send both credentials;
+production clients should use the gateway's own address.
+
 ## Who reads the request log (#1820)
 
 `/api/v1/analytics/*` (the request log, usage, spend and attribution rollups)
 and `/api/v1/health/*` (provider uptime, MTTR, the failure timeline) are merged
-onto the part of the router that also serves the probes and `/api/v1/config`,
+onto the part of the router that also serves the probes,
 and until #1820 that made them open: neither resolved a principal, so a caller
 with no credentials read every tenant's request logs — captured prompt and
 completion bodies included — on a deployment whose CRUD API was enforcing RBAC.
@@ -267,32 +560,42 @@ Two details carry the design:
   string, so naming another org's project beside one's own org reads nothing
   back.
 
-A captured body is joined to its log row on `(request_id, ts)`, never on the
-id alone. The gateway keeps whatever `x-request-id` the caller sent, so two
-tenants' requests can share an id; an id-only join let a caller log a bodiless
-request under an id seen on another project's rows and read that project's
-prompt through their own row, which the mask passed because it judges the row,
-not the body. `PayloadLog` copies its log row's `ts` through the same
-serializer, so the pair names one request.
+A captured body is joined to its log row on `log_id`, never on the caller's id.
+The gateway keeps whatever `x-request-id` the caller sent, so two tenants'
+requests can share an id; an id-only join let a caller log a bodiless request
+under an id seen on another project's rows and read that project's prompt
+through their own row, which the mask passed because it judges the row, not the
+body. `log_id` is a UUID the gateway mints per request when it queues the row
+and writes to both `request_logs` and `request_payloads`, so the caller can
+neither choose nor observe it, and a client that sends one constant id no
+longer collides with itself (#1937). The caller's `x-request-id` stays in
+`request_id` for lookup and search. The join key also carries the row's
+`org_id` and `project_id`, which the gateway copies onto the payload row, so a
+body cannot meet a row of another project even if a key were somehow reused.
 
-The pair is not a perfect key. Two requests that share an `x-request-id` and
-were logged in the same millisecond (`ts` is `DateTime64(3)`) still get one
-body between them, which takes a client sending predictable or constant ids.
-Keying the join on something the caller cannot choose is #1937. The pair also
-drops bodies written by gateways from v0.1.0 or earlier, which let ClickHouse
-stamp the log row and the payload row separately: after the control plane is
-upgraded those bodies stop showing until payload retention removes them. The
-user docs' upgrade page says to upgrade gateways first for that reason.
+A row that has a `log_id` never falls back to a weaker join. Only a row written
+before migration `012_request_log_key.sql`, where `log_id` is empty, joins on
+`(request_id, ts)` as before, so old bodies stay visible until retention
+removes them; that fallback keeps the same-millisecond limit for those rows and
+disappears on its own as they expire. Bodies written by gateways from v0.1.0 or
+earlier, which let ClickHouse stamp the log row and the payload row separately,
+never joined on `ts` and still do not: after the control plane is upgraded those
+bodies stop showing until payload retention removes them. The user docs'
+upgrade page says to upgrade gateways first for that reason.
 
 Two limits are known and tracked:
 
-- **Provider health matches by name.** `provider_health_events` carries the
-  provider's display name and no org, and names are unique per org only. A
-  name that another org used and then deleted brings its history (uptime,
-  latency, error kinds, `target_id`) to whichever org creates it next, until
-  the 90-day TTL drops it. Provider names are unique across the deployment,
-  so two orgs never hold one at the same time. Recording the org in the rows
-  is #1908.
+- **Provider health rows written before `clickhouse/013_provider_health_org.sql`
+  have no org.** `provider_health_events.org_id` is the provider's org (#1908),
+  and `PROVIDER_VISIBLE` matches `(org_id, provider)` rather than the bare name,
+  so a name another org used and deleted no longer brings its history to the
+  next org that creates it. A row with an empty `org_id` matches no restricted
+  caller: that is every config-file provider, and, on upgrade, every row
+  written before the migration. Those rows are visible only to the admin token
+  and superadmins until the 90-day TTL drops them, so a tenant's health
+  history starts empty at the upgrade. The gateway stamps the org in
+  `HealthEventSink::emit` from the live provider list, which a config reload
+  swaps.
 - **No database, no dashboard.** A control plane with `ROLTER_ADMIN_TOKEN` and
   no store has no sessions, so the admin token is the only credential these
   routes accept, and the dashboard's e-mail-only sign-in cannot present it. The
@@ -304,10 +607,52 @@ What keeps this from regressing is
 `crates/rolter-control/tests/control_integration.rs`: it walks the served
 `/openapi.json` with no credentials and a forged bearer and requires a `401`
 from every GET the document does not mark public. The routes that are open by
-design (`/api/v1/ping`, `/roles`, `/provider-kinds`, `/currency`, `/config`,
-`/config/problems`) are marked `.public()` in `openapi.rs` for that reason, and
+design are listed in `PUBLIC_ROUTES` (see above) and marked `.public()` in
+`openapi.rs`, and
 `crates/rolter-control/tests/analytics_scoping.rs` pins the row and body rules
 against a real ClickHouse.
+
+## Who reads the MCP tool-call log (#1831)
+
+`GET /api/v1/mcp/logs`, `/summary` and `/{event_id}` were superadmin-only, which
+left the engineer whose agent's tool call failed with no way to read the row that
+said why. They now follow the request-log model above, through the same
+`AnalyticsAccess` filter (`McpLogAccess` in `analytics_access.rs` is the extractor
+for this table), so there is one implementation of "which rows may this caller
+read" rather than two:
+
+| caller                                     | rows                                                                                                | tool arguments and results                                                                                                                |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| admin token, superadmin session, open mode | all, including rows with no tenancy                                                                 | all                                                                                                                                       |
+| a user with memberships or custom roles    | rows whose org, team or project any of their roles reaches, and every row whose `user_id` is theirs | where their role at the row's scope meets the `request_payload` floor (member), or a viewer on a project with `payload_min_role = viewer` |
+| no role anywhere                           | none: an empty list, a summary of zero, `404` on a detail                                           | none                                                                                                                                      |
+| no credentials or a forged bearer          | `401`                                                                                               | `401`                                                                                                                                     |
+
+- **The floors are matrix rows.** `mcp_log:read` is `viewer` at project scope
+  and the body floor is the existing `request_payload:read`; `mcp_log:create`
+  stays superadmin, so only the gateway's credential or a superadmin records an
+  event. A custom role may now grant `mcp_log:read`.
+- **Own rows.** `mcp_tool_call_logs.user_id` carries the id of the user who owns
+  the MCP OAuth session that made the call. The predicate is
+  `user_id = caller`, bound as a parameter, and it admits the row without any
+  role, so the caller sees their own failures even on a call the gateway could
+  not attribute to a project. Their arguments and results still need the body
+  floor, which a row with no scope never meets, so an unattributed row's bodies
+  stay withheld from its owner.
+- **Bodies are masked in the database.** The detail query blanks `arguments` and
+  `result` and sets `payload_withheld` for a caller below the floor, like the
+  invocation list. The flag reads the table-qualified columns; unqualified it
+  would resolve to the masked alias and never fire. A row the caller may not see
+  is a `404`, so an event id cannot be probed across tenants.
+- **Rows from before attribution.** The table already had `org_id`, `team_id`,
+  `project_id` and `user_id`, filled by whoever submits the event, so no
+  migration was needed. A row written with those empty (everything the table
+  holds from before the gateway attributes its calls) has no tenant and no
+  owner, so it stays visible to superadmins and the admin token only.
+
+`crates/rolter-control/tests/mcp_log_scoping.rs` pins the rules against a real
+ClickHouse, and `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller`
+still covers the three routes.
 
 ## One org never reaches another (#1844, #1845)
 
@@ -332,8 +677,9 @@ with a `409` that does not say which org holds the name. The route-name check
 runs one way: a slug created after another org's `slug/…` route is accepted,
 and keys that carry no org then reach that route rather than the new address
 (the ADR-0017 addendum explains why). An admin can also
-narrow a route to its own project (`project_only`), which narrows that route
-but not the `slug/model` address of the provider behind it (#1919).
+narrow a route to its own project (`project_only`), and scope a provider or
+group to one project, which keeps its `slug/model` address and every route
+behind it to that project's keys (#1919).
 The contract, the table of which keys admit which rows, and the write-time
 guards are in
 [RBAC & authentication](rbac-and-auth.md#one-org-never-reaches-another-1844-1845);
@@ -481,12 +827,17 @@ joined, and stops seeing someone's once they hold no role in it. Deactivation
 keeps memberships, so a deactivated leaver stays visible; `user.delete`, which
 removes them, is written per org for that reason.
 
-Rows no org can claim are still not readable through the API: the account
-events of someone with no membership anywhere — above all a superadmin's own
-sign-ins — and attempts against an address nobody registered, which are
-recorded with no actor and otherwise reach only the logs and
-`rolter_control_login_attempts`. A deployment-wide read for the superadmin (and
-the security-auditor role of #1834) is #1858.
+Rows no org can claim — the account events of someone with no membership
+anywhere, above all a superadmin's own sign-ins, and attempts against an address
+nobody registered, which are recorded with no actor — are read through
+`GET /api/v1/audit-log` (#1858). It returns every row in `audit_log`, org-less
+ones included, and is guarded by the superadmin-only `deployment_audit_log:read`
+capability. It is the same keyset-paged read as the per-org one: the handlers
+share the query-string parsing (`audit_log_filter`), the `(at, id)` cursor and
+the response builder, and differ only in the store call (`list_page_all` /
+`count_all` have no org predicate). A security-auditor role (#1834) does not
+exist yet, so the endpoint admits superadmins alone; that role is to be added
+at the guard in `list_deployment_audit_log`.
 
 ## Three credentials, one word (#943)
 

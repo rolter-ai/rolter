@@ -246,14 +246,33 @@ CMD ["sh", "-c", "rolter check --strict && rolter control"]
 ### Docker Compose
 
 The bundled `docker/docker-compose.yml` is the _local_ stack and is
-deliberately loose — example postgres credentials, no KEK, management plane wide
-open. Gating local bring-up on production rules would break the one path that is
-meant to have no friction, so the check lives behind a profile and never runs on
-`docker compose up`:
+deliberately loose, with example postgres credentials, no KEK, and a management
+plane wide open. Gating local bring-up on production rules would break the one
+path that is meant to have no friction, so the check lives behind a profile and
+never runs on `docker compose up`. On its own that file gives the preflight
+service an empty environment, so it reports every secret missing.
+
+The team shape, `docker/docker-compose.team.yml`, hands the preflight service the
+same environment it hands the control plane, read from the env file:
 
 ```bash
-docker compose -f docker/docker-compose.yml --profile preflight \
-               run --rm --env-file /path/to/production.env preflight
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+               --env-file .env --profile preflight run --rm preflight
+```
+
+`--env-file` is a flag of `docker compose` and goes before `run`; `run` has no
+such flag. A filled env file prints `all pre-boot checks passed`, and one with
+`ROLTER_CONTROL_HOST=0.0.0.0` fails the strict check on the exposure warning. An
+empty one fails earlier, at interpolation, naming the first missing variable.
+
+Add `--connect` after the service name to probe the datastores from inside the
+compose network and, on an image built with the `postgres` feature, to open the
+store with the KEK:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+               --env-file .env --profile preflight run --rm preflight \
+               /usr/local/bin/rolter check --strict --connect
 ```
 
 ### Kubernetes and Helm

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::OrgAuthPolicy;
-use rolter_store::postgres::repo::{OrgAuthPolicyRepo, SsoRepo};
+use rolter_store::postgres::repo::{LockoutGuard, OrgAuthPolicyRepo, SsoRepo};
 
 use crate::crud::{log_audit, pool, ApiError, ApiResult, SafeJson};
 
@@ -54,8 +54,9 @@ pub fn router() -> Router<ControlState> {
 struct AuthMethods {
     /// whether to render the email + password form
     password: bool,
-    /// one entry per enabled provider; empty means "no sso configured", which
-    /// is the default deployment
+    /// one entry per enabled provider whose org allows sso; empty means "no
+    /// sso to offer", which is the default deployment. a provider of an org
+    /// that turned sso off is left out rather than shown and refused (#2339)
     sso: Vec<SsoOption>,
 }
 
@@ -68,7 +69,7 @@ struct SsoOption {
 }
 
 async fn methods(State(state): State<ControlState>) -> ApiResult<Json<AuthMethods>> {
-    let providers = SsoRepo(pool(&state)).list_enabled_providers().await?;
+    let providers = SsoRepo(pool(&state)).list_sign_in_providers().await?;
     let password = OrgAuthPolicyRepo(pool(&state))
         .any_password_login_allowed()
         .await?;
@@ -153,17 +154,6 @@ async fn set_policy(
             "at least one login method must stay enabled".into(),
         ));
     }
-    if !body.allow_password_login {
-        // refusing passwords before an IdP exists locks every non-superadmin
-        // out, and the operator almost certainly meant to register the
-        // provider first
-        let providers = SsoRepo(pool(&state)).list_providers(org_id).await?;
-        if !providers.iter().any(|p| p.enabled) {
-            return Err(ApiError::Conflict(
-                "register an enabled sso provider before disabling password login".into(),
-            ));
-        }
-    }
     let current = OrgAuthPolicyRepo(pool(&state)).get(org_id).await?;
     let (mfa_policy, mfa_enforce_after) = match body.mfa_policy.clone() {
         Some(policy) => (
@@ -197,7 +187,9 @@ async fn set_policy(
     // a window only postpones a requirement; stored under `off` it would sit
     // there to surprise whoever next turns the requirement on
     let mfa_enforce_after = mfa_enforce_after.filter(|_| mfa_policy.starts_with("required_"));
-    let policy = OrgAuthPolicyRepo(pool(&state))
+    // the provider check lives in the store, under the lock the provider
+    // writes take, so it cannot race a concurrent disable (#2233)
+    let policy = match OrgAuthPolicyRepo(pool(&state))
         .set(
             org_id,
             body.allow_password_login,
@@ -205,7 +197,18 @@ async fn set_policy(
             &mfa_policy,
             mfa_enforce_after,
         )
-        .await?;
+        .await?
+    {
+        LockoutGuard::Done(policy) => policy,
+        LockoutGuard::WouldLockOut => {
+            // refusing passwords before an IdP exists locks every non-superadmin
+            // out, and the operator almost certainly meant to register the
+            // provider first
+            return Err(ApiError::Conflict(
+                "register an enabled sso provider before disabling password login".into(),
+            ));
+        }
+    };
     log_audit(
         &state,
         &principal,

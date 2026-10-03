@@ -42,3 +42,23 @@ export function CardDescription({
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("p-6 pt-0", className)} {...props} />;
 }
+
+/**
+ * A padded card that stacks its children with a gap (#1711).
+ *
+ * `Pricing`, `Connectors`, `Alerting`, `ComplexityRouter` and `Limits` each
+ * wrote this as a div. It is not `Card` with a class: the row cards use the
+ * 10px radius of the other list surfaces where `Card` is 8px, so converting
+ * them to `Card` would have changed how they look.
+ */
+export function CardStack({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4",
+        className,
+      )}
+      {...props}
+    />
+  );
+}

@@ -1,6 +1,6 @@
 //! A Postgres database per worktree, derived rather than configured.
 //!
-//! [`test_schema`](crate::postgres::test_schema) already gives every *test* a
+//! [`test_schema`] already gives every *test* a
 //! schema of its own, which is what makes plain `cargo test` — threads in one
 //! process, as the coverage job runs — safe. It does nothing about the level
 //! above: every worktree on a developer's machine points
@@ -53,7 +53,7 @@ static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
 /// Whether a test database was configured at all, without connecting.
 ///
 /// Test modules guard on this before doing any work, so it has to stay cheap
-/// and synchronous; [`url()`](crate::postgres::test_database::url) is what
+/// and synchronous; [`url()`] is what
 /// actually resolves the database.
 pub fn is_configured() -> bool {
     std::env::var(URL_ENV).is_ok_and(|url| !url.is_empty())
@@ -62,9 +62,15 @@ pub fn is_configured() -> bool {
 /// The url the postgres tests should connect through, or `None` when
 /// [`URL_ENV`] is unset and the caller should skip.
 ///
-/// Falls back to the configured url whenever the derived database cannot be
-/// created — a role without `CREATEDB` should lose isolation, not the ability
-/// to run the suite at all.
+/// Never falls back to the shared database: a failure to create the derived
+/// one is retried with a bounded backoff and then panics with the cause, since
+/// a silent fallback would put this worktree's migrations in a database other
+/// worktrees are reading (#1898). Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to
+/// choose the shared database deliberately, for a role without `CREATEDB`.
+///
+/// # Panics
+///
+/// When the derived database cannot be created after every retry.
 pub async fn url() -> Option<String> {
     if let Some(resolved) = RESOLVED.get() {
         return resolved.clone();
@@ -92,15 +98,46 @@ async fn resolve() -> Option<String> {
 
     let root = workspace_root();
     let name = database_name_for(root);
-    match ensure_database(&configured, &name, root).await {
+    let result = retry(RETRY_DELAYS, |_| ensure_database(&configured, &name, root)).await;
+    match result {
         Ok(()) => Some(with_database(&configured, &name)),
-        Err(err) => {
-            // isolation is a convenience; losing it must not lose the suite
-            eprintln!(
-                "could not create the per-worktree test database {name} ({err}); \
-                 falling back to {URL_ENV} as configured"
-            );
-            Some(configured)
+        // a silent fallback would share one database between worktrees, which
+        // is the isolation failure #1430 removed
+        Err(err) => panic!(
+            "could not create the per-worktree test database {name}: {err}; \
+             refusing to fall back to the shared database. Fix the connection, \
+             or set {OPT_OUT_ENV}=0 to use {URL_ENV} as given"
+        ),
+    }
+}
+
+/// Backoff between attempts; one more attempt than there are delays.
+const RETRY_DELAYS: &[std::time::Duration] = &[
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(2),
+];
+
+/// Run `op` until it succeeds or the delays are spent, returning the last error.
+async fn retry<T, E, F, Fut>(delays: &[std::time::Duration], mut op: F) -> Result<T, E>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempt = 0;
+    loop {
+        match op(attempt).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let Some(delay) = delays.get(attempt) else {
+                    return Err(err);
+                };
+                eprintln!("per-worktree test database setup failed ({err}); retrying in {delay:?}");
+                tokio::time::sleep(*delay).await;
+                attempt += 1;
+            }
         }
     }
 }
@@ -326,5 +363,32 @@ mod tests {
                 .is_dir(),
             "{root} does not look like the workspace root"
         );
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_is_retried_until_it_succeeds() {
+        let ms = std::time::Duration::from_millis(1);
+        let result = retry(&[ms, ms, ms], |attempt| async move {
+            if attempt < 2 {
+                Err("connection refused")
+            } else {
+                Ok(attempt)
+            }
+        })
+        .await;
+        assert_eq!(result, Ok(2));
+    }
+
+    #[tokio::test]
+    async fn a_persistent_failure_is_returned_after_the_bound_not_swallowed() {
+        let ms = std::time::Duration::from_millis(1);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let result: Result<(), &str> = retry(&[ms, ms], |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err("down") }
+        })
+        .await;
+        assert_eq!(result, Err("down"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

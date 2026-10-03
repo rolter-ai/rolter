@@ -6,16 +6,22 @@
 // over the scorer can prove "rr" reaches "Routing Rules" ahead of "Providers"
 // for every future wording of either label.
 
+import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
+
 /** an entry the palette can open: a nav leaf, or a record on one of them */
 export interface PaletteEntry {
   /** stable identity, unique across every section */
   id: string;
   /** nav leaf key the entry opens — `/<key>` */
   screen: string;
+  /** query string the screen opens with (`?request_id=…`), when it is not opened bare */
+  search?: string;
   /** what the reader sees and types against, already translated */
   label: string;
   /** the second line: the record's screen, or the group the leaf sits in */
   hint?: string;
+  /** a label that carries an id is wrapped rather than cut off, since the tail is what tells two apart */
+  wrap?: boolean;
 }
 
 /**
@@ -76,6 +82,27 @@ export function rankEntries<T extends PaletteEntry>(entries: T[], query: string)
   // the nav put them in rather than whatever the sort happened to do
   scored.sort((a, b) => b.score - a.score || a.at - b.at);
   return scored.map((s) => s.entry);
+}
+
+/** the shortest word the palette will offer to look up as a request id */
+export const MIN_PASTED_ID_LENGTH = 8;
+
+/**
+ * The id a palette query is, when the reader pasted one (#1861).
+ *
+ * A trace id, or a `traceparent` header with one in it, is unmistakable. A
+ * request id is any string a client chose, so a typed word must not read as
+ * one: it has to be a single token of at least {@link MIN_PASTED_ID_LENGTH}
+ * characters with a digit in it, which every uuid, ulid and counter-suffixed
+ * id has and a screen or model name rarely does. A query that falls short here
+ * is still searched as a name.
+ */
+export function pastedIdLookup(query: string): LogLookup | null {
+  const lookup = parseLogLookup(query);
+  if (lookup === null || lookup.kind === "trace_id") return lookup;
+  const { value } = lookup;
+  const token = value.length >= MIN_PASTED_ID_LENGTH && !/\s/.test(value);
+  return token && /\d/.test(value) ? lookup : null;
 }
 
 /** where the recently visited screens are remembered, per browser */

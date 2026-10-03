@@ -68,18 +68,28 @@ struct ProviderBody {
 }
 
 impl RuleBody {
+    // an empty token would delete matches outright, so it is stored as absent
+    // and the detector's default token applies
+    fn stored_replacement(&self) -> Option<&str> {
+        self.replacement
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+    }
+
     // create and update send the same body and write the same columns, so both
     // borrow their repo input from here rather than restating the field list
     fn as_input(&self) -> GuardrailRuleInput<'_> {
         GuardrailRuleInput {
-            name: &self.name,
+            // stored trimmed: route overrides are compared against the trimmed
+            // name at runtime, so a padded name would never match its override
+            name: self.name.trim(),
             enabled: self.enabled,
             source_type: &self.source_type,
             builtin: self.builtin.as_deref(),
             pattern: self.pattern.as_deref(),
             stage: &self.stage,
             action: &self.action,
-            replacement: self.replacement.as_deref(),
+            replacement: self.stored_replacement(),
             include_system: self.include_system,
             position: self.position,
         }
@@ -320,6 +330,7 @@ async fn create_provider(
 ) -> ApiResult<(StatusCode, Json<GuardrailProvider>)> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Create))?;
     validate_provider(&body)?;
+    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
     let row = GuardrailRepo(pool(&state))
         .create_provider(body.as_input())
         .await?;
@@ -345,6 +356,7 @@ async fn update_provider(
 ) -> ApiResult<Json<GuardrailProvider>> {
     authorize_superadmin(&principal, superadmin_cap!("guardrail_provider", Update))?;
     validate_provider(&body)?;
+    crate::crud::require_allowed_egress(&state, &body.url, "guardrail provider url")?;
     let row = GuardrailRepo(pool(&state))
         .update_provider(id, body.as_input())
         .await?;
@@ -402,6 +414,27 @@ mod tests {
             position: 0,
         };
         assert!(validate_rule(&body).is_err());
+    }
+
+    #[test]
+    fn empty_replacement_is_stored_as_absent() {
+        let mut body = RuleBody {
+            name: "email".into(),
+            enabled: true,
+            source_type: "builtin".into(),
+            builtin: Some("email".into()),
+            pattern: None,
+            stage: "pre_call".into(),
+            action: "redact".into(),
+            replacement: Some(String::new()),
+            include_system: false,
+            position: 0,
+        };
+        assert_eq!(body.as_input().replacement, None);
+        body.replacement = Some("  ".into());
+        assert_eq!(body.as_input().replacement, None);
+        body.replacement = Some("[X]".into());
+        assert_eq!(body.as_input().replacement, Some("[X]"));
     }
 
     #[test]

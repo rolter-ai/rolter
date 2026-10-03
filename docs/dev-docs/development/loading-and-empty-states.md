@@ -54,6 +54,19 @@ table for a screen reader (see [list tables](list-tables.md)):
 `ListLoadingRow` and its sibling `ListEmptyRow` take the query itself and decide
 from it, for the reason the next rule gives.
 
+A skeleton stands in the grid its content is laid out in, or the tiles change
+columns when the data lands. `StatGridSkeleton` lays out in `STAT_GRID`
+(`ui/src/components/ui/stat-card.tsx`), the grid a strip of stat cards uses, so a
+screen puts its loaded `StatCard`s in the same constant. Its stories compare the
+tracks of the two at every width (#1994).
+
+The state row is as wide as the part of the table the reader sees, not as its
+column floor (#2362). Below the floor the table scrolls sideways, and a row the
+width of the floor put the empty title and its call to action centred past the
+right edge of a 375px card, so a phone showed a header over a blank body. The
+row sticks to the frame's left edge and fills it; see
+[list tables](list-tables.md) for how, and for the story that measures it.
+
 Every shape wraps itself in one `role="status"` region labelled with
 `common.loading`, so a screen reader hears one announcement rather than one per
 bar, and a story can assert the screen is busy without reaching for a class
@@ -109,10 +122,25 @@ The pieces that carry the rule:
 - **Anything derived from the list waits too.** A card that reads "No spend in
   this window" when its unit has no row in the rollup only says so once the
   rollup succeeded (Cost Attribution, #2105); an Export CSV or a "collector
-  config" button that renders the list waits for a list that answered.
+  config" button that renders the list waits for a list that answered. The
+  same card adds "no key assigned" only when the listing's `live_key_count`
+  is `0` (#2581): an absent count is an older control plane or a
+  create/update answer, which is unknown, not zero.
 
 A card-grid screen with no `ListTable` gates its `EmptyState` the same way:
 `query.isSuccess && query.data.length === 0`.
+
+A screen made of cards that each read their own query gives every card all three
+states (#1976). The Dashboard's `CardRead` decides from `isAwaiting` and the
+read's data before it lets a card draw anything: a skeleton in the card's own
+shape, then either its own `LoadError` or the content. The empty copy sits
+inside the content, where the read is known to hold data, so an empty answer
+still says so after a failed refresh. When every read has failed holding nothing
+the Dashboard draws no cards and shows one `LoadError` for the screen
+([error states](error-states.md)). An average or a rate over an empty window
+is undefined rather than zero: the Dashboard's latency and error-rate tiles read
+"—" with "No requests in this window" under them, where "0 ms" and "0.00 %"
+claimed a measurement of a quiet deployment.
 
 ### Empty: what it is, and what to do about it
 
@@ -139,11 +167,12 @@ Two rules the wording depends on:
   alone is what produced "No provider groups match." on a screen with no query.
 - **A deployment answer is not an empty state.** A control plane with no
   ClickHouse has not "served nothing yet" — it was never asked to record
-  anything, and no amount of traffic will fill the screen. That is a
-  `noAnalytics` state, not an `EmptyState`; the Dashboard rendered it as the
-  latter until #1236. Nor is it an outage: LLM Logs shows it as an
-  informational panel rather than a red alert (#1984), and the other screens
-  follow in #1976 and #2016 (see [error states](error-states.md)).
+  anything, and no amount of traffic will fill the screen. That is an
+  `AnalyticsUnavailableError`, not an `EmptyState`; the Dashboard rendered it as
+  the latter until #1236. Nor is it an outage: LLM Logs, the Dashboard, MCP
+  Logs, Cost Attribution's spend strip and Account's usage figures all show it
+  as the informational `AnalyticsUnavailable` panel rather than a red alert
+  (#1984, #1976, #2016; see [error states](error-states.md)).
 - **No CTA where no action exists.** `McpOAuth` grants are created by a user
   completing an OAuth flow in a client; `Cluster` nodes enrol themselves on
   their snapshot poll. Inventing a button for those would be worse than none.
@@ -153,7 +182,11 @@ Two rules the wording depends on:
 `Table` takes an `empty` prop rendered in a full-width row, so the placeholder
 sits inside the table's border with the column headers above it rather than
 floating beneath a header row over nothing. It comes with `read`, the query the
-rows came from, and renders only once that read succeeded.
+rows came from, and renders only once that read succeeded. Like the list-table
+state row, the placeholder is as wide as the frame the table scrolls in and not
+as the table (#2420): it sticks to the frame's left edge, so on a 375px phone
+the title, the description and the button are centred on what is visible. See
+[list tables](list-tables.md).
 
 An empty result is never routed through `LoadError`; see
 [error states](error-states.md) for why.

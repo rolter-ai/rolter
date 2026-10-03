@@ -7,8 +7,8 @@ import { BusinessUnits, Customers } from "./CostAttribution";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectAnalyticsUnavailable,
   expectInStatusRegion,
-  expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
   expectSheetClosed,
@@ -25,6 +25,9 @@ import {
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { TIME_WINDOW_STORAGE_KEY } from "@/lib/time-window";
 
 // the formatter the screen itself uses, so a story asserts the house format
@@ -481,6 +484,11 @@ export const BusinessUnitsShowWindowSpend: Story = {
     await expect(canvas.getByText(fmt.currency(41.5, "USD"))).toBeVisible();
     await expect(canvas.getByText("Unattributed")).toBeVisible();
     await expect(canvas.getByText(/of the window/)).toBeVisible();
+    // the figure says how to reduce it, and where
+    await expect(canvas.getByRole("link", { name: "virtual key" })).toHaveAttribute(
+      "href",
+      "/virtual-keys",
+    );
   },
 };
 
@@ -533,6 +541,74 @@ export const AUnitWithNoTrafficSaysSo: Story = {
     await waitFor(() =>
       expect(canvas.getAllByText("No spend in this window").length).toBeGreaterThan(0),
     );
+    // these rows carry no key count (an older control plane), and an unknown
+    // count must not be read as "no key"
+    await expect(canvas.queryByText(/no key assigned/)).toBeNull();
+  },
+};
+
+/**
+ * A zero-spend card whose unit has no live key says so and links to where keys
+ * are attributed, so "idle" and "nothing could bill it" read differently
+ * (#2581). A unit that has keys but no traffic keeps the plain line.
+ */
+export const AZeroSpendUnitWithNoKeySaysSo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        units: () =>
+          json([
+            { ...UNITS[0], live_key_count: 0 },
+            { ...UNITS[1], live_key_count: 3 },
+          ]),
+        spend: () => json({ data: [] }),
+      })}
+    >
+      <Routes>
+        <Route path="/virtual-keys" element={<p>Virtual keys screen</p>} />
+        <Route path="*" element={<BusinessUnits />} />
+      </Routes>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const noKey = await canvas.findByTestId("card-no-key");
+    await expect(noKey).toHaveTextContent("No spend in this window · no key assigned.");
+    // exactly one card: the unit with three live keys is idle, not unassigned
+    await expect(canvas.getAllByTestId("card-no-key")).toHaveLength(1);
+    await expect(canvas.getAllByText("No spend in this window")).toHaveLength(1);
+    const link = within(noKey).getByRole("link", { name: "Assign a key" });
+    await expect(link).toHaveAttribute("href", "/virtual-keys");
+    // routed inside the app, not a page reload (#2215)
+    await userEvent.click(link);
+    await waitFor(() => expect(canvas.getByText("Virtual keys screen")).toBeVisible());
+  },
+};
+
+/** the customer screen reads its own count the same way */
+export const AZeroSpendCustomerWithNoKeySaysSo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        customers: () =>
+          json([
+            { ...CUSTOMERS[0], live_key_count: 2 },
+            { ...CUSTOMERS[1], live_key_count: 0 },
+          ]),
+        spend: () => json({ data: [] }),
+      })}
+    >
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId("card-no-key")).toHaveLength(1));
+    // the line sits on its own card, which is Globex's and not Acme's
+    const card = canvas.getByTestId("card-no-key").parentElement as HTMLElement;
+    await expect(within(card).getByText("Globex")).toBeVisible();
+    await expect(within(card).queryByText("Acme Corp")).toBeNull();
+    await expect(within(card).getByRole("link", { name: "Assign a key" })).toBeVisible();
   },
 };
 
@@ -562,8 +638,9 @@ export const SpendLoading: Story = {
 
 /**
  * Analytics is optional; governance is not. A deployment with no ClickHouse
- * gets the `noAnalytics` load error where the spend strip would be — the
- * setting it lacks, and no retry that cannot help (#1270) — and keeps the
+ * gets the informational `AnalyticsUnavailable` panel where the spend strip
+ * would be: a `status` naming the setting it lacks, with no retry that cannot
+ * help and no red alert announced on every visit (#1270, #2016). It keeps the
  * postgres-backed roster it can still serve.
  */
 export const SpendUnavailableKeepsTheRoster: Story = {
@@ -578,11 +655,45 @@ export const SpendUnavailableKeepsTheRoster: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /Analytics are not configured[\s\S]*attribution spend/);
-    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.costAttribution.noAnalytics.title,
+      "analytics is not configured",
+    );
     await expect(canvas.getByText("Platform Engineering")).toBeVisible();
+    // the roster is still there to work with, not blanked by the missing store
+    await expect(canvas.getByRole("button", { name: "Edit Platform Engineering" })).toBeVisible();
     await expect(canvas.queryAllByTestId("card-spend-loading")).toHaveLength(0);
     await expectNoFalseEmpty(canvasElement, /No spend in this window/);
+  },
+};
+
+/**
+ * The customers screen shares the strip, so it says the same thing at 375px in
+ * Russian, where the title wraps inside the screen rather than pushing the
+ * page sideways.
+ */
+export const CustomersSpendUnavailableAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={router({
+        spend: () => json({ error: { message: "analytics is not configured" } }, 404),
+      })}
+    >
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      ru.pages.costAttribution.noAnalytics.title,
+      "analytics is not configured",
+    );
+    await expect(canvas.getByText("Acme Corp")).toBeVisible();
+    await expectNoHorizontalOverflow();
   },
 };
 

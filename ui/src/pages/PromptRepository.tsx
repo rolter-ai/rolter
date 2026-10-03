@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -65,7 +66,7 @@ import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface Draft {
   variables: PromptTemplateVariable[];
@@ -165,7 +166,6 @@ export default function PromptRepository() {
 
   useScreenReady(!templates.isLoading);
 
-  useErrorState(!!templates.error, "prompt-repository");
   const selected = templates.data?.find((template) => template.id === selectedId);
 
   React.useEffect(() => {
@@ -397,6 +397,7 @@ export default function PromptRepository() {
           error={templates.error}
           resource={t("errors.resources.promptTemplates")}
           onRetry={() => void templates.refetch()}
+          target="prompt-list"
         />
       </div>
     );
@@ -1429,7 +1430,7 @@ function CreateTemplateDialog({
         <DialogDescription>{t("pages.promptRepo.createDescription")}</DialogDescription>
       </DialogHeader>
       <form
-        className="space-y-3"
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1439,45 +1440,47 @@ function CreateTemplateDialog({
           });
         }}
       >
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldName")}
-          <Input
-            className="mt-1"
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder={t("pages.promptRepo.namePlaceholder")}
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldSlug")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Input
-            className="mt-1"
-            value={slug}
-            onChange={(event) => setSlug(event.target.value)}
-            placeholder="support-concierge"
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldDescription")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Textarea
-            className="mt-1"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {error && (
-          <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody className="space-y-3">
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldName")}
+            <Input
+              className="mt-1"
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={t("pages.promptRepo.namePlaceholder")}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldSlug")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Input
+              className="mt-1"
+              value={slug}
+              onChange={(event) => setSlug(event.target.value)}
+              placeholder="support-concierge"
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldDescription")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Textarea
+              className="mt-1"
+              rows={3}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.promptRepo.cancel")}
@@ -1528,38 +1531,40 @@ function RenameTemplateDialog({
         </DialogDescription>
       </DialogHeader>
       <form
-        className="space-y-3"
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({ name: trimmed, description: description.trim() });
         }}
       >
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldName")}
-          <Input
-            className="mt-1"
-            autoFocus
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          {t("pages.promptRepo.fieldDescription")}{" "}
-          <span className="font-normal text-muted-foreground">
-            {t("pages.promptRepo.fieldOptional")}
-          </span>
-          <Textarea
-            className="mt-1"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {error && (
-          <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody className="space-y-3">
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldName")}
+            <Input
+              className="mt-1"
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {t("pages.promptRepo.fieldDescription")}{" "}
+            <span className="font-normal text-muted-foreground">
+              {t("pages.promptRepo.fieldOptional")}
+            </span>
+            <Textarea
+              className="mt-1"
+              rows={3}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.promptRepo.cancel")}
@@ -1814,6 +1819,7 @@ function MakeLiveDialog({
               <Skeleton width="100%" height={36} radius={6} />
             </LoadingRegion>
           ) : scopesError ? (
+            // load-error-allow: a scope summary inside the publish dialog; nothing to be empty
             <LoadError
               error={scopesError}
               resource={t("errors.resources.promptTemplateScopes")}
@@ -1821,6 +1827,7 @@ function MakeLiveDialog({
                 void targetScopes.refetch();
                 if (live) void liveScopes.refetch();
               }}
+              target="prompt-publish-scopes"
             />
           ) : unscoped ? (
             <p className="text-[color:var(--status-warning-text)]">

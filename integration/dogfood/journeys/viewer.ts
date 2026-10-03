@@ -53,9 +53,23 @@ await step("V1.4", "project admin opens bodies to viewers; the viewer then reads
 
 await step("V2.1", "set a display name and a bio", async () => {
   await goto(page, "/api-keys");
-  const text = await page.locator("main").innerText();
-  const hasProfile = /display name|bio/i.test(text);
-  return hasProfile ? ["fail", "a profile section exists — update the script"] : ["gap", "no profile or bio anywhere on the account screen (#1823)"];
+  await page.getByLabel("Display name").waitFor({ timeout: 10000 });
+  await page.getByLabel("Display name").fill("Vera Viewer");
+  await page.getByLabel("Bio").fill("Ask me about the payments dashboards");
+  await page.getByRole("button", { name: "Save profile" }).click();
+  try {
+    const me = await until(async () => {
+      const r = (await api("GET", "/api/v1/auth/me", viewerToken)).json;
+      return r?.user?.display_name === "Vera Viewer" || r?.display_name === "Vera Viewer" ? r : null;
+    }, 10000);
+    // the name other people see: the account menu shows it instead of the e-mail
+    await goto(page, "/dashboard");
+    const shown = /Vera Viewer/.test(await page.locator("body").innerText());
+    assert(me, "profile not stored");
+    return shown ? ["pass", "display name and bio saved from the account screen; the shell shows the display name"] : ["partial", "display name and bio saved (API echoes them), but the shell still shows the e-mail"];
+  } finally {
+    await api("PATCH", "/api/v1/me/profile", viewerToken, { display_name: null, bio: null });
+  }
 }, page);
 
 await step("V3.1", "switch the dashboard language; is it remembered elsewhere?", async () => {
@@ -100,6 +114,7 @@ await step("V4.2", "virtual keys listed without secrets; minting refused", async
 await step("V4.3", "budgets and limits readable, not editable", async () => {
   const st = await screenState(page, "budgets");
   if (!scoped && st.state !== "ok") return ["bug", `Budgets & Limits: ${st.state} — no project in scope (#1846)`];
+  if (st.state === "denied") return ["fail", "Budgets & Limits answers 'You do not have access' to a project-scoped viewer: budget:read is org-scoped (rbac_matrix.rs), so the project viewer cannot read the caps that govern their keys"];
   const add = page.getByRole("button", { name: "Add budget" }).first();
   await add.waitFor({ timeout: 8000 });
   await until(async () => await add.isDisabled(), 8000);
@@ -129,8 +144,22 @@ await step("V4.4", "roles & permissions shows the new capability rows", async ()
 
 await step("V5.1", "save a filter as a named view", async () => {
   await goto(page, "/logs");
-  const save = await page.getByRole("button", { name: /save (view|filter|preset)/i }).count();
-  return save ? ["fail", "a save-view control exists — update the script"] : ["gap", "no saved views on LLM Logs (#1825)"];
+  const name = `errors-${Date.now() % 100000}`;
+  await page.getByRole("button", { name: "Saved views" }).click();
+  await page.getByPlaceholder("Errors on gpt-4o this week").fill(name);
+  await page.getByRole("button", { name: "Save view" }).click();
+  try {
+    const list = await until(async () => {
+      const r = await api("GET", "/api/v1/me/saved-views?surface=llm_logs", viewerToken);
+      return r.status === 200 && r.json.some((v: any) => v.name === name) ? r.json : null;
+    }, 10000);
+    await page.getByRole("button", { name: `Apply ${name}` }).waitFor({ timeout: 8000 }).catch(() => {});
+    const row = await page.getByRole("button", { name: `Apply ${name}` }).count();
+    return row ? ["pass", `saved view "${name}" stored per account (${list.length} listed) and offered to apply`] : ["partial", "the view is stored but the Apply control is not on screen"];
+  } finally {
+    const r = await api("GET", "/api/v1/me/saved-views?surface=llm_logs", viewerToken);
+    for (const v of r.json ?? []) if (v.name === name) await api("DELETE", `/api/v1/me/saved-views/${v.id}`, viewerToken);
+  }
 }, page);
 
 await context.close();

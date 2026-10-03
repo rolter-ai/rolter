@@ -38,6 +38,11 @@ export interface ComboboxProps {
   clearable?: boolean;
   disabled?: boolean;
   /**
+   * accept a value that is not in `options`: typing one that matches no option
+   * exactly adds a "Use …" row, and a value outside the list reads as itself
+   */
+  allowCustom?: boolean;
+  /**
    * control height. `default` matches Input; `sm` is the compact toolbar
    * variant the dashboard wrote as `h-8 text-xs` on the native select
    */
@@ -204,6 +209,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     title,
     className,
     listClassName,
+    allowCustom,
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
@@ -231,11 +237,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
   const listbox = React.useRef<HTMLDivElement>(null);
   React.useImperativeHandle(ref, () => input.current as HTMLInputElement);
 
-  const selected = options.find((o) => o.value === value);
-  const filtered = React.useMemo(
-    () => (query ? options.filter((o) => matches(o, query)) : options),
-    [options, query],
-  );
+  const selected =
+    options.find((o) => o.value === value) ??
+    (allowCustom && value ? { value, label: value } : undefined);
+  const filtered = React.useMemo(() => {
+    const found = query ? options.filter((o) => matches(o, query)) : options;
+    const typed = query?.trim();
+    if (!allowCustom || !typed || options.some((o) => fold(o.value) === fold(typed))) return found;
+    return [...found, { value: typed, label: t("common.combobox.use", { value: typed }) }];
+  }, [options, query, allowCustom, t]);
   const sections = React.useMemo(() => layout(filtered), [filtered]);
   const enabled = React.useMemo(
     () => filtered.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0),
@@ -369,6 +379,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         event.stopPropagation();
         close();
         return;
+      case "Backspace":
+      case "Delete":
+        // nothing typed (the input shows only the chosen label, or is
+        // empty after a delete): the key removes the selection itself
+        if (clearable && value && !disabled && (query === null || query === "")) {
+          event.preventDefault();
+          clear();
+        }
+        return;
       case "Tab":
         if (open) close();
         return;
@@ -472,7 +491,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         autoComplete="off"
         spellCheck={false}
         disabled={disabled}
-        title={title}
+        title={title ?? (!open ? selected?.label : undefined)}
         value={text}
         placeholder={(open && selected?.label) || placeholder || t("common.combobox.placeholder")}
         aria-label={ariaLabel}
@@ -492,7 +511,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
           else show();
         }}
         className={cn(
-          "flex w-full rounded-md border border-input bg-[color:var(--surface-subtle)] px-3 py-1 transition-colors",
+          "flex w-full truncate text-ellipsis rounded-md border border-input bg-[color:var(--surface-subtle)] px-3 py-1 transition-colors",
           "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           "disabled:cursor-not-allowed disabled:opacity-50",
           size === "sm" ? "h-8 text-xs" : "h-9 text-sm",

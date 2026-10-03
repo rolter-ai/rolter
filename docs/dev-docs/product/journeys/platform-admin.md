@@ -20,22 +20,34 @@ version reaching the gateway after each change.
 
 The first fork, decided by one question: **who will use it, and from where?**
 
-| branch | when                                             | shape                                                                                                                     |
-| ------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| A0-a   | "I want to see it work" — one person, one laptop | `rolter easy-up`: no database, no keys, loopback only                                                                     |
-| A0-b   | one person, one host (trial)                     | `docker compose -f docker/docker-compose.yml up -d`: Postgres, Redis, ClickHouse, both planes (open by design, see below) |
-| A0-c   | production                                       | Helm (`charts/rolter`), managed Postgres/Redis/ClickHouse, TLS in front, secrets from a manager                           |
-| A0-d   | no internet at all                               | A0-b or A0-c from mirrors ([air-gapped](../../deployment/air-gapped.md))                                                  |
+| branch | when                                             | shape                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A0-a   | "I want to see it work" — one person, one laptop | `rolter easy-up`: no database, no keys, loopback only                                                                                                                                                        |
+| A0-b   | one host: a trial, or a team                     | the compose stack: Postgres, Redis, ClickHouse, both planes. A trial is `docker/docker-compose.yml` alone (open by design); a team adds `docker/docker-compose.team.yml` and an env file (closed, see below) |
+| A0-c   | production                                       | Helm (`charts/rolter`), managed Postgres/Redis/ClickHouse, TLS in front, secrets from a manager                                                                                                              |
+| A0-d   | no internet at all                               | A0-b or A0-c from mirrors ([air-gapped](../../deployment/air-gapped.md))                                                                                                                                     |
 
-`docker/docker-compose.yml` is the local stack and is open on purpose: the
-control plane binds every interface with `ROLTER_ALLOW_OPEN_MODE=1`, 4001 is
-published, no admin token is set, the file reads none of the A0.5 secrets, and
-its gateway serves the bundled `rolter.toml` instead of polling the control
-plane. It also publishes Postgres (example `rolter`/`rolter` login), Redis (no
-password) and ClickHouse (passwordless default user) on every interface, so an
-admin token added by hand still leaves the data reachable around it. A0-b is a
-single-person trial until a compose shape for a shared host exists (#1890); a
-team goes to A0-c.
+`docker/docker-compose.yml` on its own is the local stack and is open on purpose:
+the control plane binds every interface with `ROLTER_ALLOW_OPEN_MODE=1`, 4001 is
+published, no admin token is set, and Postgres (example `rolter`/`rolter` login),
+Redis (no password) and ClickHouse (passwordless default user) are published on
+every interface, so an admin token added by hand still leaves the data reachable
+around it. Its gateway follows the control plane, so a provider, route or
+virtual key created in the dashboard reaches it within a poll. A0-b as a trial
+is one person on a machine nobody else can reach.
+
+A team on one host layers `docker/docker-compose.team.yml` over it and passes
+`--env-file .env`. That shape reads the A0.5 secrets and fails at `up` with the
+name of any that is missing, runs the control plane with an admin token and no
+open mode, publishes it on `127.0.0.1` (`ROLTER_CONTROL_HOST`), moves
+`/internal/*` to an unpublished port 4002 that the gateway polls with the
+internal token and the same key pepper, gives Postgres, Redis and ClickHouse a
+password each and publishes only Postgres, on `127.0.0.1`. Its own project name
+keeps it off the local stack's volumes, and `docker/rolter.team.toml` replaces
+the image's example config so the public `sk-rolter-dev` key never reaches the
+gateway through the snapshot. The compose preflight service runs
+`rolter check --strict` over the same values. The compose files build the image
+with the `postgres` feature, which the published image lacks (#2405).
 
 A0-c has its own gap: with default values the chart's preflight init container
 cannot pass (`preflight.strict` fails on the `0.0.0.0` bind the Service needs,
@@ -53,14 +65,14 @@ and the gateway pod runs the control plane's checks), so today an install sets
 
 ### A0-b / A0-c — a real deployment
 
-| #     | step                                       | where                                                                              | expect                                                                                                                     | status                                                                                                                                                                          |
-| ----- | ------------------------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A0.5  | generate the deployment secrets            | `rolter init` ([preflight](../../deployment/preflight-validation.md))              | admin token, internal token, KEK and key pepper written somewhere they outlive a restart; the session pepper added by hand | partial — #1889 (no session pepper)                                                                                                                                             |
-| A0.6  | bring the stack up                         | `docker compose … up -d`, or `helm install`                                        | Postgres, Redis, ClickHouse healthy; migrations applied on control-plane boot                                              | verified (compose datastores); partial on constrained hosts — #1819; the compose planes do not take the A0.5 secrets — #1890; the chart's default preflight cannot pass — #1939 |
-| A0.7  | check the configuration before trusting it | `rolter check`                                                                     | admin token, KEK and database URL present; a warning for a missing key pepper or a control plane on every interface        | partial — #1889 (the session pepper is not checked)                                                                                                                             |
-| A0.8  | create the first account                   | `rolter-seed --admin-email … --admin-password …`                                   | a superadmin that can sign in; the org, team and project `default` exist                                                   | partial — #1897 (verified from a checkout; not in the image or package)                                                                                                         |
-| A0.9  | sign in and enrol a second factor          | dashboard sign-in, then **Settings → My Virtual Keys → Two-factor authentication** | TOTP enrolled, ten recovery codes shown once                                                                               | works                                                                                                                                                                           |
-| A0.10 | confirm the planes agree                   | **Cluster Config**                                                                 | every gateway node live and converged on the current config version                                                        | verified                                                                                                                                                                        |
+| #     | step                                       | where                                                                                                                    | expect                                                                                                                                                                                 | status                                                                                                                                                                                                                                                                                                 |
+| ----- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A0.5  | generate the deployment secrets            | `rolter init` ([preflight](../../deployment/preflight-validation.md))                                                    | admin token, internal token, KEK, key pepper and session pepper written somewhere they outlive a restart                                                                               | partial — #2413 (the compose team stack also takes three datastore passwords added by hand)                                                                                                                                                                                                            |
+| A0.6  | bring the stack up                         | `docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml --env-file .env up -d`, or `helm install` | preflight passes; Postgres, Redis, ClickHouse healthy; migrations applied on control-plane boot; the gateway follows the control plane, so a key minted in the dashboard works at once | verified (compose team stack, from a checkout build); partial on constrained hosts — #1819; the published image has no postgres support — #2405; the bundled `sk-rolter-dev` key can reach gateways through the snapshot outside this shape — #2408; the chart's default preflight cannot pass — #1939 |
+| A0.7  | check the configuration before trusting it | `rolter check`                                                                                                           | admin token, KEK and database URL present; a warning for a missing key pepper, a missing session pepper or a control plane on every interface                                          | works                                                                                                                                                                                                                                                                                                  |
+| A0.8  | create the first account                   | `rolter-seed --admin-email … --admin-password …`                                                                         | a superadmin that can sign in; the org, team and project `default` exist                                                                                                               | partial — #1897 (verified from a checkout; not in the image or package)                                                                                                                                                                                                                                |
+| A0.9  | sign in and enrol a second factor          | dashboard sign-in, then **Settings → My Virtual Keys → Two-factor authentication**                                       | TOTP enrolled, ten recovery codes shown once                                                                                                                                           | works                                                                                                                                                                                                                                                                                                  |
+| A0.10 | confirm the planes agree                   | **Cluster Config**                                                                                                       | every gateway node live and converged on the current config version                                                                                                                    | verified                                                                                                                                                                                                                                                                                               |
 
 ## A1 — decide how people sign in
 
@@ -69,12 +81,14 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-a — no identity provider: invitations and passwords
 
-| #     | step                                       | where                                                                        | expect                                                                                     | status          |
-| ----- | ------------------------------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------- |
-| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations` | a one-time link, valid for days, naming the role and scope it grants                       | verified        |
-| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                     | the invitee receives it                                                                    | partial — #1828 |
-| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                         | an account with exactly the invited role; the link is dead once used                       | verified        |
-| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)          | members without a factor are refused a session until they enrol (the confirmation says so) | partial — #1852 |
+| #     | step                                       | where                                                                                   | expect                                                                                     | status                                                              |
+| ----- | ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| A1a.1 | invite a colleague at a scope and role     | **Governance → Users → Invite user** · `POST /api/v1/orgs/{org}/invitations`            | a one-time link, valid for days, naming the role and scope it grants                       | verified                                                            |
+| A1a.2 | get the link to them                       | copy the link into chat or email by hand                                                | the invitee receives it                                                                    | partial — #1828                                                     |
+| A1a.3 | the invitee accepts and chooses a password | the link opens **Accept invitation**                                                    | an account with exactly the invited role; the link is dead once used                       | verified                                                            |
+| A1a.4 | require a second factor for the org        | **Governance → Single Sign-On → Org sign-in policy** (`mfa_policy`)                     | members without a factor are refused a session until they enrol (the confirmation says so) | verified (#1852; the viewer gets an enrolment token, not a session) |
+| A1a.5 | withdraw a link sent to the wrong address  | **Governance → Users → Pending invitations**, the × · `DELETE /api/v1/invitations/{id}` | the link stops working at once; the address can be invited again                           | works — #2054                                                       |
+| A1a.6 | block a leaver, or remove their account    | **Governance → Users**, deactivate or **Edit → Delete** · `/api/v1/users/{id}`          | a confirmation names the account; sign-in is blocked and sessions end                      | works — #2055                                                       |
 
 ### A1-b — an OIDC identity provider (Okta, Entra ID, Google, Keycloak)
 
@@ -96,13 +110,13 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-d — provisioning from the IdP (SCIM), with any of the above
 
-| #     | step                                   | where                                            | expect                                                                | status      |
-| ----- | -------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------- | ----------- |
-| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | verified    |
-| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | verified    |
-| A1d.3 | map IdP groups to teams and roles      | **Group mappings** on the same screen            | group membership in the IdP becomes a role in rolter on the next sync | works       |
-| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | verified    |
-| A1d.5 | their personal keys stop working too   | the gateway                                      | a key the leaver minted is refused                                    | bug — #1841 |
+| #     | step                                   | where                                            | expect                                                                | status                                                  |
+| ----- | -------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------- |
+| A1d.1 | issue an org-scoped provisioning token | **Governance → User Provisioning → Issue token** | the token, shown once, named after the IdP connector                  | verified                                                |
+| A1d.2 | configure the IdP's SCIM connector     | the IdP                                          | a test user is created in rolter as an org **viewer**, nothing more   | verified                                                |
+| A1d.3 | map IdP groups to teams and roles      | **Group mappings** on the same screen            | group membership in the IdP becomes a role in rolter on the next sync | works                                                   |
+| A1d.4 | deprovision the test user in the IdP   | the IdP                                          | the account is deactivated, its sessions dropped                      | verified                                                |
+| A1d.5 | their personal keys stop working too   | the gateway                                      | a key the leaver minted is refused                                    | works — #1841 fixed (T6.2 walks the membership variant) |
 
 ### A1-e — custom roles and access profiles (optional)
 
@@ -134,13 +148,13 @@ many places, and does traffic need spreading?**
 
 ### A3-a — one provider, one route
 
-| #     | step                                      | where                                                                                                               | expect                                                                                      | status                                                 |
-| ----- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| A3.1  | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers`                                 | the key is sealed with the KEK and never shown again                                        | verified                                               |
-| A3.2  | check it before anything depends on it    | the provider's **Test connection**                                                                                  | a model list from the upstream, or the reason there is none                                 | verified                                               |
-| A3.3  | add a route: public name → provider/model | **Model Catalog → + Add model** or **Routing Rules → + Add route**, one sheet · `POST /api/v1/projects/{id}/routes` | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)                                        |
-| A3.3a | check the upstream name before saving     | **Model Catalog → + Add model**, the sheet                                                                          | the provider's catalogue lists the upstream model, or the reason it could not tell          | gap — #2008 (UI: #2009)                                |
-| A3.4  | try it                                    | **Playground**, the new model                                                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | bug — #1853; #1847 for a superadmin with no membership |
+| #     | step                                      | where                                                                                                               | expect                                                                                      | status                  |
+| ----- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------- |
+| A3.1  | add the provider with its key             | **Models → Model Providers → + Add provider** · `POST /api/v1/orgs/{org}/providers`                                 | the key is sealed with the KEK and never shown again                                        | verified                |
+| A3.2  | check it before anything depends on it    | **Test connection**, offered in the sheet right after **Create provider** (#2142)                                   | a model list from the upstream, or the reason there is none                                 | verified                |
+| A3.3  | add a route: public name → provider/model | **Model Catalog → + Add model** or **Routing Rules → + Add route**, one sheet · `POST /api/v1/projects/{id}/routes` | the public name appears in **Model Catalog** and in `/v1/models` for keys that may reach it | verified (seed)         |
+| A3.3a | check the upstream name before saving     | **Model Catalog → + Add model**, the sheet                                                                          | the provider's catalogue lists the upstream model, or the reason it could not tell          | gap — #2008 (UI: #2009) |
+| A3.4  | try it                                    | **Playground**, the new model                                                                                       | an answer; a row in **LLM Logs** naming the provider and the cost                           | verified (#1853, #1847) |
 
 ### A3-b — the same model from two providers, with failover
 
@@ -187,14 +201,14 @@ many places, and does traffic need spreading?**
 
 ## A5 — spend and budgets
 
-| #    | step                                                    | where                                                                | expect                                                         | status                      |
-| ---- | ------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
-| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`   | `cost_usd` on every row; nothing counts as free by accident    | works                       |
-| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)         | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
-| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)     | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
-| A5.4 | cap throughput                                          | **Add rate limit**                                                   | HTTP 429 with `Retry-After`                                    | verified                    |
-| A5.5 | hear about it before the cap                            | —                                                                    | a warning at a threshold                                       | gap — #337                  |
-| A5.6 | alert on spend velocity                                 | **Alerting → Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
+| #    | step                                                    | where                                                                      | expect                                                         | status                      |
+| ---- | ------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
+| A5.1 | price every model that costs money                      | **Models → Pricing Overrides** (superadmin), or `[[model_prices]]`         | `cost_usd` on every row; nothing counts as free by accident    | works                       |
+| A5.2 | find unpriced traffic                                   | **Dashboard** (unpriced share), **LLM Logs** (unpriced flag)               | the dogfood fleet shows 12 unpriced models — every fake route  | verified                    |
+| A5.3 | cap spend per org, team, project, key, unit or customer | **Models → Budgets & Limits → Add budget** (admin at that scope)           | the next request past the cap gets HTTP 402; counters in Redis | verified                    |
+| A5.4 | cap throughput                                          | **Add rate limit**                                                         | HTTP 429 with `Retry-After`                                    | verified                    |
+| A5.5 | hear about it before the cap                            | —                                                                          | a warning at a threshold                                       | gap — #337                  |
+| A5.6 | alert on spend velocity                                 | **Alerting → Alert Rules**, `spend_velocity` (superadmin, deployment-wide) | a webhook when spend per hour crosses the line                 | works; scoped rules — #1829 |
 
 ## A6 and A7 — run it, and keep it safe
 

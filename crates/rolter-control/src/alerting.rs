@@ -2,7 +2,9 @@
 //! delivery of state transitions.
 //!
 //! A rule reads one signal over a trailing window and is `firing` when the
-//! value reaches its threshold, `ok` otherwise. A change between the two is a
+//! value reaches its threshold (`>=`, or `<=` for a `below` rule), `ok`
+//! otherwise. A window with nothing to measure is settled by the rule's
+//! `no_data` policy instead. A change between the two is a
 //! transition: it is POSTed to the rule's channel when that channel is enabled,
 //! and recorded in `alert_notification_history` as `delivered`, `failed` or
 //! `skipped` either way.
@@ -22,7 +24,7 @@
 //!   status or the class of transport failure, since an error body can echo the
 //!   credential it just rejected.
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
@@ -47,14 +49,26 @@ use crate::ControlState;
 /// that lock for long.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Longest a signal query may run. The ClickHouse client has no timeout of its
-/// own, and a pass that hangs on one rule never reaches the rest.
+/// Longest a signal query may run. The ClickHouse client bounds each request at
+/// 15s itself; this outer bound is a backstop so a pass never hangs on one rule.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Why a rule fired or resolved on a window with nothing to measure.
+const NO_DATA_DETAIL: &str = "no data in window";
 /// Longest `last_error` stored, in bytes.
 const MAX_ERROR_LEN: usize = 512;
 /// How many of a rule's newest history rows the retry decision reads: enough
 /// to count the failed attempts behind the longest [`retry_delay`].
 const HISTORY_WINDOW: i64 = 16;
+
+const COMPARISONS: &[&str] = &["above", "below"];
+const NO_DATA_POLICIES: &[&str] = &["ignore", "fire", "ok"];
+
+/// Whether an empty window is a missing reading for this signal. An error rate
+/// or a percentile of zero requests is undefined, not zero. The others are
+/// real zeros: no spend, no requests, no failed health events.
+fn can_lack_data(signal: &str) -> bool {
+    matches!(signal, "error_rate" | "p95_latency_ms")
+}
 
 const SIGNALS: &[&str] = &[
     "error_rate",
@@ -116,6 +130,8 @@ struct Rule {
     name: String,
     signal: String,
     threshold: f64,
+    comparison: String,
+    no_data: String,
     window_secs: i32,
     channel_id: Option<Uuid>,
     enabled: bool,
@@ -152,10 +168,48 @@ struct RuleInput {
     name: String,
     signal: String,
     threshold: f64,
+    /// `above` (the default) fires at `value >= threshold`, `below` at
+    /// `value <= threshold`. Omitted on an update, the stored value is kept,
+    /// so an editor that predates the field cannot reset it
+    comparison: Option<String>,
+    /// What a window with no data does: `ignore` (the default), `fire` or
+    /// `ok`. Omitted on an update, the stored value is kept
+    no_data: Option<String>,
     window_secs: i32,
     channel_id: Option<Uuid>,
     #[serde(default)]
     enabled: bool,
+}
+
+fn default_comparison() -> String {
+    "above".into()
+}
+
+fn default_no_data() -> String {
+    "ignore".into()
+}
+
+impl RuleInput {
+    /// The comparison a create stores: the body's, or the default
+    fn comparison(&self) -> String {
+        self.comparison.clone().unwrap_or_else(default_comparison)
+    }
+
+    /// The no-data policy a create stores: the body's, or the default
+    fn no_data(&self) -> String {
+        self.no_data.clone().unwrap_or_else(default_no_data)
+    }
+
+    /// The no-data policy an update writes, `None` to keep the stored one.
+    /// A rule moved to a signal that cannot lack data is written `ignore`,
+    /// since a kept `fire` or `ok` would be a policy that never applies
+    fn no_data_for_update(&self) -> Option<String> {
+        match &self.no_data {
+            Some(policy) => Some(policy.clone()),
+            None if !can_lack_data(&self.signal) => Some(default_no_data()),
+            None => None,
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {
@@ -229,6 +283,23 @@ fn validate_rule(input: &RuleInput) -> ApiResult<()> {
     if !(60..=86_400).contains(&input.window_secs) {
         return Err(invalid("window_secs must be between 60 and 86400"));
     }
+    if !COMPARISONS.contains(&input.comparison().as_str()) {
+        return Err(invalid(format!(
+            "comparison must be one of {COMPARISONS:?}"
+        )));
+    }
+    if !NO_DATA_POLICIES.contains(&input.no_data().as_str()) {
+        return Err(invalid(format!(
+            "no_data must be one of {NO_DATA_POLICIES:?}"
+        )));
+    }
+    // rejected rather than stored inert: a policy that can never apply reads
+    // as protection the rule does not have
+    if input.no_data() != "ignore" && !can_lack_data(&input.signal) {
+        return Err(invalid(
+            "no_data applies only to error_rate and p95_latency_ms; the other signals read 0 for an empty window (use comparison below on request_volume to catch stopped traffic)",
+        ));
+    }
     Ok(())
 }
 
@@ -239,7 +310,7 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
         )));
     };
     kek.encrypt(secret)
-        .map_err(|_| ApiError::Core(Error::Store("failed to encrypt channel credential".into())))
+        .map_err(|_| ApiError::Curated("failed to encrypt channel credential".into()))
 }
 
 fn channel_columns() -> &'static str {
@@ -247,7 +318,7 @@ fn channel_columns() -> &'static str {
 }
 
 fn rule_columns() -> &'static str {
-    "id, name, signal, threshold, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, created_at, updated_at"
+    "id, name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, created_at, updated_at"
 }
 
 async fn list_channels(
@@ -412,8 +483,8 @@ async fn create_rule(
 ) -> ApiResult<Json<Rule>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Create))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(&format!("insert into alert_rules (name, signal, threshold, window_secs, channel_id, enabled) values ($1,$2,$3,$4,$5,$6) returning {}", rule_columns()))
-        .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled)
+    let rule: Rule = sqlx::query_as(&format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns()))
+        .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(input.comparison()).bind(input.no_data())
         .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
     audit(
         &state,
@@ -434,8 +505,8 @@ async fn update_rule(
 ) -> ApiResult<Json<Rule>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Update))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(&format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, updated_at=now() where id=$1 returning {}", rule_columns()))
-        .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled)
+    let rule: Rule = sqlx::query_as(&format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns()))
+        .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(input.no_data_for_update())
         .fetch_optional(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?
         .ok_or_else(|| Error::NotFound(format!("alert rule {id}")))?;
     audit(
@@ -689,13 +760,10 @@ async fn evaluate_one(
             .await
             .map_err(store_error)?;
             tx.commit().await.map_err(store_error)?;
-            return Err(ApiError::Core(Error::Upstream(reason)));
+            // `read_signal` words the reason for the rule card, and never with
+            // the ClickHouse endpoint in it, so the caller may read it too
+            return Err(ApiError::Curated(reason));
         }
-    };
-    let next_state = if value >= rule.threshold {
-        "firing"
-    } else {
-        "ok"
     };
     let history: Vec<Reported> = sqlx::query_as(
         "select state, delivery_status, sent_at from alert_notification_history \
@@ -706,6 +774,7 @@ async fn evaluate_one(
     .fetch_all(&mut *tx)
     .await
     .map_err(store_error)?;
+    let next_state = judge(&rule, value, held_state(&rule.state, &history));
     // the time the reading was taken rather than now(), so a later reading
     // can tell this one is older
     let rule: Rule = sqlx::query_as(&format!(
@@ -726,7 +795,16 @@ async fn evaluate_one(
     };
     let notification = match transition(&history, next_state, redeliver) {
         Some(change) => {
-            Some(report(&state.egress, &mut tx, &rule, channel.as_ref(), change, kek).await?)
+            let no_data = value.is_none() && rule.no_data != "ignore";
+            let report = report(
+                &state.egress,
+                &mut tx,
+                &rule,
+                channel.as_ref(),
+                (change, no_data),
+                kek,
+            );
+            Some(report.await?)
         }
         None => None,
     };
@@ -739,6 +817,48 @@ async fn evaluate_one(
         notified,
         notification,
     }))
+}
+
+/// The state a rule keeps when a window has no data and its policy is `ignore`.
+///
+/// A rule in `error` has lost its state, so it is read back from the newest
+/// history row, the same record [`transition`] decides against.
+fn held_state(state: &str, history: &[Reported]) -> &'static str {
+    match state {
+        "firing" => "firing",
+        "ok" => "ok",
+        "unknown" => "unknown",
+        _ => match history.first().map(|r| r.state.as_str()) {
+            Some("firing") => "firing",
+            Some("resolved") => "ok",
+            _ => "unknown",
+        },
+    }
+}
+
+/// The state a reading puts `rule` in. `value` is `None` for a window with no
+/// data, which the rule's `no_data` policy settles; `held` is what `ignore`
+/// keeps.
+///
+/// `above` fires at `value >= threshold` and `below` at `value <= threshold`,
+/// both inclusive, so a rule that reads exactly its threshold fires either way.
+fn judge(rule: &Rule, value: Option<f64>, held: &'static str) -> &'static str {
+    let fires = match value {
+        Some(value) if rule.comparison == "below" => value <= rule.threshold,
+        Some(value) => value >= rule.threshold,
+        None => {
+            return match rule.no_data.as_str() {
+                "fire" => "firing",
+                "ok" => "ok",
+                _ => held,
+            }
+        }
+    };
+    if fires {
+        "firing"
+    } else {
+        "ok"
+    }
 }
 
 /// Whether a state that holds is sent again when no attempt at it got
@@ -812,7 +932,14 @@ fn retry_delay(failures: usize) -> chrono::Duration {
 ///
 /// The error is what the rule's `last_error` shows, so it is kept short and
 /// never carries the ClickHouse endpoint (see [`describe_query_error`]).
-async fn read_signal(state: &ControlState, signal: &str, window_secs: i32) -> Result<f64, String> {
+///
+/// `Ok(None)` is a window with no data, for a signal that can lack it (see
+/// [`can_lack_data`]); any other empty window reads `0`.
+async fn read_signal(
+    state: &ControlState,
+    signal: &str,
+    window_secs: i32,
+) -> Result<Option<f64>, String> {
     let Some(ch) = state.clickhouse.as_ref() else {
         return Err("alert evaluation requires CLICKHOUSE_URL".to_string());
     };
@@ -830,11 +957,23 @@ async fn read_signal(state: &ControlState, signal: &str, window_secs: i32) -> Re
             ))
         }
     };
-    Ok(rows
-        .first()
+    let row = rows.first();
+    let samples = row
+        .and_then(|row| row.get("samples"))
+        .and_then(serde_json::Value::as_f64);
+    let value = row
         .and_then(|row| row.get("value"))
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0))
+        .and_then(serde_json::Value::as_f64);
+    Ok(reading(signal, value, samples))
+}
+
+/// A signal's reading from the row its query returned: the value and how many
+/// logged requests it was computed from.
+fn reading(signal: &str, value: Option<f64>, samples: Option<f64>) -> Option<f64> {
+    if can_lack_data(signal) && (value.is_none() || samples.is_some_and(|n| n < 1.0)) {
+        return None;
+    }
+    Some(value.unwrap_or(0.0))
 }
 
 /// A bounded description of a failed signal query that is safe to store.
@@ -885,7 +1024,8 @@ fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
     } else {
         "request_logs"
     };
-    Ok(format!("select toFloat64({expression}) as value from {table} where ts >= now64(3) - interval {window} second format JSON"))
+    // samples as a float: ClickHouse quotes a 64-bit integer in JSON output
+    Ok(format!("select toFloat64({expression}) as value, toFloat64(count()) as samples from {table} where ts >= now64(3) - interval {window} second format JSON"))
 }
 
 /// The channel columns delivery needs, secret included. Never serialized.
@@ -930,18 +1070,28 @@ impl Outcome {
 /// Deliver `change` to the rule's channel and record the outcome as a history
 /// row, inside the evaluation's transaction.
 async fn report(
-    egress: &EgressPolicy,
+    egress: &Arc<EgressPolicy>,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     rule: &Rule,
     channel: Option<&ChannelTarget>,
-    change: &'static str,
+    (change, no_data): (&'static str, bool),
     kek: Option<&Kek>,
 ) -> ApiResult<Notification> {
     let id = Uuid::new_v4();
     let outcome = match channel {
         None => Outcome::skipped("no channel configured"),
         Some(channel) if !channel.enabled => Outcome::skipped("channel disabled"),
-        Some(channel) => deliver(egress, channel, &payload(id, rule, change), kek).await,
+        Some(channel) => deliver(egress, channel, &payload(id, rule, change, no_data), kek).await,
+    };
+    // the history row is the record of why a rule fired, and an empty window
+    // is not evident from the reading
+    let outcome = if no_data {
+        Outcome {
+            detail: format!("{}; {NO_DATA_DETAIL}", outcome.detail),
+            ..outcome
+        }
+    } else {
+        outcome
     };
     if outcome.status == "failed" {
         tracing::warn!(rule = %rule.id, change, detail = %outcome.detail, "alert delivery failed");
@@ -971,18 +1121,37 @@ async fn report(
 /// `id` is the history row's id, so a receiver can match a request to the row
 /// the **History** screen shows. `text` is a one-line summary for a relay or a
 /// chat tool to display as-is.
-fn payload(id: Uuid, rule: &Rule, change: &str) -> serde_json::Value {
-    let value = rule.last_value.unwrap_or_default();
-    let text = if change == "firing" {
-        format!(
-            "{} is firing: {} is {value}, threshold {}, {}s window",
-            rule.name, rule.signal, rule.threshold, rule.window_secs
-        )
+///
+/// `no_data` marks a transition caused by a window with no data: `value` is
+/// then `null` and `text` says so, rather than reporting a made-up `0`.
+fn payload(id: Uuid, rule: &Rule, change: &str, no_data: bool) -> serde_json::Value {
+    let value = if no_data {
+        None
     } else {
-        format!(
-            "{} resolved: {} is {value}, threshold {}, {}s window",
-            rule.name, rule.signal, rule.threshold, rule.window_secs
-        )
+        Some(rule.last_value.unwrap_or_default())
+    };
+    let verb = if change == "firing" {
+        "is firing"
+    } else {
+        "resolved"
+    };
+    let text = match value {
+        Some(value) => {
+            // an above rule reads as it always has
+            let below = if rule.comparison == "below" {
+                " (below)"
+            } else {
+                ""
+            };
+            format!(
+                "{} {verb}: {} is {value}, threshold {}{below}, {}s window",
+                rule.name, rule.signal, rule.threshold, rule.window_secs
+            )
+        }
+        None => format!(
+            "{} {verb}: {NO_DATA_DETAIL} for {}, {}s window",
+            rule.name, rule.signal, rule.window_secs
+        ),
     };
     serde_json::json!({
         "id": id,
@@ -990,6 +1159,8 @@ fn payload(id: Uuid, rule: &Rule, change: &str) -> serde_json::Value {
         "rule": { "id": rule.id, "name": rule.name },
         "signal": rule.signal,
         "value": value,
+        "no_data": no_data,
+        "comparison": rule.comparison,
         "threshold": rule.threshold,
         "window_secs": rule.window_secs,
         "evaluated_at": rule.last_evaluated_at,
@@ -1003,7 +1174,7 @@ fn payload(id: Uuid, rule: &Rule, change: &str) -> serde_json::Value {
 /// history records, never an evaluation error, so a dead endpoint cannot stop
 /// the rule's state from moving.
 async fn deliver(
-    egress: &EgressPolicy,
+    egress: &Arc<EgressPolicy>,
     channel: &ChannelTarget,
     payload: &serde_json::Value,
     kek: Option<&Kek>,
@@ -1036,7 +1207,7 @@ async fn deliver(
         }
         _ => None,
     };
-    let Some(client) = delivery_client() else {
+    let Some(client) = delivery_client(egress) else {
         return Outcome::failed("webhook client unavailable");
     };
     let mut request = client.post(&channel.endpoint).json(payload);
@@ -1060,24 +1231,19 @@ async fn deliver(
 
 /// The client webhooks are sent with.
 ///
-/// Separate from [`ControlState`]'s shared client because it does not follow
+/// It resolves through the egress policy, so a hostname that answers with a
+/// denied address is refused at connect time, and it does not follow
 /// redirects: a `3xx` is how an endpoint that passed the egress check hands the
 /// request to one that would not have, so it is recorded as a failure instead.
 /// Bounded end to end, since the evaluator waits on it while holding the
 /// rule's row lock.
-fn delivery_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(DELIVERY_TIMEOUT)
-                .user_agent(concat!("rolter/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .ok()
-        })
-        .as_ref()
+fn delivery_client(egress: &Arc<EgressPolicy>) -> Option<reqwest::Client> {
+    crate::egress_client::builder(egress)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(DELIVERY_TIMEOUT)
+        .user_agent(concat!("rolter/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()
 }
 
 async fn audit(
@@ -1115,10 +1281,136 @@ mod tests {
             name: "x".into(),
             signal: signal.into(),
             threshold,
+            comparison: None,
+            no_data: None,
             window_secs,
             channel_id: None,
             enabled: false,
         }
+    }
+
+    fn stored(comparison: &str, no_data: &str) -> Rule {
+        Rule {
+            id: Uuid::nil(),
+            name: "r".into(),
+            signal: "error_rate".into(),
+            threshold: 0.5,
+            comparison: comparison.into(),
+            no_data: no_data.into(),
+            window_secs: 300,
+            channel_id: None,
+            enabled: true,
+            state: "ok".into(),
+            last_value: None,
+            last_evaluated_at: None,
+            last_error: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_rule_body_without_the_new_fields_keeps_todays_behaviour() {
+        let input: RuleInput = serde_json::from_value(serde_json::json!({
+            "name": "x", "signal": "error_rate", "threshold": 0.5, "window_secs": 300
+        }))
+        .expect("an old-style body still parses");
+        assert_eq!(
+            (input.comparison().as_str(), input.no_data().as_str()),
+            ("above", "ignore")
+        );
+        assert!(validate_rule(&input).is_ok());
+    }
+
+    #[test]
+    fn rules_reject_unknown_comparison_and_no_data_values() {
+        let mut input = rule("error_rate", 0.5, 60);
+        input.comparison = Some("equal".into());
+        assert!(validate_rule(&input).is_err());
+        let mut input = rule("error_rate", 0.5, 60);
+        input.no_data = Some("page".into());
+        assert!(validate_rule(&input).is_err());
+    }
+
+    #[test]
+    fn no_data_policy_is_only_accepted_where_a_window_can_lack_data() {
+        for signal in SIGNALS {
+            let mut input = rule(signal, 0.5, 60);
+            input.no_data = Some("fire".into());
+            assert_eq!(
+                validate_rule(&input).is_ok(),
+                can_lack_data(signal),
+                "{signal}"
+            );
+            input.comparison = Some("below".into());
+            input.no_data = Some("ignore".into());
+            assert!(validate_rule(&input).is_ok(), "{signal}");
+        }
+    }
+
+    #[test]
+    fn above_fires_at_or_over_and_below_at_or_under_the_threshold() {
+        let above = stored("above", "ignore");
+        assert_eq!(judge(&above, Some(0.5), "ok"), "firing");
+        assert_eq!(judge(&above, Some(0.9), "ok"), "firing");
+        assert_eq!(judge(&above, Some(0.1), "firing"), "ok");
+        let below = stored("below", "ignore");
+        assert_eq!(judge(&below, Some(0.5), "ok"), "firing");
+        assert_eq!(judge(&below, Some(0.1), "ok"), "firing");
+        assert_eq!(judge(&below, Some(0.9), "firing"), "ok");
+    }
+
+    #[test]
+    fn a_window_with_no_data_follows_the_rules_policy() {
+        for comparison in ["above", "below"] {
+            let ignore = stored(comparison, "ignore");
+            assert_eq!(judge(&ignore, None, "ok"), "ok");
+            assert_eq!(judge(&ignore, None, "firing"), "firing");
+            assert_eq!(judge(&ignore, None, "unknown"), "unknown");
+            assert_eq!(judge(&stored(comparison, "fire"), None, "ok"), "firing");
+            assert_eq!(judge(&stored(comparison, "ok"), None, "firing"), "ok");
+        }
+    }
+
+    #[test]
+    fn an_empty_window_reads_as_no_data_only_for_signals_that_can_lack_it() {
+        assert_eq!(reading("error_rate", Some(0.0), Some(0.0)), None);
+        assert_eq!(reading("p95_latency_ms", Some(0.0), Some(0.0)), None);
+        assert_eq!(reading("error_rate", None, None), None);
+        assert_eq!(reading("error_rate", Some(0.0), Some(40.0)), Some(0.0));
+        assert_eq!(reading("request_volume", Some(0.0), Some(0.0)), Some(0.0));
+        assert_eq!(reading("spend_velocity", None, None), Some(0.0));
+    }
+
+    #[test]
+    fn a_rule_in_error_holds_the_state_its_history_last_reported() {
+        let row = |state: &str| Reported {
+            state: state.into(),
+            delivery_status: "delivered".into(),
+            sent_at: Utc::now(),
+        };
+        assert_eq!(held_state("error", &[row("firing")]), "firing");
+        assert_eq!(held_state("error", &[row("resolved")]), "ok");
+        assert_eq!(held_state("error", &[]), "unknown");
+        assert_eq!(held_state("ok", &[row("firing")]), "ok");
+    }
+
+    #[test]
+    fn a_no_data_payload_says_so_and_carries_no_made_up_value() {
+        let mut rule = stored("above", "fire");
+        rule.state = "firing".into();
+        let body = payload(Uuid::nil(), &rule, "firing", true);
+        assert_eq!(body["no_data"], true);
+        assert!(body["value"].is_null());
+        assert_eq!(
+            body["text"],
+            "r is firing: no data in window for error_rate, 300s window"
+        );
+        rule.last_value = Some(0.7);
+        let body = payload(Uuid::nil(), &rule, "firing", false);
+        assert_eq!(body["no_data"], false);
+        assert_eq!(body["value"], 0.7);
+        assert_eq!(body["comparison"], "above");
     }
 
     fn channel(endpoint: &str, managed_secret: Option<String>) -> ChannelInput {
@@ -1128,6 +1420,27 @@ mod tests {
             enabled: false,
             managed_secret,
         }
+    }
+
+    /// #1949: a hostname that resolves only to an address the policy denies
+    /// passes the literal check, so only the connect-time resolver stops it.
+    #[tokio::test]
+    async fn a_name_resolving_to_a_denied_address_is_never_contacted() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let channel = ChannelTarget {
+            id: Uuid::new_v4(),
+            endpoint: listener.url("/hook"),
+            enabled: true,
+            secret_ciphertext: None,
+            secret_nonce: None,
+        };
+        let policy = crate::egress_client::testing::deny_loopback();
+        // the write-time and pre-send literal checks cannot see a hostname
+        assert!(policy.url_deny_reason(&channel.endpoint).is_none());
+        let outcome = deliver(&policy, &channel, &serde_json::json!({}), None).await;
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.detail, "could not connect to the endpoint");
+        assert_eq!(listener.accepted(), 0);
     }
 
     fn egress() -> EgressPolicy {
@@ -1367,6 +1680,8 @@ mod tests {
             name: "high error rate".into(),
             signal: "error_rate".into(),
             threshold: 0.05,
+            comparison: "above".into(),
+            no_data: "ignore".into(),
             window_secs: 300,
             channel_id: None,
             enabled: true,
@@ -1377,7 +1692,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let body = payload(Uuid::nil(), &rule, "firing");
+        let body = payload(Uuid::nil(), &rule, "firing", false);
         assert_eq!(body["state"], "firing");
         assert_eq!(body["rule"]["name"], "high error rate");
         assert_eq!(body["signal"], "error_rate");
@@ -1388,7 +1703,7 @@ mod tests {
             body["text"],
             "high error rate is firing: error_rate is 0.07, threshold 0.05, 300s window"
         );
-        let resolved = payload(Uuid::nil(), &rule, "resolved");
+        let resolved = payload(Uuid::nil(), &rule, "resolved", false);
         assert!(resolved["text"]
             .as_str()
             .is_some_and(|t| t.starts_with("high error rate resolved")));
@@ -1410,7 +1725,12 @@ mod tests {
 
         use super::*;
 
-        const SECRET: &str = "s3cret-bearer";
+        /// The webhook bearer secret, generated once per process rather than
+        /// written out.
+        fn bearer_secret() -> &'static str {
+            static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            SECRET.get_or_init(|| format!("bearer-{}", uuid::Uuid::new_v4()))
+        }
 
         /// One request the webhook receiver saw: its `Authorization` header and
         /// its JSON body.
@@ -1420,6 +1740,9 @@ mod tests {
         struct Stub {
             /// The signal value the fake ClickHouse answers with, as `f64` bits.
             value: Arc<AtomicU64>,
+            /// When set, the window has no requests: ClickHouse answers with a
+            /// sample count of zero, as it does for an aggregate over no rows.
+            empty: Arc<AtomicBool>,
             /// When non-zero, ClickHouse answers with this status instead.
             clickhouse_status: Arc<AtomicU16>,
             /// The status the webhook receiver answers with.
@@ -1441,6 +1764,7 @@ mod tests {
                 let url = format!("http://{}", listener.local_addr().expect("a local address"));
                 let stub = Self {
                     value: Arc::new(AtomicU64::new(0f64.to_bits())),
+                    empty: Arc::default(),
                     clickhouse_status: Arc::new(AtomicU16::new(0)),
                     hook_status: Arc::new(AtomicU16::new(200)),
                     hooks: Arc::default(),
@@ -1458,6 +1782,10 @@ mod tests {
 
             fn read(&self, value: f64) {
                 self.value.store(value.to_bits(), Ordering::SeqCst);
+            }
+
+            fn empty_window(&self, empty: bool) {
+                self.empty.store(empty, Ordering::SeqCst);
             }
 
             fn hook_url(&self) -> String {
@@ -1479,7 +1807,12 @@ mod tests {
                     .into_response();
             }
             let value = f64::from_bits(stub.value.load(Ordering::SeqCst));
-            Json(json!({ "data": [{ "value": value }] })).into_response()
+            let samples = if stub.empty.load(Ordering::SeqCst) {
+                0.0
+            } else {
+                25.0
+            };
+            Json(json!({ "data": [{ "value": value, "samples": samples }] })).into_response()
         }
 
         async fn hook(
@@ -1498,7 +1831,7 @@ mod tests {
             let status = StatusCode::from_u16(stub.hook_status.load(Ordering::SeqCst))
                 .unwrap_or(StatusCode::OK);
             // a receiver that echoes what it was sent, which the history must not keep
-            (status, format!("rejected {SECRET}")).into_response()
+            (status, format!("rejected {}", bearer_secret())).into_response()
         }
 
         /// A schema of its own per test; the guard drops it when the test ends.
@@ -1523,7 +1856,11 @@ mod tests {
         }
 
         async fn add_channel(db: &TestSchema, endpoint: &str, enabled: bool, secret: bool) -> Uuid {
-            let sealed = secret.then(|| kek().encrypt(SECRET).expect("seal the test secret"));
+            let sealed = secret.then(|| {
+                kek()
+                    .encrypt(bearer_secret())
+                    .expect("seal the test secret")
+            });
             sqlx::query_scalar(
                 "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) \
                  values ($1, 'webhook', $2, $3, $4, $5) returning id",
@@ -1545,6 +1882,27 @@ mod tests {
             )
             .bind(format!("rule-{}", Uuid::new_v4()))
             .bind(channel_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("insert a rule")
+        }
+
+        async fn add_rule_with(
+            db: &TestSchema,
+            signal: &str,
+            comparison: &str,
+            no_data: &str,
+            threshold: f64,
+        ) -> Uuid {
+            sqlx::query_scalar(
+                "insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, enabled) \
+                 values ($1, $2, $3, $4, $5, 300, true) returning id",
+            )
+            .bind(format!("rule-{}", Uuid::new_v4()))
+            .bind(signal)
+            .bind(threshold)
+            .bind(comparison)
+            .bind(no_data)
             .fetch_one(db.pool())
             .await
             .expect("insert a rule")
@@ -1602,7 +1960,7 @@ mod tests {
             let (authorization, body) = &hooks[0];
             assert_eq!(
                 authorization.as_deref(),
-                Some(format!("Bearer {SECRET}").as_str())
+                Some(format!("Bearer {}", bearer_secret()).as_str())
             );
             assert_eq!(body["id"], json!(notification.id));
             assert_eq!(body["state"], "firing");
@@ -1634,6 +1992,155 @@ mod tests {
                     ),
                 ]
             );
+        }
+
+        #[tokio::test]
+        async fn a_rule_saved_before_the_new_fields_evaluates_exactly_as_before() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            // the original insert, which names neither column
+            let id = add_rule(&db, None).await;
+            let row = rule_row(&db, id).await;
+            assert_eq!(
+                (row.comparison.as_str(), row.no_data.as_str()),
+                ("above", "ignore")
+            );
+
+            stub.read(0.9);
+            assert_eq!(run(&state, id, None).await.rule.state, "firing");
+            // an empty window with the default policy leaves the state alone
+            stub.read(0.0);
+            stub.empty_window(true);
+            let held = run(&state, id, None).await;
+            assert_eq!(held.rule.state, "firing");
+            assert!(held.notification.is_none());
+            assert_eq!(held.rule.last_value, None);
+            stub.empty_window(false);
+            assert_eq!(run(&state, id, None).await.rule.state, "ok");
+        }
+
+        #[tokio::test]
+        async fn a_zero_request_window_fires_a_no_data_rule_and_resolves_when_traffic_returns() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let channel = add_channel(&db, &stub.hook_url(), true, false).await;
+            let id = add_rule_with(&db, "error_rate", "above", "fire", 0.5).await;
+            sqlx::query("update alert_rules set channel_id=$2 where id=$1")
+                .bind(id)
+                .bind(channel)
+                .execute(db.pool())
+                .await
+                .expect("attach the channel");
+
+            // the query reads 0, which a rule that only compared values would
+            // call healthy
+            stub.read(0.0);
+            stub.empty_window(true);
+            let fired = run(&state, id, None).await;
+            assert_eq!(fired.rule.state, "firing");
+            assert_eq!(fired.rule.last_value, None);
+            let notification = fired.notification.expect("a history row");
+            assert_eq!(notification.state, "firing");
+            assert_eq!(
+                notification.detail.as_deref(),
+                Some("HTTP 200; no data in window")
+            );
+            let hooks = stub.hooks();
+            assert_eq!(hooks.len(), 1);
+            assert_eq!(hooks[0].1["no_data"], true);
+            assert!(hooks[0].1["value"].is_null());
+
+            // traffic comes back healthy
+            stub.empty_window(false);
+            stub.read(0.01);
+            let resolved = run(&state, id, None).await;
+            assert_eq!(resolved.rule.state, "ok");
+            assert_eq!(stub.hooks()[1].1["state"], "resolved");
+            assert_eq!(stub.hooks()[1].1["no_data"], false);
+        }
+
+        #[tokio::test]
+        async fn no_data_ok_resolves_a_firing_rule() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let id = add_rule_with(&db, "p95_latency_ms", "above", "ok", 100.0).await;
+            stub.read(900.0);
+            assert_eq!(run(&state, id, None).await.rule.state, "firing");
+            stub.empty_window(true);
+            let resolved = run(&state, id, None).await;
+            assert_eq!(resolved.rule.state, "ok");
+            assert_eq!(
+                resolved.notification.expect("a resolved row").state,
+                "resolved"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_below_rule_on_request_volume_catches_stopped_traffic() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let id = add_rule_with(&db, "request_volume", "below", "ignore", 0.0).await;
+            stub.read(340.0);
+            assert_eq!(run(&state, id, None).await.rule.state, "ok");
+            // no requests is a count of 0, a real reading for this signal
+            stub.read(0.0);
+            stub.empty_window(true);
+            assert_eq!(run(&state, id, None).await.rule.state, "firing");
+        }
+
+        #[tokio::test]
+        async fn the_rule_api_round_trips_comparison_and_no_data() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let id = add_rule(&db, None).await;
+            let (status, body) = put(
+                &state,
+                format!("/api/v1/alert-rules/{id}"),
+                json!({"name": "stopped", "signal": "error_rate", "threshold": 0.5,
+                       "window_secs": 300, "comparison": "below", "no_data": "fire"}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["comparison"], "below");
+            assert_eq!(body["no_data"], "fire");
+            // an omitted field keeps the stored value, so an editor that
+            // predates the fields cannot reset them on an unrelated edit
+            let (status, body) = put(
+                &state,
+                format!("/api/v1/alert-rules/{id}"),
+                json!({"name": "renamed", "signal": "error_rate", "threshold": 0.4,
+                       "window_secs": 300}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["name"], "renamed");
+            assert_eq!(body["comparison"], "below");
+            assert_eq!(body["no_data"], "fire");
+            // moved to a signal that cannot lack data, a kept `fire` would
+            // never apply, so the omitted policy is written `ignore`
+            let (status, body) = put(
+                &state,
+                format!("/api/v1/alert-rules/{id}"),
+                json!({"name": "renamed", "signal": "request_volume", "threshold": 1,
+                       "window_secs": 300}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["comparison"], "below");
+            assert_eq!(body["no_data"], "ignore");
+            let (status, _) = put(
+                &state,
+                format!("/api/v1/alert-rules/{id}"),
+                json!({"name": "stopped", "signal": "request_volume", "threshold": 1,
+                       "window_secs": 300, "no_data": "fire"}),
+            )
+            .await;
+            assert!(status.is_client_error(), "{status}");
         }
 
         async fn scheduled(
@@ -1717,7 +2224,7 @@ mod tests {
             assert_eq!(hooks[2].1["state"], "firing");
             assert_eq!(
                 hooks[2].0.as_deref(),
-                Some(format!("Bearer {SECRET}").as_str())
+                Some(format!("Bearer {}", bearer_secret()).as_str())
             );
 
             // delivered once: neither the schedule nor evaluate now sends it again
@@ -2104,6 +2611,32 @@ mod tests {
             assert_eq!(stub.hooks()[1].1["state"], "resolved");
             // error passes write no history of their own
             assert_eq!(history(&db, id).await.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_stalled_clickhouse_is_an_evaluation_error_not_a_hang() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let mut state = state_with(&db, &stub);
+            let id = add_rule(&db, None).await;
+            let stalled = crate::analytics::testing::Stalled::start().await;
+            state.clickhouse = Some(crate::analytics::ClickHouseClient::with_timeouts(
+                &stalled.url,
+                Duration::from_secs(1),
+                Duration::from_millis(300),
+            ));
+
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(10),
+                evaluate_one(&state, id, Lock::Wait, None),
+            )
+            .await
+            .expect("a stalled signal read must not hang the pass");
+            assert!(outcome.is_err());
+            let errored = rule_row(&db, id).await;
+            assert_eq!(errored.state, "error");
+            let last_error = errored.last_error.expect("last_error is set");
+            assert_eq!(last_error, "analytics query timed out");
         }
 
         #[tokio::test]
