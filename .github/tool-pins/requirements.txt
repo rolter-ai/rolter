@@ -1,0 +1,7 @@
+# the one place a python tool run through `uvx` is pinned (#2185). dependabot's
+# pip ecosystem bumps these lines (.github/dependabot.yml), and every workflow
+# step, hook and doc reads them through `scripts/tool-pin.sh <name>` instead of
+# writing `uvx <tool>@<version>` inline, which dependabot cannot see.
+# scripts/check-tool-pins.sh fails on an inline pin or an unused entry here
+maturin==1.15.0
+zizmor==1.26.1

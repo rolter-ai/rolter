@@ -284,7 +284,7 @@ jobs:
       - name: maturin sdist (validates the PyPI packaging)
         id: sdist
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
+        run: uvx --from "$(bash scripts/tool-pin.sh maturin)" maturin sdist --out "${RUNNER_TEMP}/sdist"
 
       # ── gateway smoke (fake-llm) ──────────────────────────────────────────
       # boots the real binary and exercises the built-in fake-llm (no upstream
@@ -479,7 +479,7 @@ jobs:
           row "package (publish verify)" "cargo package (verifies each crate in isolation)" "${OUTCOME_PACKAGE}" \
             "cargo package --workspace --locked"
           row "package (publish verify)" "maturin sdist (validates the PyPI packaging)" "${OUTCOME_SDIST}" \
-            "uvx maturin@1.15.0 sdist --out target/sdist"
+            "uvx --from \"\$(bash scripts/tool-pin.sh maturin)\" maturin sdist --out target/sdist"
           row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
           row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
             "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
@@ -742,6 +742,18 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
+      # ── uvx tool pins: one file dependabot tracks ─────────────────────────
+      # `uvx zizmor@x.y.z` hides the version from dependabot, so the pins live
+      # in .github/tool-pins/requirements.txt (a pip manifest it bumps) and every
+      # command reads them through scripts/tool-pin.sh. this fails on an inline
+      # pin creeping back in, or an unused or unresolvable entry (#2185)
+      - name: uvx tool pins
+        id: tool-pins
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/check-tool-pins.sh
+          bash scripts/check-tool-pins.sh --self-test
+
       # ── spelling: docs / comments / identifiers ───────────────────────────
       # false positives are pinned in .github/config/typos.toml with an
       # explaining comment each.
@@ -818,7 +830,7 @@ jobs:
           out="${RUNNER_TEMP}/zizmor.txt"
           attempt=1
           while true; do
-            uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+            uvx --from "$(bash scripts/tool-pin.sh zizmor)" zizmor --min-severity=medium --persona=regular \
               .github/workflows/ .github/actions/ 2>&1 | tee "${out}"
             status="${PIPESTATUS[0]}"
 
@@ -955,6 +967,7 @@ jobs:
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_TOOL_PINS: ${{ steps.tool-pins.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
           OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
@@ -1031,6 +1044,8 @@ jobs:
             "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
+          row "uvx tool pins" "uvx tool pins" "${OUTCOME_TOOL_PINS}" yes \
+            "prek run tool-pins --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
           row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
           row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
@@ -1038,7 +1053,7 @@ jobs:
           row "unused deps" "unused deps" "${OUTCOME_MACHETE}" yes "cargo machete"
           row "actionlint" "actionlint" "${OUTCOME_ACTIONLINT}" yes "prek run actionlint --all-files"
           row "zizmor" "zizmor" "${OUTCOME_ZIZMOR}" yes \
-            "uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
+            "uvx --from \"\$(bash scripts/tool-pin.sh zizmor)\" zizmor --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
           row "release handoff wired" "release handoff wired" "${OUTCOME_RELEASE_HANDOFF}" yes \
             "prek run release-handoff --all-files"
           row "release handoff wired" "release handoff wired (self-test)" "${OUTCOME_RELEASE_HANDOFF_SELF_TEST}" yes \
