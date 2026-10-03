@@ -38,7 +38,6 @@ import {
   fetchAuthPolicy,
   fetchMemberships,
   fetchSsoGroupMappings,
-  ApiError,
   fetchSsoProviders,
   ssoRedirectUri,
   updateAuthPolicy,
@@ -154,15 +153,23 @@ function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
 }
 
 /**
- * The control plane's own refusal (409) of the change the card already holds
- * back (#2443), in the dashboard's words. It still arrives when another admin
- * turned the last other way in off between this screen's read and the click.
+ * What a change to a provider would leave nobody able to do (#2084).
+ *
+ * Raised inside the confirmation for taking the last enabled provider out of
+ * service or deleting it while password sign-in is off. It says who still gets
+ * in, and only from what the control plane enforces: superadmins are exempt
+ * from `allow_password_login = false` (`auth_policy.rs`), and an account that
+ * signed up through a provider was created with no password, so turning
+ * password sign-in back on does not bring it back.
  */
-function refusal(error: unknown, t: (key: string) => string): unknown {
-  if (error instanceof ApiError && error.status === 409) {
-    return new Error(t("pages.sso.lastMethod.refused"));
-  }
-  return error;
+function LockoutNotice({ name }: { name: string }) {
+  const { t } = useTranslation();
+  return (
+    <WarningNote title={t("pages.sso.lockout.title")}>
+      <p className="text-muted-foreground">{t("pages.sso.lockout.body", { name })}</p>
+      <p className="text-muted-foreground">{t("pages.sso.lockout.noPassword")}</p>
+    </WarningNote>
+  );
 }
 
 /**
@@ -587,7 +594,7 @@ function SignInPolicyCard({
             else save.mutate();
           }}
         >
-          {save.isPending && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+          {save.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {t("pages.sso.policy.save")}
         </GatedButton>
       </footer>
@@ -713,7 +720,6 @@ function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
 
 function ProviderCard({
   provider,
-  lastWayIn,
   onClearSecret,
   onDelete,
   onEdit,
@@ -723,8 +729,6 @@ function ProviderCard({
   toggling,
 }: {
   provider: SsoProviderRow;
-  /** the last enabled provider while password sign-in is off (#2443) */
-  lastWayIn: boolean;
   onClearSecret: (provider: SsoProviderRow) => void;
   onDelete: (provider: SsoProviderRow) => void;
   onEdit: (provider: SsoProviderRow) => void;
@@ -734,10 +738,6 @@ function ProviderCard({
   toggling: boolean;
 }) {
   const { t } = useTranslation();
-  // the control plane refuses to disable or delete the last way in while
-  // password sign-in is off, so the card says so instead of offering it (#2443)
-  const reasonId = `sso-last-way-${provider.id}`;
-  const held = lastWayIn ? reasonId : undefined;
 
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
@@ -772,11 +772,6 @@ function ProviderCard({
                 })
               : t("pages.sso.providers.noDefaultRole")}
           </p>
-          {lastWayIn && (
-            <p id={reasonId} className="mt-1 text-sm text-muted-foreground">
-              {t("pages.sso.lastMethod.reason")}
-            </p>
-          )}
         </div>
         {/* taking a provider out of service is a routine act — an IdP
             migration, a broken secret — and used to require deleting it,
@@ -786,9 +781,7 @@ function ProviderCard({
           gate="sso_provider:update"
           control="sso-provider-toggle"
           checked={provider.enabled}
-          disabled={toggling || lastWayIn}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : undefined}
-          aria-describedby={held}
+          disabled={toggling}
           onCheckedChange={(next) => onToggle(provider, next)}
           aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
         />
@@ -817,7 +810,7 @@ function ProviderCard({
             onClick={() => onClearSecret(provider)}
           >
             {clearingSecret ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Eraser className="h-3.5 w-3.5" />
             )}
@@ -827,14 +820,13 @@ function ProviderCard({
           danger
           gate="sso_provider:delete"
           control="sso-provider-delete"
+          title={t("pages.sso.providers.delete")}
           aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          disabled={deleting || lastWayIn}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
-          aria-describedby={held}
+          disabled={deleting}
           onClick={() => onDelete(provider)}
         >
           {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <Trash2 className="h-3.5 w-3.5" />
           )}
@@ -1240,7 +1232,7 @@ export default function SingleSignOn() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: provider.name }),
-        detail: errorDetail(refusal(error, t)),
+        detail: errorDetail(error),
       });
     },
   });
@@ -1311,10 +1303,12 @@ export default function SingleSignOn() {
   // no org means nothing to hang a provider on, and an unreadable list means
   // this principal may not manage them either
   const canManage = !!orgId && !providers.isError;
-  // against the saved policy: with it unread there is nothing to hold back
-  // from, and the server still refuses the change itself (#2443)
-  const locksOut = (target: SsoProviderRow) =>
-    !!policy.data && locksOutMembers(rows, target, policy.data);
+  // against the saved policy: with it unread there is nothing to warn from, and
+  // the plain confirmation still stands
+  const locksOut = (target: SsoProviderRow | null) =>
+    !!target && !!policy.data && locksOutMembers(rows, target, policy.data);
+  const disableLocksOut = locksOut(disableTarget);
+  const deleteLocksOut = locksOut(deleteTarget);
 
   return (
     <PageBody>
@@ -1385,7 +1379,6 @@ export default function SingleSignOn() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
-                lastWayIn={locksOut(provider)}
                 clearingSecret={clearSecret.isPending && clearSecret.variables?.id === provider.id}
                 deleting={remove.isPending && remove.variables === provider.id}
                 toggling={toggle.isPending && toggle.variables?.provider.id === provider.id}
@@ -1442,8 +1435,9 @@ export default function SingleSignOn() {
       />
 
       {/* out of service is reversible with one flip, so it confirms as a
-          default-tone action. the mutation is reset on close so a refusal for
-          one provider does not greet the next */}
+          default-tone action; it turns destructive only when it would leave
+          members no way in. the mutation is reset on close so a refusal for one
+          provider does not greet the next */}
       <ConfirmDialog
         name="sso-provider-disable"
         open={!!disableTarget}
@@ -1455,8 +1449,9 @@ export default function SingleSignOn() {
         title={t("pages.sso.disable.title", { name: disableTarget?.name })}
         description={t("pages.sso.disable.body")}
         confirmLabel={t("pages.sso.disable.confirm")}
+        tone={disableLocksOut ? "danger" : "default"}
         pending={toggle.isPending}
-        error={toggle.error ? refusal(toggle.error, t) : undefined}
+        error={toggle.error}
         onConfirm={() => {
           if (!disableTarget) return;
           toggle.mutate(
@@ -1464,7 +1459,9 @@ export default function SingleSignOn() {
             { onSuccess: () => setDisableTarget(null) },
           );
         }}
-      />
+      >
+        {disableLocksOut && disableTarget && <LockoutNotice name={disableTarget.name} />}
+      </ConfirmDialog>
 
       <ConfirmDialog
         name="sso-connection-delete"
@@ -1474,7 +1471,7 @@ export default function SingleSignOn() {
         description={t("pages.sso.confirm.body")}
         confirmLabel={t("pages.sso.confirm.confirm")}
         pending={remove.isPending}
-        error={remove.error ? refusal(remove.error, t) : undefined}
+        error={remove.error}
         onConfirm={() => {
           if (!deleteTarget) return;
           const what = deleteTarget.name;
@@ -1487,12 +1484,14 @@ export default function SingleSignOn() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(refusal(error, t)),
+                detail: errorDetail(error),
               });
             },
           });
         }}
-      />
+      >
+        {deleteLocksOut && deleteTarget && <LockoutNotice name={deleteTarget.name} />}
+      </ConfirmDialog>
     </PageBody>
   );
 }

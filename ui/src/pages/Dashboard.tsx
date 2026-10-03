@@ -8,8 +8,6 @@ import { PageBody } from "@/components/screen";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { LoadError } from "@/components/LoadError";
-import { SavedViews } from "@/components/SavedViews";
-import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
@@ -25,33 +23,23 @@ import {
   fetchInvocations,
   type AnalyticsByModelRow,
   type InvocationRow,
-  type SavedViewFilters,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
-import {
-  DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useAddressWindow,
-  useTimeWindowOptions,
-  windowBounds,
-  type TimeWindow,
-} from "@/lib/time-window";
+import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
-// the figures and charts read one window, by name: the last 24 hours unless the
-// address names another (`?window=7d`). its bounds are worked out as each
+// the screen reads one window, by name. its bounds are worked out as each
 // request leaves rather than once when the module loads, so a tab left open
-// reads the window as it is now and not as it was when it was opened (#1975).
-// the name is what the query keys carry
-const readWindow = (name: TimeWindow) => ({ ...windowBounds(name), bucket: "hour" });
-// "recent" is the latest requests, whatever window the figures are read over
-const readRecent = () => windowBounds(DEFAULT_TIME_WINDOW);
+// reads the last 24 hours as they are now and not every hour since it was
+// opened (#1975). the name is what the query keys carry
+const WINDOW_NAME: TimeWindow = "24h";
+const readWindow = () => ({ ...windowBounds(WINDOW_NAME), bucket: "hour" });
 
 // the recent requests card says "live", so it asks again every 15s, the pace
 // of the other polled screens (Cluster, Adaptive Routing). react-query holds
@@ -184,14 +172,9 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const money = (n: number) => fmt.currency(n, currency);
   const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
-  const [timeWindow, setWindow] = useAddressWindow();
-  const windowOptions = useTimeWindowOptions();
-  const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
-  // what a saved view keeps: the window. the buckets are fixed at an hour here
-  const savedFilters: SavedViewFilters = { window: timeWindow };
   const summary = useQuery({
-    queryKey: ["analytics", "summary", timeWindow],
-    queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow)),
+    queryKey: ["analytics", "summary", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsSummary(readWindow()),
     refetchInterval: overviewPoll,
     retry: false,
   });
@@ -200,20 +183,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", timeWindow],
-    queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow)),
+    queryKey: ["analytics", "timeseries", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsTimeseries(readWindow()),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", timeWindow],
-    queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow)),
+    queryKey: ["analytics", "by-model", WINDOW_NAME],
+    queryFn: () => fetchAnalyticsByModel(readWindow()),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const recent = useQuery({
     queryKey: ["invocations", "recent"],
-    queryFn: () => fetchInvocations({ ...readRecent(), limit: 8 }),
+    queryFn: () => fetchInvocations({ ...readWindow(), limit: 8 }),
     refetchInterval: pollEvery(pollMs ?? RECENT_POLL_MS),
     retry: false,
   });
@@ -280,20 +263,6 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
 
   return (
     <PageBody className="gap-[18px]">
-      <div className="flex flex-wrap items-center gap-2">
-        <Combobox
-          aria-label={t("common.timeWindow.label")}
-          className="w-48"
-          options={windowOptions}
-          value={timeWindow}
-          onChange={(next) => setWindow(readTimeWindow(next))}
-        />
-        <SavedViews
-          surface="dashboard"
-          current={savedFilters}
-          onApply={(view) => setWindow(readTimeWindow(view.window))}
-        />
-      </div>
       <GettingStarted requests={summary.isSuccess ? num(summary.data?.requests) : undefined} />
       <div data-testid="dashboard-figures">
         <CardRead
@@ -363,7 +332,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <Card data-testid="dashboard-spend">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {windowLabel}
+              {t("pages.dashboard.last24h")}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.spendTitle")}</CardTitle>
             {/* the amounts follow the deployment's currency, so the subtitle
@@ -404,7 +373,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                     series={[{ name: "spend", values: spendPoints }]}
                     labels={spendLabels}
                     height={220}
-                    label={t("pages.dashboard.spendChartAria", { window: windowLabel })}
+                    label={t("pages.dashboard.spendChartAria")}
                     formatValue={(v) => money(v)}
                     emptyState={
                       <p className="text-sm text-muted-foreground">{t("analytics.noRowsYet")}</p>
@@ -419,7 +388,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <Card data-testid="dashboard-traffic">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {windowLabel}
+              {t("pages.dashboard.last24h")}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.trafficTitle")}</CardTitle>
             <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
@@ -466,7 +435,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <Card data-testid="dashboard-by-model">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {windowLabel}
+              {t("pages.dashboard.last24h")}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.byModelTitle")}</CardTitle>
           </CardHeader>

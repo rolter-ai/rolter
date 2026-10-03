@@ -1172,12 +1172,6 @@ export interface ProviderRow {
   egress_proxy?: string | null;
   /** extra egress proxies the upstream client rotates through; never null */
   egress_proxies: string[];
-  /**
-   * The project this provider is scoped to: only keys minted in it reach the
-   * provider, through a route or `slug/model`. `null` (or absent, from a control
-   * plane that predates scoping) is org-wide (#1919)
-   */
-  project_id?: string | null;
   created_at: string;
 }
 
@@ -1190,8 +1184,6 @@ export interface CreateProviderInput {
   api_key?: string;
   api_key_env?: string;
   egress_proxy?: string;
-  /** scope the provider to a project of the org; omit for org-wide */
-  project_id?: string;
 }
 
 export interface UpdateProviderInput {
@@ -1208,8 +1200,6 @@ export interface UpdateProviderInput {
   egress_proxy?: string;
   /** omit to leave unchanged; an empty array clears the list */
   egress_proxies?: string[];
-  /** omit to leave the scope unchanged; a project id scopes it; `null` makes it org-wide */
-  project_id?: string | null;
 }
 
 /**
@@ -1359,8 +1349,6 @@ export interface ProviderGroupRow {
   /** stable, URL-safe identity used for `group-slug/model` addressing */
   slug: string;
   strategy: string;
-  /** the project the group is scoped to; `null` or absent is org-wide (#1919) */
-  project_id?: string | null;
   created_at: string;
   members: ProviderGroupMember[];
 }
@@ -1378,8 +1366,6 @@ export interface CreateProviderGroupInput {
   slug?: string;
   strategy: string;
   members: GroupMemberInput[];
-  /** scope the group to a project of the org; omit for org-wide */
-  project_id?: string;
 }
 
 export interface UpdateProviderGroupInput {
@@ -1390,8 +1376,6 @@ export interface UpdateProviderGroupInput {
   strategy?: string;
   /** present = replace the whole membership; omit = leave unchanged */
   members?: GroupMemberInput[];
-  /** omit to leave the scope unchanged; a project id scopes it; `null` makes it org-wide */
-  project_id?: string | null;
 }
 
 export function fetchProviderGroups(orgId: string): Promise<ProviderGroupRow[]> {
@@ -2229,31 +2213,6 @@ export function confirmSignInEnrolment(
   });
 }
 
-/** what `POST /auth/sso/exchange` answers: the login body plus the roles the sign-in granted */
-export interface SsoExchangeResponse extends LoginResponse {
-  granted_roles: unknown[];
-}
-
-/**
- * Redeem the one-time code a browser SSO sign-in ends with
- * (`/login?sso_code=…`) for a session.
- *
- * Sent with no `Authorization` header on purpose, and not through `sendJson`,
- * which attaches whatever token is stored: the caller is mid sign-in, and a
- * stale token must not ride along. The code is single use, so a caller must
- * not retry it. A spent, expired or unknown code is a `400` with
- * `code == "invalid_exchange_code"`.
- */
-export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
-  const res = await fetch("/auth/sso/exchange", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  if (!res.ok) throw await apiError(res);
-  return (await res.json()) as SsoExchangeResponse;
-}
-
 /** what the login screen may offer; see crates/rolter-control/src/auth_policy.rs */
 export interface AuthMethods {
   /** render the email + password form */
@@ -2293,42 +2252,6 @@ export interface MeMembership extends MembershipRow {
 export interface MeResponse {
   user: UserRow;
   memberships: MeMembership[];
-  /**
-   * The saved Client Settings public base URL, or null. Readable by every role,
-   * unlike `client_settings:read` (#2512). Absent from an older control plane.
-   */
-  gateway_base_url?: string | null;
-  /**
-   * A SCIM directory owns `user.display_name`, so a change to it answers 409.
-   * The bio stays editable. Absent from a control plane older than #1823.
-   */
-  display_name_managed?: boolean;
-}
-
-/** longest display name, in characters (`users_display_name_shape`) */
-export const MAX_DISPLAY_NAME_LEN = 80;
-/** longest bio, in characters (`users_bio_shape`) */
-export const MAX_BIO_LEN = 500;
-
-/**
- * `PATCH /me/profile` body. Send only the fields being changed: an omitted
- * field is left alone, `null` clears one, and whitespace-only is a 400.
- */
-export interface ProfileUpdate {
-  display_name?: string | null;
-  bio?: string | null;
-}
-
-/** what `PATCH /me/profile` answers: the profile as stored, trimmed */
-export interface ProfileResult {
-  display_name: string | null;
-  bio: string | null;
-  display_name_managed: boolean;
-}
-
-/** Set the signed-in account's own display name and bio (#1823). */
-export function updateMyProfile(body: ProfileUpdate): Promise<ProfileResult> {
-  return sendJson<ProfileResult>("PATCH", "/api/v1/me/profile", body);
 }
 
 /**
@@ -2531,10 +2454,6 @@ export type MembershipScopeType = (typeof MEMBERSHIP_SCOPE_TYPES)[number];
 export interface UserRow {
   id: string;
   email: string;
-  /** what the account goes by; null until set (or provisioned by an IdP) */
-  display_name?: string | null;
-  /** a line on who to ask about what; null until set */
-  bio?: string | null;
   is_superadmin: boolean;
   /** set when the account is deactivated (login blocked); null when active */
   deactivated_at?: string | null;
@@ -2896,69 +2815,6 @@ export interface MyUsageRow {
   errors: number | string;
 }
 
-/** the screens a saved filter preset can belong to (#1825) */
-export type SavedViewSurface = "llm_logs" | "dashboard";
-
-/**
- * The filter set a preset holds. Keys mirror the query parameters the screen
- * sends; the control plane refuses any it does not allow-list for the surface.
- */
-export interface SavedViewFilters {
-  window?: string;
-  status?: string;
-  model?: string;
-  key?: string;
-  business_unit?: string[];
-  customer?: string[];
-  bucket?: string;
-}
-
-/** a filter entry the caller can no longer read, so it was left out of `effective_filters` */
-export interface SavedViewUnavailable {
-  filter: "key" | "business_unit" | "customer";
-  id: string;
-}
-
-export interface SavedView {
-  id: string;
-  surface: SavedViewSurface;
-  name: string;
-  /** as stored; never apply this one */
-  filters: SavedViewFilters;
-  /** `filters` without what `unavailable` names: what to apply */
-  effective_filters: SavedViewFilters;
-  unavailable: SavedViewUnavailable[];
-  created_at: string;
-  updated_at: string;
-}
-
-const SAVED_VIEWS = "/api/v1/me/saved-views";
-
-/** the caller's presets for one screen, oldest first */
-export function fetchSavedViews(surface: SavedViewSurface): Promise<SavedView[]> {
-  return getJson<SavedView[]>(`${SAVED_VIEWS}?surface=${surface}`);
-}
-
-export function createSavedView(input: {
-  surface: SavedViewSurface;
-  name: string;
-  filters: SavedViewFilters;
-}): Promise<SavedView> {
-  return sendJson<SavedView>("POST", SAVED_VIEWS, input);
-}
-
-/** a `filters` value replaces the whole stored set */
-export function updateSavedView(
-  id: string,
-  patch: { name?: string; filters?: SavedViewFilters },
-): Promise<SavedView> {
-  return sendJson<SavedView>("PATCH", `${SAVED_VIEWS}/${id}`, patch);
-}
-
-export function deleteSavedView(id: string): Promise<void> {
-  return sendJson<void>("DELETE", `${SAVED_VIEWS}/${id}`);
-}
-
 export function fetchMyKeys(): Promise<OwnedKeyRow[]> {
   return getJson<OwnedKeyRow[]>("/api/v1/me/virtual-keys");
 }
@@ -3035,7 +2891,7 @@ export interface AuditLogQuery {
   include_total?: boolean;
 }
 
-function auditLogQueryString(query: AuditLogQuery): string {
+export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== "") {
@@ -3043,35 +2899,34 @@ function auditLogQueryString(query: AuditLogQuery): string {
     }
   }
   const qs = params.toString();
-  return qs ? `?${qs}` : "";
-}
-
-export function fetchAuditLogPage(orgId: string, query: AuditLogQuery = {}): Promise<AuditLogPage> {
-  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${auditLogQueryString(query)}`);
-}
-
-// every audit row in the deployment, org-less account events included;
-// superadmin-only (`deployment_audit_log:read`), a 403 for anyone else
-export function fetchDeploymentAuditLogPage(query: AuditLogQuery = {}): Promise<AuditLogPage> {
-  return getJson<AuditLogPage>(`/api/v1/audit-log${auditLogQueryString(query)}`);
+  return getJson<AuditLogPage>(`/api/v1/orgs/${orgId}/audit-log${qs ? `?${qs}` : ""}`);
 }
 
 // ---------------------------------------------------------------------------
 // security settings (superadmin-only global gateway policy)
 
 export interface SecuritySettingsDto {
+  virtual_key_required: boolean;
   allowed_origins: string[];
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
+  dashboard_auth_enabled: boolean;
+  dashboard_credential_ref: string | null;
+  dashboard_secret_configured: boolean;
   updated_at: string;
 }
 
 export interface UpdateSecuritySettingsInput {
+  virtual_key_required: boolean;
   allowed_origins: string[];
   allowed_headers: string[];
   required_headers: Record<string, string>;
   auth_bypass_routes: string[];
+  dashboard_auth_enabled: boolean;
+  dashboard_credential_ref?: string | null;
+  /// write-only; sealed server-side, never echoed back
+  managed_dashboard_secret?: string;
 }
 
 export function fetchSecuritySettings(): Promise<SecuritySettingsDto> {
@@ -3399,13 +3254,6 @@ export const ALERT_SIGNALS = [
   "provider_health_flaps",
 ] as const;
 
-/** which side of the threshold fires: `above` is value >= threshold, `below` is value <= threshold */
-export const ALERT_COMPARISONS = ["above", "below"] as const;
-/** what a rule does when its window holds no data; only `error_rate` and `p95_latency_ms` take it */
-export const ALERT_NO_DATA_POLICIES = ["ignore", "fire", "ok"] as const;
-export type AlertComparison = (typeof ALERT_COMPARISONS)[number];
-export type AlertNoDataPolicy = (typeof ALERT_NO_DATA_POLICIES)[number];
-
 export interface AlertChannelRow {
   id: string;
   name: string;
@@ -3429,8 +3277,6 @@ export interface AlertRuleRow {
   name: string;
   signal: string;
   threshold: number;
-  comparison: AlertComparison;
-  no_data: AlertNoDataPolicy;
   window_secs: number;
   channel_id: string | null;
   enabled: boolean;
@@ -3446,10 +3292,6 @@ export interface AlertRuleInput {
   name: string;
   signal: string;
   threshold: number;
-  /** left out, a PUT keeps the stored value */
-  comparison?: AlertComparison;
-  /** left out, a PUT keeps the stored value; the API answers 400 for a signal that has no data policy */
-  no_data?: AlertNoDataPolicy;
   window_secs: number;
   channel_id?: string | null;
   enabled: boolean;
@@ -3632,9 +3474,6 @@ export interface McpLogRow {
 export interface McpLogDetail extends McpLogRow {
   arguments: string | null;
   result: string | null;
-  /// 1 when the arguments and result were captured but the caller's role is
-  /// below the payload floor, so the server blanked them (#2396)
-  payload_withheld?: number | string;
 }
 
 export interface McpLogsQuery extends AnalyticsWindow {
@@ -4460,72 +4299,4 @@ export function updateAuthPolicy(
   },
 ): Promise<OrgAuthPolicy> {
   return sendJson<OrgAuthPolicy>("PUT", `/api/v1/orgs/${orgId}/auth-policy`, input);
-}
-
-/**
- * The self-service preferences document (`/api/v1/me/preferences`,
- * `crates/rolter-control/src/me.rs`). A `null` key means "use the default":
- * the browser's language and zone, the Playground's own pick.
- */
-export interface UserPreferences {
-  language: string | null;
-  default_org_id: string | null;
-  default_team_id: string | null;
-  default_project_id: string | null;
-  default_playground_model: string | null;
-  chart_time_zone: string | null;
-}
-
-/** The scope the control plane says the account can still read, computed on every GET. */
-export interface EffectiveDefaultScope {
-  org_id: string | null;
-  team_id: string | null;
-  project_id: string | null;
-}
-
-/**
- * `GET`/`PUT` answer: the document plus `effective_default_scope`. The dashboard
- * opens on the latter and never on the raw `default_*_id` keys, which can name a
- * scope the account lost access to.
- */
-export interface PreferencesResponse extends UserPreferences {
-  effective_default_scope: EffectiveDefaultScope | null;
-}
-
-export const PREFERENCE_KEYS = [
-  "language",
-  "default_org_id",
-  "default_team_id",
-  "default_project_id",
-  "default_playground_model",
-  "chart_time_zone",
-] as const satisfies readonly (keyof UserPreferences)[];
-
-/** The six stored keys of a response, without the computed scope. */
-export function preferencesDocument(source: UserPreferences): UserPreferences {
-  return {
-    language: source.language ?? null,
-    default_org_id: source.default_org_id ?? null,
-    default_team_id: source.default_team_id ?? null,
-    default_project_id: source.default_project_id ?? null,
-    default_playground_model: source.default_playground_model ?? null,
-    chart_time_zone: source.chart_time_zone ?? null,
-  };
-}
-
-export function fetchPreferences(): Promise<PreferencesResponse> {
-  return getJson<PreferencesResponse>("/api/v1/me/preferences");
-}
-
-/**
- * Replaces the whole document: a key left out is cleared, and the computed
- * `effective_default_scope` is refused with a 400. Everything goes through
- * `preferencesDocument` so neither mistake can be made by a caller.
- */
-export function putPreferences(document: UserPreferences): Promise<PreferencesResponse> {
-  return sendJson<PreferencesResponse>(
-    "PUT",
-    "/api/v1/me/preferences",
-    preferencesDocument(document),
-  );
 }

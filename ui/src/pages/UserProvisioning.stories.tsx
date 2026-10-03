@@ -29,7 +29,7 @@ import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, phoneFits } from "@/lib/story-viewport";
+import { atMobile } from "@/lib/story-viewport";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
 
@@ -1318,12 +1318,3 @@ export const RefusedToAMember: Story = {
     await expectRefused(canvasElement, "Map group");
   },
 };
-
-// the same screen at a phone's width in both languages: Russian runs a third
-// longer than English and overflowed twice as many screens (#2004)
-const provisioningFits = phoneFits({
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  ready: (canvas) => canvas.findByText("Okta production"),
-});
-export const MobileFits: Story = provisioningFits("mobile", "en");
-export const MobileFitsInRussian: Story = provisioningFits("mobile", "ru");

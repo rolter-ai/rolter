@@ -121,14 +121,12 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-seven things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+six things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a
 `DialogFooter` holding a `"destructive"` button, which is a confirmation
 assembled by hand rather than taken from `ConfirmDialog` (see
-[destructive actions](destructive-actions.md)), and a bare `animate-spin` /
-`animate-pulse`, which must be `motion-safe:` so `prefers-reduced-motion` stops
-it (#2006). The fourth is this page's rule
+[destructive actions](destructive-actions.md)). The fourth is this page's rule
 — #1044 sat undiscovered for months because nothing looked, and seven
 primitives stayed trapped in one sheet's file.
 

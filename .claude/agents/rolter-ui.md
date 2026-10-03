@@ -111,9 +111,8 @@ bun run test:stories <the story files you touched>
 - Stay inside your worktree. Never write scratch or backup files outside it.
 - Do what the parent asked about pushing. If it says commit locally, do not
   push or open a PR.
-- Leave the Rust crates to the rolter-rust agent unless the parent asks
-  otherwise. When a screen needs an API change, report it instead of editing
-  `crates/`.
+- Leave the Rust crates to the backend station. When a screen needs an API
+  change, report it for a `station:rtx` issue instead of editing `crates/`.
 - Branch name is `<type>/<issue-number>-<short-description>`.
 - Verify before you build — grep for the component or endpoint the issue says is
   missing. If it exists, narrow the change to the real gap.

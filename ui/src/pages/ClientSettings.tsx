@@ -4,7 +4,6 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
-import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -34,9 +33,6 @@ interface FormState {
 }
 
 let nextPairId = 0;
-// a shape for the field, not an address the dashboard hands out
-const BASE_URL_PLACEHOLDER = "https://gateway.example.com";
-
 const pair = (name = "", value = ""): HeaderPair => ({ id: nextPairId++, name, value });
 
 // the allowlist is a comma or newline separated list in the textbox; both are
@@ -194,10 +190,11 @@ function ClientSettingsScreen() {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
   const localError = validate(form, dto.reserved);
-  // what a client would actually type, following the field as it is edited.
-  // an empty field has no example: the /gw proxy needs a dashboard session, so
-  // it is no address for a client (#2486)
-  const exampleBase = gatewayBase(form.publicBaseUrl)?.url ?? null;
+  // what a client would actually type, following the field as it is edited:
+  // the typed address, or the dashboard's /gw proxy while the field is empty.
+  // the placeholder is that proxy, the address an empty field stands for
+  const exampleBase = gatewayBase(form.publicBaseUrl).url;
+  const proxyBase = gatewayBase(null).url;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
@@ -217,14 +214,14 @@ function ClientSettingsScreen() {
           </label>
           <Input
             id="client-public-base-url"
-            className="sm:min-w-[320px] font-mono text-xs"
+            className="min-w-[320px] font-mono text-xs"
             aria-label={t("pages.clientSettings.publicBaseUrl")}
-            placeholder={BASE_URL_PLACEHOLDER}
+            placeholder={proxyBase}
             value={form.publicBaseUrl}
             onChange={(e) => set({ publicBaseUrl: e.target.value })}
           />
         </div>
-        {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
+        <Snippet base={exampleBase} />
       </section>
 
       <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">

@@ -162,10 +162,8 @@ export const Accepts: Story = {
 
 /**
  * The link was still valid when it was previewed and spent by the time it was
- * accepted. The server's message is not one the dashboard has a translation
- * for, so it leads with a generic translated line and keeps the message below
- * as detail: it is the only thing that distinguishes this from a typed
- * password the form would have caught.
+ * accepted. The server's reason is shown as-is: it is the only thing that
+ * distinguishes this from a typed password the form would have caught.
  */
 export const AcceptRejected: Story = {
   render: () => (
@@ -231,64 +229,5 @@ export const SecondFactorRequired: Story = {
     );
     await expect(canvas.queryByLabelText(/^Password/)).not.toBeInTheDocument();
     await expect(localStorage.getItem("rolter.session.token")).toBeNull();
-  },
-};
-
-/** the accept form filled in and sent, in whatever locale the story set */
-const submitRu = async (canvasElement: HTMLElement) => {
-  const canvas = within(canvasElement);
-  await userEvent.type(await canvas.findByLabelText(/^Пароль/), "correct-horse");
-  await userEvent.type(canvas.getByLabelText(/Повторите пароль/), "correct-horse");
-  await userEvent.click(canvas.getByRole("button", { name: "Принять приглашение" }));
-  return canvas;
-};
-
-/**
- * A coded refusal is translated: the server's English message never reaches
- * the screen when the dashboard has the sentence for its `code` (#2216).
- */
-export const AcceptRejectedInRussian: Story = {
-  render: () => (
-    <Stage
-      stub={invite(
-        () => json(PREVIEW),
-        () =>
-          json(
-            {
-              error: {
-                message: "too many rejected attempts; try again later",
-                code: "too_many_attempts",
-              },
-            },
-            429,
-          ),
-      )}
-    />
-  ),
-  // the toolbar global is what switches the catalog
-  globals: { locale: "ru" },
-  play: async ({ canvasElement }) => {
-    const canvas = await submitRu(canvasElement);
-    await expect(await canvas.findByText(/Слишком много неудачных попыток/)).toBeVisible();
-    await expect(canvas.queryByText(/too many rejected/)).not.toBeInTheDocument();
-  },
-};
-
-/** An unknown message falls back to a generic line, the raw words tucked below it. */
-export const AcceptUnknownErrorInRussian: Story = {
-  render: () => (
-    <Stage
-      stub={invite(
-        () => json(PREVIEW),
-        () => json({ error: { message: "invitation seat limit reached" } }, 409),
-      )}
-    />
-  ),
-  // the toolbar global is what switches the catalog
-  globals: { locale: "ru" },
-  play: async ({ canvasElement }) => {
-    const canvas = await submitRu(canvasElement);
-    await expect(await canvas.findByText(/Сервер отклонил этот запрос/)).toBeVisible();
-    await expect(canvas.getByText("invitation seat limit reached")).toBeVisible();
   },
 };

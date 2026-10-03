@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Link, type LinkProps } from "react-router";
 
 import { cn } from "@/lib/utils";
 import { useEmptyState } from "@/lib/ux-react";
@@ -57,22 +56,5 @@ export function EmptyState({
       {thread && <div className="vyshivka-rule mt-1 h-2 w-16 opacity-70" aria-hidden />}
       {actions && <div className="mt-1.5 flex gap-2">{actions}</div>}
     </div>
-  );
-}
-
-/**
- * A link action for `EmptyState.actions`: routes inside the app through the
- * router instead of reloading the SPA, and reads like the quiet text actions
- * elsewhere (#2215). Never a raw `<a href="/...">`.
- */
-export function EmptyStateLink({ className, ...props }: LinkProps) {
-  return (
-    <Link
-      className={cn(
-        "text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        className,
-      )}
-      {...props}
-    />
   );
 }

@@ -9,10 +9,8 @@ import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import {
   Harness,
-  json,
   pending,
   recording,
-  StaleSession,
   withGateway,
   type FetchStub,
   type GatewayAnswer,
@@ -172,59 +170,6 @@ export const Unknown: Story = {
       false,
     );
     await expect(pill.getAttribute("title")).toBe(GATEWAY.detail.unknown);
-  },
-};
-
-/**
- * The `/gw` proxy requires a dashboard session (#2486), so the probe carries
- * it as `Authorization: Bearer`, and nothing else: the proxy never forwards it
- * and the gateway's `/readyz` takes no key.
- */
-const probeAuth: (string | null)[] = [];
-export const ProbesWithTheSession: Story = {
-  render: (args) => (
-    <StaleSession token="session-abc">
-      <HeaderStory
-        {...args}
-        fetchStub={async (input, init) => {
-          if (String(input).includes("/gw/readyz")) {
-            probeAuth.push(new Headers(init?.headers).get("Authorization"));
-            return new Response("ok", { status: 200 });
-          }
-          return pending(input, init);
-        }}
-      />
-    </StaleSession>
-  ),
-  play: async ({ canvasElement }) => {
-    await expectPill(
-      canvasElement,
-      GATEWAY.healthy,
-      { dot: "bg-[color:var(--status-success)]", label: MUTED },
-      true,
-    );
-    await expect(probeAuth.length).toBeGreaterThan(0);
-    await expect(probeAuth.every((a) => a === "Bearer session-abc")).toBe(true);
-  },
-};
-
-/**
- * A `401` from the proxy is a refused session, not a statement about the
- * gateway, so the pill says it does not know rather than calling it down.
- */
-export const RefusedSessionIsUnknown: Story = {
-  render: (args) => (
-    <HeaderStory
-      {...args}
-      fetchStub={async (input) =>
-        String(input).includes("/gw/readyz")
-          ? json({ error: { message: "unauthorized" } }, 401)
-          : pending(input)
-      }
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await expectPill(canvasElement, GATEWAY.unknown, { dot: SUBTLE_DOT, label: MUTED }, false);
   },
 };
 

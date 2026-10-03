@@ -23,10 +23,14 @@ import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-view
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const BASE: SecuritySettingsDto = {
+  virtual_key_required: true,
   allowed_origins: ["https://app.example.com"],
   allowed_headers: ["x-request-id"],
   required_headers: { "x-tenant": "acme" },
   auth_bypass_routes: ["/v1/models"],
+  dashboard_auth_enabled: true,
+  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
+  dashboard_secret_configured: true,
   updated_at: "2026-08-01T09:00:00Z",
 };
 
@@ -74,10 +78,13 @@ function securityApi(
 
 // the body a save of `BASE` with nothing touched sends
 const BASE_BODY = {
+  virtual_key_required: true,
   allowed_origins: ["https://app.example.com"],
   allowed_headers: ["x-request-id"],
   required_headers: { "x-tenant": "acme" },
   auth_bypass_routes: ["/v1/models"],
+  dashboard_auth_enabled: true,
+  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
 };
 
 const puts = (api: { calls: { method: string }[] }) =>
@@ -97,11 +104,7 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
-    // the "enforce virtual keys" switch is gone (#2357): it only reached
-    // managed gateways, which refuse a keyless request whatever it said
-    await expect(canvas.queryByRole("switch")).toBeNull();
-    await expect(canvas.queryByText(/Enforce Virtual Keys/)).toBeNull();
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
   },
 };
 
@@ -224,7 +227,7 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };
@@ -238,16 +241,20 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };
 
 const fresh = securityApi({
+  virtual_key_required: false,
   allowed_origins: [],
   allowed_headers: [],
   required_headers: {},
   auth_bypass_routes: [],
+  dashboard_auth_enabled: false,
+  dashboard_credential_ref: null,
+  dashboard_secret_configured: false,
   updated_at: "2026-08-01T09:00:00Z",
 });
 
@@ -308,14 +315,15 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByText("1 setting changed, not saved yet.")).toBeVisible();
 
-    const names = canvas.getByLabelText("Allowed Headers");
-    await userEvent.type(names, "{Enter}x-trace");
+    const enforce = canvas.getByRole("switch", { name: "Enforce Virtual Keys on Inference" });
+    await expect(enforce).toBeChecked();
+    await userEvent.click(enforce);
     await expect(canvas.getAllByText("Edited")).toHaveLength(2);
     await expect(canvas.getByText("2 settings changed, not saved yet.")).toBeVisible();
 
     await userEvent.click(discard);
     await expect(origins).toHaveValue("https://app.example.com");
-    await expect(names).toHaveValue("x-request-id");
+    await expect(enforce).toBeChecked();
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
     await expect(canvas.queryByText(/not saved yet/)).toBeNull();
     await expect(save).toBeDisabled();
@@ -513,9 +521,9 @@ export const StoredProblemIsShownFromTheStart: Story = {
 const loosen = securityApi();
 
 /**
- * Adding two bypass routes in one save. The dialog lists exactly those two,
- * says what each means, and nothing is sent until it is confirmed. One request
- * then carries the whole form (#2103).
+ * Turning off virtual-key enforcement and adding a bypass route in one save.
+ * The dialog lists exactly those two, says what each means, and nothing is
+ * sent until it is confirmed. One request then carries the whole form (#2103).
  */
 export const LooseningIsConfirmedBeforeItIsSent: Story = {
   beforeEach: recordUxEvents,
@@ -528,10 +536,10 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(
-      await canvas.findByLabelText("Auth Bypass Routes"),
-      "{Enter}/v1/ping{Enter}/v1/embeddings",
+    await userEvent.click(
+      await canvas.findByRole("switch", { name: "Enforce Virtual Keys on Inference" }),
     );
+    await userEvent.type(canvas.getByLabelText("Auth Bypass Routes"), "{Enter}/v1/ping");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
 
     const dialogElement = await confirmation();
@@ -543,24 +551,71 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
     await expect(dialogElement).toHaveTextContent("This save loosens security in 2 ways");
     const rows = await dialog.findAllByRole("listitem");
     await expect(rows).toHaveLength(2);
-    await expect(rows[0]).toHaveTextContent("Auth bypass route added:");
-    await expect(within(rows[0]).getByText("/v1/ping")).toBeInTheDocument();
-    await expect(rows[0]).toHaveTextContent("no budget or per-key rate limit applies to it");
+    await expect(rows[0]).toHaveTextContent("Virtual keys are no longer enforced on inference");
+    await expect(rows[0]).toHaveTextContent(
+      "A gateway that holds no virtual keys stops refusing every request by default",
+    );
     await expect(rows[1]).toHaveTextContent("Auth bypass route added:");
-    await expect(within(rows[1]).getByText("/v1/embeddings")).toBeInTheDocument();
+    await expect(within(rows[1]).getByText("/v1/ping")).toBeInTheDocument();
+    await expect(rows[1]).toHaveTextContent("no budget or per-key rate limit applies to it");
+    // the dashboard is still protected, so it is not on the list
+    await expect(dialogElement).not.toHaveTextContent("password protected");
     await expect(puts(loosen)).toHaveLength(0);
     expectNoUxEvent("form_submit", "security-loosen");
 
     await confirmDestructive("Save changes that loosen security?", "Save changes");
     await expect(await loosen.expectSentBody("PUT", SETTINGS)).toEqual({
       ...BASE_BODY,
-      auth_bypass_routes: ["/v1/models", "/v1/ping", "/v1/embeddings"],
+      virtual_key_required: false,
+      auth_bypass_routes: ["/v1/models", "/v1/ping"],
     });
     await expect(puts(loosen)).toHaveLength(1);
     await expectUxEvent("form_submit", "security-loosen");
     await expectUxEvent("save_confirmed", "security-loosen");
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
     await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
+  },
+};
+
+const dashboardOff = securityApi();
+
+/**
+ * Only what opens is listed: the dashboard's own switch, alone, is one row and
+ * the singular title, with nothing about keys or routes in it.
+ */
+export const DashboardProtectionOffIsListedOnItsOwn: Story = {
+  render: () => (
+    <Harness fetchStub={dashboardOff.stub}>
+      <Security />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("switch", { name: "Password protect the dashboard" }),
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+
+    const dialogElement = await confirmation();
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Save a change that loosens security?" }),
+    ).toBeInTheDocument();
+    const rows = await dialog.findAllByRole("listitem");
+    await expect(rows).toHaveLength(1);
+    await expect(rows[0]).toHaveTextContent("The dashboard is no longer password protected");
+    await expect(rows[0]).toHaveTextContent(
+      "The dashboard stops requiring its credential to open.",
+    );
+    await expect(dialogElement).not.toHaveTextContent("Virtual keys");
+    await expect(dialogElement).not.toHaveTextContent("bypass route");
+
+    await confirmDestructive("Save a change that loosens security?", "Save changes");
+    await expect(await dashboardOff.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      dashboard_auth_enabled: false,
+    });
   },
 };
 
@@ -582,8 +637,10 @@ export const CancelledLooseningSendsNothing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const routes = await canvas.findByLabelText("Auth Bypass Routes");
-    await userEvent.type(routes, "{Enter}/v1/ping");
+    const enforce = await canvas.findByRole("switch", {
+      name: "Enforce Virtual Keys on Inference",
+    });
+    await userEvent.click(enforce);
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await expect(await confirmation()).toBeInTheDocument();
 
@@ -591,14 +648,14 @@ export const CancelledLooseningSendsNothing: Story = {
     cancelled.expectNotSent("PUT", SETTINGS);
     expectNoUxEvent("form_submit", "security-loosen");
     await expectUxEvent("form_abandon", "security-loosen");
-    await expect(routes).toHaveValue("/v1/models\n/v1/ping");
+    await expect(enforce).not.toBeChecked();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
   },
 };
 
 const refused = securityApi(BASE, undefined, () =>
-  json({ error: { message: "security settings could not be saved" } }, 422),
+  json({ error: { message: "dashboard authentication requires a credential" } }, 422),
 );
 
 /**
@@ -616,27 +673,29 @@ export const RefusedLooseningKeepsTheDialogOpen: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("Auth Bypass Routes"), "{Enter}/v1/ping");
+    await userEvent.click(
+      await canvas.findByRole("switch", { name: "Enforce Virtual Keys on Inference" }),
+    );
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     const dialogElement = await confirmation();
     await userEvent.click(within(dialogElement).getByRole("button", { name: "Save changes" }));
 
     await waitFor(() =>
       expect(within(dialogElement).getByRole("alert")).toHaveTextContent(
-        "security settings could not be saved",
+        "dashboard authentication requires a credential",
       ),
     );
-    await expectToast(canvasElement, /security settings could not be saved/, "error");
+    await expectToast(canvasElement, /dashboard authentication requires a credential/, "error");
     await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
   },
 };
 
-const tightening = securityApi();
+const tightening = securityApi({ ...BASE, virtual_key_required: false });
 
 /**
- * A save that only closes things goes straight out: a bypass route taken away
- * and a header required. No dialog stands in front of it,
+ * A save that only closes things goes straight out: enforcement turned on, a
+ * bypass route taken away, a header required. No dialog stands in front of it,
  * and one request is all that is sent.
  */
 export const TighteningSavesWithoutAsking: Story = {
@@ -649,12 +708,16 @@ export const TighteningSavesWithoutAsking: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.clear(await canvas.findByLabelText("Auth Bypass Routes"));
+    await userEvent.click(
+      await canvas.findByRole("switch", { name: "Enforce Virtual Keys on Inference" }),
+    );
+    await userEvent.clear(canvas.getByLabelText("Auth Bypass Routes"));
     await userEvent.type(canvas.getByLabelText("Required Headers"), "{Enter}x-mesh-id: edge");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
 
     await expect(await tightening.expectSentBody("PUT", SETTINGS)).toEqual({
       ...BASE_BODY,
+      virtual_key_required: true,
       required_headers: { "x-tenant": "acme", "x-mesh-id": "edge" },
       auth_bypass_routes: [],
     });

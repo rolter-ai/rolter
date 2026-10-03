@@ -14,7 +14,6 @@ import {
 } from "./story-harness";
 import type { ClientSettingsDto } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
-import { phoneFits } from "@/lib/story-viewport";
 
 const RESERVED = ["authorization", "x-api-key", "host", "cookie"];
 
@@ -74,21 +73,19 @@ const example = (canvasElement: HTMLElement) =>
 /**
  * The shipped default: no base URL override, no header policy.
  *
- * With no address saved there is no example request: the dashboard's `/gw`
- * proxy needs a dashboard session, so it is no address for a client (#2486).
- * The field's placeholder is only a shape.
+ * The example request goes through the dashboard's `/gw` proxy, the one
+ * address the control plane serves the gateway on. It used to fall back to the
+ * bare origin, and `/v1/chat/completions` there is a 404 (#2075).
  */
 export const Empty: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/No headers injected/)).toBeVisible());
-    await expect(canvas.getByRole("note")).toHaveTextContent(en.common.gatewayBasePrompt);
-    await expect(canvasElement.textContent ?? "").not.toContain("/gw/v1");
-    await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute(
-      "placeholder",
-      "https://gateway.example.com",
-    );
+    const proxy = `${window.location.origin}/gw`;
+    await expect(example(canvasElement)).toContain(`curl ${proxy}/v1/chat/completions`);
+    // the placeholder is the address an empty field stands for
+    await expect(canvas.getByLabelText("Public base URL")).toHaveAttribute("placeholder", proxy);
     await expect(canvas.getByText(en.pages.clientSettings.baseUrlHint)).toBeVisible();
   },
 };
@@ -249,14 +246,3 @@ export const RefusedToAViewer: Story = {
     await expectForbidden(canvasElement);
   },
 };
-
-// the same screen at a phone's width in both languages: Russian runs a third
-// longer than English and overflowed twice as many screens (#2004)
-const clientFits = phoneFits({
-  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
-  ready: (canvas) => canvas.findByLabelText(en.pages.clientSettings.publicBaseUrl),
-});
-// the base-url field held a 320px floor: 63px past the edge of a 320px phone
-export const MobileFits: Story = clientFits("mobile", "en");
-export const SmallPhone: Story = clientFits("small", "en");
-export const SmallPhoneInRussian: Story = clientFits("small", "ru");

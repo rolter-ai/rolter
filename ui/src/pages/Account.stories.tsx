@@ -21,11 +21,9 @@ import {
   scoped,
   secretClosePrompt,
   sheet,
-  StaleSession,
   stubClipboard,
   answerDiscardPrompt,
   type FetchStub,
-  Toasted,
   expectEmptyState,
   expectInStatusRegion,
   expectNoFalseEmpty,
@@ -38,7 +36,6 @@ import {
   type Recorder,
 } from "./story-harness";
 import type {
-  MeResponse,
   MfaStatus,
   MintedKey,
   MyUsageRow,
@@ -153,20 +150,6 @@ const MINTED: MintedKey = {
   key: "sk-rolter-plaintext-shown-once",
 };
 
-/** the account as `/auth/me` serialises it, with a name and a bio already set */
-const ME: MeResponse = {
-  user: {
-    id: "user-1",
-    email: "ada@example.com",
-    display_name: "Ada Lovelace",
-    bio: "Ask me about routing",
-    is_superadmin: false,
-    created_at: "2026-01-01T00:00:00Z",
-  },
-  memberships: [],
-  display_name_managed: false,
-};
-
 /**
  * The screen runs two independent queries — keys and usage — and the usage one
  * is allowed to fail on its own, so every stub has to answer both.
@@ -174,12 +157,9 @@ const ME: MeResponse = {
 const account = (
   keys: (init?: RequestInit) => Response,
   usage: () => Response = () => json({ data: USAGE }),
-  me: (init?: RequestInit) => Response = () => json(ME),
 ): FetchStub =>
   scoped(async (input, init) => {
     const url = String(input);
-    // the profile card reads and writes the account itself (#2434)
-    if (url.includes("/me/profile") || url.includes("/auth/me")) return me(init);
     // the mint sheet's provider picker reads this one, and answering it with
     // the key list gave it an option named `null` — a checkbox row with no
     // label at all, which is what axe reported as `button-name` (#1181)
@@ -603,14 +583,17 @@ export const MintsAKey: Story = {
     // the user never gets the secret they just created
     await waitFor(() => expect(within(dialog).getByText(MINTED.key)).toBeInTheDocument());
 
-    // the step after it (#2217). a member cannot read the saved base URL and
-    // the /gw proxy is no address for an external client (#2486), so it asks
-    // for a base URL rather than printing a request, and never the key
-    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
-      "Save your gateway base URL under Client Settings",
-    );
-    await expect(dialog.textContent ?? "").not.toContain("/gw/");
-    await expect(dialog.textContent ?? "").not.toContain("curl ");
+    // the step after it (#2217). this key may reach every route, so the
+    // request names the gateway's built-in model; the address is the
+    // dashboard's own proxy, and the key is referenced, never written out
+    const origin = window.location.origin;
+    await expect(
+      await within(dialog).findByRole("region", { name: /Gateway URL/ }),
+    ).toHaveTextContent(`${origin}/gw/v1`);
+    const request = within(dialog).getByRole("region", { name: /First request/ });
+    await waitFor(() => expect(request).toHaveTextContent(`curl ${origin}/gw/v1/chat/completions`));
+    await expect(request).toHaveTextContent(`"model":"fake-llm"`);
+    await expect(request).not.toHaveTextContent(MINTED.key);
 
     // nobody copied the key, so closing asks, and only the confirm closes it
     await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
@@ -618,39 +601,6 @@ export const MintsAKey: Story = {
     await waitFor(() =>
       expect(within(document.body).queryByText(MINTED.key)).not.toBeInTheDocument(),
     );
-  },
-};
-
-/**
- * A member cannot read client settings, but `/auth/me` hands every role the
- * saved public base URL, so the step after minting prints a usable request
- * (#2512).
- */
-export const AMemberGetsTheSavedGatewayUrl: Story = {
-  render: () => (
-    <Harness
-      fetchStub={account(
-        (init) => (init?.method === "POST" ? json(MINTED, 201) : json(KEYS)),
-        undefined,
-        () => json({ ...ME, gateway_base_url: "https://llm.example.com" }),
-      )}
-    >
-      <StaleSession>
-        <Account />
-      </StaleSession>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
-    await waitFor(() =>
-      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
-        "https://llm.example.com/v1",
-      ),
-    );
-    const request = within(dialog).getByRole("region", { name: /First request/ });
-    await expect(request).toHaveTextContent("curl https://llm.example.com/v1/chat/completions");
-    await expect(request).not.toHaveTextContent(MINTED.key);
-    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 
@@ -1130,237 +1080,5 @@ export const ExplainerHasNoLinkWithoutADocsHost: Story = {
     // the explainer itself is still there — only the link is suppressed
     await canvas.findByText(/These are rolter virtual keys/);
     await expect(canvas.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
-  },
-};
-
-// --- the profile card (#2434) ---
-
-/** the profile as `PATCH /me/profile` answers it, trimmed */
-const saved = (display_name: string | null, bio: string | null, managed = false) =>
-  json({ display_name, bio, display_name_managed: managed });
-
-/** an account whose name a SCIM directory owns */
-const MANAGED_ME: MeResponse = { ...ME, display_name_managed: true };
-
-const profileRecorder = (me: MeResponse, answer: () => Response) =>
-  recording(
-    account(
-      () => json(KEYS),
-      () => json({ data: USAGE }),
-      (init) => (init?.method === "PATCH" ? answer() : json(me)),
-    ),
-  );
-
-const nameEdit = profileRecorder(ME, () => saved("Ada King", "Ask me about routing"));
-const bioClear = profileRecorder(ME, () => saved("Ada Lovelace", null));
-const managedEdit = profileRecorder(MANAGED_ME, () =>
-  saved("Ada Lovelace", "Ask me about spend", true),
-);
-const refused = profileRecorder(ME, () =>
-  json({ error: { message: "display_name must not be blank", code: "invalid_profile" } }, 400),
-);
-
-const profile = (recorder: { stub: FetchStub }) => (
-  <Harness fetchStub={recorder.stub}>
-    <Toasted>
-      <Account />
-    </Toasted>
-  </Harness>
-);
-
-/**
- * Editing sends only what changed: the name alone leaves the bio out of the
- * body (#2434).
- */
-export const EditsTheName: Story = {
-  render: () => profile(nameEdit),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const name = await canvas.findByRole("textbox", { name: "Display name" });
-    // the stored values fill the form
-    await waitFor(() => expect(name).toHaveValue("Ada Lovelace"));
-    await expect(canvas.getByRole("textbox", { name: "Bio" })).toHaveValue("Ask me about routing");
-    // nothing changed, so nothing to save
-    const save = canvas.getByRole("button", { name: "Save profile" });
-    await expect(save).toBeDisabled();
-
-    await userEvent.clear(name);
-    await userEvent.type(name, "  Ada King  ");
-    await expect(save).toBeEnabled();
-    await userEvent.click(save);
-
-    // the toast fades in, so wait for it to finish rather than reading opacity
-    // on the frame it mounts (#2287)
-    await waitFor(() => expect(within(document.body).getByText("Profile saved")).toBeVisible());
-    await expect(await nameEdit.expectSentBody("PATCH", "/me/profile")).toEqual({
-      display_name: "Ada King",
-    });
-    // the form now holds the trimmed value the server answered with
-    await waitFor(() => expect(name).toHaveValue("Ada King"));
-  },
-};
-
-/** Emptying a field clears it: the body carries `null`, never `""`. */
-export const ClearsTheBio: Story = {
-  render: () => profile(bioClear),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const bio = await canvas.findByRole("textbox", { name: "Bio" });
-    await waitFor(() => expect(bio).toHaveValue("Ask me about routing"));
-    await userEvent.clear(bio);
-    await userEvent.click(canvas.getByRole("button", { name: "Save profile" }));
-    await expect(await bioClear.expectSentBody("PATCH", "/me/profile")).toEqual({ bio: null });
-  },
-};
-
-/**
- * A SCIM-provisioned account cannot rename itself: the name is read-only with
- * the reason beside it, and the bio stays editable and is the only thing sent.
- */
-export const ManagedNameIsReadOnly: Story = {
-  render: () => profile(managedEdit),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const name = await canvas.findByRole("textbox", { name: "Display name" });
-    await waitFor(() => expect(name).toHaveValue("Ada Lovelace"));
-    await expect(name).toHaveAttribute("readonly");
-    await expect(canvas.getByText("Your name is managed by your identity provider")).toBeVisible();
-
-    const bio = canvas.getByRole("textbox", { name: "Bio" });
-    await expect(bio).not.toHaveAttribute("readonly");
-    await userEvent.clear(bio);
-    await userEvent.type(bio, "Ask me about spend");
-    await userEvent.click(canvas.getByRole("button", { name: "Save profile" }));
-    await expect(await managedEdit.expectSentBody("PATCH", "/me/profile")).toEqual({
-      bio: "Ask me about spend",
-    });
-  },
-};
-
-/** The managed note, in Russian. */
-export const ManagedNameInRussian: Story = {
-  globals: { locale: "ru" },
-  render: () => profile(managedEdit),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText("Ваше имя управляется вашим провайдером удостоверений"),
-    ).toBeVisible();
-    await expect(canvas.getByRole("textbox", { name: "Отображаемое имя" })).toHaveAttribute(
-      "readonly",
-    );
-  },
-};
-
-/**
- * What the server would refuse is said before the request: whitespace only, and
- * a bio past 500 characters. Save stays off while a field is wrong.
- */
-export const ValidatesBeforeSending: Story = {
-  render: () => profile(refused),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const name = await canvas.findByRole("textbox", { name: "Display name" });
-    await waitFor(() => expect(name).toHaveValue("Ada Lovelace"));
-    const save = canvas.getByRole("button", { name: "Save profile" });
-
-    await userEvent.clear(name);
-    await userEvent.type(name, "   ");
-    await expect(
-      await canvas.findByText("The name cannot be only spaces. Empty it to clear it."),
-    ).toBeVisible();
-    await expect(name).toBeInvalid();
-    await expect(save).toBeDisabled();
-
-    await userEvent.clear(name);
-    await userEvent.type(name, "x".repeat(81));
-    await expect(await canvas.findByText("A display name is at most 80 characters.")).toBeVisible();
-    await expect(save).toBeDisabled();
-
-    await userEvent.clear(name);
-    await userEvent.type(name, "Ada");
-    const bio = canvas.getByRole("textbox", { name: "Bio" });
-    // typing 501 characters one by one is slow; paste is one event
-    await userEvent.clear(bio);
-    await userEvent.click(bio);
-    await userEvent.paste("y".repeat(501));
-    await expect(await canvas.findByText("A bio is at most 500 characters.")).toBeVisible();
-    await expect(save).toBeDisabled();
-    refused.expectNotSent("PATCH", "/me/profile");
-  },
-};
-
-/** A refusal from the control plane stays on the card, in its own words. */
-export const ServerRefusalIsShown: Story = {
-  render: () => profile(refused),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const bio = await canvas.findByRole("textbox", { name: "Bio" });
-    await waitFor(() => expect(bio).toHaveValue("Ask me about routing"));
-    await userEvent.type(bio, " and spend");
-    await userEvent.click(canvas.getByRole("button", { name: "Save profile" }));
-    await expect(await canvas.findByText(/Could not save your profile\./)).toHaveTextContent(
-      "display_name must not be blank",
-    );
-    // the draft survives the refusal
-    await expect(bio).toHaveValue("Ask me about routing and spend");
-  },
-};
-
-/** The profile card has its own skeleton and error, apart from the keys. */
-export const ProfileLoading: Story = {
-  render: () => (
-    <Harness fetchStub={pending}>
-      <Account />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText("Profile")).toBeVisible();
-    await expect(canvas.queryByRole("textbox", { name: "Display name" })).toBeNull();
-    await expect(canvas.queryByRole("button", { name: "Save profile" })).toBeNull();
-  },
-};
-
-export const ProfileLoadFailed: Story = {
-  render: () => (
-    <Harness
-      fetchStub={account(
-        () => json(KEYS),
-        () => json({ data: USAGE }),
-        () => json({ error: { message: "boom" } }, 500),
-      )}
-    >
-      <Account />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /your profile/i);
-    await expect(canvas.queryByRole("textbox", { name: "Display name" })).toBeNull();
-    // the keys below are unaffected
-    await expect(await canvas.findByText("my laptop")).toBeVisible();
-  },
-};
-
-/**
- * Open mode has no accounts, so there is no profile to edit. The screen says so
- * once, in the keys panel, and the card is not drawn at all.
- */
-export const ProfileHiddenInOpenMode: Story = {
-  render: () => {
-    const noSession = () =>
-      json({ error: { message: "no local account session", code: "open_mode_no_session" } }, 401);
-    return (
-      <Harness fetchStub={account(noSession, () => json({ data: USAGE }), noSession)}>
-        <Account />
-      </Harness>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText(/Self-service keys need a local account/)).toBeVisible();
-    await expect(canvas.queryByText("Profile")).toBeNull();
-    await expect(canvas.queryByRole("textbox", { name: "Display name" })).toBeNull();
   },
 };

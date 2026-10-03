@@ -87,55 +87,6 @@ export const Desktop: Story = {
 };
 
 /**
- * The rail's account block goes by the display name when the account has one and
- * by the email when it has not; the email is never lost, it moves under the name
- * in the account menu (#2434).
- */
-export const AccountMenuShowsTheDisplayName: Story = {
-  render: () => (
-    <AppShell
-      fetchStub={shellStub([
-        [
-          "/api/v1/auth/me",
-          () => ({
-            user: {
-              id: "user-1",
-              email: "anya@acme.co",
-              display_name: "Anya Petrova",
-              bio: null,
-              is_superadmin: true,
-              created_at: "2026-01-01T00:00:00Z",
-            },
-            memberships: [],
-            display_name_managed: false,
-          }),
-        ],
-      ])}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const rail = await railOf(canvasElement);
-    const account = await within(rail).findByText("Anya Petrova");
-    await expect(account).toBeVisible();
-    await expect(within(rail).queryByText("anya@acme.co")).toBeNull();
-    await userEvent.click(account);
-    // the menu names the person and keeps the address as the second line
-    const menu = within(document.body);
-    await expect((await menu.findAllByText("Anya Petrova")).length).toBeGreaterThan(1);
-    await expect(await menu.findByText("anya@acme.co")).toBeVisible();
-  },
-};
-
-/** With no display name the rail falls back to the email, as it always did. */
-export const AccountMenuFallsBackToTheEmail: Story = {
-  render: () => <AppShell route="/dashboard" />,
-  play: async ({ canvasElement }) => {
-    const rail = await railOf(canvasElement);
-    await expect(await within(rail).findByText("anya@acme.co")).toBeVisible();
-  },
-};
-
-/**
  * The landing screen's reference render is one day of traffic, not figures
  * over empty charts. The shell's stub answered the summary and nothing else, so
  * the tiles said 132 requests beside a spend chart, a donut, bars and a request
@@ -150,9 +101,7 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     await expect(await within(figures).findByText("132")).toBeVisible();
     await expect(figures).toHaveTextContent(/215\s*ms/);
     await expect(
-      await canvas.findByRole("img", {
-        name: en.pages.dashboard.spendChartAria.replace("{{window}}", en.common.timeWindow.last24h),
-      }),
+      await canvas.findByRole("img", { name: en.pages.dashboard.spendChartAria }),
     ).toBeVisible();
     await expect(
       await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),

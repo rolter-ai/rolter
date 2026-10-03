@@ -503,7 +503,7 @@ function ConnectorsScreen() {
                   onClick={() => test.mutate(c)}
                 >
                   {test.isPending && test.variables?.id === c.id ? (
-                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <FlaskConical className="h-3.5 w-3.5" />
                   )}

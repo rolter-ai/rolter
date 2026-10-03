@@ -690,7 +690,8 @@ listed, with its reason, in the run summary and the pull request body:
 - the range already starts at the patched release, so the alert is stale and
   closes on its own once GitHub re-reads the manifest.
 
-A pull request
+The pull request carries `station:mac`, since the mac station owns `ui/`, and
+that station reviews and merges it like any other of its PRs. A pull request
 the repository token opens raises no event that `project-automation.yml` fires
 on, so the workflow dispatches it with the new pull request's number and
 `area=ui` right after `gh pr create`, which puts it on the board as
@@ -737,7 +738,7 @@ merges, run it once from `master`:
 gh workflow run ui-security-updates.yml -f synthetic-alert=@opentelemetry/api@1.9.1
 ```
 
-Then check that the pull request opened, that the dispatched
+Then check that the pull request opened with `station:mac`, that the dispatched
 `ci.yml` run reported `ci-ok` on its head, and that the next run without the
 input withdrew it and deleted the branch. Merge nothing from a synthetic run.
 
@@ -1434,7 +1435,7 @@ and `actions: write` at job level with no checkout.
 
 An issue opened with the workflow's own token raises no `issues` event, so
 `project-automation` never sees it. The job triages a new issue itself instead:
-it sets the `Maintenance, CI & DX` milestone, then dispatches
+it adds `station:rtx` and the `Maintenance, CI & DX` milestone, then dispatches
 `project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
 puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
 half only warns when it fails, since a renamed milestone must not cost the issue

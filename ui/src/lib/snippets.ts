@@ -25,6 +25,22 @@ export type SnippetLang = "curl" | "python" | "javascript";
 export const SNIPPET_LANGS: SnippetLang[] = ["curl", "python", "javascript"];
 
 /**
+ * The comment a snippet carries above its base URL when that URL is the
+ * dashboard's `/gw` proxy (#2218).
+ *
+ * The proxy is a working OpenAI-compatible surface, so the snippet runs as-is
+ * from anywhere the dashboard is reachable, but it is the control plane's
+ * port rather than the gateway's, and a snippet pasted into an application
+ * should say so. A base URL the operator saved on Client Settings is the
+ * gateway's own address, so there is nothing to warn about and no line.
+ */
+function proxyNote(base: GatewayBase, comment: string, name: string): string {
+  return base.configured
+    ? ""
+    : `${comment} ${name} is the dashboard's gateway proxy; in production point this at the gateway itself\n`;
+}
+
+/**
  * The key is referenced through an environment variable, never inlined.
  *
  * The Playground holds a real virtual key in localStorage, and inlining it
@@ -43,7 +59,7 @@ function curl(req: SnippetRequest, base: GatewayBase): string {
     messages: [{ role: "user", content: req.prompt }],
     ...(req.stream ? { stream: true } : {}),
   };
-  return `curl ${base.url}/v1/chat/completions \\
+  return `${proxyNote(base, "#", "base url")}curl ${base.url}/v1/chat/completions \\
   -H "Authorization: Bearer $${KEY_ENV}" \\
   -H "Content-Type: application/json" \\
   -d '${JSON.stringify(body)}'`;
@@ -68,7 +84,7 @@ print(response.choices[0].message.content)`;
 import os
 from openai import OpenAI
 
-client = OpenAI(
+${proxyNote(base, "#", "base_url")}client = OpenAI(
     base_url=${j(`${base.url}/v1`)},
     api_key=os.environ[${j(KEY_ENV)}],
 )
@@ -95,7 +111,7 @@ console.log(response.choices[0].message.content);`;
   return `// npm install openai
 import OpenAI from "openai";
 
-const client = new OpenAI({
+${proxyNote(base, "//", "baseURL")}const client = new OpenAI({
   baseURL: ${j(`${base.url}/v1`)},
   apiKey: process.env.${KEY_ENV},
 });
@@ -105,9 +121,8 @@ ${call}`;
 
 /**
  * Render one request as runnable client code, addressed to `base` — the
- * saved public base URL `useGatewayBase()` returns, so it is the same address
- * every other snippet in the dashboard hands out. There is no `/gw` form:
- * that proxy needs a dashboard session an external client does not have.
+ * value `useGatewayBase()` returns, so it is the same address every other
+ * snippet in the dashboard hands out.
  */
 export function renderSnippet(lang: SnippetLang, req: SnippetRequest, base: GatewayBase): string {
   switch (lang) {

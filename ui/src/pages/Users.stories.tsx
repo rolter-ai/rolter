@@ -239,46 +239,6 @@ export const Loaded: Story = {
 };
 
 /**
- * A named account leads with its name and keeps the email as secondary text; an
- * account with no name keeps the email as its headline, so a row never goes
- * blank (#2434). The bio says who to ask about what, and search matches names.
- */
-export const ShowsDisplayNamesBesideTheEmail: Story = {
-  render: () => (
-    <Harness
-      fetchStub={routes([
-        ["/memberships", () => MEMBERSHIPS],
-        [
-          "/users",
-          () =>
-            USERS.map((u) =>
-              u.id === "user-2"
-                ? { ...u, display_name: "Grace Hopper", bio: "Ask me about the compiler routes" }
-                : u,
-            ),
-        ],
-      ])}
-    >
-      <Users />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const name = await canvas.findByText("Grace Hopper");
-    const row = within(name.closest('[role="row"]') as HTMLElement);
-    // the email is still there, as the secondary line
-    await expect(row.getByText("grace@example.com")).toBeVisible();
-    await expect(row.getByText("Ask me about the compiler routes")).toBeVisible();
-    // an unnamed account is headed by its email
-    await expect(canvas.getByText("ada@example.com")).toBeVisible();
-    // the search box finds a person by name
-    await userEvent.type(canvas.getByRole("searchbox"), "hopper");
-    await waitFor(() => expect(canvas.queryByText("ada@example.com")).toBeNull());
-    await expect(canvas.getByText("Grace Hopper")).toBeVisible();
-  },
-};
-
-/**
  * The grants are a read of their own, so while it is still coming a row is not
  * a person with "no roles" (#2211).
  */
