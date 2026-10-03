@@ -58,6 +58,7 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
+// not reachable from any sign-in route yet (#1826); see the module docs
 pub mod ldap;
 #[cfg(feature = "postgres")]
 mod logging_settings;

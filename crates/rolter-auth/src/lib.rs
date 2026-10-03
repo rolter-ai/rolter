@@ -2,8 +2,8 @@
 //!
 //! The MVP covers virtual-key verification and the role model used by the
 //! control plane. Local password login and OAuth2/OIDC SSO both implement the
-//! pluggable [`IdentityProvider`] trait below (ROL-35); LDAP (#241) is the
-//! next provider to plug into the same seam.
+//! pluggable [`IdentityProvider`] trait below (ROL-35). An LDAP provider is
+//! implemented in `rolter-control` but not yet reachable from sign-in (#1826).
 //!
 //! **Internal crate.** It is published only so `cargo install rolter` can
 //! resolve, and it offers no stable Rust API: any public item here may change

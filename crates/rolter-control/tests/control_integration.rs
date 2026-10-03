@@ -19069,3 +19069,84 @@ async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
     assert!(org_admin_rows(&pool, ada, org_uuid).await.is_empty());
     assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
 }
+
+/// The SCIM resource echoes the `displayName` the IdP sent, while the account
+/// stores the sanitised name (#2731). An IdP that saw its own value come back
+/// trimmed would treat it as drift and push it again on every sync.
+#[tokio::test]
+async fn a_scim_resource_echoes_the_raw_display_name_the_account_stores_it_sanitised() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "EchoScimOrg", "slug": "echo-scim-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+
+    let raw = "  Ada\u{7} Lovelace  ";
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "lovelace@example.com",
+            "displayName": raw,
+            "emails": [{"value": "lovelace@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["displayName"], raw);
+    let scim_id = created["id"].as_str().unwrap().to_string();
+
+    let fetched: Value = client
+        .get(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched["displayName"], raw);
+
+    let member_id: uuid::Uuid = scim_id.parse().unwrap();
+    let token = seed_session(&pool, member_id, "echoscimuser").await;
+    let me: Value = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["user"]["display_name"], "Ada Lovelace");
+}
