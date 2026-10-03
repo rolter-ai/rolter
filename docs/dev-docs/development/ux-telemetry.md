@@ -64,6 +64,36 @@ The screen key is not a prop. It travels through `UxScreenProvider`, mounted
 once by the app shell, so a sheet rendered outside one is silent rather than
 mislabelled.
 
+## A refresh that failed over data still on screen
+
+A list that has loaded and then fails a poll keeps its rows and says so in a
+line of its own (`RefreshFailed` on the Dashboard, the Recent card's header). No
+`LoadError` mounts, so `error_state` from the component never fires, and since
+#2444 moved the recording into `LoadError` that left the stale case invisible to
+the dead-states query (#2640).
+
+It records `error_state` as well, with the region's name and `-stale` after it:
+`dashboard-spend-stale`, `dashboard-recent-stale`. The two are told apart by the
+target alone, which is the cheaper choice over a new event kind: a kind would
+need the control-plane allowlist in `crates/rolter-control/src/ui_events.rs`, the
+ClickHouse enum and the `ui-events` docs to change together, and every existing
+dead-states query already counts `error_state` and groups by `target`. Filter
+`target LIKE '%-stale'` to separate the two, or `NOT LIKE` for the old meaning.
+
+How it differs from the `LoadError` row:
+
+- the data is still on screen, so it is a warning that figures may be old, not a
+  region that shows nothing. Do not read it as an outage
+- it is recorded by `useErrorState` beside the line, because the line is not a
+  `LoadError`; this is the one place a screen calls the hook for a region the
+  shared component cannot see
+- one row per appearance: a poll that fails again while the line is up is the
+  same appearance, and the line going away on a good poll and coming back is a
+  second one. Two cards fed by the same read each record their own row
+
+The `AStaleRefreshRecordsOneErrorStatePerAppearance` story in
+`Dashboard.stories.tsx` reads the queue.
+
 ## Names are keys, not content
 
 `name` and `target` are stable slugs — `virtual-key-create`,
