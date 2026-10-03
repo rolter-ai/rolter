@@ -288,13 +288,29 @@ at shutdown they used to be cancelled mid-batch (#1924).
 After the HTTP and realtime drains, `run()` cancels each sink's token. The task
 closes its receiver, which still yields everything already queued and then
 `None`, so the normal "senders gone" path flushes the remainder and exits. The
-three sinks drain concurrently and the process waits at most 5 seconds for all
+four sinks drain concurrently and the process waits at most 5 seconds for all
 of them. That bound is deliberately short: a healthy ClickHouse or Redis takes
 milliseconds, so it only ever expires when one is unreachable, and it must not
 push the HTTP drain, the 10 second realtime grace and this wait past the 30
 seconds an orchestrator usually allows before `SIGKILL`. When it expires, a
 warning is logged and whatever the sinks still held is lost. A `try_send` that
 races the close is counted as dropped, like any other full or stopped queue.
+The usage-recording workers check their stop token before the queue (a
+`biased` select), so the queue closes on a worker's first turn after the stop
+rather than once the backlog runs dry: the drain applies exactly what was
+queued when it began, and a record offered during it lands on
+`rolter_usage_records_dropped_total` (#2374).
+
+The background loops — the health prober, the upstream-metrics scraper, the
+status-page poller, the adaptive-routing telemetry task and the config watcher —
+are not stopped before the drain; they end with the runtime. Of these only the
+prober and the status-page poller emit health events, and one they emit after
+`drain_sinks` has closed the health-event queue is refused and counted on
+`rolter_health_events_dropped_total`, never written. That is deliberate: such an
+event describes an upstream at the moment of one probe or poll, the next
+gateway to start takes the same reading within an interval, and stopping the
+loops first would add a second cancellation path to each for rows nothing
+relies on. A few drops on that counter around a shutdown are expected.
 
 ## Failure modes
 
