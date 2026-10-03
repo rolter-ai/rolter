@@ -1265,7 +1265,7 @@ function AlertHistoryScreen() {
             actions={
               filtering ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("pages.alerting.history.clearFilters")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <EmptyStateLink to="/alerting-rules">

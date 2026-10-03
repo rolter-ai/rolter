@@ -250,7 +250,7 @@ function McpLogsScreen() {
               actions={
                 filtersActive ? (
                   <Button variant="outline" onClick={clearFilters}>
-                    {t("common.clearSearch")}
+                    {t("common.clearFilters")}
                   </Button>
                 ) : undefined
               }

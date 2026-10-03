@@ -74,18 +74,28 @@ describe("the playground key", () => {
   it("clears the key, and its expiry with it", () => {
     setPlaygroundKey("sk-old", { expiresAt: "2026-01-01T00:30:00Z", minted: true });
     setPlaygroundKey("");
-    expect(getPlaygroundKeyState()).toEqual({ key: "", expiresAt: null, minted: false });
+    expect(getPlaygroundKeyState()).toEqual({
+      key: "",
+      expiresAt: null,
+      minted: false,
+      models: [],
+    });
   });
 
   // a pasted key has no expiry the dashboard chose, so it must not inherit the
   // one the minted key it replaced carried
-  it("drops the previous expiry when a pasted key replaces a minted one", () => {
-    setPlaygroundKey("sk-minted", { expiresAt: "2026-01-01T00:30:00Z", minted: true });
+  it("drops the previous expiry and reach when a pasted key replaces a minted one", () => {
+    setPlaygroundKey("sk-minted", {
+      expiresAt: "2026-01-01T00:30:00Z",
+      minted: true,
+      models: ["fake-llm"],
+    });
     setPlaygroundKey("sk-pasted");
     expect(getPlaygroundKeyState()).toEqual({
       key: "sk-pasted",
       expiresAt: null,
       minted: false,
+      models: [],
     });
   });
 

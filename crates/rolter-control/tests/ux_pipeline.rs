@@ -123,9 +123,75 @@ async fn rows_for_session(client: &reqwest::Client, base: &str, session_id: &str
         .send()
         .await
         .expect("reach clickhouse");
-    assert!(response.status().is_success(), "read-back query failed");
-    let body: Value = response.json().await.expect("clickhouse json");
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "read-back query failed ({status}): {text}"
+    );
+    let body: Value = serde_json::from_str(&text).expect("clickhouse json");
     body["data"].as_array().cloned().unwrap_or_default()
+}
+
+/// Assert a response's status, and say why when it is wrong.
+///
+/// A bare `assert_eq!` on the status printed `left: 500, right: 202` and
+/// nothing else (#1940). The body is printed too, but a 500 from the ingest
+/// endpoint is deliberately generic (#1747), so the ClickHouse side is fetched
+/// as well: the insert exceptions `system.query_log` holds for the last few
+/// minutes. An empty list there is itself the answer — the insert never reached
+/// the server, so the failure was on the connection rather than in ClickHouse.
+/// Returns the body for the assertions that read it.
+async fn expect_status(
+    response: reqwest::Response,
+    expected: u16,
+    clickhouse: Option<(&reqwest::Client, &str)>,
+) -> String {
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if status != expected {
+        let store = match clickhouse {
+            Some((http, base)) => recent_insert_errors(http, base).await,
+            None => "not consulted".to_string(),
+        };
+        panic!(
+            "expected {expected}, got {status}\nbody: {body}\nclickhouse insert errors: {store}"
+        );
+    }
+    body
+}
+
+/// The `ui_events` insert exceptions ClickHouse logged in the last five
+/// minutes, newest first, as text for a failure message.
+async fn recent_insert_errors(http: &reqwest::Client, base: &str) -> String {
+    // the query log is flushed on an interval; without this the failure that
+    // just happened is usually not in it yet
+    let _ = http
+        .post(format!("{base}/"))
+        .body("system flush logs")
+        .send()
+        .await;
+    let sql = "select toString(event_time) as at, exception \
+               from system.query_log \
+               where type in ('ExceptionBeforeStart', 'ExceptionWhileProcessing') \
+               and query_kind = 'Insert' and query like '%ui_events%' \
+               and event_time > now() - interval 5 minute \
+               order by event_time desc limit 5 FORMAT JSON";
+    let response = match http.post(format!("{base}/")).body(sql).send().await {
+        Ok(response) => response,
+        Err(err) => return format!("query_log unreachable: {err}"),
+    };
+    let text = response.text().await.unwrap_or_default();
+    match serde_json::from_str::<Value>(&text) {
+        Ok(body) => match body["data"].as_array() {
+            Some(rows) if rows.is_empty() => {
+                "none logged (the insert never reached clickhouse)".to_string()
+            }
+            Some(rows) => format!("{rows:?}"),
+            None => text,
+        },
+        Err(_) => text,
+    }
 }
 
 async fn fresh_db() -> TestSchema {
@@ -242,7 +308,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
 
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), 2, "batch did not land: {rows:?}");
@@ -326,7 +392,7 @@ async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
 
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), actions.len(), "an action was refused: {rows:?}");
@@ -398,7 +464,7 @@ async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
 
     // 400, not 404/405 — so `ux.ts` drops this batch and keeps sending the next
     // one rather than disabling itself
-    assert_eq!(response.status(), 400);
+    expect_status(response, 400, Some((&http, &ch_url))).await;
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert!(
         rows.is_empty(),
@@ -449,10 +515,9 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 500);
     // the store's own error goes to the control-plane log, not the browser: no
     // insert url, no address, no clickhouse wording (#1747)
-    let body = response.text().await.unwrap();
+    let body = expect_status(response, 500, None).await;
     for leak in [closed.to_string().as_str(), "http", "clickhouse", "INSERT"] {
         assert!(!body.contains(leak), "the 500 body leaks {leak:?}: {body}");
     }
@@ -484,7 +549,7 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resumed.status(), 202);
+    expect_status(resumed, 202, Some((&http, &ch_url))).await;
     let rows = rows_for_session(&http, &ch_url, &session).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["event_id"], "ux-after-outage");
@@ -532,7 +597,7 @@ async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
         .send()
         .await
         .unwrap();
-    assert_eq!(anonymous.status(), 401);
+    expect_status(anonymous, 401, None).await;
 
     let expired = http
         .post(format!("http://{addr}/api/v1/ui-events"))
@@ -541,7 +606,7 @@ async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
         .send()
         .await
         .unwrap();
-    assert_eq!(expired.status(), 401);
+    expect_status(expired, 401, None).await;
 
     assert!(
         rows_for_session(&http, &ch_url, &session).await.is_empty(),
@@ -579,7 +644,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
         .send()
         .await
         .unwrap();
-    assert_eq!(missing.status(), 404);
+    expect_status(missing, 404, None).await;
 
     let wrong_method = http
         .get(format!("http://{addr}/api/v1/ui-events"))
@@ -587,7 +652,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
         .send()
         .await
         .unwrap();
-    assert_eq!(wrong_method.status(), 405);
+    expect_status(wrong_method, 405, None).await;
 }
 
 /// An oversized batch is refused whole, and the client's own cap is what keeps
@@ -630,7 +695,7 @@ async fn a_batch_over_the_server_limit_is_refused_whole() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 400);
+    expect_status(response, 400, Some((&http, &ch_url))).await;
     assert!(rows_for_session(&http, &ch_url, &session).await.is_empty());
 }
 
@@ -673,8 +738,7 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
     };
 
     let off = set_ui_events(false).await.unwrap();
-    assert_eq!(off.status(), 200);
-    let off: Value = off.json().await.unwrap();
+    let off: Value = serde_json::from_str(&expect_status(off, 200, None).await).unwrap();
     assert_eq!(off["ui_events"], false);
 
     let session = session_id();
@@ -691,14 +755,14 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
     assert!(
         rows_for_session(&http, &ch_url, &session).await.is_empty(),
         "an opted-out deployment still stored UX events"
     );
 
     let on = set_ui_events(true).await.unwrap();
-    assert_eq!(on.status(), 200);
+    expect_status(on, 200, None).await;
     let response = http
         .post(format!("http://{addr}/api/v1/ui-events"))
         .bearer_auth(&token)
@@ -706,6 +770,6 @@ async fn switching_ui_events_off_answers_202_and_stores_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 202);
+    expect_status(response, 202, Some((&http, &ch_url))).await;
     assert_eq!(rows_for_session(&http, &ch_url, &session).await.len(), 1);
 }

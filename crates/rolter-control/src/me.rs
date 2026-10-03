@@ -301,7 +301,7 @@ impl Preferences {
             )?;
         }
         if let Some(zone) = &self.chart_time_zone {
-            if !is_iana_zone_shape(zone) {
+            if !is_known_zone(zone) {
                 return Err(bad_request(
                     "chart_time_zone must be an IANA time zone name such as Europe/Berlin or UTC",
                 ));
@@ -320,11 +320,17 @@ impl Preferences {
     }
 }
 
+/// Whether `zone` is a name in the IANA tz database (`chrono-tz` with default
+/// features off, so no serde or regex pulled in). The shape
+/// check runs first so an oversized or malformed string never reaches the
+/// lookup. The dashboard offers the browser's `Intl` list, a subset of this one
+/// plus aliases, so every zone it can pick is accepted.
+fn is_known_zone(zone: &str) -> bool {
+    is_iana_zone_shape(zone) && zone.parse::<chrono_tz::Tz>().is_ok()
+}
+
 /// Whether `zone` has the shape of an IANA name: `UTC`, `Europe/Berlin`,
-/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`. The workspace carries no
-/// tz database (`chrono-tz` is not a dependency and is heavy), so this checks
-/// shape only; the browser's `Intl` rejects a well-formed name it does not
-/// know, and the dashboard falls back to the local zone when it does.
+/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`.
 fn is_iana_zone_shape(zone: &str) -> bool {
     if zone.is_empty() || zone.len() > MAX_TIME_ZONE_LEN {
         return false;
@@ -626,10 +632,12 @@ pub(crate) const PLAYGROUND_PURPOSE: &str = "playground";
 /// from the routes configured in the project the caller is minting against,
 /// and the TTL is fixed.
 ///
-/// An empty `models` list on a virtual key means *every* model, so a project
-/// with no routes cannot produce a playground key: minting one would hand out
-/// the widest key in the system to mean "nothing to address". That is a 400,
-/// not an empty list.
+/// An empty `models` list on a virtual key means *every* model, so the list is
+/// never left empty. A project with no routes yet gets a key scoped to the
+/// built-in `fake-llm` alone (#2300): that is the one model a fresh deployment
+/// can answer, and it is what the first step of Getting started sends, so the
+/// Playground works before any provider or route exists without the key
+/// reaching anything else.
 async fn mint_playground_key(
     current: CurrentUser,
     State(state): State<ControlState>,
@@ -642,16 +650,17 @@ async fn mint_playground_key(
     // by hand, so it cannot be the thing that lets a viewer create credentials
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
-    let models: Vec<String> = RouteRepo(pool(&state))
+    let mut models: Vec<String> = RouteRepo(pool(&state))
         .list(project_id)
         .await?
         .into_iter()
         .map(|route| route.model)
         .collect();
     if models.is_empty() {
-        return Err(bad_request(
-            "this project has no routes, so there is nothing a playground key could address",
-        ));
+        // an empty list would be the widest key in the system, and a managed
+        // gateway refuses a keyless call even for the builtin, so a routeless
+        // project is scoped to exactly the model it can already be answered by
+        models.push(rolter_core::FAKE_LLM_MODEL.to_string());
     }
 
     let expires_at = Utc::now() + chrono::Duration::minutes(PLAYGROUND_KEY_TTL_MINUTES);
@@ -806,6 +815,46 @@ mod tests {
             assert!(!is_iana_zone_shape(bad), "{bad}");
         }
         assert!(!is_iana_zone_shape(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn time_zone_must_exist_in_the_tz_database() {
+        for ok in ["UTC", "Europe/Berlin", "Asia/Kolkata", "Etc/GMT+5"] {
+            assert!(is_known_zone(ok), "{ok}");
+        }
+        for bad in ["Foo/Bar", "Europe/Berlinn", "", "../etc"] {
+            assert!(!is_known_zone(bad), "{bad}");
+        }
+        let prefs = Preferences {
+            chart_time_zone: Some("Foo/Bar".into()),
+            ..Default::default()
+        };
+        let err = prefs.validated().unwrap_err();
+        assert!(format!("{err:?}").contains("chart_time_zone"), "{err:?}");
+    }
+
+    /// every catalog under `ui/src/lib/i18n/locales` must be an accepted
+    /// language and the reverse, so adding a catalog without the code (or the
+    /// code without a catalog) fails here rather than at a user's `PUT`
+    #[test]
+    fn languages_match_the_dashboard_locale_catalogs() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/lib/i18n/locales");
+        let mut catalogs: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .filter_map(|e| {
+                let path = e.ok()?.path();
+                (path.extension()? == "json")
+                    .then(|| path.file_stem()?.to_str().map(String::from))?
+            })
+            .collect();
+        catalogs.sort();
+        let mut langs: Vec<String> = LANGUAGES.iter().map(|l| l.to_string()).collect();
+        langs.sort();
+        assert_eq!(
+            catalogs, langs,
+            "LANGUAGES in me.rs and the locale catalogs in ui/src/lib/i18n/locales have drifted"
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ export function InfoHint({ text, label, className }: InfoHintProps) {
         onBlur={() => setOpen(false)}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "inline-flex items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none",
+          "-m-[5px] inline-flex items-center justify-center p-[5px] text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none",
           className,
         )}
       >

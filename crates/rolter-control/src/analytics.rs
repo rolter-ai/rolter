@@ -52,6 +52,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// `alter table ... modify ttl` is not an interactive read.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long an idle pooled connection to ClickHouse may be reused.
+///
+/// ClickHouse closes an idle keep-alive connection after its own
+/// `keep_alive_timeout` (10 seconds by default, 3 on older releases), and
+/// reqwest's default of 90 seconds kept handing that connection out regardless.
+/// A request written onto a socket the server is closing at the same instant
+/// never gets a response: hyper reports an incomplete message, and the UX and
+/// MCP ingest handlers turn that into a 500 for a batch ClickHouse would have
+/// accepted (#1940). Retiring connections well inside the server's window means
+/// a reused connection is always one the server still holds open; a request
+/// after a longer pause opens a fresh one, which on the same network costs a
+/// millisecond.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+// below the shortest keep_alive_timeout ClickHouse has shipped as a default
+const _: () = assert!(POOL_IDLE_TIMEOUT.as_secs() < 3);
+
 /// Bound for the log-retention `alter table` statements, which may rewrite
 /// table metadata on a large table and are run by an admin, not a dashboard
 /// poll.
@@ -60,10 +77,11 @@ const DDL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Build the one `reqwest` client every ClickHouse call goes through, so a
 /// stalled server can never hold a request, an ingest handler or an alert pass
 /// open (#1951).
-fn build_http(connect: Duration, request: Duration) -> reqwest::Client {
+fn build_http(connect: Duration, request: Duration, pool_idle: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(connect)
         .timeout(request)
+        .pool_idle_timeout(pool_idle)
         .build()
         // building only fails when the TLS backend cannot initialise, which
         // `Client::new()` would hit as well; fall back to it rather than panic
@@ -78,9 +96,20 @@ impl ClickHouseClient {
     /// [`ClickHouseClient::new`] with explicit bounds, so a test can prove a
     /// stalled server is cut off without waiting out the production values.
     pub(crate) fn with_timeouts(url: &str, connect: Duration, request: Duration) -> Self {
+        Self::with_pool_idle(url, connect, request, POOL_IDLE_TIMEOUT)
+    }
+
+    /// [`ClickHouseClient::with_timeouts`] with an explicit idle-connection
+    /// bound, so a test can cross it without waiting out the production value.
+    fn with_pool_idle(
+        url: &str,
+        connect: Duration,
+        request: Duration,
+        pool_idle: Duration,
+    ) -> Self {
         Self {
             base: url.trim_end_matches('/').to_string(),
-            client: build_http(connect, request),
+            client: build_http(connect, request, pool_idle),
         }
     }
 
@@ -451,14 +480,14 @@ async fn summary(
         Err(resp) => return resp,
     };
     let sql = format!(
-        "select count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
+        "select {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
-                countIf(status >= 400) as errors, \
+                {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} format JSON"
     );
@@ -466,6 +495,20 @@ async fn summary(
         .query(&sql, &with_access(window_params(&q), &access))
         .await)
 }
+
+// Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
+// carries `sample_weight` (clickhouse/014) = how many real requests it stands
+// for. Counts and sums are scaled by it so a sampled log does not under-report
+// traffic or spend (#2239); averages and percentiles are left alone, since a
+// uniform sample already estimates them. Rows written unsampled, or before the
+// column existed, weigh 1.
+const REQUESTS: &str = "round(sum(sample_weight))";
+const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
+const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
+const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
+const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
+const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -487,9 +530,9 @@ async fn timeseries(
     };
     let sql = format!(
         "select {bucket_expr}(ts) as bucket, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by bucket order by bucket format JSON"
     );
@@ -510,11 +553,11 @@ async fn by_model(
     };
     let sql = format!(
         "select model, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(unpriced = 1) as unpriced_requests, \
-                countIf(status >= 400) as errors, \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
@@ -571,12 +614,12 @@ async fn by_attribution(
     };
     let sql = format!(
         "select {column} as id, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                sum(prompt_tokens) as prompt_tokens, \
-                sum(completion_tokens) as completion_tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(status >= 400) as errors \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {PROMPT_TOKENS} as prompt_tokens, \
+                {COMPLETION_TOKENS} as completion_tokens, \
+                {COST} as cost_usd, \
+                {ERRORS} as errors \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
          group by id having {attributed} order by cost_usd desc format JSON"
     );
@@ -862,6 +905,79 @@ pub(crate) mod testing {
             }
         }
     }
+    /// A server that answers the first request on each connection, keeps the
+    /// connection alive, and drops it unanswered when a second request arrives
+    /// on it — what a client sees when it reuses a connection at the instant
+    /// ClickHouse's `keep_alive_timeout` closes it (#1940).
+    pub(crate) struct ClosesReusedConnections {
+        pub(crate) url: String,
+        pub(crate) connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Read one HTTP/1.1 request (head plus a `content-length` body); `false`
+    /// when the peer closed first.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        while buf.len() < head_end + length {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        true
+    }
+
+    impl ClosesReusedConnections {
+        pub(crate) async fn start() -> Self {
+            use std::sync::atomic::Ordering;
+            use tokio::io::AsyncWriteExt;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a local port");
+            let port = listener.local_addr().expect("a local address").port();
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = connections.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    tokio::spawn(async move {
+                        if !read_request(&mut socket).await {
+                            return;
+                        }
+                        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n";
+                        if socket.write_all(reply).await.is_err() {
+                            return;
+                        }
+                        // the reused connection: closed with the request unanswered
+                        read_request(&mut socket).await;
+                    });
+                }
+            });
+            Self {
+                url: format!("http://127.0.0.1:{port}"),
+                connections,
+                _task: task,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -918,6 +1034,64 @@ mod tests {
             .await
             .expect("mcp insert is bounded");
         assert!(mcp.is_err());
+    }
+
+    /// A connection idle past the pool bound is retired rather than reused, so
+    /// a batch sent after a pause never lands on a socket ClickHouse is closing
+    /// (#1940). The fake server drops any second request on a connection, which
+    /// is the race made deterministic: reuse fails the insert, a fresh
+    /// connection succeeds.
+    #[tokio::test]
+    async fn an_idle_connection_is_retired_before_the_server_closes_it() {
+        let server = testing::ClosesReusedConnections::start().await;
+        let pool_idle = Duration::from_millis(200);
+        let ch = ClickHouseClient::with_pool_idle(
+            &server.url,
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+            pool_idle,
+        );
+        let event = json!({"event_id": "e"});
+        tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("bounded")
+            .expect("the first insert is answered");
+        // wall-clock, not paused tokio time: the pool stamps idle connections
+        // with std's clock
+        tokio::time::sleep(pool_idle * 3).await;
+        tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
+            .await
+            .expect("bounded")
+            .expect("the insert after a pause goes out on a fresh connection");
+        assert_eq!(
+            server.connections.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+    }
+
+    #[test]
+    fn counts_and_sums_scale_by_the_row_sample_weight() {
+        // at a 50 % rate each kept row weighs 2, so no count()/sum() may read
+        // a row once; averages and percentiles stay unweighted
+        for expr in [
+            REQUESTS,
+            TOKENS,
+            PROMPT_TOKENS,
+            COMPLETION_TOKENS,
+            COST,
+            UNPRICED,
+            ERRORS,
+        ] {
+            assert!(expr.contains("sample_weight"), "{expr}");
+        }
+        assert_eq!(REQUESTS, "round(sum(sample_weight))");
+        let src = include_str!("analytics.rs");
+        let handlers = &src[src.find("async fn summary(").unwrap()
+            ..src.find("pub struct InvocationsQuery").unwrap()];
+        assert!(!handlers.contains("count()"), "an unweighted count()");
+        assert!(!handlers.contains("countIf("), "an unweighted countIf()");
+        assert!(handlers.contains("avg(latency_ms)"));
+        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
     }
 
     #[test]
