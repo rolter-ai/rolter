@@ -411,9 +411,9 @@ When evaluating budgets and rate limits, Rolter walks the scope chain from org d
 
 ## User accounts
 
-Rolter v1 ships with **local user accounts** secured with username and password. You create and manage accounts through the control plane dashboard or API.
+Rolter ships with **local user accounts** secured with email and password. You create and manage accounts through the control plane dashboard or API.
 
-**OAuth2 / OIDC SSO** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is on the roadmap and will be available in a future release.
+**OAuth2 / OIDC single sign-on** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is available today, and **SCIM** provisions and deprovisions accounts from the same providers. See [Single sign-on](/security/single-sign-on) and [User provisioning](/security/user-provisioning). A first SSO sign-in gives an account that has no display name the one your identity provider sends; the user can still change it.
 
 <Info>
   If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.

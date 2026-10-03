@@ -3424,6 +3424,22 @@ impl UserRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
+    /// give an account that has no display name the one its identity provider
+    /// asserted. The `is null` guard is in the statement so a name set between
+    /// the caller's read and this write is never overwritten. Returns whether
+    /// a name was written.
+    pub async fn default_display_name(&self, id: Uuid, display_name: &str) -> Result<bool> {
+        let res = sqlx::query(
+            "update users set display_name = $2 where id = $1 and display_name is null",
+        )
+        .bind(id)
+        .bind(display_name)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// delete the account, refused when it is the last active superadmin
     /// (#2344)
     pub async fn delete(&self, id: Uuid) -> Result<LockoutGuard<()>> {

@@ -914,6 +914,21 @@ async fn complete_login(
         return Err(failed(AccountDeactivated, named)(ApiError::Forbidden));
     }
 
+    // a first-sign-in default only: the name is the IdP's suggestion, not
+    // managed, so the user can change it and a later sign-in never reverts it
+    if user.display_name.is_none() {
+        if let Some(name) = identity
+            .display_name
+            .as_deref()
+            .and_then(crate::me::sanitise_directory_name)
+        {
+            UserRepo(pool_ref)
+                .default_display_name(user.id, &name)
+                .await
+                .map_err(failed(InternalError, named))?;
+        }
+    }
+
     let granted = apply_mappings(state, &provider, &matched, user.id)
         .await
         .map_err(failed(InternalError, named))?;

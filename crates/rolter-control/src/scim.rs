@@ -504,10 +504,15 @@ pub(crate) struct PatchBody {
     pub(crate) operations: Vec<PatchOp>,
 }
 
-/// The `active` toggle is what every IdP uses to deactivate a leaver, so it is
-/// the operation this slice implements. Other paths are refused explicitly —
-/// an IdP that gets `204 No Content` for an operation nothing applied would
-/// believe a change landed.
+/// `active` is what every IdP uses to deactivate a leaver, and `displayName`
+/// keeps the dashboard's name for the account current. Other paths are refused
+/// explicitly — an IdP that gets a success for an operation nothing applied
+/// would believe a change landed.
+///
+/// Every operation is read before anything is written, so a malformed one
+/// cannot leave an earlier one half applied. `active` is applied before the
+/// name: a deactivation can be refused (the last superadmin), and a refused
+/// request must not have renamed the account either.
 async fn patch_user(
     principal: ScimPrincipal,
     State(state): State<ControlState>,
@@ -520,19 +525,33 @@ async fn patch_user(
         )));
     }
     let (user, identity) = resolve(&state, &principal, &id).await?;
-    let mut applied = false;
-    let mut personal_keys = 0;
+    let mut changes = PatchChanges::default();
     for op in &body.operations {
         let verb = op.op.to_ascii_lowercase();
         if verb != "replace" && verb != "add" {
             return Err(ScimError::invalid(format!("unsupported op '{}'", op.op)));
         }
-        let active = active_from_op(op)?;
-        personal_keys = deactivate(&state, user.id, !active).await?;
-        applied = true;
+        changes.merge(changes_from_op(op)?);
     }
-    if !applied {
+    if changes.active.is_none() && changes.display_name.is_none() {
         return Err(ScimError::invalid("no supported operation in the request"));
+    }
+    let mut personal_keys = 0;
+    if let Some(active) = changes.active {
+        personal_keys = deactivate(&state, user.id, !active).await?;
+    }
+    let mut identity = identity;
+    if let Some(name) = changes.display_name {
+        identity = ScimIdentityRepo(pool(&state))
+            .upsert(
+                user.id,
+                principal.org_id,
+                identity.external_id.as_deref(),
+                &identity.user_name,
+                &name,
+            )
+            .await?;
+        sync_display_name(pool(&state), user.id, &identity).await?;
     }
     audit_scim(
         &state,
@@ -547,24 +566,67 @@ async fn patch_user(
     Ok(Json(user_resource(&user, &identity)))
 }
 
-/// Read the `active` value out of a patch operation, in both the
+/// What a patch asks for, after reading every operation. A later operation on
+/// the same attribute wins, as it would applied one by one.
+#[derive(Debug, Default, PartialEq)]
+struct PatchChanges {
+    active: Option<bool>,
+    display_name: Option<String>,
+}
+
+impl PatchChanges {
+    fn merge(&mut self, other: PatchChanges) {
+        self.active = other.active.or(self.active);
+        self.display_name = other.display_name.or(self.display_name.take());
+    }
+}
+
+/// Read the supported attributes out of a patch operation, in both the
 /// `path: "active"` and the bare `{"active": false}` value forms IdPs send.
-fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
+fn changes_from_op(op: &PatchOp) -> ScimResult<PatchChanges> {
     let value = op
         .value
         .as_ref()
         .ok_or_else(|| ScimError::invalid("operation is missing a value"))?;
-    let candidate = match op.path.as_deref().map(str::trim) {
-        Some("active") => value.clone(),
+    let mut changes = PatchChanges::default();
+    match op.path.as_deref().map(str::trim) {
+        Some("active") => changes.active = Some(active_value(value)?),
+        Some("displayName") => changes.display_name = Some(name_value(value)?),
         Some(other) => {
             return Err(ScimError::invalid(format!("unsupported path '{other}'")));
         }
-        None => value.get("active").cloned().ok_or_else(|| {
-            ScimError::invalid("only the `active` attribute can be patched today")
-        })?,
-    };
+        None => {
+            let object = value
+                .as_object()
+                .ok_or_else(|| ScimError::invalid("a pathless operation needs an object value"))?;
+            for (key, value) in object {
+                match key.as_str() {
+                    "active" => changes.active = Some(active_value(value)?),
+                    "displayName" => changes.display_name = Some(name_value(value)?),
+                    other => {
+                        return Err(ScimError::invalid(format!(
+                            "unsupported attribute '{other}'; only `active` and `displayName` can be patched"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(changes)
+}
+
+fn name_value(value: &Value) -> ScimResult<String> {
+    match value {
+        Value::String(name) => Ok(name.clone()),
+        other => Err(ScimError::invalid(format!(
+            "displayName must be a string, got {other}"
+        ))),
+    }
+}
+
+fn active_value(candidate: &Value) -> ScimResult<bool> {
     match candidate {
-        Value::Bool(active) => Ok(active),
+        Value::Bool(active) => Ok(*active),
         // some IdPs send the string form
         Value::String(s) if s.eq_ignore_ascii_case("true") => Ok(true),
         Value::String(s) if s.eq_ignore_ascii_case("false") => Ok(false),
@@ -822,6 +884,10 @@ mod tests {
         }
     }
 
+    fn active_of(op: &PatchOp) -> ScimResult<Option<bool>> {
+        changes_from_op(op).map(|c| c.active)
+    }
+
     #[test]
     fn reads_active_from_both_patch_shapes() {
         let with_path = PatchOp {
@@ -829,14 +895,14 @@ mod tests {
             path: Some("active".into()),
             value: Some(json!(false)),
         };
-        assert!(!active_from_op(&with_path).unwrap());
+        assert_eq!(active_of(&with_path).unwrap(), Some(false));
 
         let bare = PatchOp {
             op: "replace".into(),
             path: None,
             value: Some(json!({"active": true})),
         };
-        assert!(active_from_op(&bare).unwrap());
+        assert_eq!(active_of(&bare).unwrap(), Some(true));
 
         // the string form some IdPs send
         let stringly = PatchOp {
@@ -844,7 +910,29 @@ mod tests {
             path: Some("active".into()),
             value: Some(json!("False")),
         };
-        assert!(!active_from_op(&stringly).unwrap());
+        assert_eq!(active_of(&stringly).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn reads_display_name_and_both_attributes_from_one_operation() {
+        let with_path = PatchOp {
+            op: "replace".into(),
+            path: Some("displayName".into()),
+            value: Some(json!("Ada")),
+        };
+        assert_eq!(
+            changes_from_op(&with_path).unwrap().display_name.as_deref(),
+            Some("Ada")
+        );
+
+        let both = PatchOp {
+            op: "replace".into(),
+            path: None,
+            value: Some(json!({"displayName": "Ada", "active": false})),
+        };
+        let changes = changes_from_op(&both).unwrap();
+        assert_eq!(changes.display_name.as_deref(), Some("Ada"));
+        assert_eq!(changes.active, Some(false));
     }
 
     #[test]
@@ -852,13 +940,23 @@ mod tests {
         for op in [
             PatchOp {
                 op: "replace".into(),
-                path: Some("displayName".into()),
+                path: Some("nickName".into()),
                 value: Some(json!("Ada")),
             },
             PatchOp {
                 op: "replace".into(),
                 path: None,
-                value: Some(json!({"displayName": "Ada"})),
+                value: Some(json!({"nickName": "Ada"})),
+            },
+            PatchOp {
+                op: "replace".into(),
+                path: None,
+                value: Some(json!({"displayName": "Ada", "nickName": "A"})),
+            },
+            PatchOp {
+                op: "replace".into(),
+                path: Some("displayName".into()),
+                value: Some(json!(7)),
             },
             PatchOp {
                 op: "replace".into(),
@@ -866,7 +964,7 @@ mod tests {
                 value: None,
             },
         ] {
-            assert!(active_from_op(&op).is_err());
+            assert!(changes_from_op(&op).is_err(), "accepted {op:?}");
         }
     }
 
