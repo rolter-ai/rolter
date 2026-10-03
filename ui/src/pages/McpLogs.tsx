@@ -92,7 +92,13 @@ function McpLogsScreen() {
 
   useScreenReady(!summary.isLoading);
 
-  useErrorState(!!summary.error, "mcp-logs");
+  // the summary has no `LoadError` of its own to record a failure, so it is
+  // reported here; the call list and the detail drawer record theirs (#2444).
+  // no analytics store is a supported shape, stated below, not an error state
+  useErrorState(
+    !!summary.error && !(summary.error instanceof AnalyticsUnavailableError),
+    "mcp-log-summary",
+  );
   const logs = useQuery({
     queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
     queryFn: () =>
@@ -235,6 +241,7 @@ function McpLogsScreen() {
               error={logs.error}
               resource={t("errors.resources.mcpLogs")}
               onRetry={() => void logs.refetch()}
+              target="mcp-logs"
             />
           )}
           {rows.length === 0 && logs.isSuccess && (
@@ -396,6 +403,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             error={detail.error}
             resource={t("errors.resources.mcpLogDetail")}
             onRetry={() => void detail.refetch()}
+            target="mcp-log-detail"
           />
         ))}
       {d && (

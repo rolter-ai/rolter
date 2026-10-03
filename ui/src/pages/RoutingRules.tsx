@@ -27,7 +27,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { strategyTone, usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TARGET_BARS = [
   "var(--red-folk)",
@@ -92,13 +92,10 @@ export default function RoutingRules() {
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
   // the route list is what the reader waits on first and the target reads
-  // decide what every card says, so readiness and the error signal follow both
+  // decide what every card says, so readiness follows both. the error signal
+  // is each `LoadError`'s own: one for the list, one per card whose targets
+  // failed (#2444)
   useScreenReady(!routes.isLoading && !targetStates.some((s) => s.kind === "loading"));
-  useErrorState(!!routes.error, "routing-rules");
-  useErrorState(
-    targetStates.some((s) => s.kind === "failed"),
-    "route-targets",
-  );
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
@@ -169,6 +166,7 @@ export default function RoutingRules() {
           error={routes.error}
           resource={t("errors.resources.routes")}
           onRetry={() => void routes.refetch()}
+          target="routes"
         />
       )}
       {routes.isSuccess && shown.length === 0 && (
@@ -351,10 +349,12 @@ function RouteTargets({
   }
   if (state.kind === "failed") {
     return (
+      // load-error-allow: one route's expanded target breakdown; the routes list pairs as routes
       <LoadError
         error={state.error}
         resource={t("errors.resources.routeTargets")}
         onRetry={state.retry}
+        target="route-targets"
       />
     );
   }

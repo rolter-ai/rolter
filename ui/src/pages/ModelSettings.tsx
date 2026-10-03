@@ -19,7 +19,7 @@ import {
   type ModelDefaultsDto,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // every field is optional, so the form keeps raw strings and an empty string
 // means "leave this to the provider" rather than "send zero"
@@ -107,7 +107,6 @@ function ModelSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `defaults` is the query the user is actually waiting on for this screen
   useScreenReady(!defaults.isLoading);
-  useErrorState(!!defaults.error, "model-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -172,6 +171,7 @@ function ModelSettingsScreen() {
           error={defaults.error}
           resource={t("errors.resources.modelSettings")}
           onRetry={() => void defaults.refetch()}
+          target="model-settings"
         />
       </div>
     );
@@ -187,34 +187,28 @@ function ModelSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">{t("pages.modelSettings.applyDefaults")}</span>
-              <Badge
-                tone={active ? "success" : "neutral"}
-                className="font-mono text-[10px] uppercase"
-              >
-                {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
-              </Badge>
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.modelSettings.applyDefaultsDesc")}
-            </p>
-          </div>
+      <SettingsPanel
+        title={t("pages.modelSettings.applyDefaults")}
+        description={t("pages.modelSettings.applyDefaultsDesc")}
+        badge={
+          <Badge tone={active ? "success" : "neutral"} className="font-mono text-[10px] uppercase">
+            {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
+          </Badge>
+        }
+        action={
           <Switch
             checked={form.enabled}
             aria-label={t("pages.modelSettings.applyDefaults")}
             onCheckedChange={(v) => set({ enabled: v })}
           />
-        </div>
+        }
+      >
         {form.enabled && !hasAnyDefault(form) && (
           <p className="text-xs text-[color:var(--text-subtle)]">
             {t("pages.modelSettings.noDefaults")}
           </p>
         )}
-      </section>
+      </SettingsPanel>
 
       <SettingsPanel
         title={t("pages.modelSettings.sampling.title")}

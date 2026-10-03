@@ -109,6 +109,7 @@ export function TwoFactorPanel() {
             error={status.error}
             resource={t("errors.resources.twoFactor")}
             onRetry={() => void status.refetch()}
+            target="mfa"
           />
         )}
 
@@ -292,10 +293,12 @@ function EnrolDialog({
       <DialogBody>
         {enrolment.isLoading && <PanelSkeleton panels={1} height={176} />}
         {enrolment.error && (
+          // load-error-allow: the enrolment secret fills a dialog step; there is no list to be empty
           <LoadError
             error={enrolment.error}
             resource={t("errors.resources.twoFactorSecret")}
             onRetry={() => void enrolment.refetch()}
+            target="mfa-enrolment"
           />
         )}
         {enrolment.data && (

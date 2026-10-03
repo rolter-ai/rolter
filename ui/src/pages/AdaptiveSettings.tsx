@@ -8,6 +8,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchAdaptiveRoutingPolicy,
@@ -18,7 +19,7 @@ import {
   type AdaptiveRoutingPolicyDto,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   enabled: boolean;
@@ -86,7 +87,6 @@ function AdaptiveSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
-  useErrorState(!!policy.error, "adaptive-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -140,6 +140,7 @@ function AdaptiveSettingsScreen() {
           error={policy.error}
           resource={t("errors.resources.adaptiveSettings")}
           onRetry={() => void policy.refetch()}
+          target="adaptive-settings"
         />
       </div>
     );
@@ -162,112 +163,111 @@ function AdaptiveSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex-1">
-          <span className="text-sm font-medium">{t("pages.adaptiveSettings.title")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            <Trans
-              i18nKey="pages.adaptiveSettings.killSwitch"
-              components={[<code key="strategy" className="font-mono text-xs" />]}
-            />
-          </p>
-          {/* the blast radius, so the switch is never flipped blind */}
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            {affected.length === 0 ? (
+      <SettingsPanel
+        title={t("pages.adaptiveSettings.title")}
+        description={
+          <Trans
+            i18nKey="pages.adaptiveSettings.killSwitch"
+            components={[<code key="strategy" className="font-mono text-xs" />]}
+          />
+        }
+        action={
+          <Switch
+            aria-label={t("pages.adaptiveSettings.toggleAria")}
+            checked={form.enabled}
+            onCheckedChange={(enabled) => set({ enabled })}
+          />
+        }
+      >
+        {/* the blast radius, so the switch is never flipped blind */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {affected.length === 0 ? (
+            <span className="text-xs text-muted-foreground">
+              {t("pages.adaptiveSettings.noAffectedRoutes")}
+            </span>
+          ) : (
+            <>
               <span className="text-xs text-muted-foreground">
-                {t("pages.adaptiveSettings.noAffectedRoutes")}
+                {t("pages.adaptiveSettings.governsRoutes", {
+                  count: affected.length,
+                })}
               </span>
-            ) : (
-              <>
-                <span className="text-xs text-muted-foreground">
-                  {t("pages.adaptiveSettings.governsRoutes", {
-                    count: affected.length,
-                  })}
+              {affected.map((model) => (
+                <Badge key={model} tone="outline" className="font-mono">
+                  {model}
+                </Badge>
+              ))}
+            </>
+          )}
+        </div>
+      </SettingsPanel>
+
+      <SettingsPanel
+        title={t("pages.adaptiveSettings.weightsTitle")}
+        description={
+          <Trans
+            i18nKey="pages.adaptiveSettings.weightsDesc"
+            components={[<span key="range" className="font-mono text-xs" />]}
+          />
+        }
+      >
+        <div className="flex w-full flex-col gap-3">
+          {WEIGHTS.map(([key, name]) => {
+            const label = t(`pages.adaptiveSettings.weights.${name}.label`);
+            const hint = t(`pages.adaptiveSettings.weights.${name}.hint`);
+            const value = Number(form[key]) || 0;
+            const share = total > 0 ? Math.round((value / total) * 100) : 0;
+            return (
+              <div key={key} className="flex items-center gap-3">
+                <div className="flex-1">
+                  <span className="text-sm">{label}</span>
+                  <p className="text-xs text-muted-foreground">{hint}</p>
+                </div>
+                <span className="w-12 text-right font-mono text-xs text-muted-foreground">
+                  {share}%
                 </span>
-                {affected.map((model) => (
-                  <Badge key={model} tone="outline" className="font-mono">
-                    {model}
-                  </Badge>
-                ))}
-              </>
-            )}
+                <Input
+                  className="w-[92px]"
+                  inputMode="decimal"
+                  aria-label={t("pages.adaptiveSettings.weightAria", { label })}
+                  value={form[key]}
+                  onChange={(e) => set({ [key]: e.target.value } as Partial<FormState>)}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </SettingsPanel>
+
+      <SettingsPanel
+        title={t("pages.adaptiveSettings.explorationTitle")}
+        description={t("pages.adaptiveSettings.explorationDesc", {
+          maxRatio: MAX_EXPLORATION_RATIO,
+        })}
+      >
+        <div className="flex w-full flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <span className="flex-1 text-sm">{t("pages.adaptiveSettings.explorationRatio")}</span>
+            <Input
+              className="w-[92px]"
+              inputMode="decimal"
+              aria-label={t("pages.adaptiveSettings.explorationRatio")}
+              value={form.explorationRatio}
+              onChange={(e) => set({ explorationRatio: e.target.value })}
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="flex-1 text-sm">{t("pages.adaptiveSettings.warmUpSamples")}</span>
+            <Input
+              className="w-[92px]"
+              inputMode="numeric"
+              aria-label={t("pages.adaptiveSettings.warmUpSamples")}
+              value={form.minSamples}
+              onChange={(e) => set({ minSamples: e.target.value })}
+            />
           </div>
         </div>
-        <Switch
-          aria-label={t("pages.adaptiveSettings.toggleAria")}
-          checked={form.enabled}
-          onCheckedChange={(enabled) => set({ enabled })}
-        />
-      </section>
-
-      <section className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.adaptiveSettings.weightsTitle")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            <Trans
-              i18nKey="pages.adaptiveSettings.weightsDesc"
-              components={[<span key="range" className="font-mono text-xs" />]}
-            />
-          </p>
-        </div>
-        {WEIGHTS.map(([key, name]) => {
-          const label = t(`pages.adaptiveSettings.weights.${name}.label`);
-          const hint = t(`pages.adaptiveSettings.weights.${name}.hint`);
-          const value = Number(form[key]) || 0;
-          const share = total > 0 ? Math.round((value / total) * 100) : 0;
-          return (
-            <div key={key} className="flex items-center gap-3">
-              <div className="flex-1">
-                <span className="text-sm">{label}</span>
-                <p className="text-xs text-muted-foreground">{hint}</p>
-              </div>
-              <span className="w-12 text-right font-mono text-xs text-muted-foreground">
-                {share}%
-              </span>
-              <Input
-                className="w-[92px]"
-                inputMode="decimal"
-                aria-label={t("pages.adaptiveSettings.weightAria", { label })}
-                value={form[key]}
-                onChange={(e) => set({ [key]: e.target.value } as Partial<FormState>)}
-              />
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">
-            {t("pages.adaptiveSettings.explorationTitle")}
-          </span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.adaptiveSettings.explorationDesc", {
-              maxRatio: MAX_EXPLORATION_RATIO,
-            })}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">{t("pages.adaptiveSettings.explorationRatio")}</span>
-          <Input
-            className="w-[92px]"
-            inputMode="decimal"
-            aria-label={t("pages.adaptiveSettings.explorationRatio")}
-            value={form.explorationRatio}
-            onChange={(e) => set({ explorationRatio: e.target.value })}
-          />
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="flex-1 text-sm">{t("pages.adaptiveSettings.warmUpSamples")}</span>
-          <Input
-            className="w-[92px]"
-            inputMode="numeric"
-            aria-label={t("pages.adaptiveSettings.warmUpSamples")}
-            value={form.minSamples}
-            onChange={(e) => set({ minSamples: e.target.value })}
-          />
-        </div>
-      </section>
+      </SettingsPanel>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {localError && (

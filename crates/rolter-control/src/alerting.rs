@@ -1725,7 +1725,12 @@ mod tests {
 
         use super::*;
 
-        const SECRET: &str = "s3cret-bearer";
+        /// The webhook bearer secret, generated once per process rather than
+        /// written out.
+        fn bearer_secret() -> &'static str {
+            static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            SECRET.get_or_init(|| format!("bearer-{}", uuid::Uuid::new_v4()))
+        }
 
         /// One request the webhook receiver saw: its `Authorization` header and
         /// its JSON body.
@@ -1826,7 +1831,7 @@ mod tests {
             let status = StatusCode::from_u16(stub.hook_status.load(Ordering::SeqCst))
                 .unwrap_or(StatusCode::OK);
             // a receiver that echoes what it was sent, which the history must not keep
-            (status, format!("rejected {SECRET}")).into_response()
+            (status, format!("rejected {}", bearer_secret())).into_response()
         }
 
         /// A schema of its own per test; the guard drops it when the test ends.
@@ -1851,7 +1856,11 @@ mod tests {
         }
 
         async fn add_channel(db: &TestSchema, endpoint: &str, enabled: bool, secret: bool) -> Uuid {
-            let sealed = secret.then(|| kek().encrypt(SECRET).expect("seal the test secret"));
+            let sealed = secret.then(|| {
+                kek()
+                    .encrypt(bearer_secret())
+                    .expect("seal the test secret")
+            });
             sqlx::query_scalar(
                 "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) \
                  values ($1, 'webhook', $2, $3, $4, $5) returning id",
@@ -1951,7 +1960,7 @@ mod tests {
             let (authorization, body) = &hooks[0];
             assert_eq!(
                 authorization.as_deref(),
-                Some(format!("Bearer {SECRET}").as_str())
+                Some(format!("Bearer {}", bearer_secret()).as_str())
             );
             assert_eq!(body["id"], json!(notification.id));
             assert_eq!(body["state"], "firing");
@@ -2215,7 +2224,7 @@ mod tests {
             assert_eq!(hooks[2].1["state"], "firing");
             assert_eq!(
                 hooks[2].0.as_deref(),
-                Some(format!("Bearer {SECRET}").as_str())
+                Some(format!("Bearer {}", bearer_secret()).as_str())
             );
 
             // delivered once: neither the schedule nor evaluate now sends it again

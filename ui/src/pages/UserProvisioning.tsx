@@ -34,7 +34,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TOKENS_QUERY_KEY = ["scim-tokens"];
 const MAPPINGS_QUERY_KEY = "scim-group-mappings";
@@ -152,8 +152,6 @@ export default function UserProvisioning() {
   // `tokens` is the query the user is actually waiting on for this screen
 
   useScreenReady(!tokens.isLoading);
-
-  useErrorState(!!tokens.error, "user-provisioning");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: [...TOKENS_QUERY_KEY, orgId] });
@@ -298,6 +296,7 @@ export default function UserProvisioning() {
           error={tokens.error}
           resource={t("errors.resources.provisioningTokens")}
           onRetry={() => tokens.refetch()}
+          target="provisioning-list"
         />
       )}
       {revoke.isError && (

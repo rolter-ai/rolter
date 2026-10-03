@@ -260,7 +260,16 @@ jobs:
     needs: [quality, codeql]
     runs-on: ubuntu-24.04
     steps:
-      - name: record that the heavy gate passed on this run
+      # the step name is the record of which base this verdict is for. the
+      # `edited` fast path (scripts/assert-gate-ran.sh) reads it back from the
+      # jobs listing it already fetches and accepts only a run gated against
+      # the pr's current base sha, so a pass against a base the pr has since
+      # been retargeted away from cannot vouch for the new one (#2649). the
+      # run's own `pull_requests[].base.sha` cannot answer that: the api fills
+      # it in live from the pr as it is now, not as it was when the run
+      # started. a run with no pull request in its payload (a dispatch, a
+      # push, a merge group) records `none`, which the fast path never accepts
+      - name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
         run: echo "quality and codeql both succeeded on this run"
 
   # single aggregating gate for branch protection. mark ONLY `ci-ok` as a
@@ -324,7 +333,8 @@ jobs:
       # commit mergeable before a single test had run (#1328, seen on #1315 and
       # #1267). this step turns the assumption into a check: the fast-path may
       # only report green when a real gate run for this exact sha recorded a
-      # passing `gate-ok` and no other run on it still owes a gate verdict.
+      # passing `gate-ok` against the pr's current base, and no other run on it
+      # still owes a gate verdict.
       #
       # when a gate is still in flight the step waits for its verdict rather
       # than declining at once. a red `ci-ok` is not superseded by a later
@@ -344,6 +354,9 @@ jobs:
           # `github.sha` on a pull_request run is the throwaway merge commit; the
           # runs and check-runs that branch protection reads hang off the PR head
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # the base this pr targets now. only a gate run that recorded this
+          # same base in its `gate-ok` step name counts (#2649)
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SELF_RUN_ID: ${{ github.run_id }}
         # the logic lives in a script so it can be exercised against a fake gh
         # and clock (scripts/test-assert-gate-ran.sh); the checkout above

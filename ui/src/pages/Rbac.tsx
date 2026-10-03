@@ -36,7 +36,7 @@ import {
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // Roles & Permissions, rendered from `GET /api/v1/rbac/matrix` (#1178).
 //
@@ -228,17 +228,18 @@ export default function Rbac() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `matrix` is the query the user is actually waiting on for this screen
   useScreenReady(!matrix.isLoading);
-  useErrorState(!!matrix.error, "rbac");
 
   if (matrix.isLoading) return <MatrixSkeleton />;
 
   if (matrix.error) {
     return (
       <PageBody>
+        {/* load-error-allow: the permission matrix is fixed content, never empty */}
         <LoadError
           error={matrix.error}
           resource={t("errors.resources.rbacMatrix")}
           onRetry={() => matrix.refetch()}
+          target="rbac"
         />
       </PageBody>
     );
@@ -655,6 +656,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           error={roles.error}
           resource={t("errors.resources.customRoles")}
           onRetry={() => void roles.refetch()}
+          target="custom-roles"
         />
       )}
       {roles.data && roles.data.length === 0 && (

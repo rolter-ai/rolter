@@ -50,7 +50,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
 import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
 const statusTint = (hue: "success" | "danger" | "info") =>
@@ -188,6 +188,7 @@ function CollectorConfigDialog({
                 error={config.error}
                 resource={t("errors.resources.collectorConfig")}
                 onRetry={() => void config.refetch()}
+                target="collector-config"
               />
             )}
             {config.data !== undefined && (
@@ -238,7 +239,6 @@ function ConnectorsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `connectors` is the query the user is actually waiting on for this screen
   useScreenReady(!connectors.isLoading);
-  useErrorState(!!connectors.error, "connectors");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["connectors"] });
 
   const toggle = useMutation({
@@ -350,6 +350,7 @@ function ConnectorsScreen() {
           error={connectors.error}
           resource={t("errors.resources.connectors")}
           onRetry={() => void connectors.refetch()}
+          target="connectors"
         />
       )}
       {/* the empty state offers the same create as the toolbar, which stays

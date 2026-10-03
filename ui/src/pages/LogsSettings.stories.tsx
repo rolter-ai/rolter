@@ -198,6 +198,39 @@ export const CaptureDisabled: Story = {
   },
 };
 
+// the max-bytes field is disabled while capture is off, so an out-of-range
+// stored value must neither show an error nor block saving (#2575); turning
+// capture back on validates it again
+export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
+  render: () => {
+    const stored = {
+      ...BASE,
+      payload_capture_enabled: false,
+      payload_capture_max_bytes: 2_000_000,
+    };
+    return <Harness fetchStub={async () => json(stored)} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const maxBytes = () => canvas.getByLabelText("Max bytes per payload");
+    await waitFor(() => expect(maxBytes()).toBeDisabled());
+    await expect(maxBytes()).not.toHaveAttribute("aria-invalid", "true");
+    await expect(canvas.queryByText(/Max payload bytes must be/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    // re-enabling capture re-validates the value
+    await userEvent.click(canvas.getByRole("switch", { name: /capture/i }));
+    await waitFor(() => expect(maxBytes()).toHaveAttribute("aria-invalid", "true"));
+    await expect(maxBytes()).toHaveAccessibleDescription(/Max payload bytes must be/);
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+
 // the request never settles, so the skeleton stays up
 export const Loading: Story = {
   render: () => <Harness fetchStub={() => new Promise<Response>(() => {})} />,

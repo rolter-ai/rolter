@@ -28,7 +28,7 @@ import {
   type ModelPriceRow,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PRICES_QUERY_KEY = ["model-prices"];
 
@@ -58,8 +58,6 @@ export default function Pricing() {
   // `prices` is the query the user is actually waiting on for this screen
 
   useScreenReady(!prices.isLoading);
-
-  useErrorState(!!prices.error, "pricing");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: PRICES_QUERY_KEY });
 
@@ -103,6 +101,7 @@ export default function Pricing() {
           error={prices.error}
           resource={t("errors.resources.modelPrices")}
           onRetry={() => prices.refetch()}
+          target="model-prices"
         />
       )}
       {!prices.isLoading && prices.data?.length === 0 && (
