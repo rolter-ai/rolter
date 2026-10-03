@@ -181,6 +181,32 @@ export const Empty: Story = {
   },
 };
 
+// "My calls" narrows to nothing: a filter answer whose button clears every
+// filter, so it is labelled for filters rather than for a search (#2294)
+export const NoMatch: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness
+        fetchStub={scoped(async (input) => {
+          const url = new URL(String(input), "http://localhost");
+          if (url.pathname.endsWith("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+          const user = url.searchParams.get("user");
+          return json({ data: user ? [] : [call()], next_cursor: null });
+        })}
+      >
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "My calls" }));
+    await expectEmptyState(canvasElement, /No calls match these filters/);
+    await userEvent.click(canvas.getByRole("button", { name: en.common.clearFilters }));
+    await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+  },
+};
+
 /**
  * The summary envelope comes back empty while the log list itself loads fine.
  *

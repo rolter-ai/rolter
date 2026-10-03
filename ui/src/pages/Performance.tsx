@@ -58,6 +58,10 @@ const inRange = (value: string, min: number, max: number) => {
   return Number.isInteger(n) && n >= min && n <= max;
 };
 
+const validCapacity = (value: string) => inRange(value, 1, 100_000);
+const validWorkers = (value: string) => inRange(value, 1, 2_048);
+const validBlockMs = (value: string) => inRange(value, 0, 120_000);
+
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // it names a catalog key rather than carrying english copy — the screen renders
@@ -74,15 +78,20 @@ function validate(form: FormState): string | null {
   if (!inRange(form.timeoutRequestS, 0, 3_600)) {
     return `${key}requestTimeout`;
   }
-  if (!inRange(form.queueCapacity, 1, 100_000)) {
+  // the queue fields are disabled while the queue is off, and the block
+  // timeout while the policy is not `block`, so a bad value there could not be
+  // fixed; each is re-checked once its control is enabled again (#2645)
+  if (!form.queueEnabled) return null;
+  if (!validCapacity(form.queueCapacity)) {
     return `${key}queueCapacity`;
   }
-  if (!inRange(form.queueWorkers, 1, 2_048)) return `${key}queueWorkers`;
-  if (!inRange(form.queueBlockMs, 0, 120_000)) {
+  if (!validWorkers(form.queueWorkers)) return `${key}queueWorkers`;
+  if (form.queueBackpressure !== "block") return null;
+  if (!validBlockMs(form.queueBlockMs)) {
     return `${key}blockTimeout`;
   }
   // blocking with a zero timeout would park callers forever
-  if (form.queueBackpressure === "block" && Number(form.queueBlockMs) === 0) {
+  if (Number(form.queueBlockMs) === 0) {
     return `${key}blockNeedsTimeout`;
   }
   return null;
@@ -113,19 +122,30 @@ function PerformanceScreen() {
   }, [policy.data, form]);
 
   const save = useMutation({
-    mutationFn: (f: FormState) =>
-      updateRuntimePolicy({
+    mutationFn: (f: FormState) => {
+      // an unusable queue value is only reachable while its field is
+      // disabled; keep what is stored rather than sending a draft the server
+      // would refuse
+      const stored = policy.data;
+      const keep = (draft: string, valid: boolean, fallback: number | undefined) =>
+        valid ? Number(draft) : (fallback ?? Number(draft));
+      return updateRuntimePolicy({
         retry_max_retries: Number(f.retryMaxRetries),
         retry_base_ms: Number(f.retryBaseMs),
         retry_max_ms: Number(f.retryMaxMs),
         timeout_connect_s: Number(f.timeoutConnectS),
         timeout_request_s: Number(f.timeoutRequestS),
         queue_enabled: f.queueEnabled,
-        queue_capacity: Number(f.queueCapacity),
-        queue_workers: Number(f.queueWorkers),
+        queue_capacity: keep(
+          f.queueCapacity,
+          validCapacity(f.queueCapacity),
+          stored?.queue_capacity,
+        ),
+        queue_workers: keep(f.queueWorkers, validWorkers(f.queueWorkers), stored?.queue_workers),
         queue_backpressure: f.queueBackpressure,
-        queue_block_ms: Number(f.queueBlockMs),
-      }),
+        queue_block_ms: keep(f.queueBlockMs, validBlockMs(f.queueBlockMs), stored?.queue_block_ms),
+      });
+    },
     onSuccess: (dto) => {
       queryClient.setQueryData(["runtime-policy"], dto);
       // the cached write alone left every other reader of this key on the

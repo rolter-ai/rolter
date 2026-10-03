@@ -657,7 +657,7 @@ export default function Models() {
             actions={
               filtersActive ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("common.clearSearch")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <GatedButton

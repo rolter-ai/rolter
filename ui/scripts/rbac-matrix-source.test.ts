@@ -4,10 +4,13 @@ import { fileURLToPath, URL } from "node:url";
 import {
   drift,
   parseCapabilities,
+  parseChainTrims,
   readCapabilities,
+  readChainTrims,
   type CapabilityRow,
 } from "./rbac-matrix-source";
 import snapshot from "../src/lib/rbac-capabilities.json";
+import { CHAIN_TRIMS } from "../src/lib/rbac-capabilities";
 
 const RBAC_MATRIX = fileURLToPath(
   new URL("../../crates/rolter-control/src/rbac_matrix.rs", import.meta.url),
@@ -110,5 +113,53 @@ describe("the checked-in capability fixture", () => {
     expect((snapshot.capabilities as CapabilityRow[]).map((c) => c.resource)).toEqual(
       readCapabilities(RBAC_MATRIX).map((c) => c.resource),
     );
+  });
+});
+
+describe("the chain each row is decided at", () => {
+  const CHAIN_AT = `
+fn chain_at(scope: &str, chain: ScopeChain) -> ScopeChain {
+    match scope {
+        "org" => ScopeChain {
+            team: None,
+            project: None,
+            ..chain
+        },
+        "team" => ScopeChain {
+            project: None,
+            ..chain
+        },
+        _ => chain,
+    }
+}
+`;
+
+  it("reads the fields each scope clears", () => {
+    expect(parseChainTrims(CHAIN_AT)).toEqual({ org: ["team", "project"], team: ["project"] });
+  });
+
+  it("refuses an arm it only partly understood", () => {
+    const extra = CHAIN_AT.replace(
+      "_ => chain,",
+      '"tenant" => narrow(chain),\n        _ => chain,',
+    );
+    expect(() => parseChainTrims(extra)).toThrow(/parsed 2 of 4 `chain_at` arms/);
+  });
+
+  it("refuses a fallback that no longer hands back the whole chain", () => {
+    expect(() =>
+      parseChainTrims(CHAIN_AT.replace("_ => chain,", "_ => ScopeChain::default(),")),
+    ).toThrow(/fallback arm/);
+  });
+
+  // the dashboard's port of `rbac/effective` decides each row at the part of
+  // the chain `chain_at` names (#2376); were the two to differ, a gating story
+  // would promise a team or project member what the guard refuses them
+  it("is the rule src/lib/rbac-capabilities.ts ports", () => {
+    const field: Record<string, string> = { orgId: "org", teamId: "team", projectId: "project" };
+    const ported = Object.fromEntries(
+      Object.entries(CHAIN_TRIMS).map(([scope, fields]) => [scope, fields.map((f) => field[f])]),
+    );
+    expect(ported).toEqual(readChainTrims(RBAC_MATRIX));
   });
 });

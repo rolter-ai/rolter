@@ -674,7 +674,9 @@ fn grant_matches(membership: &Membership, want: &ScopedGrant) -> bool {
 ///
 /// This is the whole convergence guarantee: the wanted set is derived from the
 /// database every time, never from the request, so replaying a sync is a no-op
-/// and a dropped group membership revokes the role that group granted.
+/// and a dropped group membership revokes the role that group granted. The
+/// one exception is an org's last active admin grant, which is kept and
+/// audited until the org has another admin (#2558).
 pub(crate) async fn reconcile_user(
     state: &ControlState,
     org_id: Uuid,
@@ -702,15 +704,20 @@ pub(crate) async fn reconcile_user(
         .filter(|m| m.user_id == user_id)
         .collect();
 
+    let mut granted = Vec::new();
     for stale in existing
         .iter()
         .filter(|m| m.source == SCIM_SOURCE)
         .filter(|m| !wanted.iter().any(|w| grant_matches(m, w)))
     {
-        repo.delete(stale.id).await?;
+        // the org's last admin grant outlives the group change rather than
+        // failing the sync; the next sync revokes it once another admin exists
+        // (#2558)
+        if crate::crud::revoke_idp_grant(state, stale).await? {
+            granted.push(stale.role.clone());
+        }
     }
 
-    let mut granted = Vec::new();
     for want in &wanted {
         granted.push(want.3.clone());
         // an equivalent grant from any source already covers this one; creating

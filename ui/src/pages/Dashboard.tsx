@@ -423,7 +423,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                   </p>
                 ) : (
                   <LineChart
-                    series={[{ name: "spend", values: spendPoints }]}
+                    series={[{ name: t("pages.dashboard.spendTitle"), values: spendPoints }]}
                     labels={spendLabels}
                     height={220}
                     label={t("pages.dashboard.spendChartAria", { window: windowLabel })}

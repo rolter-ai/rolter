@@ -736,7 +736,7 @@ export function McpCatalog() {
               <div className="mt-3">
                 <ToolBadges tools={server.tools} />
               </div>
-              <div className="mt-4 flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <Badge tone="info">{server.transport.replace("_", " ")}</Badge>
                 <AuthBadge server={server} />
                 <span className="ml-auto flex flex-wrap justify-end gap-1">
@@ -1533,7 +1533,7 @@ export function ToolGroups() {
                   </Badge>
                 ))}
               </div>
-              <div className="mt-4 flex justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex flex-wrap justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="mcp_tool_group:delete"
                   control="tool-group-delete"

@@ -19,7 +19,7 @@ import {
 } from "./story-harness";
 import type { ClusterNodeRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile } from "@/lib/story-viewport";
+import { atMobile, phoneFits } from "@/lib/story-viewport";
 
 const node = (over: Partial<ClusterNodeRow> = {}): ClusterNodeRow => ({
   id: "gw-1",
@@ -281,3 +281,12 @@ export const ForgetRejectedByTheServer: Story = {
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const clusterFits = phoneFits({
+  render: () => <Harness fetchStub={async () => json(FLEET)} />,
+  ready: (canvas) => canvas.findByText("gw-old"),
+});
+export const MobileFits: Story = clusterFits("mobile", "en");
+export const MobileFitsInRussian: Story = clusterFits("mobile", "ru");

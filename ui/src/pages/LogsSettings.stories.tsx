@@ -171,10 +171,14 @@ export const AClearedSampleRateCannotBeSaved: Story = {
     const canvas = within(canvasElement);
     const rate = await canvas.findByLabelText("Sample rate percent");
     await userEvent.clear(rate);
-    await waitFor(() =>
-      expect(canvas.getByText("Sample rate must be between 0 and 100 percent.")).toBeVisible(),
+    await waitFor(() => expect(rate).toHaveAttribute("aria-invalid", "true"));
+    await expect(rate).toHaveAccessibleDescription(
+      /Sample rate must be between 0 and 100 percent\./,
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await expect(canvas.queryByText(/The log keeps/)).toBeNull();
   },
 };
@@ -219,10 +223,65 @@ export const PayloadRetentionCannotOutliveLogs: Story = {
     const days = await canvas.findByLabelText("Retention days");
     await userEvent.clear(days);
     await userEvent.type(days, "1");
-    await waitFor(() =>
-      expect(canvas.getByText("Payload retention cannot outlive log retention.")).toBeVisible(),
+    const hours = canvas.getByLabelText("Payload retention hours");
+    await waitFor(() => expect(hours).toHaveAttribute("aria-invalid", "true"));
+    await expect(hours).toHaveAccessibleDescription(
+      "Payload retention cannot outlive log retention.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+
+// every failing field is marked at once, each with its own message, and a
+// press on Save moves focus to the first one (#2096)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const days = await canvas.findByLabelText("Retention days");
+    const hours = canvas.getByLabelText("Payload retention hours");
+    await userEvent.clear(days);
+    await userEvent.type(days, "0");
+    await userEvent.clear(hours);
+    await userEvent.type(hours, "9999");
+    await waitFor(() => {
+      expect(days).toHaveAttribute("aria-invalid", "true");
+      expect(hours).toHaveAttribute("aria-invalid", "true");
+    });
+    await expect(days).toHaveAccessibleDescription(
+      "Retention must be a whole number of days between 1 and 3650.",
+    );
+    await expect(hours).toHaveAccessibleDescription(
+      "Payload retention must be a whole number of hours between 1 and 8760.",
+    );
+    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expect(days).toHaveFocus();
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "retention_days must be between 1 and 3650" } }, 400);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const days = await canvas.findByLabelText("Retention days");
+    await userEvent.type(days, "0");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(days).toHaveAttribute("aria-invalid", "true"));
+    await expect(days).toHaveAccessibleDescription("retention_days must be between 1 and 3650");
+    await waitFor(() => expect(days).toHaveFocus());
   },
 };
 
