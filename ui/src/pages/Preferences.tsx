@@ -26,7 +26,7 @@ import { validTimeZone } from "@/lib/i18n/format";
 import { PREFERENCES_QUERY_KEY, refusedField, savePreferences } from "@/lib/preferences";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useDraft } from "@/lib/use-draft";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the account's own preferences (#2448), stored on the control plane so they
 // follow the account to another browser. what a save sends is the document as
@@ -62,7 +62,6 @@ export default function Preferences() {
     retry: false,
   });
   useScreenReady(!prefs.isLoading);
-  useErrorState(!!prefs.error, "preferences");
 
   // a copy cached for first paint is stale by construction (it is a guess made
   // before the fetch answered), so the form waits for the server's word
@@ -113,6 +112,7 @@ export default function Preferences() {
           error={prefs.error}
           resource={t("errors.resources.preferences")}
           onRetry={() => void prefs.refetch()}
+          target="preferences"
         />
       </PageBody>
     );

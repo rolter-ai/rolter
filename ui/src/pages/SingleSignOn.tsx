@@ -7,12 +7,12 @@ import {
   Pencil,
   Plus,
   ShieldCheck,
-  Trash2,
   Users,
 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
@@ -25,6 +25,7 @@ import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen"
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
 import { CopyableValue } from "@/components/ui/copyable-value";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
@@ -64,7 +65,7 @@ import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
@@ -464,7 +465,7 @@ function SignInPolicyCard({
   const bothOff = !password && !sso;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
         <h2 className="text-sm font-medium text-foreground">{t("pages.sso.policy.title")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.subtitle")}</p>
@@ -631,7 +632,7 @@ function SignInPolicyCard({
           <DocsLink page="breakGlass" label={t("pages.sso.policy.mfaConfirm.breakGlassLink")} />
         </p>
       </ConfirmDialog>
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -710,7 +711,7 @@ function ProviderCard({
   const held = lastWayIn ? reasonId : undefined;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="flex items-start gap-3 px-4 py-3.5">
         <KeyRound aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -793,22 +794,16 @@ function ProviderCard({
             )}
           </RowIconButton>
         )}
-        <RowIconButton
-          danger
+        <DeleteIconButton
           gate="sso_provider:delete"
           control="sso-provider-delete"
-          aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          disabled={deleting || lastWayIn}
+          label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
           title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
+          pending={deleting}
+          disabled={lastWayIn}
           aria-describedby={held}
           onClick={() => onDelete(provider)}
-        >
-          {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </RowIconButton>
+        />
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
@@ -846,7 +841,7 @@ function ProviderCard({
       </div>
 
       <ProviderMappings provider={provider} />
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -1173,7 +1168,6 @@ export default function SingleSignOn() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // the provider list is what the user is actually waiting on here
   useScreenReady(!providers.isLoading);
-  useErrorState(!!providers.error, "sso");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: [PROVIDERS_KEY, orgId] });
 
@@ -1291,6 +1285,7 @@ export default function SingleSignOn() {
           error={policy.error}
           resource={t("errors.resources.signInPolicy")}
           onRetry={() => policy.refetch()}
+          target="sign-in-policy"
         />
       )}
       {policy.data && orgId && (
@@ -1325,6 +1320,7 @@ export default function SingleSignOn() {
           error={providers.error}
           resource={t("errors.resources.ssoProviders")}
           onRetry={() => providers.refetch()}
+          target="sso-providers"
         />
       )}
 

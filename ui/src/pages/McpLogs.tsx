@@ -3,6 +3,7 @@ import { ChevronRight, SearchX, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Overline } from "@/components/ui/overline";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
@@ -91,7 +92,13 @@ function McpLogsScreen() {
 
   useScreenReady(!summary.isLoading);
 
-  useErrorState(!!summary.error, "mcp-logs");
+  // the summary has no `LoadError` of its own to record a failure, so it is
+  // reported here; the call list and the detail drawer record theirs (#2444).
+  // no analytics store is a supported shape, stated below, not an error state
+  useErrorState(
+    !!summary.error && !(summary.error instanceof AnalyticsUnavailableError),
+    "mcp-log-summary",
+  );
   const logs = useQuery({
     queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
     queryFn: () =>
@@ -234,6 +241,7 @@ function McpLogsScreen() {
               error={logs.error}
               resource={t("errors.resources.mcpLogs")}
               onRetry={() => void logs.refetch()}
+              target="mcp-logs"
             />
           )}
           {rows.length === 0 && logs.isSuccess && (
@@ -341,9 +349,7 @@ function latencyStat(value: number | null | undefined, ms: (v: number) => string
 function McpStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-[10px] border border-[color:var(--border-subtle)] bg-card p-4">
-      <div className="mb-1 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline className="mb-1">{label}</Overline>
       <div className="font-mono text-xl font-semibold">{value}</div>
     </div>
   );
@@ -397,6 +403,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             error={detail.error}
             resource={t("errors.resources.mcpLogDetail")}
             onRetry={() => void detail.refetch()}
+            target="mcp-log-detail"
           />
         ))}
       {d && (
@@ -418,9 +425,9 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             // that is certain, unlike an empty body, so it is stated plainly
             // rather than left looking like a call with no arguments
             <div>
-              <h3 className="mb-1 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+              <Overline as="h3" className="mb-1">
                 {t("pages.mcpLogs.argumentsAndResult")}
-              </h3>
+              </Overline>
               <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   {t("pages.mcpLogs.payloadWithheld")}
@@ -487,9 +494,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
 function DrawerStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline>{label}</Overline>
       <div className="truncate font-mono text-xs text-[color:var(--text-secondary)]">{value}</div>
     </div>
   );
@@ -506,9 +511,7 @@ function DrawerBlock({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline className="mb-1">{label}</Overline>
       {/* tool arguments and results are JSON almost always and opaque text
           occasionally; the shared block colours the first and leaves the
           second alone (#949) */}

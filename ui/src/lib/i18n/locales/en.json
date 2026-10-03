@@ -18,6 +18,7 @@
         "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
         "state_expired": "This sign-in took too long or was already used. Start it again.",
         "sso_disabled": "Single sign-on is turned off for this organization.",
+        "unknown_provider": "That single sign-on option is no longer available. Pick another way to sign in, or contact your administrator.",
         "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
         "account_deactivated": "This account has been deactivated. Contact your administrator.",
         "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
@@ -285,13 +286,18 @@
         "invalid_credentials": "The email or password is wrong.",
         "invalid_cursor": "The page position is no longer valid. Reload the list.",
         "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_field": "One of the values is not accepted. Correct it and try again.",
         "invalid_query": "The filter is not valid.",
         "invalid_time_bound": "The time range is not valid.",
+        "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
         "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "name_taken": "That name is already taken. Choose another.",
         "no_such_endpoint": "This control plane does not offer that feature.",
         "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
         "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "referenced": "Other items still depend on this one. Move or delete them first.",
+        "scope_mismatch": "A provider here is scoped to a different project. Use an org-wide provider or one scoped to the same project.",
         "too_many_attempts": "Too many failed attempts. Try again later.",
         "unauthenticated": "Your session is missing or has expired. Sign in again."
       }
@@ -537,6 +543,11 @@
       "todo": "To do",
       "noScopeTitle": "No project selected",
       "noScopeBody": "Pick an organisation, team and project in the header. Each step below is done when the row exists in that project.",
+      "noProjectTitle": "No project yet",
+      "noProjectBody": "Step 1 needs a project, and the team in scope has none yet. Create one here, or later with the + beside Project in the scope switcher in the sidebar.",
+      "noTeamBody": "Step 1 needs a project, and a project belongs to a team. Add an organisation and a team with the + controls in the scope switcher in the sidebar, then come back to create the project.",
+      "createProject": "Create project",
+      "noProjectDenied": "Step 1 needs a project, and this deployment has none. Ask an administrator to create one; creating a project takes the admin role.",
       "snippetLabel": "Request",
       "steps": {
         "call": {
@@ -2867,6 +2878,7 @@
       "projectRole": "Project role",
       "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
       "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
+      "inviteReplaces": "{{email}} already has a pending invitation. Sending another replaces it, and the old link stops working.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
@@ -2889,6 +2901,7 @@
       "viaScim": "from SCIM",
       "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
       "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
+      "lastAdminHint": "{{email}}'s {{role}} role on {{scope}} is the organization's last admin grant. Grant admin to someone else first.",
       "toastRevoked": "Revoked {{role}} on {{scope}} from {{email}}",
       "toastAlreadyRevoked": "{{email}} no longer held {{role}} on {{scope}}",
       "toastChanged": "{{email}} is now {{role}} on {{scope}}.",
@@ -2926,6 +2939,7 @@
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
+        "lastAdminRefused": "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
         "changeTitle": "Change {{email}}'s role on {{scope}}?",
         "changeBody": "They hold {{role}} there now. The role you pick is granted first and {{role}} is revoked right after, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
@@ -2955,7 +2969,8 @@
         "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
         "superadminRemoveConfirm": "Remove superadmin",
         "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
-        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
+        "lastSuperadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again."
       }
     },
     "config": {
@@ -3290,7 +3305,9 @@
         "title": "Model",
         "desc": "Used when a request arrives without a model. Leave this empty to keep rejecting such requests instead of silently picking one for the caller.",
         "defaultModel": "Default model",
-        "defaultModelHint": "A routed model or group-slug/model address"
+        "defaultModelHint": "A routed model or group-slug/model address",
+        "placeholder": "Leave empty to reject requests that arrive without a model",
+        "modelsUnavailable": "Couldn’t load the list of models. You can still type an address."
       },
       "timeoutsNote": "Upstream timeouts and the retry budget are deployment-wide and live under <0>Settings › Performance Tuning</0>.",
       "providerDefault": "provider default",

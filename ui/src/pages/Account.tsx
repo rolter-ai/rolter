@@ -56,7 +56,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // end-user self-service panel (ROL-224): view/rotate/delete the virtual keys you
 // personally minted and see your own usage/spend. no admin role required — the
@@ -75,7 +75,6 @@ export default function Account() {
 
   useScreenReady(!keys.isLoading);
 
-  useErrorState(!!keys.error, "account");
   const usage = useQuery({
     queryKey: ["my-usage"],
     queryFn: () => fetchMyUsage(),
@@ -174,6 +173,7 @@ export default function Account() {
           error={keys.error}
           resource={t("errors.resources.yourKeys")}
           onRetry={() => keys.refetch()}
+          target="own-keys"
         />
       )}
       {!keys.isLoading && !keys.error && keys.data?.length === 0 && (
@@ -219,6 +219,7 @@ export default function Account() {
             error={usage.error}
             resource={t("errors.resources.yourUsage")}
             onRetry={() => usage.refetch()}
+            target="own-usage"
           />
         ))}
 

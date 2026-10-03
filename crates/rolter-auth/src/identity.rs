@@ -4,7 +4,7 @@
 //! [`Identity`] that the control plane turns into a session and reconciled
 //! memberships. [`IdentityProvider`] is the seam between "how was this person
 //! verified" (provider-specific: an argon2 hash comparison, a JWKS-checked id
-//! token, eventually an LDAP bind for #241) and "what rolter does once they
+//! token, an LDAP bind once #1826 wires it) and "what rolter does once they
 //! are" (identical for every provider, so it lives outside this trait).
 //!
 //! Concrete providers own the dependencies verification actually needs
@@ -81,9 +81,9 @@ pub enum IdentityError {
 
 /// A pluggable source of verified identities.
 ///
-/// New providers (LDAP bind + group mapping is #241) implement this trait;
-/// nothing downstream of a resolved [`Identity`] needs to know which provider
-/// produced it.
+/// New providers (LDAP bind + group mapping, #241, wired by #1826) implement
+/// this trait; nothing downstream of a resolved [`Identity`] needs to know
+/// which provider produced it.
 #[async_trait]
 pub trait IdentityProvider: Send + Sync {
     /// stable identifier of the provider kind, e.g. `"local"`, `"oidc"`,

@@ -6,7 +6,8 @@ name: extended
 # continue-on-error jobs, where each one took a slot from the 20-job runner pool
 # (the macOS one from the 5-slot macOS pool) for a verdict nothing read. they
 # run here nightly and on demand instead (ADR-0034, #2025). `bun pin` rides
-# along: a ten-second check that .bun-version still names the latest bun (#1922).
+# along: a ten-second check that .bun-version still names the latest bun (#1922),
+# and a lockfile audit of ui/bun.lock, which dependabot alerts cannot see (#1930).
 #
 # nothing gates on this workflow, so no job here carries continue-on-error: a
 # failure has to reach `needs.*.result` as `failure` for `report failure` to
@@ -208,6 +209,36 @@ jobs:
           fi
           echo "bun ${pinned} is the latest release" >> "${GITHUB_STEP_SUMMARY}"
 
+  # ── ui lockfile audit (#1930) ───────────────────────────────────────────────
+  # dependabot's dependency graph reads ui/package.json but not ui/bun.lock, so
+  # a vulnerable package that only arrives transitively raises no alert. this
+  # reads the lockfile itself with `bun audit` and fails on any advisory that is
+  # not fixed or listed in ui/audit-accepted.json. it is informational, never a
+  # merge gate: a new advisory lands on code that is already merged, and a gate
+  # would turn every unrelated PR red for it. `report failure` opens the tracking
+  # issue. needs no install: bun audit reads package.json and bun.lock
+  ui-audit:
+    name: ui lockfile audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .bun-version
+            ui/package.json
+            ui/bun.lock
+            ui/audit-accepted.json
+            ui/scripts/audit-lockfile.ts
+          sparse-checkout-cone-mode: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: bun audit over ui/bun.lock
+        working-directory: ui
+        run: bun scripts/audit-lockfile.ts
+
   # ── report failure: one tracking issue for the whole workflow ──────────────
   # opens an issue titled after this workflow the first time a job fails, and
   # comments on it while it stays open, so a red night is seen rather than
@@ -226,7 +257,7 @@ jobs:
   # cost it
   report-failure:
     name: report failure
-    needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin]
+    needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin, ui-audit]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -246,6 +277,7 @@ jobs:
           MSRV: ${{ needs.msrv.result }}
           COVERAGE: ${{ needs.coverage.result }}
           BUN_PIN: ${{ needs.bun-pin.result }}
+          UI_AUDIT: ${{ needs.ui-audit.result }}
           MILESTONE: Maintenance, CI & DX
         run: |
           set -euo pipefail
@@ -259,7 +291,8 @@ jobs:
             "| compose smoke | $COMPOSE_SMOKE |" \
             "| msrv build | $MSRV |" \
             "| coverage | $COVERAGE |" \
-            "| bun pin | $BUN_PIN |")"
+            "| bun pin | $BUN_PIN |" \
+            "| ui lockfile audit | $UI_AUDIT |")"
           number="$(gh issue list --state open --label ci --limit 200 --json number,title \
             | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')"
           if [ -n "$number" ]; then

@@ -1,8 +1,10 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, CircleHelp, Plus, Trash2 } from "lucide-react";
+import { ArrowLeftRight, CircleHelp, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -10,6 +12,7 @@ import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,7 +25,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /**
  * What is known about one route's complexity policy.
@@ -89,10 +92,9 @@ export default function ComplexityRouter() {
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
   // the route list is half of what the reader waits on — the policy reads decide
-  // what every card says — so readiness and the error signal follow both
+  // what every card says — so readiness follows both. the error signal is the
+  // two `LoadError`s' own, one for the route list and one for the policy group
   useScreenReady(!routes.isLoading && checking.length === 0);
-  useErrorState(!!routes.error, "complexity-router");
-  useErrorState(failed.length > 0, "complexity-policies");
 
   return (
     <PageBody>
@@ -121,6 +123,7 @@ export default function ComplexityRouter() {
           error={routes.error}
           resource={t("errors.resources.routes")}
           onRetry={() => void routes.refetch()}
+          target="complexity-routes"
         />
       )}
       {routes.isSuccess && states.length === 0 && (
@@ -150,6 +153,7 @@ export default function ComplexityRouter() {
             error={failed[0].error}
             resource={t("errors.resources.complexityPolicies")}
             onRetry={() => failed.forEach((f) => f.retry())}
+            target="complexity-policies"
           />
           <div className="flex flex-wrap gap-2.5">
             {failed.map(({ route }) => (
@@ -170,14 +174,11 @@ export default function ComplexityRouter() {
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
         {configured.map(({ route, tiers }) => (
-          <div
-            key={route.id}
-            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
-          >
+          <CardStack key={route.id}>
             <div className="flex items-center gap-2.5">
-              <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--red-folk-text)]">
+              <IconFrame className="text-[color:var(--red-folk-text)]">
                 <ArrowLeftRight className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <span className="min-w-0 truncate font-mono text-sm font-semibold">
                 {route.model}
               </span>
@@ -219,7 +220,7 @@ export default function ComplexityRouter() {
                 {t("pages.complexityRouter.editPolicy")}
               </GatedButton>
             </div>
-          </div>
+          </CardStack>
         ))}
       </div>
 
@@ -372,6 +373,7 @@ function PolicyDialog({
           error={existing.error}
           resource={translate("errors.resources.complexityPolicy")}
           onRetry={() => void existing.refetch()}
+          target="complexity-policy"
         />
       )}
       {!existing.isPending && !existing.error && (
@@ -404,19 +406,12 @@ function PolicyDialog({
                 onChange={(route) => set(i, { route })}
                 options={allRoutes.map((m) => ({ value: m, label: m }))}
               />
-              <button
-                type="button"
-                title={translate("pages.complexityRouter.removeTierAria", {
-                  name: t.name || i + 1,
-                })}
-                aria-label={translate("pages.complexityRouter.removeTierAria", {
+              <DeleteIconButton
+                label={translate("pages.complexityRouter.removeTierAria", {
                   name: t.name || i + 1,
                 })}
                 onClick={() => setTiers((ts) => ts?.filter((_, j) => j !== i) ?? null)}
-                className="flex h-8 flex-none items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
           ))}
           <Button

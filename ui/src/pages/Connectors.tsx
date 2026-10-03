@@ -3,6 +3,8 @@ import { Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } from "lucide-re
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -48,7 +50,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
 import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
 const statusTint = (hue: "success" | "danger" | "info") =>
@@ -186,6 +188,7 @@ function CollectorConfigDialog({
                 error={config.error}
                 resource={t("errors.resources.collectorConfig")}
                 onRetry={() => void config.refetch()}
+                target="collector-config"
               />
             )}
             {config.data !== undefined && (
@@ -236,7 +239,6 @@ function ConnectorsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `connectors` is the query the user is actually waiting on for this screen
   useScreenReady(!connectors.isLoading);
-  useErrorState(!!connectors.error, "connectors");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["connectors"] });
 
   const toggle = useMutation({
@@ -348,6 +350,7 @@ function ConnectorsScreen() {
           error={connectors.error}
           resource={t("errors.resources.connectors")}
           onRetry={() => void connectors.refetch()}
+          target="connectors"
         />
       )}
       {/* the empty state offers the same create as the toolbar, which stays
@@ -374,18 +377,17 @@ function ConnectorsScreen() {
           const tone = healthTone(c.health_status);
           const problem = problemWith(c);
           return (
-            <div
+            <CardStack
               key={c.id}
               // named after the connector, so the card's own test, delete and
               // error line read as belonging to it
               role="group"
               aria-label={c.name}
-              className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
-                <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+                <IconFrame>
                   <Cable className="h-4 w-4" />
-                </span>
+                </IconFrame>
                 <div className="min-w-0 flex-1">
                   <div className="font-mono text-sm font-semibold">{c.name}</div>
                   {/* wraps rather than truncating: at 375 px a cut-off URL has no
@@ -500,7 +502,7 @@ function ConnectorsScreen() {
                   />
                 </div>
               </div>
-            </div>
+            </CardStack>
           );
         })}
       </div>

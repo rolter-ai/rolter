@@ -60,47 +60,91 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply the shipped `ui_events` DDL, and every migration that has widened it.
+/// Apply every shipped ClickHouse migration, once per test binary.
 ///
 /// Read from `clickhouse/` rather than repeated here on purpose: a copy would
-/// let the table this test writes to drift away from the one a deployment gets,
-/// which is precisely the class of failure the test exists to catch. Every
-/// statement is `create table if not exists` or an `alter`, so this is also the
-/// repair for the failure mode a dogfood stack is most likely to hit — a
-/// ClickHouse volume created before #805 landed never ran the init scripts
-/// again and has no `ui_events` table at all.
+/// let the tables this test writes to drift away from the ones a deployment
+/// gets, which is precisely the class of failure the test exists to catch.
+/// Every statement is `create ... if not exists` or an `alter`, so this is also
+/// the repair for a ClickHouse volume created before #805 landed, which never
+/// ran the init scripts again and has no `ui_events` table at all.
 ///
-/// All of them, not just the `create`: the `action` column is an `Enum8` that
-/// `010_*` appended to, and a test that only ran the `create` would reject
-/// every value added since while the deployment accepted it (#1731).
-async fn ensure_table(client: &reqwest::Client, base: &str) {
+/// All of them, not just the `ui_events` ones: the `action` column is an
+/// `Enum8` that `010_*` appended to (#1731), and the control plane's startup
+/// `reconcile_retention` also touches `request_logs`, which a `ui_events`-only
+/// schema leaves missing and answers with an `UNKNOWN_TABLE` warning (#2697).
+///
+/// Once, because with every test running its own `ALTER`s in parallel each one
+/// took up to about 2 s (#2697). Each `#[tokio::test]` owns a runtime, so a
+/// `tokio::sync::OnceCell` would be tied to whichever runtime first awaited it;
+/// a `std::sync::OnceLock` filled from a thread with a private runtime is not.
+async fn ensure_table(base: &str) {
+    static APPLIED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let base = base.to_string();
+    tokio::task::spawn_blocking(move || {
+        APPLIED.get_or_init(|| {
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the schema runtime")
+                    .block_on(apply_schema(&base));
+            })
+            .join()
+            .expect("apply the clickhouse schema");
+        });
+    })
+    .await
+    .expect("join the schema setup");
+}
+
+async fn apply_schema(base: &str) {
+    let client = reqwest::Client::new();
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .expect("read the clickhouse migration directory")
         .filter_map(|entry| {
             let path = entry.ok()?.path();
-            let name = path.file_name()?.to_str()?.to_string();
-            // the numeric prefix is the order, and it is why these are sorted
-            // by file name rather than taken as the directory hands them over
-            name.contains("ui_events").then_some((name, path))
+            (path.extension()? == "sql").then_some(path)
         })
         .collect();
+    // the numeric prefix is the order
     files.sort();
-    assert!(!files.is_empty(), "no ui_events DDL found in clickhouse/");
+    assert!(
+        files
+            .iter()
+            .any(|f| f.to_string_lossy().contains("ui_events")),
+        "no ui_events DDL found in clickhouse/"
+    );
 
-    for (name, path) in files {
-        let ddl = std::fs::read_to_string(&path).expect("read the shipped ui_events DDL");
-        let response = client
-            .post(format!("{base}/"))
-            .body(ddl)
-            .send()
-            .await
-            .expect("reach clickhouse");
-        assert!(
-            response.status().is_success(),
-            "{name} failed: {}",
-            response.text().await.unwrap_or_default()
-        );
+    for path in files {
+        let ddl = std::fs::read_to_string(&path).expect("read the shipped DDL");
+        // comments go first, as `ux-capture.sh apply-schema` strips them: several
+        // hold a `;` of their own. then one statement per request, since the HTTP
+        // interface refuses more than one
+        let stripped: String = ddl
+            .lines()
+            .map(|line| line.split("--").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for statement in stripped
+            .split(';')
+            .map(str::trim)
+            .filter(|statement| !statement.is_empty())
+        {
+            let response = client
+                .post(format!("{base}/"))
+                .body(statement.to_string())
+                .send()
+                .await
+                .expect("reach clickhouse");
+            assert!(
+                response.status().is_success(),
+                "{}: {}",
+                path.display(),
+                response.text().await.unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -254,7 +298,7 @@ fn session_id() -> String {
 async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -348,7 +392,7 @@ async fn a_dashboard_batch_lands_in_clickhouse_with_its_own_screen_action_and_ts
 async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -428,7 +472,7 @@ async fn every_action_the_server_accepts_is_one_clickhouse_stores() {
 async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -483,7 +527,7 @@ async fn one_bad_event_rejects_the_whole_batch_and_writes_nothing() {
 async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -568,7 +612,7 @@ async fn a_dead_clickhouse_is_a_500_and_the_batch_is_dropped_not_queued() {
 async fn a_lapsed_session_is_a_401_which_disables_the_client_permanently() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -665,7 +709,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
 async fn a_batch_over_the_server_limit_is_refused_whole() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();
@@ -712,7 +756,7 @@ async fn a_batch_over_the_server_limit_is_refused_whole() {
 async fn switching_ui_events_off_answers_202_and_stores_nothing() {
     let ch_url = skip_without_stack!();
     let http = reqwest::Client::new();
-    ensure_table(&http, &ch_url).await;
+    ensure_table(&ch_url).await;
 
     let db = fresh_db().await;
     let pool = db.pool().clone();

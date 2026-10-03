@@ -18,7 +18,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { serverFieldError } from "@/lib/field-errors";
 import { sampleShare } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   samplePercent: string;
@@ -57,6 +57,11 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
 // field can never save a policy that logs nothing
 const parsePercent = (value: string) => (value.trim() === "" ? Number.NaN : Number(value));
 
+const validMaxBytes = (value: string) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 1_048_576;
+};
+
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // returns a catalog key, translated by the caller
@@ -86,8 +91,9 @@ function validate(form: FormState): FieldErrors {
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
     errors.samplePercent = "pages.logsSettings.errors.sampleRange";
   }
-  const maxBytes = Number(form.maxBytes);
-  if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > 1_048_576) {
+  // the field is disabled while capture is off, so a bad value there could
+  // not be fixed; it is re-checked once capture is switched back on
+  if (form.captureEnabled && !validMaxBytes(form.maxBytes)) {
     errors.maxBytes = "pages.logsSettings.errors.maxBytes";
   }
   const days = Number(form.retentionDays);
@@ -121,7 +127,6 @@ function LogsSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "logs-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const sampleHintId = React.useId();
@@ -145,7 +150,10 @@ function LogsSettingsScreen() {
       updateLoggingSettings({
         sample_rate: Number(f.samplePercent) / 100,
         payload_capture_enabled: f.captureEnabled,
-        payload_capture_max_bytes: Number(f.maxBytes),
+        // an unusable value is only reachable with capture off; keep what is stored
+        payload_capture_max_bytes: validMaxBytes(f.maxBytes)
+          ? Number(f.maxBytes)
+          : (settings.data?.payload_capture_max_bytes ?? 0),
         payload_capture_redact_fields: splitList(f.redactFields),
         payload_capture_models: splitList(f.models),
         payload_capture_virtual_key_ids: splitList(f.virtualKeyIds),
@@ -195,6 +203,7 @@ function LogsSettingsScreen() {
           error={settings.error}
           resource={t("errors.resources.logsSettings")}
           onRetry={() => void settings.refetch()}
+          target="logs-settings"
         />
       </div>
     );

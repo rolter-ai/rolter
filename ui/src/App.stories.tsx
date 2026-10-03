@@ -8,7 +8,15 @@ import {
   shellStub,
   shellStubWithStability,
 } from "./pages/shell-harness";
-import { expectForbidden, recording, withCapabilities } from "./pages/story-harness";
+import {
+  TEAM,
+  confirmation,
+  expectForbidden,
+  json,
+  recording,
+  withCapabilities,
+  type FetchStub,
+} from "./pages/story-harness";
 import type { InvocationRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
@@ -165,6 +173,44 @@ export const TheLandingScreenHoldsOneDayOfTraffic: Story = {
     await expect(canvas.queryByText(en.analytics.noRowsYet)).toBeNull();
     await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
     await expect(canvas.queryByText(en.pages.dashboard.nothingLogged)).toBeNull();
+  },
+};
+
+/**
+ * The shell's team has no project yet. The shared chain answers the project list
+ * before a story's own routes, so this answers it first.
+ */
+function withoutProjects(): FetchStub {
+  const shell = shellStub();
+  return async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === `/api/v1/teams/${TEAM.id}/projects` && init?.method !== "POST") return json([]);
+    return shell(input, init);
+  };
+}
+
+/**
+ * Getting started opens the create-project dialog from the Dashboard with the
+ * account menu closed (#2611). The scope switcher lives in that menu and is not
+ * in the document while it is shut, so this is the story that fails if the
+ * dialog ever moves back into it.
+ */
+export const GettingStartedOpensCreateProject: Story = {
+  // the dismissal is persisted per browser, and a card another story put away
+  // would leave nothing here to click
+  beforeEach: () => localStorage.removeItem("rolter.getting-started.dismissed"),
+  render: () => <AppShell route="/dashboard" fetchStub={withoutProjects()} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const create = await canvas.findByRole("button", {
+      name: en.pages.gettingStarted.createProject,
+    });
+    // the switcher, and its own + beside Project, are not mounted
+    await expect(canvas.queryByRole("button", { name: en.scope.addProject })).toBeNull();
+    await userEvent.click(create);
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await expect(dialog.getByText(en.scope.newProjectHint)).toBeVisible();
   },
 };
 

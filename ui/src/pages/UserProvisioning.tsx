@@ -3,6 +3,7 @@ import { BookUser, Loader2, Plus, Users } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { GroupMappings } from "@/components/GroupMappings";
@@ -33,7 +34,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TOKENS_QUERY_KEY = ["scim-tokens"];
 const MAPPINGS_QUERY_KEY = "scim-group-mappings";
@@ -98,7 +99,7 @@ function ScimBaseUrl({ hint, className }: { hint?: string; className?: string })
 function MappingsPanel({ orgId }: { orgId: string }) {
   const { t } = useTranslation();
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="flex items-start gap-3 border-b border-[color:var(--border-subtle)] px-4 py-3">
         <Users aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
         <div className="min-w-0">
@@ -124,7 +125,7 @@ function MappingsPanel({ orgId }: { orgId: string }) {
           removeBody={(role) => t("pages.userProvisioning.mappings.removeBody", { role })}
         />
       </div>
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -151,8 +152,6 @@ export default function UserProvisioning() {
   // `tokens` is the query the user is actually waiting on for this screen
 
   useScreenReady(!tokens.isLoading);
-
-  useErrorState(!!tokens.error, "user-provisioning");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: [...TOKENS_QUERY_KEY, orgId] });
@@ -297,6 +296,7 @@ export default function UserProvisioning() {
           error={tokens.error}
           resource={t("errors.resources.provisioningTokens")}
           onRetry={() => tokens.refetch()}
+          target="provisioning-list"
         />
       )}
       {revoke.isError && (

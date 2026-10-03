@@ -177,6 +177,7 @@ export default function SignInEnrolment({
           error={enrolment.error}
           resource={t("errors.resources.twoFactorSecret")}
           onRetry={() => void enrolment.refetch()}
+          target="mfa-enrolment"
         />
       )}
       {enrolment.data && (

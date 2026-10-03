@@ -13,7 +13,8 @@ name: quality
 # the rust checks that link nothing, `rust build` for the ones that link or boot
 # a binary. each runs one named step per concern plus a report step that names
 # whichever failed. `ui, storybook, docs` does the same for every check that
-# runs on bun. nextest, the image smoke and coverage run as jobs of their own.
+# runs on bun; `rust build` also builds and smokes the runtime image (#2037).
+# nextest and coverage run as jobs of their own.
 # ci.yml's `ci-ok`, the single check branch protection requires, needs every
 # job here and runs the pr title and body checks as steps of its own (#2045).
 # coverage runs as informational (continue-on-error) on pull requests only; the
@@ -226,8 +227,9 @@ jobs:
   rust-build:
     name: rust build
     runs-on: ubuntu-24.04
-    # about 3.5 min warm; the three builds can take 20 cold, and the semver
-    # step carries a limit of its own
+    # about 3.5 min warm before the image smoke, which adds a debug build of the
+    # image binaries, a vite build and the smoke itself; the builds can take 20
+    # cold, and the semver step carries a limit of its own
     timeout-minutes: 45
     # no job-level RUSTFLAGS here, ever: the variable replaces every `rustflags`
     # entry in cargo's config, the wild-linker action's `--ld-path` included,
@@ -284,7 +286,7 @@ jobs:
       - name: maturin sdist (validates the PyPI packaging)
         id: sdist
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx maturin@1.15.0 sdist --out "${RUNNER_TEMP}/sdist"
+        run: uvx --from "$(bash scripts/tool-pin.sh maturin)" maturin sdist --out "${RUNNER_TEMP}/sdist"
 
       # ── gateway smoke (fake-llm) ──────────────────────────────────────────
       # boots the real binary and exercises the built-in fake-llm (no upstream
@@ -327,6 +329,66 @@ jobs:
             -o /tmp/stream.txt
           cat /tmp/stream.txt
           grep -q 'data:' /tmp/stream.txt
+
+      # ── image smoke (published ports) ─────────────────────────────────────
+      # runs the single image the way the quickstart documents (default
+      # command, ports published with `-p`) and curls both planes from the
+      # host, plus the refusal with no admin token and no acknowledgement.
+      # `rolter --version` and every in-process test pass on an image whose
+      # planes bind the container's loopback, which a published port never
+      # reaches (#1891); only this sees it.
+      #
+      # it used to be a job of its own that ran `docker build --target runtime`,
+      # a cold release build of the workspace (about 5 min, the BuildKit cargo
+      # cache mounts start empty on a hosted runner) for a 1 s smoke (#2037).
+      # it now builds `runtime-prebuilt`, the same runtime layout (base, user,
+      # workdir, bundled config, env, ports, default command) around debug
+      # binaries built here on this job's warm cache and a dashboard built
+      # here with vite. its base is distroless debian13 rather than the
+      # published debian12: this runner's glibc headers make aws-lc link
+      # glibc 2.38 symbols, which debian 12's 2.36 lacks, so the binaries would
+      # not start there. the release build itself is still exercised: nightly by
+      # extended.yml's compose smoke, and before anything is published by
+      # release.yml's `smoke image`, which runs the same script against every
+      # pushed architecture's digest
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        id: setup-bun
+        if: ${{ !cancelled() }}
+        with:
+          bun-version-file: .bun-version
+      - name: build the dashboard for the image
+        id: image-ui
+        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      # the features the Dockerfile builds with (CARGO_FEATURES=postgres), in
+      # the dev profile, so it reuses this job's cache instead of compiling the
+      # workspace in release mode. the binaries are stripped into a directory of
+      # their own, so the dev profile's debug info stays out of the image layer
+      - name: build the image binaries
+        id: image-bins
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo build --workspace --features postgres --locked
+          mkdir -p "${RUNNER_TEMP}/image-bin"
+          install -s -m 0755 target/debug/rolter target/debug/rolter-gateway target/debug/rolter-control \
+            "${RUNNER_TEMP}/image-bin/"
+      - name: build the image (runtime-prebuilt)
+        id: image-build
+        if: ${{ !cancelled() && steps.image-ui.outcome == 'success' && steps.image-bins.outcome == 'success' }}
+        run: |
+          docker build -f docker/Dockerfile --target runtime-prebuilt \
+            --build-arg RUNTIME_DISTRO=debian13 \
+            --build-context rolter-bin="${RUNNER_TEMP}/image-bin" \
+            --build-context rolter-ui=ui/dist \
+            -t rolter:image-smoke .
+      - name: run it with published ports and curl both planes
+        id: image-smoke
+        if: ${{ !cancelled() && steps.image-build.outcome == 'success' }}
+        run: bash docker/smoke/image-smoke.sh rolter:image-smoke
 
       # ── semver-checks (advisory) ──────────────────────────────────────────
       # notice when a change moves a shared crate's rust API. scoped
@@ -421,6 +483,11 @@ jobs:
           OUTCOME_SDIST: ${{ steps.sdist.outcome }}
           OUTCOME_SMOKE_BUILD: ${{ steps.smoke-build.outcome }}
           OUTCOME_SMOKE_PROBE: ${{ steps.smoke-probe.outcome }}
+          OUTCOME_SETUP_BUN: ${{ steps.setup-bun.outcome }}
+          OUTCOME_IMAGE_UI: ${{ steps.image-ui.outcome }}
+          OUTCOME_IMAGE_BINS: ${{ steps.image-bins.outcome }}
+          OUTCOME_IMAGE_BUILD: ${{ steps.image-build.outcome }}
+          OUTCOME_IMAGE_SMOKE: ${{ steps.image-smoke.outcome }}
           OUTCOME_SEMVER_INSTALL: ${{ steps.semver-install.outcome }}
           OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
           OUTCOME_SEMVER: ${{ steps.semver.outcome }}
@@ -479,10 +546,19 @@ jobs:
           row "package (publish verify)" "cargo package (verifies each crate in isolation)" "${OUTCOME_PACKAGE}" \
             "cargo package --workspace --locked"
           row "package (publish verify)" "maturin sdist (validates the PyPI packaging)" "${OUTCOME_SDIST}" \
-            "uvx maturin@1.15.0 sdist --out target/sdist"
+            "uvx --from \"\$(bash scripts/tool-pin.sh maturin)\" maturin sdist --out target/sdist"
           row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
           row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
             "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
+          row "image smoke (published ports)" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
+          row "image smoke (published ports)" "build the dashboard for the image" "${OUTCOME_IMAGE_UI}" \
+            "cd ui && bun install --frozen-lockfile && bun run build"
+          row "image smoke (published ports)" "build the image binaries" "${OUTCOME_IMAGE_BINS}" \
+            "cargo build --workspace --features postgres --locked"
+          row "image smoke (published ports)" "build the image (runtime-prebuilt)" "${OUTCOME_IMAGE_BUILD}" \
+            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-arg RUNTIME_DISTRO=debian13 --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
+          row "image smoke (published ports)" "run it with published ports and curl both planes" "${OUTCOME_IMAGE_SMOKE}" \
+            "bash docker/smoke/image-smoke.sh rolter:image-smoke"
           advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
             "cargo install cargo-semver-checks --locked"
           advisory "semver-checks (advisory)" "resolve baseline" "${OUTCOME_BASELINE}" \
@@ -742,6 +818,18 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
+      # ── uvx tool pins: one file dependabot tracks ─────────────────────────
+      # `uvx zizmor@x.y.z` hides the version from dependabot, so the pins live
+      # in .github/tool-pins/requirements.txt (a pip manifest it bumps) and every
+      # command reads them through scripts/tool-pin.sh. this fails on an inline
+      # pin creeping back in, or an unused or unresolvable entry (#2185)
+      - name: uvx tool pins
+        id: tool-pins
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/check-tool-pins.sh
+          bash scripts/check-tool-pins.sh --self-test
+
       # ── docs: dev-docs relative links resolve ─────────────────────────────
       # mdBook only checks links inside the book, so a `../../` that should
       # have been `../../../` pointed at nothing and nothing failed. see #1926.
@@ -844,7 +932,7 @@ jobs:
           out="${RUNNER_TEMP}/zizmor.txt"
           attempt=1
           while true; do
-            uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+            uvx --from "$(bash scripts/tool-pin.sh zizmor)" zizmor --min-severity=medium --persona=regular \
               .github/workflows/ .github/actions/ 2>&1 | tee "${out}"
             status="${PIPESTATUS[0]}"
 
@@ -892,6 +980,15 @@ jobs:
         id: release-gate
         if: ${{ !cancelled() }}
         run: bash scripts/test-release-gate.sh
+
+      # ── python: the gate scripts under scripts/ ───────────────────────────
+      # the release handoff and rendered-manifest checkers are part of the merge
+      # gate, so drift in them is drift in the gate. rules live in ruff.toml;
+      # the pin is bumped by hand like the zizmor one (#2185)
+      - name: ruff (scripts)
+        id: ruff
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff check scripts
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
@@ -971,6 +1068,7 @@ jobs:
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_TOOL_PINS: ${{ steps.tool-pins.outcome }}
           OUTCOME_DEV_DOCS_LINKS: ${{ steps.dev-docs-links.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
@@ -981,6 +1079,7 @@ jobs:
           OUTCOME_RELEASE_HANDOFF: ${{ steps.release-handoff.outcome }}
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
+          OUTCOME_RUFF: ${{ steps.ruff.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
           OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
@@ -1048,6 +1147,8 @@ jobs:
             "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
+          row "uvx tool pins" "uvx tool pins" "${OUTCOME_TOOL_PINS}" yes \
+            "prek run tool-pins --all-files"
           row "dev-docs links" "dev-docs links" "${OUTCOME_DEV_DOCS_LINKS}" yes \
             "prek run dev-docs-links --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
@@ -1057,13 +1158,14 @@ jobs:
           row "unused deps" "unused deps" "${OUTCOME_MACHETE}" yes "cargo machete"
           row "actionlint" "actionlint" "${OUTCOME_ACTIONLINT}" yes "prek run actionlint --all-files"
           row "zizmor" "zizmor" "${OUTCOME_ZIZMOR}" yes \
-            "uvx zizmor@1.26.1 --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
+            "uvx --from \"\$(bash scripts/tool-pin.sh zizmor)\" zizmor --min-severity=medium --persona=regular .github/workflows/ .github/actions/"
           row "release handoff wired" "release handoff wired" "${OUTCOME_RELEASE_HANDOFF}" yes \
             "prek run release-handoff --all-files"
           row "release handoff wired" "release handoff wired (self-test)" "${OUTCOME_RELEASE_HANDOFF_SELF_TEST}" yes \
             "prek run release-handoff-self-test --all-files"
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
+          row "ruff" "ruff (scripts)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
@@ -1223,6 +1325,13 @@ jobs:
         id: waits
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:waits
+      # an override wins over the dependency range, so a bump of
+      # @playwright/test that skips `overrides.playwright` installs nothing new
+      # (#2028)
+      - name: playwright pin matches @playwright/test
+        id: playwright-pin
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run check:playwright-pin
       - name: unit tests (bun test)
         id: unit
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -1241,8 +1350,9 @@ jobs:
       #
       # the test-runner launches the headless shell, a separate download from
       # the full chromium build. ui/package.json pins the test-runner's
-      # playwright to the same version as @playwright/test, so one install
-      # serves both (#737)
+      # playwright through `overrides`, and `bun run check:playwright-pin` keeps
+      # that pin equal to @playwright/test, so one install serves both (#737,
+      # #2028)
       - name: install chromium (playwright)
         id: chromium
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -1283,6 +1393,7 @@ jobs:
           OUTCOME_PRIMITIVES: ${{ steps.primitives.outcome }}
           OUTCOME_FOCUS: ${{ steps.focus.outcome }}
           OUTCOME_WAITS: ${{ steps.waits.outcome }}
+          OUTCOME_PLAYWRIGHT_PIN: ${{ steps.playwright-pin.outcome }}
           OUTCOME_UNIT: ${{ steps.unit.outcome }}
           OUTCOME_BUILD: ${{ steps.build.outcome }}
           OUTCOME_CHROMIUM: ${{ steps.chromium.outcome }}
@@ -1333,6 +1444,7 @@ jobs:
           row "${ui}" "no hand-rolled shared components" "${OUTCOME_PRIMITIVES}" "cd ui && bun run check:primitives"
           row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
           row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
+          row "${ui}" "playwright pin matches @playwright/test" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
           row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
           row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
           row "${sb}" "install chromium (playwright)" "${OUTCOME_CHROMIUM}" \
@@ -1346,26 +1458,6 @@ jobs:
             exit 1
           fi
           echo "every ui, storybook and docs check passed" >> "${summary}"
-
-  # ── image smoke: the single image through published ports ───────────────────
-  # runs the image the quickstart documents (default command, ports published
-  # with `-p`) and curls both planes from the host, plus the refusal with no
-  # admin token and no acknowledgement. `rolter --version` and every in-process
-  # test pass on an image whose planes bind the container's loopback, which a
-  # published port never reaches (#1891); only this sees it. blocking, unlike
-  # extended.yml's compose smoke: it needs no secrets and no compose stack
-  image-smoke:
-    name: image smoke (published ports)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: build the image
-        run: docker build -f docker/Dockerfile --target runtime -t rolter:image-smoke .
-      - name: run it with published ports and curl both planes
-        run: bash docker/smoke/image-smoke.sh rolter:image-smoke
 
   # ── informational checks ────────────────────────────────────────────────────
   # non-blocking for now (continue-on-error); promote to required once their
@@ -1436,8 +1528,16 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
+        # `shell: bash` adds pipefail, so the `| tee` keeps cargo's exit status
+        shell: bash
         run: |
-          cargo llvm-cov --workspace --all-features --no-report
+          # job logs are not readable from every place that triages this job,
+          # so a failing test is named in an annotation as well as the log
+          log="${RUNNER_TEMP}/llvm-cov.log"
+          if ! cargo llvm-cov --workspace --all-features --no-report 2>&1 | tee "${log}"; then
+            bash .github/scripts/annotate-test-failures.sh "${log}" "coverage test failed"
+            exit 1
+          fi
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --json --summary-only > coverage.json

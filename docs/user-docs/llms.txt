@@ -110,6 +110,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 ### Deployment
 
 - [Docker](/deployment/docker): Run the full Rolter stack with Docker Compose: gateway, control plane, PostgreSQL, Redis and ClickHouse, either open on one machine or closed for a team on one host.
+- [Verify images](/deployment/verify-images): Check that a published Rolter image was built and signed by the Rolter release workflow, and read its SBOM, with cosign and the GitHub CLI.
 - [Production](/deployment/production): Checklist and guidance for running Rolter in production: TLS termination, secrets management, horizontal scaling, health probes, and database backups.
 - [Cluster](/deployment/cluster): How Rolter discovers the nodes in a deployment, how to tell a node that is lagging config from one that has stopped polling, and how to drain a node safely.
 - [Air-gapped](/deployment/air-gapped): Install and run Rolter in fully offline, air-gapped environments: mirror-based install paths for Docker, PyPI, crates.io and source builds, every outbound network path with the setting that controls it, an operator checklist, and an offline smoke test.
@@ -139,7 +140,9 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Version](/api/version): GET /api/v1/version reports the running rolter version and, when the control plane has checked, the latest stable release — the source of the dashboard's new-version hint.
 - [Public URL](/api/public-url): GET /api/v1/public-url reports the base URL the control plane builds every address it hands an identity provider from, and whether ROLTER_PUBLIC_URL set it or the default is standing in.
 - [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
+- [Providers](/api/providers): Provider rows from the control-plane API carry has_stored_key, a boolean that says whether a sealed key is stored, so a client can tell a stored key from an environment variable or no credential.
 - [Attribution listings](/api/attribution-listings): GET /api/v1/orgs/{org_id}/business-units and /customers return each row with the number of live virtual keys attributed to it, so a unit with no spend can be told apart from one that nothing could bill.
 - [Project settings](/api/project-settings): GET and PUT /api/v1/projects/{id}/settings read and change a project's own settings — today, whether the project's viewers may read the request and response bodies payload capture stored for it.
 - [Budgets & rate limits](/api/budgets-and-rate-limits): List, create, edit in place and delete spend budgets and rate limits through the control plane. PATCH changes a cap without a window where the scope has none.
+- [Dashboard analytics](/api/dashboard-analytics): Read the spend, usage and per-model figures the Dashboard shows, over any time window and narrowed to one model, virtual key, business unit or customer.
 - [Control-plane schema](/api/control-plane-openapi): The rolter control plane serves an OpenAPI 3.1 description of its management API at GET /openapi.json and renders it interactively at GET /docs — generate a client instead of hand-writing one.
