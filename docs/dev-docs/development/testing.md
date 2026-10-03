@@ -482,8 +482,9 @@ The checks that read the tree and build nothing run as steps of one job,
 the branch history, the session-url check over the PR's commits, migrations
 append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
 release handoff checker, its self-test and the release gate scripts' fixture
-test, the board automation retry policy, and the helm chart's appVersion check,
-lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
+test, the board automation retry policy, the dogfood scripts' exit codes and a
+shellcheck pass over `integration/`, and the helm chart's appVersion check, lint
+and three renders. Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
 a push starts draws on the same 20 concurrent slots. The decision and its
 trade-offs are in
@@ -518,6 +519,21 @@ check added to the job therefore needs three things: its step, an `OUTCOME_*`
 line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
+
+#### The dogfood scripts' exit codes (#1928)
+
+`integration/dogfood/*.sh` tell an operator what to do next through their exit
+codes: `provision-signoz.sh` exits 1 for an account mismatch (and points at
+`just signoz-reset`, which deletes SigNoz's users, dashboards and alerts) and 2
+for a SigNoz release whose api moved (and names its version, changing nothing).
+`scripts/test-dogfood-scripts.sh` runs the scripts against a stub http server
+that plays a scenario file, one `METHOD|PATH|STATUS|CONTENT-TYPE|BODY` line per
+route, so it needs no SigNoz, docker or secret and takes about 25 s. It covers
+every row of `provision-signoz.sh`'s exit-code table and, for
+`adaptive-routing.sh`, the happy path and a refused read and write. A new
+script gets a `cases_<name>` function and one `run_cases <name>` line at the
+bottom. The job also runs `shellcheck` over every
+`integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.
 
 ### The rust lint and rust build jobs
 

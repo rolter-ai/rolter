@@ -878,6 +878,27 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/test-project-automation.sh
 
+      # ── dogfood scripts: exit codes and shellcheck ────────────────────────
+      # integration/dogfood/*.sh decide what an operator is told to do next from
+      # their exit codes (provision-signoz.sh's 1 points at `just signoz-reset`,
+      # which deletes SigNoz's users and dashboards; its 2 changes nothing), and
+      # nothing else ran them. this drives them against a stub http server
+      # that plays SigNoz's and the control plane's answers, so it needs no
+      # docker and no secrets (#1928)
+      - name: dogfood scripts against a stub server
+        id: dogfood-scripts
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-dogfood-scripts.sh
+      # shellcheck over every shell script under integration/, which workflows
+      # never reached: it only showed up as inline `disable` comments in run:
+      # blocks. -x follows the `source` the scripts declare (their creds.env)
+      - name: shellcheck (integration scripts)
+        id: shellcheck
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: |
+          find integration -name '*.sh' -print0 \
+            | xargs -0 uvx --from shellcheck-py==0.11.0.1 shellcheck -x --source-path=SCRIPTDIR
+
       # ── helm chart: lint and render ───────────────────────────────────────
       # the chart carries the same pre-boot validation the CLI does (#854), and
       # a chart is the one deployment path with no compiler behind it: a
@@ -965,6 +986,8 @@ jobs:
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
+          OUTCOME_DOGFOOD_SCRIPTS: ${{ steps.dogfood-scripts.outcome }}
+          OUTCOME_SHELLCHECK: ${{ steps.shellcheck.outcome }}
           OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
           OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
           OUTCOME_HELM_RENDER_DEFAULTS: ${{ steps.helm-render-defaults.outcome }}
@@ -1047,6 +1070,10 @@ jobs:
             "prek run release-gate --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
+          row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
+            "prek run dogfood-scripts --all-files"
+          row "dogfood scripts" "shellcheck (integration scripts)" "${OUTCOME_SHELLCHECK}" yes \
+            "find integration -name '*.sh' -print0 | xargs -0 uvx --from shellcheck-py==0.11.0.1 shellcheck -x --source-path=SCRIPTDIR"
           row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
             "prek run chart-appversion --all-files"
           row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"
