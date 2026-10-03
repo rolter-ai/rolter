@@ -123,6 +123,60 @@ in `ci.yml` that mentions `edited` must also exclude `changes.base`, the three
 gate jobs must skip on exactly the metadata-only expression, and the verdict
 must branch on `METADATA_ONLY`.
 
+### A pass against an old base does not count (#2649)
+
+Running the gate on a retarget closed only half of it. The retarget's gate run
+sits on the same head sha as the one made against the old base, so a head sha
+can carry a pass and a failure for two different bases. The fast path used to
+accept any passing `gate-ok` on the sha, so this sequence went green:
+
+1. The PR is gated green against base A.
+2. It is retargeted to base B, and the gate fails against B.
+3. Somebody edits the title or body.
+4. The fast path finds the pass against A and reports `ci-ok` green.
+
+So `gate-ok` records the base it gated, and the fast path accepts only a pass
+against the base the PR targets **now**. The record is the name of `gate-ok`'s
+one step:
+
+```yaml
+- name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
+```
+
+The runner renders a step name's expression when the step starts, so the jobs
+listing the fast path already fetches for the verdict carries the base too: no
+extra API call, no extra permission, and nothing written that a fork PR's
+read-only token could not write. The fast path takes the current base from its
+own payload (`BASE_SHA: ${{ github.event.pull_request.base.sha }}`) and counts a
+run only when its `gate-ok` concluded `success` _and_ its step reads
+`gated against base <BASE_SHA>`.
+
+The run object's own `pull_requests[].base.sha` looks like the obvious source
+and is not one: the API fills `pull_requests` in from the pull request as it is
+when the run is read, not as it was when the run started. Run 37069049215 was
+started on #2587's head `8727bdb8`, and read two hours after `4712bdf2` was
+pushed it reported `pull_requests[0].head.sha` as `4712bdf2`. An old run reads
+back the current base the same way, so comparing it to the current base would
+always match. It is also empty once the PR is closed, and the listing the fast
+path uses passes `exclude_pull_requests=true`.
+
+What counts as "no pass against this base", and is red:
+
+- A pass whose step recorded a different base sha — the case above.
+- A pass that recorded `none`. A run with no pull request in its payload
+  (`workflow_dispatch`, which is how the release PR is gated, and `push`)
+  gated the head on its own, not merged into any base. An `edited` run on such
+  a PR needs a `pull_request` gate run, or a new commit.
+- A pass from a `gate-ok` without the step at all, which is every run made
+  before #2649 landed. A PR gated before then and only retitled afterwards
+  goes red, and needs a push or a re-run of its gate run followed by a re-run
+  of the `edited` run.
+- A step name that is not a full sha, such as an expression left unrendered.
+
+A gate run whose `gate-ok` has not concluded has no rendered step yet, so its
+base is unknown while it runs. The fast path waits for it as before and judges
+it by its base once it has concluded.
+
 ## Why that was a hole
 
 Every run of `ci.yml` writes a check-run named `ci-ok` against the pull
@@ -163,9 +217,12 @@ head sha (the _assert the gate already ran for this commit_ step of
   pending, and a gate that has still not concluded at the deadline fails the
   step. See [Waiting for an in-flight gate](#waiting-for-an-in-flight-gate-2391)
   for why it waits rather than declining.
-- **No run on this sha whose `gate-ok` job succeeded** fails the step. This
-  closes the same hole in its other shape: a retitle over a gate run that
-  _failed_ also used to write a newer green `ci-ok`.
+- **No run on this sha whose `gate-ok` job succeeded against the PR's current
+  base** fails the step. This closes the same hole in its other shape: a
+  retitle over a gate run that _failed_ also used to write a newer green
+  `ci-ok`. A pass against a base the PR has since been retargeted away from
+  does not count (see
+  [A pass against an old base does not count](#a-pass-against-an-old-base-does-not-count-2649)).
 - **A `cancelled` run does not count as a pass.** It is `completed`, so it does
   not block as in-flight, but it carries no verdict — it is treated exactly like
   a missing run, which is to say the fast path stays red until a real gate run
@@ -194,7 +251,8 @@ gate-ok:
   if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
   needs: [quality, codeql]
   steps:
-    - run: echo "quality and codeql both succeeded on this run"
+    - name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
+      run: echo "quality and codeql both succeeded on this run"
 ```
 
 It is deliberately trivial, and two things about it are load-bearing:
@@ -235,7 +293,8 @@ Details that matter if you touch this code:
   Every other path through the job takes seconds.
 - `scripts/test-assert-gate-ran.sh` runs the script against a fake `gh` and a
   fake clock: a gate that passes or fails while the edit waits, one that never
-  finishes, concurrent edits, and a flaking or malformed API. It also checks
+  finishes, concurrent edits, a pass against an old base beside a failure
+  against the current one, and a flaking or malformed API. It also checks
   the step's wiring and that the job timeout sits above the wait. It runs as the
   _ci-ok fast path against a fake gh_ step of the `static checks` job and as the
   `assert-gate-ran` prek hook.
@@ -272,11 +331,11 @@ for the rest of the gate, doing nothing but two API calls a minute.
 
 The messages it can end with:
 
-| Message                                             | Means                                                 | Action                                                                                  |
-| --------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `gate already passed for <sha>`                     | green: a run on this sha recorded a passing `gate-ok` | none                                                                                    |
-| `no ci run on <sha> recorded a passing gate-ok job` | the gate failed, was cancelled, or never ran          | push a fix; if you re-run the gate instead, re-run this `edited` run too once it passes |
-| `gate still running on <sha> after 90m`             | the gate had not concluded after the whole wait       | once it finishes, `gh run rerun <edited run id> --failed`                               |
+| Message                                             | Means                                                                          | Action                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `gate already passed for <sha> against base <base>` | green: a run on this sha recorded a passing `gate-ok` against the current base | none                                                                                    |
+| `no ci run on <sha> recorded a passing gate-ok job` | the gate failed, was cancelled, or never ran against the current base          | push a fix; if you re-run the gate instead, re-run this `edited` run too once it passes |
+| `gate still running on <sha> after 90m`             | the gate had not concluded after the whole wait                                | once it finishes, `gh run rerun <edited run id> --failed`                               |
 
 A red `ci-ok` on a head sha keeps the pull request blocked until that same run
 is re-run green, whichever run wrote it. That is why the two red rows say to
