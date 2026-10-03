@@ -133,6 +133,7 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
+              "deployment/verify-images",
               "deployment/production",
               "deployment/cluster",
               "deployment/air-gapped",
