@@ -1004,7 +1004,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                           e.stopPropagation();
                           setSelected(r);
                         }}
-                        className="ml-auto flex rounded-sm text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="-my-[5px] -mr-[5px] ml-auto flex rounded-sm p-[5px] text-[color:var(--text-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
                         <ChevronRight className="h-[15px] w-[15px]" />
                       </button>
