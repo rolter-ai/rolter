@@ -12,14 +12,18 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   deleteModelPrice,
+  fetchAnalyticsByModel,
   fetchCurrencySettings,
+  fetchModels,
   fetchModelPrices,
   isConvertible,
   upsertModelPrice,
+  type CurrencySettings,
   type ModelPriceRow,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -188,6 +192,7 @@ export default function Pricing() {
         open={editOpen}
         onOpenChange={setEditOpen}
         existing={editTarget}
+        currency={currency.data}
         onDone={invalidate}
       />
 
@@ -230,28 +235,70 @@ function UpsertPriceDialog({
   open,
   onOpenChange,
   existing,
+  currency: settings,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   existing: ModelPriceRow | null;
+  currency: CurrencySettings | undefined;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [model, setModel] = React.useState("");
-  const [inputPerMtok, setInputPerMtok] = React.useState("0");
-  const [outputPerMtok, setOutputPerMtok] = React.useState("0");
+  // empty is "not set yet", never 0: a zero price reads as free, and a model
+  // saved at zero drops out of the unpriced flags (#2100)
+  const [inputPerMtok, setInputPerMtok] = React.useState("");
+  const [outputPerMtok, setOutputPerMtok] = React.useState("");
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
-  const [currency, setCurrency] = React.useState("USD");
+  const baseCurrency = settings?.base ?? "USD";
+  const [currency, setCurrency] = React.useState(baseCurrency);
+  const [attempted, setAttempted] = React.useState(false);
+
+  // names worth offering: the routes the gateway serves and the models seen in
+  // traffic. both are suggestions — an analytics store may be absent
+  const routeModels = useQuery({ queryKey: ["models"], queryFn: fetchModels, enabled: open });
+  const trafficModels = useQuery({
+    queryKey: ["analytics", "by-model", "price-picker"],
+    queryFn: () => fetchAnalyticsByModel(),
+    enabled: open,
+    retry: false,
+  });
+  const modelOptions = React.useMemo<ComboboxOption[]>(() => {
+    const routes = (routeModels.data ?? []).map((r) => r.model);
+    const seen = new Set(routes);
+    const traffic = (trafficModels.data ?? []).map((r) => r.model).filter((m) => m && !seen.has(m));
+    return [
+      ...routes.map((value) => ({
+        value,
+        label: value,
+        group: t("pages.pricing.modelGroupRoutes"),
+      })),
+      ...[...new Set(traffic)].map((value) => ({
+        value,
+        label: value,
+        group: t("pages.pricing.modelGroupTraffic"),
+      })),
+    ];
+  }, [routeModels.data, trafficModels.data, t]);
+  const currencyOptions = React.useMemo<ComboboxOption[]>(() => {
+    const codes = [baseCurrency, ...(settings?.codes ?? [])];
+    return [...new Set(codes)].map((code) => ({
+      value: code,
+      label: code,
+      description: code === baseCurrency ? t("pages.pricing.currencyBase") : undefined,
+    }));
+  }, [baseCurrency, settings, t]);
 
   React.useEffect(() => {
     if (open) {
+      setAttempted(false);
       setModel(existing?.model ?? "");
-      setInputPerMtok(existing?.input_per_mtok ?? "0");
-      setOutputPerMtok(existing?.output_per_mtok ?? "0");
+      setInputPerMtok(existing?.input_per_mtok ?? "");
+      setOutputPerMtok(existing?.output_per_mtok ?? "");
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
-      setCurrency(existing?.currency ?? "USD");
+      setCurrency(existing?.currency ?? baseCurrency);
     }
   }, [open, existing]);
 
@@ -288,12 +335,30 @@ function UpsertPriceDialog({
     },
   });
 
+  // a price is valid when it was typed and is a number of 0 or more
+  const priceError = (value: string) =>
+    !value.trim()
+      ? t("pages.pricing.priceRequired")
+      : !(Number(value) >= 0)
+        ? t("pages.pricing.priceInvalid")
+        : undefined;
+  const errors = {
+    model: model.trim() ? undefined : t("pages.pricing.modelRequired"),
+    input: priceError(inputPerMtok),
+    output: priceError(outputPerMtok),
+    // an optional price is only wrong when it was typed and is not a number
+    cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
+    currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
+  };
+  const invalid = Object.values(errors).some(Boolean);
+  const shown: Partial<typeof errors> = attempted ? errors : {};
+
   const dirty =
     model.trim() !== (existing?.model ?? "") ||
-    inputPerMtok !== (existing?.input_per_mtok ?? "0") ||
-    outputPerMtok !== (existing?.output_per_mtok ?? "0") ||
+    inputPerMtok !== (existing?.input_per_mtok ?? "") ||
+    outputPerMtok !== (existing?.output_per_mtok ?? "") ||
     cachedInputPerMtok !== (existing?.cached_input_per_mtok ?? "") ||
-    currency !== (existing?.currency ?? "USD");
+    currency !== (existing?.currency ?? baseCurrency);
 
   return (
     <EditorSheet
@@ -309,20 +374,30 @@ function UpsertPriceDialog({
       dirty={dirty}
       errorMessage={submit.isError ? (submit.error as Error).message : undefined}
       saveLabel={t("common.save")}
-      canSave={!!model.trim() && !!inputPerMtok.trim() && !!outputPerMtok.trim()}
+      canSave
       saving={submit.isPending}
-      onSave={() => submit.mutate()}
+      onSave={() => {
+        // the refusal is shown at the fields, not by greying the button out
+        setAttempted(true);
+        if (!invalid) submit.mutate();
+      }}
     >
       <div className="space-y-3">
-        <Field label={t("pages.pricing.modelName")}>
-          <Input
+        <Field label={t("pages.pricing.modelName")} error={shown.model}>
+          <Combobox
+            allowCustom
+            options={modelOptions}
             value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="gpt-4o"
+            onChange={setModel}
+            placeholder={t("pages.pricing.modelPlaceholder")}
             disabled={!!existing}
           />
         </Field>
-        <Field label={t("pages.pricing.inputPrice")}>
+        <Field
+          label={t("pages.pricing.inputPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          error={shown.input}
+        >
           <Input
             type="number"
             min={0}
@@ -331,7 +406,11 @@ function UpsertPriceDialog({
             onChange={(e) => setInputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label={t("pages.pricing.outputPrice")}>
+        <Field
+          label={t("pages.pricing.outputPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          error={shown.output}
+        >
           <Input
             type="number"
             min={0}
@@ -340,7 +419,11 @@ function UpsertPriceDialog({
             onChange={(e) => setOutputPerMtok(e.target.value)}
           />
         </Field>
-        <Field label={t("pages.pricing.cachedInputPrice")}>
+        <Field
+          label={t("pages.pricing.cachedInputPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          error={shown.cached}
+        >
           <Input
             type="number"
             min={0}
@@ -352,10 +435,15 @@ function UpsertPriceDialog({
         </Field>
         <Field
           label={t("pages.pricing.currency")}
-          hint={t("pages.pricing.currencyHint")}
+          hint={
+            isConvertible(settings, currency)
+              ? t("pages.pricing.currencyHint")
+              : t("pages.pricing.unconvertible", { code: currency, base: baseCurrency })
+          }
           info={t("pages.pricing.currencyInfo")}
+          error={shown.currency}
         >
-          <Input value={currency} onChange={(e) => setCurrency(e.target.value)} />
+          <Combobox allowCustom options={currencyOptions} value={currency} onChange={setCurrency} />
         </Field>
       </div>
     </EditorSheet>
