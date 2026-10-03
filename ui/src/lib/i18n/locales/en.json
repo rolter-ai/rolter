@@ -109,6 +109,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
