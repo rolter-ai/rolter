@@ -868,13 +868,30 @@ The gate runs at `--min-severity=medium --persona=regular`, the setting the
 baseline was proven clean against. Reproduce a CI run locally:
 
 ```bash
-uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+uvx --from "$(bash scripts/tool-pin.sh zizmor)" zizmor --min-severity=medium --persona=regular \
   .github/workflows/ .github/actions/
 ```
 
 Some audits query the GitHub API (`impostor-commit`, `stale-action-refs`,
 `known-vulnerable-actions`), so export a `GH_TOKEN` — or pass `--offline` to
 skip them, which is enough for a quick check but is **not** what CI runs.
+
+#### Where the `uvx` tool versions live
+
+`zizmor`, `maturin` and `ruff` run through `uvx`, and dependabot cannot read a version
+out of a command line, so a `uvx zizmor@x.y.z` pin goes stale without anyone
+being told (#2185). Both are pinned instead in
+`.github/tool-pins/requirements.txt`, a pip manifest that dependabot's `pip`
+ecosystem bumps weekly, and every command reads its version through
+`scripts/tool-pin.sh <tool>`. A newer release therefore arrives as a pull
+request that moves one line, and the gate runs against it.
+
+`scripts/check-tool-pins.sh` (the `uvx tool pins` step of `static checks`, and
+the `tool-pins` prek hook) fails on an inline `uvx <tool>@<version>`, a manifest
+line that is not `name==x.y.z`, a `tool-pin.sh` reference with no entry, and an
+entry nothing runs. `--self-test` drifts a fixture to prove each rule can fail.
+To pin a new tool, add `<tool>==x.y.z` to the manifest and run it as
+`uvx --from "$(bash scripts/tool-pin.sh <tool>)" <tool> ...`.
 
 #### Retrying an API hiccup, but never a finding
 
