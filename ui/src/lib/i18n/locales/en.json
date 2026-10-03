@@ -263,6 +263,30 @@
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "requestFailed": "gateway request failed: {{status}}"
+    },
+    "api": {
+      "unreachable": "Could not reach the server. Check your connection and try again.",
+      "unauthorized": "Your session is missing or has expired. Sign in again.",
+      "forbidden": "Your role does not permit this.",
+      "rateLimited": "Too many attempts. Wait a moment and try again.",
+      "server": "The control plane hit an error. Try again, and check its logs if it persists.",
+      "generic": "The server rejected this request.",
+      "codes": {
+        "analytics_query_failed": "The analytics query failed.",
+        "internal": "The control plane hit an internal error.",
+        "invalid_credentials": "The email or password is wrong.",
+        "invalid_cursor": "The page position is no longer valid. Reload the list.",
+        "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_query": "The filter is not valid.",
+        "invalid_time_bound": "The time range is not valid.",
+        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "no_such_endpoint": "This control plane does not offer that feature.",
+        "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
+        "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "too_many_attempts": "Too many failed attempts. Try again later.",
+        "unauthenticated": "Your session is missing or has expired. Sign in again."
+      }
     }
   },
   "locale": {
