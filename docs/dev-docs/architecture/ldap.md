@@ -1,8 +1,27 @@
 # LDAP authentication
 
-The third identity provider behind `rolter_auth::IdentityProvider`, after local
-password login and OIDC SSO (#241). It is compiled in behind the `ldap` cargo
-feature and is off unless configured.
+> **Status: not shipped.** LDAP sign-in does not work in any build. The provider
+> in `crates/rolter-control/src/ldap.rs` is implemented and unit-tested, but
+> nothing constructs it: there is no configuration key, environment variable,
+> route or dashboard screen for a directory, and `POST /api/v1/auth/login`
+> resolves only local accounts. #2731 decided to keep the module, marked as
+> unwired, rather than delete it, because wiring it (#1826) reuses the policy
+> described below. The configuration on this page is the provider's struct
+> shape, not a key rolter reads. Do not document LDAP as available to users
+> until #1826 lands.
+
+What wiring needs, as #1826 scopes it: somewhere to keep the directory settings
+with the service-account password sealed under the KEK (so a table, a
+`SEALED_COLUMNS` entry and a Governance screen next to Single Sign-On),
+dispatch from the password login to the directory, group mapping through the
+same mapping model SSO and SCIM use rather than the provider's own
+`group_role_map`, `GET /api/v1/auth/methods` reporting it, and a missing
+`display_name` defaulted from the directory the way an OIDC first sign-in
+defaults it.
+
+The intended third identity provider behind `rolter_auth::IdentityProvider`,
+after local password login and OIDC SSO (#241). It is compiled in behind the
+`ldap` cargo feature.
 
 ## How a login is verified
 

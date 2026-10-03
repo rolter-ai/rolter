@@ -305,12 +305,18 @@ async fn mcp_logging_config(
     (config, seen)
 }
 
+/// The argument value the mcp audit row must redact, generated once per run.
+fn mcp_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("tok-{}", uuid::Uuid::new_v4()))
+}
+
 async fn mcp_call(gateway: SocketAddr, method: &str) -> Value {
     reqwest::Client::new()
         .post(format!("http://{gateway}/mcp/docs"))
         .header("x-api-key", "sk-mcp-log")
         .json(&json!({"jsonrpc": "2.0", "id": 41, "method": method,
-            "params": {"name": "search", "arguments": {"q": "rust", "token": "hunter2"}}}))
+            "params": {"name": "search", "arguments": {"q": "rust", "token": mcp_token()}}}))
         .send()
         .await
         .unwrap()
@@ -348,7 +354,7 @@ async fn mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution() 
     assert!(!row["event_id"].as_str().unwrap().is_empty());
     let arguments = row["arguments"].as_str().unwrap();
     assert!(arguments.contains("rust"), "{arguments}");
-    assert!(arguments.contains("[REDACTED]") && !arguments.contains("hunter2"));
+    assert!(arguments.contains("[REDACTED]") && !arguments.contains(mcp_token()));
     assert_eq!(row["result"], r#"{"content":[]}"#);
 }
 

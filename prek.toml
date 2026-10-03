@@ -189,6 +189,15 @@ language = "system"
 files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
 pass_filenames = false
 
+# pinned like the ci step; see #2187 / #2185
+[[repos.hooks]]
+id = "ruff"
+name = "ruff (scripts)"
+entry = "uvx ruff@0.15.0 check scripts"
+language = "system"
+files = "^(scripts/.*\\.py|ruff\\.toml)$"
+pass_filenames = false
+
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek
 # builds the environment from the script's own inline metadata (PEP 723), the
 # same pin `uv run --script` resolves in quality.yml. `--self-test` also runs
@@ -256,6 +265,17 @@ name = "chart appVersion tracks the workspace version"
 entry = "python3 scripts/sync-chart-appversion.py"
 language = "system"
 files = "^(Cargo\\.toml|charts/rolter/Chart\\.yaml)$"
+pass_filenames = false
+
+# the same helm lint and strict renders CI runs (scripts/check-helm-chart.sh).
+# without helm on PATH the script skips with a notice rather than failing, as
+# CI is the authority and not every contributor touches the chart
+[[repos.hooks]]
+id = "helm-render"
+name = "helm chart renders strictly"
+entry = "bash scripts/check-helm-chart.sh"
+language = "system"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
 pass_filenames = false
 
 [[repos.hooks]]

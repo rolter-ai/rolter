@@ -16,7 +16,7 @@
 // `ui/package.json` but not `bun.lock`, so every alert it raises for ui/ is
 // about a *direct* dependency, judged by the lowest version its declared range
 // admits. A vulnerable package that only arrives transitively through
-// `bun.lock` raises no alert at all, so this script never hears of it (#1930).
+// `bun.lock` raises no alert at all, so this script never hears of it; `audit-lockfile.ts` covers it (#1930).
 // The fix that closes a direct alert is to raise that range's floor to the
 // first patched release, keeping its operator, and let `bun install
 // --lockfile-only` bring the lockfile along. That is only done when the patched

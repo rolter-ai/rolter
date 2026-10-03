@@ -233,6 +233,10 @@ pub(crate) enum ApiError {
     /// a 409 a client can branch on: `code` is part of the API and never
     /// renamed, `message` is for the person reading it
     CodedConflict { code: &'static str, message: String },
+    /// a 400 for one field of the request, rendered with the stable code
+    /// [`INVALID_FIELD`] and the field's path, so a client can translate the
+    /// refusal and point at the input it came from (#2567)
+    InvalidField { field: String, message: String },
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -266,6 +270,12 @@ impl IntoResponse for ApiError {
         };
         let code = match &self {
             Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
+            Self::InvalidField { .. } => Some(INVALID_FIELD),
+            Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
+            _ => None,
+        };
+        let field = match &self {
+            Self::InvalidField { field, .. } => Some(field.clone()),
             _ => None,
         };
         let (status, message) = match self {
@@ -273,6 +283,12 @@ impl IntoResponse for ApiError {
                 Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
                 Error::Config(_) | Error::Unauthorized => {
                     (StatusCode::BAD_REQUEST, err.to_string())
+                }
+                // the store's text names the constraint, not the field; the
+                // caller only needs to know the value is taken
+                Error::AlreadyExists(_) => {
+                    tracing::debug!(error = %err, "control-plane write hit a unique constraint");
+                    (StatusCode::CONFLICT, ALREADY_EXISTS_MESSAGE.to_string())
                 }
                 _ => {
                     tracing::error!(error = %err, "control-plane request failed");
@@ -283,6 +299,7 @@ impl IntoResponse for ApiError {
                 }
             },
             Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            Self::InvalidField { message, .. } => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {
                 (StatusCode::CONFLICT, message)
             }
@@ -304,6 +321,9 @@ impl IntoResponse for ApiError {
         if let Some(code) = code {
             error["code"] = code.into();
         }
+        if let Some(field) = field {
+            error["field"] = field.into();
+        }
         let mut response = (status, Json(serde_json::json!({ "error": error }))).into_response();
         // say what the lock reads, so a client waits rather than polling. rounded
         // up, so a sub-second remainder never renders as `0`
@@ -320,6 +340,46 @@ impl IntoResponse for ApiError {
 }
 
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
+
+/// stable code of a 400 refusing one field of the request (#2567). The body
+/// also carries `field`, the field's path (`name`, `metadata.team`, `tags[2]`)
+pub(crate) const INVALID_FIELD: &str = "invalid_field";
+
+/// stable code of the 409 for a name, slug, email or key that another record
+/// already holds (#2567). Raised by the explicit checks and, as the backstop for
+/// a concurrent write or an unchecked constraint, by every unique violation the
+/// store reports
+pub(crate) const NAME_TAKEN: &str = "name_taken";
+
+/// stable code of the 409 for a delete refused because other records still
+/// depend on the one being removed (#2567)
+pub(crate) const REFERENCED: &str = "referenced";
+
+/// stable code of the 409 for a write that would use a resource from outside
+/// the scope it is confined to, such as a project-scoped provider from another
+/// project (#2567)
+pub(crate) const SCOPE_MISMATCH: &str = "scope_mismatch";
+
+/// what a unique violation from the store says. the driver's own text names a
+/// constraint and a table, which is schema detail the caller has no use for
+const ALREADY_EXISTS_MESSAGE: &str =
+    "a record with that name or identifier already exists; choose another";
+
+/// the 400 for one field of the request, with the stable [`INVALID_FIELD`] code
+pub(crate) fn invalid_field(field: impl Into<String>, message: impl Into<String>) -> ApiError {
+    ApiError::InvalidField {
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+/// a 409 with the stable [`NAME_TAKEN`] code
+pub(crate) fn name_taken(message: impl Into<String>) -> ApiError {
+    ApiError::CodedConflict {
+        code: NAME_TAKEN,
+        message: message.into(),
+    }
+}
 
 /// Reject control characters anywhere in a CRUD body's strings.
 ///
@@ -340,10 +400,13 @@ fn reject_control_chars(value: &serde_json::Value, path: &str) -> ApiResult<()> 
                 .find(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
             {
                 let field = if path.is_empty() { "body" } else { path };
-                return Err(ApiError::Core(Error::Config(format!(
-                    "{field} must not contain control characters (found U+{:04X})",
-                    bad as u32
-                ))));
+                return Err(invalid_field(
+                    field,
+                    format!(
+                        "{field} must not contain control characters (found U+{:04X})",
+                        bad as u32
+                    ),
+                ));
             }
             Ok(())
         }
@@ -443,9 +506,7 @@ where
 /// Reject a required field that's empty after trimming.
 pub(crate) fn require_non_empty(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().is_empty() {
-        return Err(ApiError::Core(Error::Config(format!(
-            "{field} must not be empty"
-        ))));
+        return Err(invalid_field(field, format!("{field} must not be empty")));
     }
     Ok(())
 }
@@ -2140,11 +2201,14 @@ async fn require_no_scoped_resources(
     if held.is_empty() {
         return Ok(());
     }
-    Err(ApiError::Conflict(format!(
-        "this {what} still owns {}; delete them or make them org-wide first, since deleting \
-         the project would otherwise widen their access or destroy them",
-        held.join(", ")
-    )))
+    Err(ApiError::CodedConflict {
+        code: REFERENCED,
+        message: format!(
+            "this {what} still owns {}; delete them or make them org-wide first, since \
+             deleting the project would otherwise widen their access or destroy them",
+            held.join(", ")
+        ),
+    })
 }
 
 async fn delete_team(
@@ -2606,11 +2670,24 @@ async fn send_provider_probe(
     req.send().await
 }
 
+/// A provider as the API returns it: the row plus whether a sealed key is
+/// stored for it.
+///
+/// The flag is derived from `provider_keys` and says nothing else about the
+/// credential; the key, its ciphertext and its nonce never leave the store.
+#[derive(Serialize)]
+struct ProviderView {
+    #[serde(flatten)]
+    provider: Provider,
+    /// a row exists in `provider_keys`; an `api_key_env` is not a stored key
+    has_stored_key: bool,
+}
+
 async fn list_providers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Provider>>> {
+) -> ApiResult<Json<Vec<ProviderView>>> {
     let rows = ProviderRepo(pool(&state)).list(org_id).await?;
     let visible = visible_in_scope(
         &state,
@@ -2621,7 +2698,17 @@ async fn list_providers(
         |row| row.project_id,
     )
     .await?;
-    Ok(Json(visible))
+    // after the scope filter so only rows the caller may see are looked up
+    let ids: Vec<Uuid> = visible.iter().map(|row| row.id).collect();
+    let stored = ProviderKeyRepo(pool(&state)).stored_among(&ids).await?;
+    let views = visible
+        .into_iter()
+        .map(|provider| ProviderView {
+            has_stored_key: stored.contains(&provider.id),
+            provider,
+        })
+        .collect();
+    Ok(Json(views))
 }
 
 /// The rows of an org listing the caller may see, where a row may be scoped to
@@ -2681,9 +2768,10 @@ async fn require_scope_project(
     if ProjectRepo(pool(state)).in_org(project_id, org_id).await? {
         return Ok(());
     }
-    Err(ApiError::Core(Error::Config(
-        "project_id must name a project of this organization".to_string(),
-    )))
+    Err(invalid_field(
+        "project_id",
+        "project_id must name a project of this organization",
+    ))
 }
 
 /// Refuse a route or group owned by `owner` (a route's project, a group's
@@ -2707,16 +2795,19 @@ async fn require_providers_usable_from(
     } else {
         "a project, and an org-wide group would expose it to every project"
     };
-    Err(ApiError::Conflict(format!(
-        "{what} cannot use provider{} {}: scoped to {owner_note}; use org-wide providers \
-         or ones scoped to the same project",
-        if outside.len() == 1 { "" } else { "s" },
-        outside
-            .iter()
-            .map(|name| format!("'{name}'"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
+    Err(ApiError::CodedConflict {
+        code: SCOPE_MISMATCH,
+        message: format!(
+            "{what} cannot use provider{} {}: scoped to {owner_note}; use org-wide providers \
+             or ones scoped to the same project",
+            if outside.len() == 1 { "" } else { "s" },
+            outside
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    })
 }
 
 #[derive(Deserialize)]
@@ -3024,12 +3115,12 @@ pub(crate) fn resolve_new_slug(name: &str, slug: Option<&str>) -> ApiResult<Stri
 
 fn validate_slug(slug: &str) -> ApiResult<()> {
     if !is_valid_slug(slug) {
-        return Err(ApiError::Core(Error::Config(
+        return Err(invalid_field(
+            "slug",
             "slug must match ^[a-z0-9][a-z0-9-]{0,62}$ (lowercase alphanumerics and \
              hyphens, 1-63 chars, not starting with a hyphen); a name with no ascii \
-             letters or digits needs an explicit slug"
-                .to_string(),
-        )));
+             letters or digits needs an explicit slug",
+        ));
     }
     Ok(())
 }
@@ -3062,7 +3153,7 @@ async fn create_provider(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProvider>,
-) -> ApiResult<Json<Provider>> {
+) -> ApiResult<Json<ProviderView>> {
     // a project-scoped provider is authorised at its project, so a project admin
     // may create one for their own project. Naming an environment variable is
     // a read of the control plane's environment, which is an org admin's call
@@ -3108,6 +3199,7 @@ async fn create_provider(
             body.project_id,
         )
         .await?;
+    let has_stored_key = sealed.is_some();
     if let Some((ciphertext, nonce)) = sealed {
         ProviderKeyRepo(pool(&state))
             .set(row.id, &ciphertext, &nonce)
@@ -3126,7 +3218,10 @@ async fn create_provider(
         }),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -3175,7 +3270,7 @@ async fn update_provider(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateProvider>,
-) -> ApiResult<Json<Provider>> {
+) -> ApiResult<Json<ProviderView>> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
     let org_id = existing.org_id;
     // an org-wide provider is an org admin's, and so is any change of scope or
@@ -3205,12 +3300,15 @@ async fn update_provider(
             .dependents_outside(id, scope)
             .await?;
         if !dependents.is_empty() {
-            return Err(ApiError::Conflict(format!(
-                "provider '{}' is used by {}, which belong to other projects; remove it from \
-                 them before scoping it to one project",
-                existing.name,
-                dependents.join(", ")
-            )));
+            return Err(ApiError::CodedConflict {
+                code: SCOPE_MISMATCH,
+                message: format!(
+                    "provider '{}' is used by {}, which belong to other projects; remove it \
+                     from them before scoping it to one project",
+                    existing.name,
+                    dependents.join(", ")
+                ),
+            });
         }
     }
     if let Some(kind) = &body.kind {
@@ -3255,6 +3353,8 @@ async fn update_provider(
                 .await?
         }
     }
+    // read back after the write so an omitted `api_key` reports what is stored
+    let has_stored_key = ProviderKeyRepo(pool(&state)).exists(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -3266,7 +3366,10 @@ async fn update_provider(
         serde_json::json!({"slug": row.slug, "project_id": row.project_id}),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 async fn delete_provider(
@@ -3331,7 +3434,7 @@ fn default_member_weight() -> i32 {
 /// It says only that the name is taken, never where: an org may not learn
 /// what another one calls its routes or providers from the refusal (#1845).
 fn taken_in_deployment(what: &str, name: &str) -> ApiError {
-    ApiError::Conflict(format!(
+    name_taken(format!(
         "{what} '{name}' is already in use in this deployment; choose another"
     ))
 }
@@ -3382,7 +3485,7 @@ async fn require_route_name_free(
     model: &str,
 ) -> ApiResult<()> {
     if model == rolter_core::FAKE_LLM_MODEL {
-        return Err(ApiError::Conflict(format!(
+        return Err(name_taken(format!(
             "'{model}' is the gateway's built-in model and cannot be a route name; choose another"
         )));
     }
@@ -3394,7 +3497,7 @@ async fn require_route_name_free(
         if state.config_owned.holds_slug(slug)
             || routes.name_takes_address_outside_org(model, org_id).await?
         {
-            return Err(ApiError::Conflict(format!(
+            return Err(name_taken(format!(
                 "route name '{model}' is a provider or provider group address in this \
                  deployment ('{slug}/…'); choose another"
             )));
@@ -4330,9 +4433,10 @@ async fn set_virtual_key_attribution(
         NullableUuid::Value(customer_id) => {
             let customer = CustomerRepo(pool(&state)).get(customer_id).await?;
             if Some(customer.org_id) != org_id {
-                return Err(ApiError::Core(Error::Config(
-                    "customer_id must belong to the same org".to_string(),
-                )));
+                return Err(invalid_field(
+                    "customer_id",
+                    "customer_id must belong to the same org",
+                ));
             }
             Some(customer_id)
         }
@@ -4343,9 +4447,10 @@ async fn set_virtual_key_attribution(
             .business_unit_id
             .is_some_and(|owner| owner != unit_id)
         {
-            return Err(ApiError::Core(Error::Config(
-                "customer_id belongs to a different business unit".to_string(),
-            )));
+            return Err(invalid_field(
+                "customer_id",
+                "customer_id belongs to a different business unit",
+            ));
         }
     }
     let row = repo
@@ -5005,9 +5110,7 @@ fn require_known_currency(state: &ControlState, currency: &str) -> ApiResult<()>
 
 fn require_numeric(value: &str, field: &str) -> ApiResult<()> {
     if value.trim().parse::<f64>().is_err() {
-        return Err(ApiError::Core(Error::Config(format!(
-            "{field} must be numeric"
-        ))));
+        return Err(invalid_field(field, format!("{field} must be numeric")));
     }
     Ok(())
 }
@@ -5154,18 +5257,17 @@ pub(crate) fn validate_email(email: &str) -> ApiResult<String> {
         None => false,
     };
     if !ok {
-        return Err(ApiError::Core(Error::Config(
-            "email must be a valid address".to_string(),
-        )));
+        return Err(invalid_field("email", "email must be a valid address"));
     }
     Ok(email.to_string())
 }
 
 pub(crate) fn validate_role(role: &str) -> ApiResult<()> {
     if !matches!(role, "admin" | "member" | "viewer") {
-        return Err(ApiError::Core(Error::Config(
-            "role must be one of admin, member, viewer".to_string(),
-        )));
+        return Err(invalid_field(
+            "role",
+            "role must be one of admin, member, viewer",
+        ));
     }
     Ok(())
 }
@@ -5243,7 +5345,7 @@ async fn create_user(
 
     let pool = pool(&state);
     if UserRepo(pool).find_by_email(&email).await?.is_some() {
-        return Err(ApiError::Conflict(format!(
+        return Err(name_taken(format!(
             "a user with email '{email}' already exists"
         )));
     }
@@ -5386,7 +5488,7 @@ async fn update_user(
     if let Some(ref new_email) = email {
         if let Some(existing) = UserRepo(pool).find_by_email(new_email).await? {
             if existing.id != id {
-                return Err(ApiError::Conflict(format!(
+                return Err(name_taken(format!(
                     "a user with email '{new_email}' already exists"
                 )));
             }
@@ -5641,8 +5743,12 @@ async fn delete_membership(
 mod slug_tests {
     use super::*;
 
+    /// a 400 refusal, coded per field or not
     fn is_config_err(res: ApiResult<impl std::fmt::Debug>) -> bool {
-        matches!(res, Err(ApiError::Core(Error::Config(_))))
+        matches!(
+            res,
+            Err(ApiError::Core(Error::Config(_)) | ApiError::InvalidField { .. })
+        )
     }
 
     #[test]
@@ -5744,8 +5850,12 @@ mod control_char_tests {
 
     fn message(value: serde_json::Value) -> String {
         match check(value) {
-            Err(ApiError::Core(Error::Config(problem))) => problem,
-            other => panic!("expected a config error, got {other:?}"),
+            Err(ApiError::InvalidField { field, message }) => {
+                // the field is the head of the message, so the two never disagree
+                assert!(message.starts_with(&field), "{field}: {message}");
+                message
+            }
+            other => panic!("expected an invalid_field error, got {other:?}"),
         }
     }
 
@@ -5861,8 +5971,12 @@ mod unknown_field_tests {
 mod user_tests {
     use super::*;
 
+    /// a 400 refusal, coded per field or not
     fn is_config_err<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
-        matches!(res, Err(ApiError::Core(Error::Config(_))))
+        matches!(
+            res,
+            Err(ApiError::Core(Error::Config(_)) | ApiError::InvalidField { .. })
+        )
     }
 
     #[test]
@@ -6128,23 +6242,30 @@ mod error_body_tests {
 
     /// Driver text as `store_err` and every `e.to_string()` call site pass it
     /// on: it names the host, the credentials in the url and the schema (#2268).
-    const DRIVER_TEXT: &str = "error returned from database: relation \"tenant_a.users\" \
-         does not exist (postgres://rolter:hunter2@db.internal:5432/rolter)";
+    fn driver_text(password: &str) -> String {
+        format!(
+            "error returned from database: relation \"tenant_a.users\" \
+             does not exist (postgres://rolter:{password}@db.internal:5432/rolter)"
+        )
+    }
 
     #[tokio::test]
     async fn a_raw_server_error_never_reaches_a_500_body() {
+        let password = format!("pw-{}", uuid::Uuid::new_v4());
+        let driver_text = driver_text(&password);
         for err in [
-            Error::Store(DRIVER_TEXT.into()),
-            Error::Upstream(DRIVER_TEXT.into()),
-            Error::Io(std::io::Error::other(DRIVER_TEXT)),
+            Error::Store(driver_text.clone()),
+            Error::Upstream(driver_text.clone()),
+            Error::Io(std::io::Error::other(driver_text.clone())),
         ] {
             let (status, body) = rendered(ApiError::Core(err)).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["error"]["message"], INTERNAL_ERROR);
             let text = body.to_string();
-            for fragment in ["db.internal", "hunter2", "tenant_a"] {
+            for fragment in ["db.internal", "tenant_a"] {
                 assert!(!text.contains(fragment), "{fragment} reached the body");
             }
+            assert!(!text.contains(&password), "the password reached the body");
         }
     }
 

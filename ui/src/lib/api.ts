@@ -1187,6 +1187,12 @@ export interface ProviderRow {
    * plane that predates scoping) is org-wide (#1919)
    */
   project_id?: string | null;
+  /**
+   * Whether a sealed key is stored for the provider. An `api_key_env` does not
+   * count, and the key itself is never returned. Absent from a control plane
+   * that predates the field
+   */
+  has_stored_key?: boolean;
   created_at: string;
 }
 
@@ -3611,7 +3617,7 @@ export function collectorConfigUrl(base: string): string {
 // ---------------------------------------------------------------------------
 // mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
 
-export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse"] as const;
+export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse", "websocket"] as const;
 export const MCP_STATUSES = [
   "success",
   "error",

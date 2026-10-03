@@ -14,7 +14,7 @@ mod labels;
 mod mcp;
 mod mfa;
 mod saved_views;
-mod support;
+pub(super) mod support;
 
 pub use guardrails::*;
 pub use labels::*;
@@ -1694,6 +1694,10 @@ async fn other_enabled_provider(
 /// state rows that make the authorization-code flow replay-safe.
 pub struct SsoRepo<'a>(pub &'a PgPool);
 
+/// Most rows one SSO sweep statement deletes. Keeps a single delete short
+/// enough that it never holds a long lock, however large the backlog.
+pub const SSO_SWEEP_BATCH: i64 = 1000;
+
 const SSO_PROVIDER_COLUMNS: &str = "id, org_id, name, slug, issuer, client_id, secret_ciphertext, \
      secret_nonce, scopes, group_claim, default_role, enabled, created_at";
 
@@ -2015,22 +2019,62 @@ impl SsoRepo<'_> {
         state: &str,
         max_age_secs: i64,
     ) -> Result<Option<SsoLoginState>> {
-        // opportunistic sweep: expired rows are worthless and unbounded growth
-        // would be the only other outcome
-        let _ = sqlx::query(
-            "delete from sso_login_states where created_at < now() - ($1 || ' seconds')::interval",
-        )
-        .bind(max_age_secs.to_string())
-        .execute(self.0)
-        .await;
+        // opportunistic sweep: expired rows are worthless. bounded, so a large
+        // backlog costs one batch here and the periodic sweeper takes the rest
+        let _ = self.sweep_login_states(max_age_secs, SSO_SWEEP_BATCH).await;
+        // the row is spent either way, but an expired one is refused here
+        // rather than trusted to the sweep above: a bounded sweep may stop
+        // before it reaches this state
         sqlx::query_as(
-            "delete from sso_login_states where state = $1 \
-             returning state, provider_id, code_verifier, nonce, redirect_uri, created_at",
+            "with spent as (delete from sso_login_states where state = $1 \
+                 returning state, provider_id, code_verifier, nonce, redirect_uri, created_at) \
+             select state, provider_id, code_verifier, nonce, redirect_uri, created_at from spent \
+             where created_at >= now() - ($2 || ' seconds')::interval",
         )
         .bind(state)
+        .bind(max_age_secs.to_string())
         .fetch_optional(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Delete at most `limit` login states older than `max_age_secs`, oldest
+    /// first, and return how many went. A login abandoned at the identity
+    /// provider is never consumed, so without this its row would stay forever.
+    ///
+    /// Rows another transaction holds are skipped rather than waited on, so
+    /// two control-plane replicas sweeping at once split the work instead of
+    /// queueing behind each other.
+    pub async fn sweep_login_states(&self, max_age_secs: i64, limit: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from sso_login_states where state in ( \
+                 select state from sso_login_states \
+                 where created_at < now() - ($1 || ' seconds')::interval \
+                 order by created_at limit $2 for update skip locked)",
+        )
+        .bind(max_age_secs.to_string())
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
+    }
+
+    /// Delete at most `limit` exchange codes past their expiry, oldest first,
+    /// and return how many went. A code whose browser never came back to
+    /// redeem it would otherwise stay forever; locked rows are skipped as in
+    /// [`SsoRepo::sweep_login_states`].
+    pub async fn sweep_exchange_codes(&self, limit: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from sso_exchange_codes where code_hash in ( \
+                 select code_hash from sso_exchange_codes where expires_at < now() \
+                 order by expires_at limit $1 for update skip locked)",
+        )
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
     }
 
     /// Record a one-time exchange code for a completed browser sign-in. Only
@@ -2063,10 +2107,8 @@ impl SsoRepo<'_> {
     /// expired code yields `None`; the delete is the single-use guarantee, so
     /// two concurrent redemptions cannot both succeed.
     pub async fn redeem_exchange(&self, code_hash: &str) -> Result<Option<SsoExchangeCode>> {
-        // opportunistic sweep, as for login states
-        let _ = sqlx::query("delete from sso_exchange_codes where expires_at < now()")
-            .execute(self.0)
-            .await;
+        // opportunistic bounded sweep, as for login states
+        let _ = self.sweep_exchange_codes(SSO_SWEEP_BATCH).await;
         sqlx::query_as(
             "delete from sso_exchange_codes where code_hash = $1 and expires_at > now() \
              returning user_id, provider_id, granted_roles",
@@ -2553,6 +2595,22 @@ impl ProviderKeyRepo<'_> {
             .await
             .map_err(store_err)?;
         Ok(())
+    }
+
+    /// Which of `provider_ids` have a stored credential, in one query so a
+    /// listing never asks per row. Reads only the key column, never the
+    /// ciphertext or nonce.
+    pub async fn stored_among(
+        &self,
+        provider_ids: &[Uuid],
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select provider_id from provider_keys where provider_id = any($1)")
+                .bind(provider_ids)
+                .fetch_all(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok(ids.into_iter().collect())
     }
 
     /// Whether a credential is stored for `provider_id`.
@@ -5999,5 +6057,113 @@ mod tests {
             .unwrap();
         assert_eq!(previous.entries[0].id, boundary.id);
         assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn sso_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = OrgRepo(&pool).create("sso", "sso").await.unwrap();
+        let user = UserRepo(&pool)
+            .create("sso@example.com", None, false)
+            .await
+            .unwrap();
+        let repo = SsoRepo(&pool);
+        let provider = repo
+            .create_provider(
+                org.id,
+                "idp",
+                "idp",
+                "https://idp.example.com",
+                "client",
+                None,
+                &[],
+                "groups",
+                None,
+            )
+            .await
+            .unwrap();
+
+        // the oidc nonce is generated, never a literal: a fixed value here reads
+        // to codeql as a hard-coded cryptographic nonce
+        let nonce = Uuid::new_v4().to_string();
+        // three abandoned logins, backdated past the ttl, and one in flight
+        for state in ["old-1", "old-2", "old-3", "live"] {
+            repo.start_login(state, provider.id, "verifier", &nonce, "https://cb")
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "update sso_login_states set created_at = now() - interval '1 hour' \
+             where state like 'old-%'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // two codes nobody redeemed, one already expired
+        repo.issue_exchange("expired-code", user.id, provider.id, &[], 60)
+            .await
+            .unwrap();
+        repo.issue_exchange("live-code", user.id, provider.id, &[], 60)
+            .await
+            .unwrap();
+        sqlx::query(
+            "update sso_exchange_codes set expires_at = now() - interval '1 second' \
+             where code_hash = 'expired-code'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let states = || async {
+            sqlx::query_scalar::<_, String>("select state from sso_login_states order by state")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        };
+        // the batch bound holds: one pass of two leaves the third expired row
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 2);
+        assert_eq!(states().await.len(), 2);
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 1);
+        assert_eq!(states().await, vec!["live".to_string()]);
+        assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 0);
+
+        assert_eq!(repo.sweep_exchange_codes(10).await.unwrap(), 1);
+        let codes: Vec<String> = sqlx::query_scalar("select code_hash from sso_exchange_codes")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(codes, vec!["live-code".to_string()]);
+
+        // the live rows are still usable after a sweep
+        assert!(repo.consume_login("live", 600).await.unwrap().is_some());
+        assert!(repo.redeem_exchange("live-code").await.unwrap().is_some());
+
+        // an expired state is refused even when the bounded sweep stops short
+        // of it: a full batch of older rows sits in front, and the row is
+        // spent all the same
+        repo.start_login("stale", provider.id, "verifier", &nonce, "https://cb")
+            .await
+            .unwrap();
+        sqlx::query("update sso_login_states set created_at = now() - interval '1 hour'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into sso_login_states (state, provider_id, code_verifier, nonce, redirect_uri, created_at) \
+             select 'backlog-' || n, $1, 'v', 'n', 'https://cb', now() - interval '2 hours' \
+             from generate_series(1, $2) as n",
+        )
+        .bind(provider.id)
+        .bind(SSO_SWEEP_BATCH as i32)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(repo.consume_login("stale", 600).await.unwrap().is_none());
+        assert!(states().await.is_empty());
     }
 }

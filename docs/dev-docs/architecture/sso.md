@@ -32,13 +32,18 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 1. `GET /auth/sso/{slug}/start` refuses a provider whose org has `allow_sso`
    off with the same `sso_disabled` refusal the callback gives (a browser is
    redirected to `/login?sso_error=sso_disabled&sso=<slug>`, any other caller
-   gets a `403` with `error.code` `sso_disabled`), and otherwise mints a
+   gets a `403` with `error.code` `sso_disabled`). A slug no enabled provider
+   answers to is refused the same way: a browser is redirected to
+   `/login?sso_error=unknown_provider` (no `sso=`, nothing vouches for the
+   slug), any other caller gets the `400`. Otherwise it mints a
    `state`, a `nonce` and a PKCE verifier, stores them in `sso_login_states`,
    and redirects to the provider's `authorization_endpoint`.
 2. The provider redirects back to `GET /auth/sso/{slug}/callback`.
 3. The callback **consumes** the state row (`DELETE … RETURNING`), so a replayed
    `code` + `state` pair finds nothing and is refused. States older than ten
-   minutes are treated as absent and swept.
+   minutes are refused, and a background sweep deletes the ones a login
+   abandoned at the provider leaves behind (#2414; see
+   [data-model.md](data-model.md#single-sign-on)).
 4. The code is exchanged at the `token_endpoint` with the PKCE verifier and the
    sealed client secret.
 5. The id token is verified against the provider's JWKS: signature by `kid`,
@@ -87,7 +92,8 @@ and receives the same body the JSON callback returns (`token`, `expires_at`,
 - **Single use.** The redemption is one `DELETE … RETURNING`, so two concurrent
   redemptions cannot both win.
 - **Sixty seconds.** The dashboard redeems it as soon as it loads. The clock is
-  the database's, and an expired row is swept on the next redemption.
+  the database's, and an expired row is deleted by the same background sweep
+  as login states.
 - **Hashed at rest.** `sso_exchange_codes` holds the SHA-256 of the code, so
   reading the table is not a sign-in. The code is 256 random bits, which is why
   the exchange needs no throttle of its own: the login throttle is keyed on an
@@ -113,6 +119,7 @@ in the URL.
 | `idp_error`               | the provider answered with an `error` (declined, policy)             |
 | `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
 | `sso_disabled`            | the org turned SSO off                                               |
+| `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
 | `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
 | `account_deactivated`     | the account is deactivated                                           |
 | `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |

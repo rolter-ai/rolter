@@ -3,6 +3,7 @@ import { BookUser, Loader2, Plus, Users } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { GroupMappings } from "@/components/GroupMappings";
@@ -98,7 +99,7 @@ function ScimBaseUrl({ hint, className }: { hint?: string; className?: string })
 function MappingsPanel({ orgId }: { orgId: string }) {
   const { t } = useTranslation();
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="flex items-start gap-3 border-b border-[color:var(--border-subtle)] px-4 py-3">
         <Users aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
         <div className="min-w-0">
@@ -124,7 +125,7 @@ function MappingsPanel({ orgId }: { orgId: string }) {
           removeBody={(role) => t("pages.userProvisioning.mappings.removeBody", { role })}
         />
       </div>
-    </section>
+    </SurfacePanel>
   );
 }
 
