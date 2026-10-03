@@ -988,9 +988,13 @@ bun run test-storybook --url http://127.0.0.1:6006
 The test-runner declares its own loose `playwright` range, so without the pin it
 resolves a different version from `@playwright/test` and launches a browser
 revision `playwright install` never downloaded — the test-runner then fails at
-launch and the play tests silently stop running (#737). Keep both on one version,
-and install `chromium-headless-shell` alongside `chromium`, since the test-runner
-launches the shell rather than the full build.
+launch and the play tests silently stop running (#737). The pin must equal
+`@playwright/test`: an override wins over the dependency range, so a bump of
+`@playwright/test` that skips it installs nothing new and playwright stays frozen
+(#2028). `bun run check:playwright-pin` (`ui/scripts/check-playwright-pin.ts`)
+fails when `overrides.playwright`, `overrides.playwright-core` and
+`devDependencies["@playwright/test"]` differ, so move all three together. Install `chromium-headless-shell` alongside `chromium`,
+since the test-runner launches the shell rather than the full build.
 
 The static build is the one that matters. `storybook dev` serves modules
 unbundled and answers from a warm cache, so it is consistently faster than the

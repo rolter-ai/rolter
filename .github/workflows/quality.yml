@@ -1223,6 +1223,13 @@ jobs:
         id: waits
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:waits
+      # an override wins over the dependency range, so a bump of
+      # @playwright/test that skips `overrides.playwright` installs nothing new
+      # (#2028)
+      - name: playwright pin matches @playwright/test
+        id: playwright-pin
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run check:playwright-pin
       - name: unit tests (bun test)
         id: unit
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -1241,8 +1248,9 @@ jobs:
       #
       # the test-runner launches the headless shell, a separate download from
       # the full chromium build. ui/package.json pins the test-runner's
-      # playwright to the same version as @playwright/test, so one install
-      # serves both (#737)
+      # playwright through `overrides`, and `bun run check:playwright-pin` keeps
+      # that pin equal to @playwright/test, so one install serves both (#737,
+      # #2028)
       - name: install chromium (playwright)
         id: chromium
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -1283,6 +1291,7 @@ jobs:
           OUTCOME_PRIMITIVES: ${{ steps.primitives.outcome }}
           OUTCOME_FOCUS: ${{ steps.focus.outcome }}
           OUTCOME_WAITS: ${{ steps.waits.outcome }}
+          OUTCOME_PLAYWRIGHT_PIN: ${{ steps.playwright-pin.outcome }}
           OUTCOME_UNIT: ${{ steps.unit.outcome }}
           OUTCOME_BUILD: ${{ steps.build.outcome }}
           OUTCOME_CHROMIUM: ${{ steps.chromium.outcome }}
@@ -1333,6 +1342,7 @@ jobs:
           row "${ui}" "no hand-rolled shared components" "${OUTCOME_PRIMITIVES}" "cd ui && bun run check:primitives"
           row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
           row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
+          row "${ui}" "playwright pin matches @playwright/test" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
           row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
           row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
           row "${sb}" "install chromium (playwright)" "${OUTCOME_CHROMIUM}" \
