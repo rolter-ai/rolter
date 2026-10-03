@@ -1931,6 +1931,7 @@
       "spendUnattributedShare": "{{share}} за период",
       "spendUnattributedHint": "Назначьте подразделение или клиента на <0>виртуальном ключе</0>, чтобы относить его расходы.",
       "noSpend": "За этот период расходов нет",
+      "noSpendNoKey": "За этот период расходов нет · ключи не назначены. <0>Назначить ключ</0>",
       "cardRequests_one": "{{count}} запрос",
       "cardRequests_few": "{{count}} запроса",
       "cardRequests_many": "{{count}} запросов",
