@@ -11,7 +11,7 @@
 //
 // So this wrapper refuses to guess:
 //
-//   1. it picks a free port itself, or fails loudly when the one you asked for
+//   1. it picks a free port itself and locks it against concurrent runs (#2323), or fails loudly when the one you asked for
 //      is taken, rather than letting Storybook shrug and continue
 //   2. it starts `storybook dev --ci` and waits for `/index.json`
 //   3. it checks that index against the story files it was asked to run: every
@@ -35,7 +35,8 @@
 //   bun scripts/run-story-tests.ts            # every story file
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, Socket } from "node:net";
-import { readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 const UI_DIR = join(import.meta.dir, "..");
@@ -111,10 +112,106 @@ export async function portIsFree(port: number): Promise<boolean> {
   });
 }
 
-/** The first free port at or after `from`, so two worktrees never collide. */
+/** The first free port at or after `from`, unclaimed: see `claimFreePort` for the locked one. */
 export async function findFreePort(from = 6100, tries = 60): Promise<number> {
   for (let port = from; port < from + tries; port += 1) {
     if (await portIsFree(port)) return port;
+  }
+  throw new Error(`no free port in ${from}..${from + tries}`);
+}
+
+/** A port this run holds: the lock file stays until `release` is called. */
+export interface PortClaim {
+  port: number;
+  release: () => void;
+}
+
+/** Where the per-port lock files live: shared by every worktree on the machine. */
+export function defaultLockDir(): string {
+  return join(tmpdir(), "rolter-story-ports");
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists but belongs to someone else
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Claim `port` with an exclusive lock file (`open(…, "wx")`, so O_EXCL) that
+ * names this process, or null when another live run holds it (#2323).
+ *
+ * Probing for a free port and releasing the probe leaves a window of seconds
+ * before Storybook binds, in which a second run picks the same port. The lock
+ * closes it: the kernel lets exactly one `wx` open succeed. A lock whose pid is
+ * dead (a run killed with SIGKILL) is stale and is taken over.
+ */
+export function claimPort(port: number, lockDir = defaultLockDir()): PortClaim | null {
+  mkdirSync(lockDir, { recursive: true });
+  const file = join(lockDir, `${port}.lock`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const fd = openSync(file, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      let released = false;
+      return {
+        port,
+        release: () => {
+          if (released) return;
+          released = true;
+          try {
+            // only remove a lock that is still ours
+            if (readFileSync(file, "utf8").trim() === String(process.pid)) unlinkSync(file);
+          } catch {
+            // already gone
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let holder: number;
+    try {
+      holder = Number(readFileSync(file, "utf8").trim());
+    } catch {
+      continue; // released between the open and the read: try again
+    }
+    // an empty file is a claim caught between open and write; give it a beat
+    if (Number.isFinite(holder) && holder > 0 && processIsAlive(holder)) return null;
+    if (Number.isNaN(holder) || holder === 0) {
+      Bun.sleepSync(20);
+      continue;
+    }
+    try {
+      unlinkSync(file);
+    } catch {
+      // someone else cleared it first
+    }
+  }
+  return null;
+}
+
+/**
+ * The first port at or after `from` that is both unlocked by another run and
+ * free on the machine, claimed for the caller. The lock is what keeps two
+ * concurrent runs apart; the free check still skips ports other software holds.
+ */
+export async function claimFreePort(
+  from = 6100,
+  tries = 60,
+  lockDir = defaultLockDir(),
+  isFree: (port: number) => Promise<boolean> = portIsFree,
+): Promise<PortClaim> {
+  for (let port = from; port < from + tries; port += 1) {
+    const claim = claimPort(port, lockDir);
+    if (claim === null) continue;
+    if (await isFree(port)) return claim;
+    claim.release();
   }
   throw new Error(`no free port in ${from}..${from + tries}`);
 }
@@ -391,9 +488,18 @@ async function main() {
     process.exit(1);
   }
 
-  let port: number;
+  let claim: PortClaim;
   if (requestedPort !== undefined) {
+    const held = claimPort(requestedPort);
+    if (held === null) {
+      console.error(
+        `port ${requestedPort} is in use by another run of this script (#2323). pick another ` +
+          `port, or omit --port and let this script pick one.`,
+      );
+      process.exit(1);
+    }
     if (!(await portIsFree(requestedPort))) {
+      held.release();
       // the whole point: a taken port is an error here, not a shrug
       console.error(
         `port ${requestedPort} is already in use. storybook would not fail on this — it would ` +
@@ -402,10 +508,16 @@ async function main() {
       );
       process.exit(1);
     }
-    port = requestedPort;
+    claim = held;
   } else {
-    port = await findFreePort();
+    claim = await claimFreePort();
   }
+  const port = claim.port;
+  // held for the run's lifetime and dropped on every way out, signals included
+  process.on("exit", claim.release);
+  // SIGINT and SIGTERM stop the storybook first (below); a hangup just exits, and
+  // the exit handlers drop the lock and kill the group
+  process.on("SIGHUP", () => process.exit(129));
 
   console.log(`[stories] starting storybook on ${port}`);
   const storybook = spawn(
@@ -438,7 +550,8 @@ async function main() {
     if (problems.length > 0) {
       console.error(
         `[stories] the storybook on ${port} is not serving this worktree's build:\n  ` +
-          problems.join("\n  "),
+          problems.join("\n  ") +
+          `\n  (this run holds the port's lock, so the listener is not another test:stories run)`,
       );
       await exitAfterStop(1);
     }
