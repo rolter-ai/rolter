@@ -19,6 +19,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 sha=0123456789abcdef0123456789abcdef01234567
+# the base the pull request targets now, and one it was retargeted away from
+base=fedcba9876543210fedcba9876543210fedcba98
+old_base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 self=900
 
 failures=0
@@ -44,6 +47,30 @@ static_check "the step keys on the pr head, not the merge commit" \
   'HEAD_SHA: ${{ github.event.pull_request.head.sha }}'
 # shellcheck disable=SC2016
 static_check "the step leaves its own run out" 'SELF_RUN_ID: ${{ github.run_id }}'
+# shellcheck disable=SC2016
+static_check "the step compares against the base the pr targets now" \
+  'BASE_SHA: ${{ github.event.pull_request.base.sha }}'
+
+# ── #2649: gate-ok records the base it gated ──────────────────────────────────
+# the script matches `gated against base <sha>` among gate-ok's step names, so
+# the job has to carry exactly that step, rendered from the payload's base
+gate_ok_steps=$(awk '
+  $0 == "  gate-ok:" { in_job = 1; next }
+  in_job && /^  [a-z]/ { exit }
+  in_job && /^      - name: / { print }
+' "$workflow")
+# shellcheck disable=SC2016
+case $gate_ok_steps in
+  *"- name: gated against base \${{ github.event.pull_request.base.sha || 'none' }}"*) ;;
+  *)
+    echo "FAIL [workflow wiring] gate-ok must record its base as a step named 'gated against base \${{ github.event.pull_request.base.sha || 'none' }}', got: ${gate_ok_steps:-no steps}" >&2
+    failures=$((failures + 1))
+    ;;
+esac
+if ! grep -qF 'capture("^gated against base (?<sha>[0-9a-f]{40})$")' "$script"; then
+  echo "FAIL [workflow wiring] assert-gate-ran.sh no longer reads the 'gated against base <sha>' step name gate-ok writes" >&2
+  failures=$((failures + 1))
+fi
 
 # ── #2031: a retarget is not a metadata edit ──────────────────────────────────
 # github sends `edited` for a title edit, a body edit and a base-branch change.
@@ -123,10 +150,13 @@ echo "$1" >>"$FAKE/slept"
 EOF
 
 # gh: answers the runs listing and each run's jobs listing out of $FAKE/runs,
-# a list of {id, done, gate_at, gate, listed}. a run is `completed` from second
-# `done` on (never, when null); its `gate-ok` job has conclusion `gate` from
-# second `gate_at` on (never, when null), and before that is queued with no
-# conclusion, or missing from the listing altogether when `listed` is false.
+# a list of {id, done, gate_at, gate, listed, base}. a run is `completed` from
+# second `done` on (never, when null); its `gate-ok` job has conclusion `gate`
+# from second `gate_at` on (never, when null), and before that is queued with
+# no conclusion and no steps, or missing from the listing altogether when
+# `listed` is false. a concluded `gate-ok` carries the step that records the
+# base it gated, `gated against base <base>`, as on github; a null `base` is a
+# gate-ok from before that step existed, with only its old step
 # $FAKE/faults holds how many of the next calls fail with a 502, and a
 # non-empty $FAKE/respond replaces the answer to every call that gets through
 cat >"$bin/gh" <<'EOF'
@@ -158,9 +188,14 @@ case $path in
       if . == null then error("no such run") else . end |
       {jobs: ([{name: "ci-ok", status: "in_progress", conclusion: null}]
         + (if .gate_at != null and $now >= .gate_at
-           then [{name: "gate-ok", status: "completed", conclusion: .gate}]
+           then [{name: "gate-ok", status: "completed", conclusion: .gate,
+             steps: ([{name: "Set up job"}]
+               + (if .base == null
+                  then [{name: "record that the heavy gate passed on this run"}]
+                  else [{name: ("gated against base " + .base)}] end)
+               + [{name: "Complete job"}])}]
            elif .listed == false then []
-           else [{name: "gate-ok", status: "queued", conclusion: null}] end))}' \
+           else [{name: "gate-ok", status: "queued", conclusion: null, steps: []}] end))}' \
       "$FAKE/runs" ;;
   *) echo "fake gh: unexpected path: $path" >&2; exit 2 ;;
 esac
@@ -172,7 +207,8 @@ case_name=""
 case_dir=""
 
 # start_case NAME RUNS_JSON: this run (id 900, unfinished, gate-ok skipped as
-# on every `edited` run) is always in the listing, as it is on github
+# on every `edited` run) is always in the listing, as it is on github. a run
+# that names no `base` gated the current one
 start_case() {
   case_name=$1
   case_dir="$work/$(echo "$1" | tr -c 'a-zA-Z0-9\n' '-')"
@@ -182,7 +218,9 @@ start_case() {
   : >"$case_dir/respond"
   : >"$case_dir/calls"
   : >"$case_dir/slept"
-  jq --argjson self "$self" '[{id: $self, done: null, gate_at: 0, gate: "skipped"}] + .' \
+  jq --argjson self "$self" --arg base "$base" \
+    '[{id: $self, done: null, gate_at: 0, gate: "skipped"}] + . |
+      map(if has("base") then . else . + {base: $base} end)' \
     <<<"$2" >"$case_dir/runs"
 }
 
@@ -190,7 +228,8 @@ run_script() {
   local rc=0
   env -i \
     PATH="$bin:$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" FAKE="$case_dir" \
-    GH_TOKEN=fake-token REPO=rolter-ai/rolter HEAD_SHA="$sha" SELF_RUN_ID="$self" \
+    GH_TOKEN=fake-token REPO=rolter-ai/rolter HEAD_SHA="$sha" BASE_SHA="$base" \
+    SELF_RUN_ID="$self" \
     bash --noprofile --norc "$script" >"$case_dir/out" 2>&1 || rc=$?
   echo "$rc" >"$case_dir/rc"
 }
@@ -226,7 +265,7 @@ start_case "a finished passing gate is green at once" "[$passed_run]"
 run_script
 expect_rc 0
 expect_waited 0
-expect_output "gate already passed for $sha in 1 run(s)"
+expect_output "gate already passed for $sha against base $base in 1 run(s)"
 finish_case
 
 start_case "a finished failing gate is red at once" \
@@ -268,7 +307,7 @@ run_script
 expect_rc 0
 expect_waited 1500
 expect_output "this metadata-only run waits for its verdict"
-expect_output "gate already passed for $sha in 1 run(s)"
+expect_output "gate already passed for $sha against base $base in 1 run(s)"
 finish_case
 
 # the wait must still never turn into a hollow green (#1328)
@@ -294,7 +333,7 @@ start_case "a passing gate does not cut short a second one in flight" \
 run_script
 expect_rc 0
 expect_waited 300
-expect_output "gate already passed for $sha in 2 run(s)"
+expect_output "gate already passed for $sha against base $base in 2 run(s)"
 finish_case
 
 start_case "a gate that never finishes is red at the deadline" \
@@ -320,6 +359,75 @@ start_case "a gate-ok not yet listed counts as undecided" \
 run_script
 expect_rc 0
 expect_waited 120
+finish_case
+
+# ── #2649: a pass counts only against the current base ────────────────────────
+# the sequence the issue names: gated green against base A, retargeted to base
+# B, the gate fails against B, then the title is edited. the pass against A
+# says nothing about B, and used to turn this run green
+start_case "a pass against an old base beside a failure against the current one is red" \
+  "[{\"id\": 100, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\", \"base\": \"$old_base\"},
+    {\"id\": 101, \"done\": 0, \"gate_at\": 0, \"gate\": \"skipped\"}]"
+run_script
+expect_rc 1
+expect_waited 0
+expect_output "no ci run on $sha recorded a passing gate-ok job against the current base $base"
+expect_output "1 run(s) passed against another base or recorded none"
+expect_output "run 100: completed, gate-ok success, gated against base $old_base"
+finish_case
+
+# the retarget's gate run was cancelled, or has not been started: still red
+start_case "a pass against an old base alone is red" \
+  "[{\"id\": 100, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\", \"base\": \"$old_base\"}]"
+run_script
+expect_rc 1
+expect_output "recorded a passing gate-ok job against the current base $base"
+finish_case
+
+# the edit lands while the gate against the new base is still running: it
+# waits for that verdict, and the old pass does not decide it either way
+start_case "an in-flight gate against the current base decides over an old pass" \
+  "[{\"id\": 100, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\", \"base\": \"$old_base\"},
+    {\"id\": 101, \"done\": 1300, \"gate_at\": 1200, \"gate\": \"skipped\"}]"
+run_script
+expect_rc 1
+expect_waited 1200
+expect_output "recorded a passing gate-ok job against the current base $base"
+finish_case
+
+start_case "a pass against the current base beside one against an old base is green" \
+  "[{\"id\": 100, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\", \"base\": \"$old_base\"},
+    {\"id\": 101, \"done\": 0, \"gate_at\": 0, \"gate\": \"skipped\"},
+    {\"id\": 102, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\"}]"
+run_script
+expect_rc 0
+expect_output "gate already passed for $sha against base $base in 1 run(s)"
+finish_case
+
+# a dispatched run has no pull request in its payload, so its gate-ok records
+# `none`: it gated the head on its own, not merged into any base
+start_case "a pass that recorded no base is red" \
+  '[{"id": 100, "done": 0, "gate_at": 0, "gate": "success", "base": "none"}]'
+run_script
+expect_rc 1
+expect_output "recorded a passing gate-ok job against the current base $base"
+finish_case
+
+# a gate-ok from before it recorded its base cannot say which one it gated
+start_case "a pass from a gate-ok that predates the base record is red" \
+  '[{"id": 100, "done": 0, "gate_at": 0, "gate": "success", "base": null}]'
+run_script
+expect_rc 1
+expect_output "gated against base none recorded"
+finish_case
+
+# an expression github left unrendered is not a sha, so it records nothing
+start_case "an unrendered step name records no base" \
+  "[{\"id\": 100, \"done\": 0, \"gate_at\": 0, \"gate\": \"success\",
+     \"base\": \"\${{ github.event.pull_request.base.sha || 'none' }}\"}]"
+run_script
+expect_rc 1
+expect_output "gated against base none recorded"
 finish_case
 
 # ── other edits ───────────────────────────────────────────────────────────────
@@ -385,7 +493,17 @@ finish_case
 start_case "a head sha that is not a sha fails before any call" "[$passed_run]"
 rc=0
 env -i PATH="$bin:$PATH" HOME="$HOME" FAKE="$case_dir" REPO=rolter-ai/rolter \
-  HEAD_SHA=refs/heads/master SELF_RUN_ID="$self" \
+  HEAD_SHA=refs/heads/master BASE_SHA="$base" SELF_RUN_ID="$self" \
+  bash --noprofile --norc "$script" >"$case_dir/out" 2>&1 || rc=$?
+check "exit code" "$rc" 1
+check "api calls" "$(cat "$case_dir/calls")" ""
+finish_case
+
+# an empty base is what a payload with no pull request renders to
+start_case "a base sha that is not a sha fails before any call" "[$passed_run]"
+rc=0
+env -i PATH="$bin:$PATH" HOME="$HOME" FAKE="$case_dir" REPO=rolter-ai/rolter \
+  HEAD_SHA="$sha" BASE_SHA="" SELF_RUN_ID="$self" \
   bash --noprofile --norc "$script" >"$case_dir/out" 2>&1 || rc=$?
 check "exit code" "$rc" 1
 check "api calls" "$(cat "$case_dir/calls")" ""
