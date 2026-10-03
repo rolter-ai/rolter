@@ -1448,7 +1448,6 @@
       "deleteAria": "Delete connector {{name}}",
       "editAria": "Edit connector {{name}}",
       "editTitle": "Edit connector {{name}}",
-      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",

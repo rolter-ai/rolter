@@ -12826,6 +12826,106 @@ async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new
     );
 }
 
+/// #2404: health describes one endpoint and credential, so changing either
+/// resets it to `unknown`; an unrelated edit keeps it.
+#[tokio::test]
+async fn a_connector_edit_resets_health_only_when_endpoint_or_secret_changes() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (sink, _) = serve_capturing_sink().await;
+    let (other_sink, _) = serve_capturing_sink().await;
+    let endpoint = format!("http://{sink}/v1/logs");
+
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": endpoint,
+            "enabled": true,
+            "sampling_rate": 1.0,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let put = |name: &'static str, endpoint: String, secret: Option<String>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        async move {
+            let mut body = json!({
+                "name": name,
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret.into();
+            }
+            let response = client
+                .put(url)
+                .bearer_auth("sekrit")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let test = || async {
+        let tested = client
+            .post(format!("{base}/api/v1/connectors/{id}/test"))
+            .bearer_auth("sekrit")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tested.status(), 200);
+    };
+    let health = || async {
+        sqlx::query_as::<_, (String, bool, bool)>(
+            "select health_status, health_checked_at is not null, health_error is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    test().await;
+    assert_eq!(health().await, ("healthy".to_string(), true, false));
+
+    // a rename and the same endpoint keep the result
+    let body = put("Renamed", endpoint.clone(), None).await;
+    assert_eq!(body["health_status"], "healthy");
+    assert_eq!(health().await, ("healthy".to_string(), true, false));
+
+    // a new secret on the same endpoint resets it
+    put("Renamed", endpoint.clone(), Some(random_password())).await;
+    assert_eq!(health().await, ("unknown".to_string(), false, false));
+
+    // so does a new endpoint, error included
+    test().await;
+    assert_eq!(health().await.0, "healthy");
+    let body = put("Renamed", format!("http://{other_sink}/v1/logs"), None).await;
+    assert_eq!(body["health_status"], "unknown");
+    assert!(body["health_checked_at"].is_null());
+    assert_eq!(health().await, ("unknown".to_string(), false, false));
+}
+
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
