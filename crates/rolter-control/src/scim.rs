@@ -362,6 +362,13 @@ async fn create_user(
         Some(existing) => existing,
         None => UserRepo(pool).create(&email, None, false).await?,
     };
+    // deactivate before linking: when the lockout guard refuses it (the
+    // adopted account is the last admin it protects) no identity may be left
+    // behind, or the IdP's retry gets "userName already exists" instead of
+    // the same refusal (#2672)
+    if body.active == Some(false) {
+        deactivate(&state, user.id, true).await?;
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -375,9 +382,6 @@ async fn create_user(
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
-    if body.active == Some(false) {
-        deactivate(&state, user.id, true).await?;
-    }
     audit_scim(
         &state,
         &principal,
@@ -455,6 +459,14 @@ async fn replace_user(
     let (user, identity) = resolve(&state, &principal, &id).await?;
     let pool = pool(&state);
     let user_name = body.user_name.clone().unwrap_or(identity.user_name);
+    let mut detail = json!({});
+    // deactivate before writing: when the lockout guard refuses it (the
+    // account is the last admin it protects) the rename, externalId and
+    // display name must not have been applied, or the IdP's retry sees a
+    // half-applied replace (#2705)
+    if body.active == Some(false) {
+        detail["personal_keys"] = deactivate(&state, user.id, true).await?.into();
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -469,9 +481,9 @@ async fn replace_user(
         )
         .await?;
     sync_display_name(pool, user.id, &identity).await?;
-    let mut detail = json!({"user_name": identity.user_name});
-    if let Some(active) = body.active {
-        detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
+    detail["user_name"] = identity.user_name.clone().into();
+    if body.active == Some(true) {
+        detail["personal_keys"] = deactivate(&state, user.id, false).await?.into();
     }
     audit_scim(
         &state,
@@ -794,6 +806,9 @@ impl From<ApiError> for ScimError {
         match err {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
+            ApiError::CodedForbidden { message, .. } => {
+                Self::new(StatusCode::FORBIDDEN, None, message)
+            }
             ApiError::Core(err) => err.into(),
             ApiError::Curated(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)

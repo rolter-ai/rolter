@@ -22,17 +22,17 @@ use rolter_core::slug::{is_valid_slug, slugify};
 use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
-    AuditLogEntry, Budget, BusinessUnit, Customer, Membership, ModelPrice, Org, OrgProject,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, Skill, SkillVersion, Team, User,
-    VirtualKey,
+    AuditLogEntry, Budget, BusinessUnit, BusinessUnitListing, Customer, CustomerListing,
+    Membership, ModelPrice, Org, OrgProject, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, Skill, SkillVersion, Team, User, VirtualKey,
 };
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
     BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
-    ProjectRepo, PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
-    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo,
-    VirtualKeyRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -237,6 +237,10 @@ pub(crate) enum ApiError {
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
     Forbidden,
+    /// a 403 that is about policy rather than the caller's role, with a `code`
+    /// a client can branch on. Same contract as [`ApiError::CodedConflict`]:
+    /// `code` is part of the API and never renamed
+    CodedForbidden { code: &'static str, message: String },
     /// the client has spent its budget of rejected attempts on a token
     /// endpoint and is locked for a while (429, #1079). Carries the remaining
     /// lock, which is rendered as `Retry-After`
@@ -261,7 +265,7 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let code = match &self {
-            Self::CodedConflict { code, .. } => Some(*code),
+            Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
             _ => None,
         };
         let (status, message) = match self {
@@ -290,6 +294,7 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN,
                 "insufficient role for this resource".to_string(),
             ),
+            Self::CodedForbidden { message, .. } => (StatusCode::FORBIDDEN, message),
             Self::TooManyAttempts(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many rejected attempts; try again later".to_string(),
@@ -871,7 +876,7 @@ async fn list_business_units(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<BusinessUnit>>> {
+) -> ApiResult<Json<Vec<BusinessUnitListing>>> {
     authorize(
         &state,
         &principal,
@@ -879,7 +884,13 @@ async fn list_business_units(
         cap!("business_unit", Read),
     )
     .await?;
-    Ok(Json(BusinessUnitRepo(pool(&state)).list(org_id).await?))
+    // the live key count rides along so a zero-spend card can say whether any
+    // key is attributed to the unit at all (#2581)
+    Ok(Json(
+        BusinessUnitRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1006,7 +1017,7 @@ async fn list_customers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Customer>>> {
+) -> ApiResult<Json<Vec<CustomerListing>>> {
     authorize(
         &state,
         &principal,
@@ -1014,7 +1025,12 @@ async fn list_customers(
         cap!("customer", Read),
     )
     .await?;
-    Ok(Json(CustomerRepo(pool(&state)).list(org_id).await?))
+    // see list_business_units for why the count is part of the listing
+    Ok(Json(
+        CustomerRepo(pool(&state))
+            .list_with_key_counts(org_id)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -3264,7 +3280,13 @@ async fn delete_provider(
         None => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider", Delete)).await?;
-    ProviderRepo(pool(&state)).delete(id).await?;
+    if let ProviderDeletion::InUse(dependents) = ProviderRepo(pool(&state)).delete(id).await? {
+        return Err(ApiError::Conflict(format!(
+            "provider '{}' is used by {}; remove it from them before deleting it",
+            existing.name,
+            dependents.join(", ")
+        )));
+    }
     publish_config_change(&state).await?;
     log_audit(
         &state,
