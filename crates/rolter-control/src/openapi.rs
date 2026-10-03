@@ -128,10 +128,6 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
-/// the `409` revoking an org's last admin grant answers (#2311)
-const LAST_ORG_ADMIN_409: &str =
-    "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
-
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -852,8 +848,7 @@ fn operations() -> Vec<Op> {
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
-            )
-            .conflict(LAST_ORG_ADMIN_409),
+            ),
         ],
     ));
 
@@ -2123,27 +2118,32 @@ fn operations() -> Vec<Op> {
                 "/gw/{path}",
                 "proxyGet",
                 "Reverse-proxy a GET to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::post(
                 "/gw/{path}",
                 "proxyPost",
                 "Reverse-proxy a POST to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::put(
                 "/gw/{path}",
                 "proxyPut",
                 "Reverse-proxy a PUT to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::patch(
                 "/gw/{path}",
                 "proxyPatch",
                 "Reverse-proxy a PATCH to the gateway data plane",
-            ),
+            )
+            .public(),
             Op::delete(
                 "/gw/{path}",
                 "proxyDelete",
                 "Reverse-proxy a DELETE to the gateway data plane",
             )
+            .public()
             .ok(Payload::Open),
         ],
     ));

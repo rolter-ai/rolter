@@ -27,6 +27,8 @@ export const REPEATED_SHAPES: ShapeAllowList = {
     "a bordered panel on the surface-card ground, in three auth screens. tracked in #1711",
   "section|border border-[color:var(--border-subtle)] flex flex-col gap-2.5 p-4 rounded-[10px]":
     "the same panel as the `gap-3.5` entry above with a tighter gap; both collapse into one primitive with a prop, tracked in #1711",
+  "section|border border-[color:var(--border-subtle)] flex gap-4 items-start p-4 rounded-[10px]":
+    "the row-wise variant of the same panel, tracked in #1711",
   "span|bg-[color:var(--surface-subtle)] border border-[color:var(--border-subtle)] flex flex-none h-[34px] items-center justify-center rounded-lg text-[color:var(--text-secondary)] w-[34px]":
     "the 34px square icon frame beside a row title, in three screens. tracked in #1711",
 };

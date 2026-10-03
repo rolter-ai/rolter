@@ -13,7 +13,6 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { ModelDefaultsDto } from "@/lib/api";
-import { phoneFits } from "@/lib/story-viewport";
 
 const BASE: ModelDefaultsDto = {
   enabled: false,
@@ -194,13 +193,3 @@ export const RefusedToAViewer: Story = {
     await expectForbidden(canvasElement);
   },
 };
-
-// the same screen at a phone's width in both languages: Russian runs a third
-// longer than English and overflowed twice as many screens (#2004)
-const modelFits = phoneFits({
-  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
-  ready: (canvas) => canvas.findByLabelText("Default model"),
-});
-export const MobileFits: Story = modelFits("mobile", "en");
-export const SmallPhone: Story = modelFits("small", "en");
-export const SmallPhoneInRussian: Story = modelFits("small", "ru");

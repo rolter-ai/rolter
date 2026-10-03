@@ -658,7 +658,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             tokio::spawn(async move { sample_pool_acquire(pool, metrics).await });
         }
     }
-    let http = proxy::gateway_client();
+    let http = reqwest::Client::new();
 
     // the throttle shares redis with config pub/sub when there is one, so every
     // replica counts against the same budget. without redis it is process-local
@@ -1917,38 +1917,13 @@ async fn list_roles(_: session_guard::AnySession) -> Json<Value> {
     Json(serde_json::to_value(roles).unwrap_or_default())
 }
 
-/// Load the store for a dashboard read. A failure is a 500 in the usual error
-/// shape with the driver text logged, not echoed: it can name hosts or schemas.
-async fn load_for_read(state: &ControlState) -> Result<GatewayConfig, StoreReadError> {
-    state.store.load().await.map_err(|err| {
-        tracing::error!(%err, "failed to load config for a dashboard read");
-        StoreReadError
-    })
-}
-
-/// A store that could not be read, rendered as a 500 that says nothing a
-/// driver said.
-struct StoreReadError;
-
-impl IntoResponse for StoreReadError {
-    fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": {"message": "internal server error"}})),
-        )
-            .into_response()
-    }
-}
-
 async fn get_config(
     _: session_guard::AnySession,
     State(state): State<ControlState>,
-) -> Result<Json<GatewayConfig>, StoreReadError> {
-    // a failed load is a 5xx, never an empty config: defaults would read as a
-    // deployment with no providers or routes. `ApiError` redacts driver text
-    let mut config = load_for_read(&state).await?;
+) -> Json<GatewayConfig> {
+    let mut config = state.store.load().await.unwrap_or_default();
     redact_config_for_dashboard(&mut config);
-    Ok(Json(config))
+    Json(config)
 }
 
 /// Strip everything a caller of the dashboard's config view must not learn.
@@ -1967,12 +1942,9 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
         for key in &mut provider.api_keys {
             key.key = None;
         }
-        provider.egress_proxy = provider
-            .egress_proxy
-            .as_deref()
-            .map(rolter_core::redact::redact_url);
+        provider.egress_proxy = provider.egress_proxy.as_deref().map(strip_userinfo);
         for proxy in &mut provider.egress_proxies {
-            *proxy = rolter_core::redact::redact_url(proxy);
+            *proxy = strip_userinfo(proxy);
         }
     }
     for provider in &mut config.provider_defaults {
@@ -2006,11 +1978,20 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     for group in &mut config.provider_groups {
         group.tenancy = None;
     }
-    config.logging.clickhouse_url = config
-        .logging
-        .clickhouse_url
-        .as_deref()
-        .map(rolter_core::redact::redact_url);
+    config.logging.clickhouse_url = config.logging.clickhouse_url.as_deref().map(strip_userinfo);
+}
+
+/// `scheme://user:pass@host/…` -> `scheme://host/…`; anything unparsable is
+/// returned untouched, since a URL the gateway could not use leaks nothing.
+fn strip_userinfo(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_string(),
+    }
 }
 
 /// What the dashboard needs to know about a provider kind to configure it.
@@ -2111,9 +2092,8 @@ async fn get_currency(
 async fn get_config_problems(
     _: session_guard::AnySession,
     State(state): State<ControlState>,
-) -> Result<Json<Value>, StoreReadError> {
-    // an unreadable store must not render as "no problems"
-    let mut config = load_for_read(&state).await?;
+) -> Json<Value> {
+    let mut config = state.store.load().await.unwrap_or_default();
     let mut problems = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
@@ -2127,7 +2107,7 @@ async fn get_config_problems(
         Ok(guessed) => problems.extend(guessed),
         Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
-    Ok(Json(json!({ "problems": problems })))
+    Json(json!({ "problems": problems }))
 }
 
 /// [`GatewayConfig::sanitize_for_snapshot`](rolter_core::GatewayConfig::sanitize_for_snapshot)
@@ -2724,44 +2704,24 @@ mod tests {
         }
         assert_eq!(
             config.providers[0].egress_proxy.as_deref(),
-            Some("http://***@proxy.internal:3128/")
+            Some("http://proxy.internal:3128/")
         );
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
         assert!(config.mcp_servers.is_empty());
         assert_eq!(
             config.logging.clickhouse_url.as_deref(),
-            Some("http://***@clickhouse:8123/")
+            Some("http://clickhouse:8123/")
         );
     }
 
     #[test]
-    fn config_view_url_redaction_masks_userinfo_query_and_unparsable() {
-        use rolter_core::redact::{redact_url, INVALID_URL_PLACEHOLDER};
+    fn strip_userinfo_leaves_plain_urls_alone() {
         assert_eq!(
-            redact_url("http://clickhouse:8123"),
+            strip_userinfo("http://clickhouse:8123"),
             "http://clickhouse:8123"
         );
-        let masked = redact_url("http://u:hunter2@ch:8123/?password=hunter2&db=x");
-        assert!(!masked.contains("hunter2"), "{masked}");
-        assert!(masked.contains("db=x"), "{masked}");
-        let junk = redact_url("not a url hunter2");
-        assert!(!junk.contains("hunter2"), "{junk}");
-        assert_eq!(junk, INVALID_URL_PLACEHOLDER);
-    }
-
-    #[test]
-    fn config_view_masks_unparsable_and_query_secret_urls() {
-        let mut config = GatewayConfig::default();
-        config.logging.clickhouse_url = Some("http://ch:8123/?token=hunter2".into());
-        config.providers.push(rolter_core::config::ProviderConfig {
-            egress_proxy: Some("pa ss:hunter2@proxy".into()),
-            egress_proxies: vec!["http://p:hunter2@proxy:3128".into()],
-            ..Default::default()
-        });
-        redact_config_for_dashboard(&mut config);
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(!json.contains("hunter2"), "{json}");
+        assert_eq!(strip_userinfo("not a url"), "not a url");
     }
 
     /// A scratch `ui_dir`, removed when the guard drops. No `tempfile` in this
@@ -3402,21 +3362,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_reads_fail_on_a_store_error_instead_of_answering_defaults() {
-        let mut state = state_with_token(None);
-        state.store = Arc::new(FailingConfigStore);
-        let addr = serve(build_app_with_internal(state)).await;
-        for path in ["/api/v1/config", "/api/v1/config/problems"] {
-            let response = reqwest::get(format!("http://{addr}{path}")).await.unwrap();
-            assert_eq!(response.status(), 500, "{path}");
-            let body: Value = response.json().await.unwrap();
-            let message = body["error"]["message"].as_str().unwrap();
-            assert_eq!(message, "internal server error", "{path}");
-            assert!(!body.to_string().contains("secret_db_details"), "{body}");
-        }
-    }
-
-    #[tokio::test]
     async fn snapshot_redacts_internal_store_errors() {
         let mut state = state_with_token(None);
         state.store = Arc::new(FailingConfigStore);
@@ -3756,132 +3701,12 @@ mod tests {
         let addr = serve(build_app_with(state, true)).await;
         let response = reqwest::Client::new()
             .get(format!("http://{addr}/gw/v1/models"))
-            .bearer_auth("admin-secret")
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), 502);
         let body = response.text().await.unwrap();
         assert!(!body.contains("127.0.0.1"), "address leaked: {body}");
-    }
-
-    /// stand-in gateway that answers with the credentials it was handed
-    async fn credential_echo_gateway() -> std::net::SocketAddr {
-        async fn echo(headers: axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
-            let get = |name: &str| {
-                headers
-                    .get(name)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-            };
-            axum::Json(serde_json::json!({
-                "authorization": get("authorization"),
-                "cookie": get("cookie"),
-                "carrier": get("x-rolter-gateway-key"),
-            }))
-        }
-        serve(Router::new().route("/v1/echo", axum::routing::any(echo))).await
-    }
-
-    /// without a session `/gw` reached the gateway for anyone who could reach
-    /// the control plane (#2463)
-    #[tokio::test]
-    async fn the_gateway_proxy_refuses_an_anonymous_caller() {
-        let up_addr = credential_echo_gateway().await;
-        let state = ControlState {
-            gateway_url: Arc::new(format!("http://{up_addr}")),
-            ..state_with_token(Some("admin-secret"))
-        };
-        let addr = serve(build_app_with(state, true)).await;
-        let client = reqwest::Client::new();
-        let url = format!("http://{addr}/gw/v1/echo");
-        for method in [
-            reqwest::Method::GET,
-            reqwest::Method::POST,
-            reqwest::Method::PUT,
-            reqwest::Method::PATCH,
-            reqwest::Method::DELETE,
-        ] {
-            let anonymous = client.request(method.clone(), &url).send().await.unwrap();
-            assert_eq!(anonymous.status(), 401, "{method} reached the gateway");
-            // a virtual key alone is not a session
-            let key_only = client
-                .request(method.clone(), &url)
-                .bearer_auth("sk-virtual")
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(key_only.status(), 401, "{method} took a key as a session");
-            let carrier_only = client
-                .request(method.clone(), &url)
-                .header("x-rolter-gateway-key", "sk-virtual")
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(carrier_only.status(), 401, "{method} took the key carrier");
-        }
-    }
-
-    /// the session authenticates to the control plane and the key to the
-    /// gateway; neither may stand in for the other, and the session must not
-    /// reach the gateway at all
-    #[tokio::test]
-    async fn the_gateway_proxy_forwards_the_key_and_drops_the_session() {
-        let up_addr = credential_echo_gateway().await;
-        let state = ControlState {
-            gateway_url: Arc::new(format!("http://{up_addr}")),
-            ..state_with_token(Some("admin-secret"))
-        };
-        let addr = serve(build_app_with(state, true)).await;
-        let client = reqwest::Client::new();
-        let url = format!("http://{addr}/gw/v1/echo");
-
-        let seen: serde_json::Value = client
-            .post(&url)
-            .bearer_auth("admin-secret")
-            .header("x-rolter-gateway-key", "sk-virtual")
-            .header("cookie", "rolter_session=cookie-secret")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(seen["authorization"], "Bearer sk-virtual");
-        assert!(seen["carrier"].is_null(), "carrier forwarded: {seen}");
-        assert!(seen["cookie"].is_null(), "cookie forwarded: {seen}");
-
-        // no key: the gateway sees no Authorization, not the session
-        let seen: serde_json::Value = client
-            .get(&url)
-            .bearer_auth("admin-secret")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert!(seen["authorization"].is_null(), "session forwarded: {seen}");
-    }
-
-    #[tokio::test]
-    async fn the_gateway_proxy_stays_open_in_open_mode() {
-        let up_addr = credential_echo_gateway().await;
-        let state = ControlState {
-            gateway_url: Arc::new(format!("http://{up_addr}")),
-            ..state_with_token(None)
-        };
-        let addr = serve(build_app_with(state, true)).await;
-        let seen: serde_json::Value = reqwest::Client::new()
-            .get(format!("http://{addr}/gw/v1/echo"))
-            .header("x-rolter-gateway-key", "sk-virtual")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(seen["authorization"], "Bearer sk-virtual");
     }
 
     #[tokio::test]

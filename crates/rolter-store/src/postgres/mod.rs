@@ -544,7 +544,7 @@ impl PostgresConfigStore {
     /// never to name them (#1162).
     async fn load_security_policy(&self) -> Result<SecurityPolicyRow> {
         sqlx::query_as(
-            "select required_headers, auth_bypass_routes \
+            "select virtual_key_required, required_headers, auth_bypass_routes \
              from security_settings where id = true",
         )
         .fetch_one(&self.pool)
@@ -1527,6 +1527,7 @@ impl ConfigStore for PostgresConfigStore {
             request_id_header: client_settings.request_id_header.to_ascii_lowercase(),
         };
         config.security = rolter_core::SecurityPolicyConfig {
+            virtual_key_required: security.virtual_key_required,
             // same treatment as injected_headers: a hand-edited non-object row
             // must not take the fleet's config propagation down with it. an
             // unreadable rule is dropped, never silently turned into a

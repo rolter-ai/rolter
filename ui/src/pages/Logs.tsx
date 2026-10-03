@@ -23,7 +23,6 @@ import {
   FilterSection,
 } from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
-import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,7 +41,6 @@ import {
   fetchModels,
   fetchVirtualKeys,
   type InvocationRow,
-  type SavedViewFilters,
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
 import type { CodeLanguage } from "@/lib/code";
@@ -51,13 +49,7 @@ import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
-import {
-  DEFAULT_TIME_WINDOW,
-  readTimeWindow,
-  useTimeWindowOptions,
-  windowBounds,
-  type TimeWindow,
-} from "@/lib/time-window";
+import { windowBounds, type TimeWindow } from "@/lib/time-window";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_MD, BELOW_XL, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -66,11 +58,11 @@ import { useErrorState, useScreenReady } from "@/lib/ux-react";
 const PAGE_SIZE = 50;
 // how often the live feed asks for the newest page
 const POLL_MS = 5000;
-// the log reads one window, by name, the last 24 hours unless the address names
-// another (`?window=7d`). its bounds are worked out as each page is requested (a
-// poll, a retry, a filter change), not when the screen mounts, so a tab left
-// open keeps reading the window as it is now rather than as it was when it was
-// opened (#2315). the name is what the query key carries
+// the log reads one window, by name. its bounds are worked out as each page is
+// requested (a poll, a retry, a filter change), not when the screen mounts, so
+// a tab left open keeps reading the last 24 hours rather than every hour since
+// it was opened (#2315). the name is what the query key carries
+const LOG_WINDOW: TimeWindow = "24h";
 type StatusFilter = "all" | "error" | "success";
 
 const num = (v: number | string | undefined): number => {
@@ -78,7 +70,14 @@ const num = (v: number | string | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// the verdict of a status, in the badge's own tones, for the table and the drawer
+function statusTone(status: number): [string, string] {
+  if (status === 0 || status >= 500) return ["var(--status-danger-text)", "rgba(229,57,53,.14)"];
+  if (status === 429) return ["var(--status-warning-text)", "rgba(245,158,11,.14)"];
+  if (status >= 400) return ["var(--status-warning-text)", "rgba(245,158,11,.14)"];
+  return ["var(--status-success-text)", "rgba(22,163,74,.14)"];
+}
+
+// the same verdict as `statusTone`, in the badge's own tones for the drawer
 function verdictTone(status: number): "success" | "warning" | "danger" {
   if (status === 0 || status >= 500) return "danger";
   if (status >= 400) return "warning";
@@ -100,15 +99,7 @@ function readStatus(raw: string | null): StatusFilter {
 }
 
 type FilterParam =
-  | "window"
-  | "status"
-  | "model"
-  | "key"
-  | "business_unit"
-  | "customer"
-  | "unpriced"
-  | "request_id"
-  | "trace_id";
+  "status" | "model" | "business_unit" | "customer" | "unpriced" | "request_id" | "trace_id";
 
 /**
  * The rail's filters, kept in the address rather than in component state
@@ -124,18 +115,12 @@ type FilterParam =
  * `trace_id`, so `/logs?request_id=…` opens that request. An address that
  * names both reads as the request id, the narrower of the two.
  *
- * `window` names the reporting window and `key` one virtual key's id. Neither
- * has a control in the rail beyond the window picker: they arrive from a saved
- * view (#2452) or a pasted address, and Clear filters drops the key.
- *
  * `unpriced=true` narrows the log to requests with no price (#1986). Any other
  * value reads as the filter left off, the way an unknown status does.
  */
 function useLogFilters() {
   const [params, setParams] = useSearchParams();
-  const timeWindow = readTimeWindow(params.get("window"));
   const status = readStatus(params.get("status"));
-  const keyId = (params.get("key") ?? "").trim();
   const model = params.get("model") ?? "";
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
@@ -172,9 +157,7 @@ function useLogFilters() {
     [setParams],
   );
   return {
-    window: timeWindow,
     status,
-    keyId,
     model,
     units,
     customers,
@@ -182,52 +165,20 @@ function useLogFilters() {
     /** the id being looked up, if any */
     lookup,
     /** changes whenever any filter does */
-    key: [
-      timeWindow,
-      status,
-      keyId,
-      model,
-      unitParam,
-      customerParam,
-      unpriced,
-      lookup?.kind,
-      lookup?.value,
-    ].join("|"),
-    setWindow: (next: TimeWindow) => update({ window: next === DEFAULT_TIME_WINDOW ? "" : next }),
-    /**
-     * Replace every filter a saved view holds with the view's own, and leave
-     * the rest of the address alone. A filter the view does not name is
-     * cleared: applying it must give the view, not the view plus what was
-     * already picked. A lookup would mask the filters, so it goes too.
-     */
-    applyView: (view: SavedViewFilters) =>
-      update({
-        window: view.window && view.window !== DEFAULT_TIME_WINDOW ? view.window : "",
-        status: view.status && view.status !== "all" ? view.status : "",
-        model: view.model ?? "",
-        key: view.key ?? "",
-        business_unit: (view.business_unit ?? []).join(","),
-        customer: (view.customer ?? []).join(","),
-        request_id: "",
-        trace_id: "",
-      }),
+    key: [status, model, unitParam, customerParam, unpriced, lookup?.kind, lookup?.value].join("|"),
     setStatus: (next: StatusFilter) => update({ status: next === "all" ? "" : next }),
     setModel: (next: string) => update({ model: next }),
-    setKey: (next: string) => update({ key: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
     setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
-    clear: () =>
-      update({ status: "", model: "", key: "", business_unit: "", customer: "", unpriced: "" }),
+    clear: () => update({ status: "", model: "", business_unit: "", customer: "", unpriced: "" }),
     setLookup: (next: LogLookup | null) =>
       update({
         request_id: next?.kind === "request_id" ? next.value : "",
         trace_id: next?.kind === "trace_id" ? next.value : "",
         // a new lookup starts from the whole log: the rail's picks would
         // narrow it without the field saying so
-        ...(next
-          ? { status: "", model: "", key: "", business_unit: "", customer: "", unpriced: "" }
-          : {}),
+        ...(next ? { status: "", model: "", business_unit: "", customer: "", unpriced: "" } : {}),
       }),
   };
 }
@@ -258,17 +209,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const filters = useLogFilters();
-  const {
-    window: logWindow,
-    status,
-    keyId,
-    model,
-    units: unitSel,
-    customers: customerSel,
-    unpriced,
-    lookup,
-  } = filters;
-  const windowOptions = useTimeWindowOptions();
+  const { status, model, units: unitSel, customers: customerSel, unpriced, lookup } = filters;
   const lookupKey = lookup ? `${lookup.kind}:${lookup.value}` : "";
   // the cursor each page after the first was opened with, oldest first. a
   // stack rather than a page index: the control plane pages on a keyset, so
@@ -311,18 +252,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     retry: false,
   });
 
-  // the keys the caller can read in the scoped project, which is the list the
-  // key picker offers and the drawer already asks for (#1983). a caller the
-  // gate refuses gets no picker rather than a list that always fails
-  const can = useCan();
-  const keys = useQuery({
-    queryKey: ["virtual-keys", scope.projectId],
-    queryFn: () => fetchVirtualKeys(scope.projectId as string),
-    enabled: can("virtual_key", "read") !== false && !!scope.projectId,
-    retry: false,
-    staleTime: 60_000,
-  });
-
   React.useEffect(() => setCursors([]), [filters.key]);
   // the drawer belongs to the lookup it was opened by
   React.useEffect(() => setSelected(null), [lookupKey]);
@@ -330,9 +259,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const query = useQuery({
     queryKey: [
       "invocations",
-      lookup ? "lookup" : logWindow,
+      lookup ? "lookup" : LOG_WINDOW,
       status,
-      keyId,
       model,
       unitSel.join(","),
       customerSel.join(","),
@@ -346,11 +274,10 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         // lookup carries no window: the control plane reads an id with no
         // `since` as every retained row, and a 24 hour bound would answer an
         // older request with an empty page that reads as "no such request"
-        ...(lookup ? {} : windowBounds(logWindow)),
+        ...(lookup ? {} : windowBounds(LOG_WINDOW)),
         request_id: lookup?.kind === "request_id" ? lookup.value : undefined,
         trace_id: lookup?.kind === "trace_id" ? lookup.value : undefined,
         model: model || undefined,
-        key: keyId || undefined,
         // the rail allows several of each, so the whole selection travels
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
@@ -364,7 +291,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     // answers the same question: rows from the feed are not a lookup's rows,
     // and a lookup holds nothing back while it is out
     placeholderData: (prev, prevQuery) =>
-      !lookup && prevQuery?.queryKey[1] === logWindow ? prev : undefined,
+      !lookup && prevQuery?.queryKey[1] === LOG_WINDOW ? prev : undefined,
     // a lookup reads every retained row, so it is asked again on request
     // (Find) rather than on a timer or on every return to the tab
     refetchOnWindowFocus: !lookup,
@@ -455,21 +382,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const filterCount =
     (status === "all" ? 0 : 1) +
     (model ? 1 : 0) +
-    (keyId ? 1 : 0) +
     unitSel.length +
     customerSel.length +
     (unpriced ? 1 : 0);
-  // what a saved view keeps of the screen: the lookup, the page and the
-  // unpriced flag are not filters it holds, and an `all` status or an empty
-  // value is left out rather than saved as a filter that filters nothing
-  const savedFilters: SavedViewFilters = {
-    window: logWindow,
-    ...(status !== "all" ? { status } : {}),
-    ...(model ? { model } : {}),
-    ...(keyId ? { key: keyId } : {}),
-    ...(unitSel.length ? { business_unit: unitSel } : {}),
-    ...(customerSel.length ? { customer: customerSel } : {}),
-  };
   // the list the model filter picks from. a model the address names but the
   // catalogue no longer lists still filters the log, so it is offered too:
   // otherwise the control would read as unset while the rows are narrowed
@@ -478,20 +393,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     if (model && !names.includes(model)) names.push(model);
     return names.map((name) => ({ value: name, label: name }));
   }, [models.data, model]);
-
-  // the list the key filter picks from, by name. a key the address names but
-  // this project's list does not hold (a saved view from another project, a
-  // pasted link) still filters the log, so it is offered by its id too
-  const keyOptions = React.useMemo(() => {
-    const options = (keys.data ?? []).map((k) => ({
-      value: k.id,
-      label: k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`,
-    }));
-    if (keyId && !options.some((o) => o.value === keyId)) {
-      options.push({ value: keyId, label: keyId });
-    }
-    return options;
-  }, [keys.data, keyId]);
 
   // a deployment with no analytics store is a shape rolter supports, not a
   // failure, so it gets a calm panel naming the setting rather than the red
@@ -694,19 +595,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 {t("pages.logs.statusOkHint")}
               </p>
             </FilterSection>
-            {/* the window is a name the address carries, so a saved view can hold it */}
-            <FilterSection
-              title={t("pages.logs.window")}
-              defaultOpen
-              count={logWindow === DEFAULT_TIME_WINDOW ? 0 : 1}
-            >
-              <Combobox
-                aria-label={t("pages.logs.window")}
-                options={windowOptions}
-                value={logWindow}
-                onChange={(next) => filters.setWindow(readTimeWindow(next))}
-              />
-            </FilterSection>
             {/* the control plane filters on one exact model, so this picks one */}
             <FilterSection title={t("pages.logs.model")} defaultOpen count={model ? 1 : 0}>
               <Combobox
@@ -718,19 +606,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 clearable
               />
             </FilterSection>
-            {/* the control plane filters on one exact key id, shown by its name */}
-            {keyOptions.length > 0 && (
-              <FilterSection title={t("pages.logs.virtualKey")} defaultOpen count={keyId ? 1 : 0}>
-                <Combobox
-                  aria-label={t("pages.logs.virtualKey")}
-                  options={keyOptions}
-                  value={keyId}
-                  onChange={filters.setKey}
-                  placeholder={t("pages.logs.allKeys")}
-                  clearable
-                />
-              </FilterSection>
-            )}
             {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
             <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
@@ -793,12 +668,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             {t("common.filters")}
             {filterCount > 0 && ` · ${filterCount}`}
           </button>
-          <SavedViews surface="llm_logs" current={savedFilters} onApply={filters.applyView} />
           <span className="inline-flex min-w-0 items-center gap-[7px] text-xs text-muted-foreground">
             <span className={cn("h-[7px] w-[7px] flex-none rounded-full", feed.dot)} />
             {feed.label}
           </span>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="ml-auto flex gap-2">
             {/* a lookup does not stream, so there is nothing to pause */}
             {!lookup && (
               <Button size="sm" variant="outline" onClick={() => setStreaming((v) => !v)}>
@@ -920,6 +794,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             <tbody>
               {rows.map((r) => {
                 const st = num(r.status);
+                const tone = statusTone(st);
                 // the drawer beside the table has no other tie back to the
                 // row it describes, so the open row says so, to the eye and
                 // to a screen reader (#1983)
@@ -955,12 +830,12 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                       {r.provider || "—"}
                     </td>
                     <td className={TD}>
-                      <Badge
-                        tone={verdictTone(st)}
-                        className="font-mono text-[0.6875rem] font-semibold"
+                      <span
+                        className="inline-flex items-center rounded-[6px] px-[7px] py-0.5 font-mono text-[11px] font-semibold"
+                        style={{ color: tone[0], background: tone[1] }}
                       >
                         {st || "ERR"}
-                      </Badge>
+                      </span>
                     </td>
                     <td
                       className={cn(

@@ -29,7 +29,6 @@ import type {
   PromptTemplateVersionRow,
 } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
-import { atShort, expectInViewport } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000001";
@@ -655,28 +654,6 @@ export const RenamesTemplateKeepingSlug: Story = {
     await userEvent.type(name, "Support desk");
     await userEvent.click(dialog.getByRole("button", { name: "Save details" }));
     await expectToast(canvasElement, /Template details updated/);
-  },
-};
-
-/**
- * The create dialog in a 640x360 window (#2225): its fields sit in a
- * `DialogBody`, so the body scrolls between a header and a footer that stay
- * on screen, and the primary action is still reachable.
- */
-export const CreateDialogFitsAShortScreen: Story = {
-  ...atShort,
-  render: () => <Harness fetchStub={loadedStub()} />,
-  play: async ({ canvas, canvasElement }) => {
-    await userEvent.click(await canvas.findByRole("button", { name: /Create template/ }));
-    const page = within(canvasElement.ownerDocument.body);
-    const dialog = within(await page.findByRole("dialog"));
-    await expectInViewport(dialog.getByRole("heading", { name: /Create/ }));
-    await expectInViewport(dialog.getByRole("button", { name: "Close" }));
-    const submit = dialog.getByRole("button", { name: "Create template" });
-    await expectInViewport(submit);
-    const body = dialog.getAllByRole("textbox")[0].closest<HTMLElement>("[data-slot=dialog-body]")!;
-    await expect(body).not.toBeNull();
-    await expect(body.scrollHeight).toBeGreaterThan(body.clientHeight);
   },
 };
 

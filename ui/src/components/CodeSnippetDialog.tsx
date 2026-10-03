@@ -2,7 +2,6 @@ import { Code2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -63,14 +62,10 @@ export function CodeSnippetDialog({
   const { t } = useTranslation();
   const [lang, setLang] = React.useState<SnippetLang>("curl");
 
-  // the saved public base URL when this caller can read it. there is no /gw
-  // fallback: the proxy needs a dashboard session an external client lacks, so
-  // without an address the dialog asks for one instead (#2486)
+  // the saved public base URL when this caller can read it, the dashboard's
+  // /gw proxy otherwise — the same address every other snippet hands out
   const base = useGatewayBase();
-  const snippet = React.useMemo(
-    () => (base ? renderSnippet(lang, request, base) : null),
-    [lang, request, base],
-  );
+  const snippet = React.useMemo(() => renderSnippet(lang, request, base), [lang, request, base]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} size="lg">
@@ -79,29 +74,25 @@ export function CodeSnippetDialog({
         <DialogDescription>{t("playground.copyAsCodeHint")}</DialogDescription>
       </DialogHeader>
 
-      {snippet === null ? (
-        <GatewayBasePrompt />
-      ) : (
-        <div className="flex flex-col gap-3">
-          <Tabs
-            aria-label={t("playground.language")}
-            tabs={SNIPPET_LANGS.map((l) => ({ value: l, label: LABELS[l] }))}
-            value={lang}
-            onChange={(v) => setLang(v as SnippetLang)}
-          />
+      <div className="flex flex-col gap-3">
+        <Tabs
+          aria-label={t("playground.language")}
+          tabs={SNIPPET_LANGS.map((l) => ({ value: l, label: LABELS[l] }))}
+          value={lang}
+          onChange={(v) => setLang(v as SnippetLang)}
+        />
 
-          {/* the block scrolls sideways rather than wrapping: a snippet broken
+        {/* the block scrolls sideways rather than wrapping: a snippet broken
             mid-URL reads as two broken lines, not as one long one (#948).
             CodeBlock owns the copy button, the focusable scroll region and
             the name, so each language is copyable on its own terms */}
-          <CodeBlock
-            value={snippet}
-            language={HIGHLIGHT[lang]}
-            label={t("playground.snippet")}
-            maxHeight={420}
-          />
-        </div>
-      )}
+        <CodeBlock
+          value={snippet}
+          language={HIGHLIGHT[lang]}
+          label={t("playground.snippet")}
+          maxHeight={420}
+        />
+      </div>
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>

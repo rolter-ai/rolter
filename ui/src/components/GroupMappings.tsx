@@ -310,7 +310,7 @@ export function GroupMappings({
           onClick={submit}
         >
           {create.isPending && !confirming && (
-            <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           )}
           {t("groupMappings.add")}
         </GatedButton>

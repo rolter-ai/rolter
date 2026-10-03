@@ -35,7 +35,7 @@
     },
     {
       "resource": "provider",
-      "scope": "project",
+      "scope": "org",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -51,7 +51,7 @@
     },
     {
       "resource": "provider_group",
-      "scope": "project",
+      "scope": "org",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -123,7 +123,7 @@
     },
     {
       "resource": "budget",
-      "scope": "project",
+      "scope": "org",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -131,7 +131,7 @@
     },
     {
       "resource": "rate_limit",
-      "scope": "project",
+      "scope": "org",
       "read": "viewer",
       "create": "admin",
       "update": "admin",

@@ -340,14 +340,3 @@ the field, on screen for as long as it is wrong.
 had — the screen looked saved and the rest of the dashboard did not agree. The
 eleven settings screens now write the response _and_ invalidate the query, so
 the save is what the next read sees (#1197).
-
-## Inline error copy (#2216)
-
-The control plane answers in English, and some of its messages are internal. An
-inline error (a sheet footer, a field error, an `ErrorNote`) therefore never
-leads with `error.message`: pass the thrown value through `describeError` in
-`ui/src/lib/error-copy.ts`. It reads the stable `code` first
-(`errors.api.codes.<code>`), then the HTTP status, and only when neither is known
-returns the server's words as `detail`, to be shown below a generic translated
-line. A new code the control plane starts sending is added to `KNOWN_ERROR_CODES`
-and to `errors.api.codes` in every catalog.

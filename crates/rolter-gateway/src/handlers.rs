@@ -1103,11 +1103,11 @@ pub(crate) fn authenticate(
         // yet), which must lock the data plane down rather than open it
         // the config file wins in either direction when it says anything:
         // it is a deliberate local override of a database the operator may
-        // not even have. otherwise the deployment mode decides. nothing in the
-        // snapshot does: the only thing a control plane could add here is a
-        // way to open a managed gateway, and that stays a decision for
-        // whoever runs the process (#2357)
-        let required = snap.require_auth.unwrap_or(state.managed_auth);
+        // not even have. otherwise the Security screen's toggle decides,
+        // falling back to what the deployment mode implies
+        let required = snap
+            .require_auth
+            .unwrap_or(snap.security.virtual_key_required || state.managed_auth);
         if required {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
             return Err(invalid_api_key_json(MISSING_KEY_MESSAGE));
@@ -4498,26 +4498,35 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // #2357: the Security screen's "enforce virtual keys" switch only ever
-    // reached managed gateways, which fail closed anyway, so it was removed.
-    // an older control plane still sends the field; neither value may open
-    // or close anything
+    // #1162: the Security screen's "enforce virtual keys on inference" toggle
+    // was stored, rendered, and read by nothing. these four tests are the
+    // reason it cannot go back to being decorative.
     #[tokio::test]
-    async fn a_retired_snapshot_field_never_opens_a_managed_gateway() {
-        for value in [false, true] {
-            let config: GatewayConfig = serde_json::from_value(serde_json::json!({
-                "security": { "virtual_key_required": value },
-            }))
-            .expect("an older control plane's snapshot must still parse");
-            let mut state = AppState::new(&config);
-            state.managed_auth = true;
-            let resp = list_models(State(state), HeaderMap::new()).await;
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{value}");
+    async fn the_security_screen_can_close_an_unmanaged_gateway() {
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = true;
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 
-            let state = AppState::new(&config);
-            let resp = list_models(State(state), HeaderMap::new()).await;
-            assert_eq!(resp.status(), StatusCode::OK, "unmanaged, {value}");
-        }
+    #[tokio::test]
+    async fn a_config_file_still_overrides_the_security_screen_in_both_directions() {
+        // the file is a deliberate local override of a database the operator
+        // running this process may not even be able to reach
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = true;
+        config.server.require_auth = Some(false);
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = false;
+        config.server.require_auth = Some(true);
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

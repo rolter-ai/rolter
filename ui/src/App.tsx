@@ -108,7 +108,6 @@ export const SCREENS: Record<string, React.ReactNode> = {
   "oauth-grants": named(() => import("@/pages/McpOAuth"), "OAuthGrants"),
   "mcp-settings": named(() => import("@/pages/McpManagement"), "McpSettings"),
   "api-keys": screen(() => import("@/pages/Account")),
-  preferences: screen(() => import("@/pages/Preferences")),
   security: screen(() => import("@/pages/Security")),
   "effective-config": screen(() => import("@/pages/Config")),
   "client-settings": screen(() => import("@/pages/ClientSettings")),
@@ -419,9 +418,7 @@ function Shell() {
   const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
   const roleName = roleLabel(t, user, memberships, scope.orgId);
   const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
-  // the name the account goes by, else its email (#2434)
-  const shownName = user?.display_name?.trim() || email;
-  const initials = (shownName.trim()[0] ?? "?").toUpperCase();
+  const initials = (email.trim()[0] ?? "?").toUpperCase();
 
   return (
     // the open-mode warning spans the full width above the shell rather than
@@ -506,7 +503,7 @@ function Shell() {
           version={`v${version}`}
           update={update}
           user={{
-            name: shownName,
+            name: email,
             role,
             initials,
             onClick: handleSignOut,
@@ -518,10 +515,7 @@ function Shell() {
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">{shownName}</p>
-                  {shownName !== email && (
-                    <p className="truncate text-[0.6875rem] text-muted-foreground">{email}</p>
-                  )}
+                  <p className="truncate text-xs font-medium text-foreground">{email}</p>
                   <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
                 </div>
               </div>

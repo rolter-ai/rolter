@@ -4741,32 +4741,11 @@ async fn an_ingress_filter_is_absent_until_the_operator_sets_one() {
     assert_eq!(resp.status(), 200);
 }
 
-/// Serve the gateway the way `run` does when it polls a control plane, so
-/// auth decides as a managed deployment does.
-async fn serve_managed_gateway(config: &GatewayConfig) -> SocketAddr {
-    let mut state = rolter_gateway::AppState::with_logging(config, None);
-    state.managed_auth = true;
-    let app = rolter_gateway::build_router(
-        state,
-        &config.server.metrics_path,
-        config.server.max_body_bytes,
-    );
-    serve(app).await
-}
-
-// #2357: the Security screen's "enforce virtual keys" switch was removed
-// because a managed gateway holding no keys is closed whatever it said. pin
-// both halves of that: the closed default, and that the only way to open one
-// is the operator's own `server.require_auth = false`
 #[tokio::test]
-async fn a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_it() {
-    // the snapshot an older control plane sends still carries the retired
-    // field; switched off, it must not open anything
-    let snapshot: GatewayConfig = serde_json::from_value(json!({
-        "security": { "virtual_key_required": false },
-    }))
-    .unwrap();
-    let addr = serve_managed_gateway(&snapshot).await;
+async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
+    let mut config = GatewayConfig::default();
+    config.security.virtual_key_required = true;
+    let addr = serve_gateway(&config).await;
     let closed = reqwest::get(format!("http://{addr}/v1/models"))
         .await
         .unwrap();
@@ -4774,9 +4753,9 @@ async fn a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_i
     let body: serde_json::Value = closed.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_api_key");
 
-    let mut opened = snapshot.clone();
-    opened.server.require_auth = Some(false);
-    let addr = serve_managed_gateway(&opened).await;
+    // and the same deployment with the toggle off answers — so the test is
+    // measuring the toggle, not the absence of keys
+    let addr = serve_gateway(&GatewayConfig::default()).await;
     let open = reqwest::get(format!("http://{addr}/v1/models"))
         .await
         .unwrap();
@@ -4786,7 +4765,7 @@ async fn a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_i
 #[tokio::test]
 async fn a_bypass_route_opens_exactly_the_path_it_names() {
     let mut config = GatewayConfig::default();
-    config.server.require_auth = Some(true);
+    config.security.virtual_key_required = true;
     config.security.auth_bypass_routes = vec!["/v1/models".to_string()];
     let addr = serve_gateway(&config).await;
     let client = reqwest::Client::new();

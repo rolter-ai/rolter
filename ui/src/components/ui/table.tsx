@@ -77,7 +77,7 @@ export function Table<T extends Record<string, unknown>>({
         // containment takes the frame's own width off its content: `w-full`
         // gives it one, but a caller that swaps that for `w-auto` in a row
         // flex would collapse it to its border
-        "relative w-full overflow-x-auto rounded-lg border border-[color:var(--border-default)] [container-type:inline-size]",
+        "w-full overflow-x-auto rounded-lg border border-[color:var(--border-default)] [container-type:inline-size]",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}

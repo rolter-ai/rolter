@@ -115,15 +115,14 @@ out (#2084), on the Single Sign-On screen:
 - **Taking a provider out of service** confirms as `sso-provider-disable` with
   `tone="default"`, since one flip undoes it. Switching a provider back on sends
   at once. Deleting one keeps `sso-connection-delete`. When the provider is the
-  last enabled one and the saved policy has password sign-in off, the control
-  plane refuses both with a 409 (#2443), so the card disables the enable switch
-  and the delete button instead of confirming, with a reason beside them
-  (`pages.sso.lastMethod.reason`) that the controls reference through
-  `aria-describedby`. `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides
-  it. It reads the saved policy, not the draft on the policy card, and a
-  provider that is already out of service never counts. A 409 that still comes
-  back (another admin changed the list first) is shown as
-  `pages.sso.lastMethod.refused`, not as the server's raw message.
+  last enabled one and the saved policy has password sign-in off, both carry a
+  `LockoutNotice` as `children` and the disable button turns `danger`.
+  `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides it. It reads the
+  saved policy, not the draft on the policy card, and a provider that is already
+  out of service never counts. The notice states only what the control plane
+  enforces: superadmins are exempt from `allow_password_login = false`, and an
+  account created through a provider has no password, so turning password
+  sign-in back on does not restore it.
 - **Turning password sign-in off** confirms as `sso-password-off`, and lists the
   enabled providers with no stored client secret (`secretGap`). It warns and
   never blocks, since a public client has no secret on purpose. A save that

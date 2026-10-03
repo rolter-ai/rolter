@@ -50,7 +50,6 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
-import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { strategyOptions, usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -585,7 +584,6 @@ function buildPreview(
 function TargetEditor({
   targets,
   providers,
-  hidden,
   publicName,
   strategy,
   labelId,
@@ -596,8 +594,6 @@ function TargetEditor({
 }: {
   targets: DraftTarget[];
   providers: ProviderRow[];
-  /** how many of the org's providers the route's project may not use, and so are not offered */
-  hidden: number;
   publicName: string;
   strategy: string;
   /** the id the list is labelled by */
@@ -639,11 +635,6 @@ function TargetEditor({
       </div>
       {providers.length === 0 && (
         <p className="text-xs text-muted-foreground">{t("modelSheet.targets.noProviders")}</p>
-      )}
-      {hidden > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {t("modelSheet.targets.scopeNote", { count: hidden })}
-        </p>
       )}
       {targets.length > 0 && (
         // captions for the eye; every field names itself for a screen reader
@@ -756,7 +747,7 @@ export function ModelSheet({
   onOpenChange,
   projectId,
   orgId,
-  providers: orgProviders,
+  providers,
   route,
   configModel,
   configTargets,
@@ -766,13 +757,6 @@ export function ModelSheet({
 }: ModelSheetProps) {
   const queryClient = useQueryClient();
   const readonly = mode === "view";
-  // a route in project P may target P's own providers and org-wide ones, never
-  // another project's, which the control plane refuses with a 409 (#1919)
-  const routeProject = route?.project_id ?? projectId;
-  const providers = React.useMemo(
-    () => providersUsableFrom(orgProviders, routeProject),
-    [orgProviders, routeProject],
-  );
 
   const [draft, setDraft] = React.useState<ModelDraft>(() => blankDraft(""));
   const [secOpen, setSecOpen] = React.useState<Record<SectionKey, boolean>>({
@@ -1407,7 +1391,6 @@ export function ModelSheet({
             <TargetEditor
               targets={draft.targets}
               providers={providers}
-              hidden={orgProviders.length - providers.length}
               publicName={publicName}
               strategy={draft.strategy}
               labelId={ids.targetsLabel}

@@ -10,9 +10,6 @@ import {
   setLocale,
   type Locale,
 } from "@/lib/i18n";
-import { useOptionalAuth } from "@/lib/auth";
-import { useOptionalPreferences } from "@/lib/preferences";
-import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 // language switcher pinned to the sidebar footer next to the version, so it is
@@ -42,23 +39,9 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
     };
   }, [open]);
 
-  // a signed-in account keeps its language on the server (#2448), so the pick
-  // is saved there too; the page switches at once either way
-  const toast = useToast();
-  const preferences = useOptionalPreferences();
-  const signedIn = !!useOptionalAuth()?.token && !!preferences?.preferences;
   const choose = (locale: Locale) => {
     setOpen(false);
-    if (locale === active) return;
-    void setLocale(locale);
-    if (!signedIn) return;
-    preferences?.save({ language: locale }).catch((error: unknown) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.saveFailed", { what: t("screens.preferences.title") }),
-        detail: errorDetail(error),
-      });
-    });
+    if (locale !== active) void setLocale(locale);
   };
 
   // a menu owes the keyboard arrow navigation and an initial focus; the list

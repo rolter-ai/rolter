@@ -42,10 +42,14 @@ import { UxScreenProvider } from "@/lib/ux-react";
 // is the admin token's alone.
 
 const SECURITY: SecuritySettingsDto = {
+  virtual_key_required: true,
   allowed_origins: ["https://app.example.com"],
   allowed_headers: ["x-request-id"],
   required_headers: {},
   auth_bypass_routes: ["/healthz"],
+  dashboard_auth_enabled: true,
+  dashboard_credential_ref: "ROLTER_DASHBOARD_SECRET",
+  dashboard_secret_configured: true,
   updated_at: "2026-08-01T09:00:00Z",
 };
 
@@ -284,7 +288,7 @@ export const SecurityAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Allowed Origins")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Password protect the dashboard")).toBeVisible());
   },
 };
 

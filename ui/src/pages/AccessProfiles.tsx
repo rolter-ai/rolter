@@ -171,11 +171,7 @@ function ProfileCard({
             disabled={deleting}
             onClick={() => onDelete(profile)}
           >
-            {deleting ? (
-              <Loader2 className="size-4 motion-safe:animate-spin" />
-            ) : (
-              <Trash2 className="size-4" />
-            )}
+            {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
           </GatedButton>
         </div>
       </div>
