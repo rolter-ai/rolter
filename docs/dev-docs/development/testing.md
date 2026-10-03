@@ -51,10 +51,14 @@ throw it away.
 3. Dispatch the workflow (`gh workflow run gemini-interactions-smoke.yml`),
    optionally with `-f model=<id>`.
 
-Until the secret exists the workflow **fails** rather than skipping. A green
-tick from a run that made no request reads as "the wire format is still
-confirmed" when nothing was checked — worse than no sweep at all. Pass
-`-f allow_unconfigured=true` for a deliberate dry run of the workflow itself.
+Until the secret exists the workflow **skips** every live step and says so: the
+job summary reads "skipped: GEMINI_API_KEY not configured" and a notice
+annotation repeats it on the run. The run is not red (a weekly failure for a
+secret nobody has added teaches people to ignore scheduled failures, #2033), but
+it is also not evidence: a skipped run made no request and confirms nothing
+about the wire format. Check the summary, not just the tick, before treating the
+sweep as having run. Once the secret is present the steps run as before and a
+failure is a real finding.
 
 Each run records the wire shapes it observed into the job summary and uploads
 the full log as an artifact. A billable run should leave evidence behind: the
