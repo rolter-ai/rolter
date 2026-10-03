@@ -202,7 +202,8 @@ fn api_error_message(err: ApiError) -> String {
         ApiError::Core(e) => e.to_string(),
         ApiError::Curated(msg)
         | ApiError::Conflict(msg)
-        | ApiError::CodedConflict { message: msg, .. } => msg,
+        | ApiError::CodedConflict { message: msg, .. }
+        | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
         ApiError::TooManyAttempts(remaining) => {
@@ -378,14 +379,42 @@ pub(crate) fn random_token() -> String {
 }
 
 /// Begin a login: record the state and redirect to the provider.
+///
+/// A provider whose org has single sign-on turned off is refused here, before
+/// the member is sent to the identity provider, with the same `sso_disabled`
+/// refusal the callback gives (#2339): a browser is sent back to the login
+/// screen, any other caller gets the `403`.
 async fn start_login(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Response> {
     let provider = SsoRepo(pool(&state))
         .find_provider_by_slug(&slug)
         .await?
         .ok_or_else(|| invalid(format!("no enabled sso provider '{slug}'")))?;
+    if !OrgAuthPolicyRepo(pool(&state))
+        .get(provider.org_id)
+        .await?
+        .allow_sso
+    {
+        let failure = CallbackFailure {
+            reason: SsoFailure::SsoDisabled,
+            slug: Some(provider.slug),
+            error: sso_disabled(),
+        };
+        tracing::info!(
+            reason = failure.reason.code(),
+            slug = ?failure.slug,
+            "sso sign-in refused before the identity provider"
+        );
+        let response = if crate::mcp_oauth_flow::prefers_html(&headers) {
+            Redirect::to(&refusal_url(public_base_url(&state), &failure)).into_response()
+        } else {
+            failure.error.into_response()
+        };
+        return Ok(([(header::VARY, "accept")], response).into_response());
+    }
     let discovery = discover(&state.egress, &provider.issuer).await?;
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
@@ -559,6 +588,15 @@ struct CallbackFailure {
     reason: SsoFailure,
     slug: Option<String>,
     error: ApiError,
+}
+
+/// The refusal for a provider whose org has single sign-on turned off, at the
+/// start of a login and at its callback alike.
+fn sso_disabled() -> ApiError {
+    ApiError::CodedForbidden {
+        code: SsoFailure::SsoDisabled.code(),
+        message: "single sign-on is turned off for this provider's organization".to_string(),
+    }
 }
 
 /// `map_err` for one step of [`complete_login`].
@@ -830,7 +868,7 @@ async fn complete_login(
     {
         // the org turned sso off; refuse without deleting the provider so it
         // can be switched back on
-        return Err(failed(SsoDisabled, named)(ApiError::Forbidden));
+        return Err(failed(SsoDisabled, named)(sso_disabled()));
     }
     let discovery = discover(&state.egress, &provider.issuer)
         .await

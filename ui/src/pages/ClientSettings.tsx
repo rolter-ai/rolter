@@ -18,6 +18,7 @@ import { serverFieldError } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
+import { KEY_ENV } from "@/lib/snippets";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 // injected headers are edited as an ordered list rather than an object so a
@@ -303,7 +304,7 @@ function ClientSettingsScreen() {
             {t("pages.clientSettings.publicBaseUrl")}
           </label>
           <Input
-            className="min-w-[320px] font-mono text-xs"
+            className="sm:min-w-[320px] font-mono text-xs"
             aria-label={t("pages.clientSettings.publicBaseUrl")}
             {...invalidProps("publicBaseUrl")}
             placeholder={BASE_URL_PLACEHOLDER}
@@ -457,7 +458,7 @@ function ClientSettingsScreen() {
 
 function Snippet({ base }: { base: string }) {
   const { t } = useTranslation();
-  const code = `curl ${base}/v1/chat/completions \\\n  -H "Authorization: Bearer $ROLTER_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"fake-llm","messages":[{"role":"user","content":"ping"}]}'`;
+  const code = `curl ${base}/v1/chat/completions \\\n  -H "Authorization: Bearer $${KEY_ENV}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"fake-llm","messages":[{"role":"user","content":"ping"}]}'`;
   // the example call through the shared code block: the same copy affordance,
   // focusable scroll region and bash palette as every other snippet (#949)
   return (

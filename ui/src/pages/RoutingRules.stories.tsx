@@ -567,7 +567,7 @@ export const NoLabelMatch: Story = {
       await within(document.body).findByRole("option", { name: "tier=silver" }),
     );
     await waitFor(() => expect(canvas.getByText(/No routes match/i)).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
   },
 };

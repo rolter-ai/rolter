@@ -355,8 +355,8 @@ Each `[[prompt_templates.templates]]` entry is one immutable version:
 - `routes` (array of string, default all) — public model names this template applies to; empty means every route
 - `[[prompt_templates.templates.variables]]` — a named variable a decorator may reference as `{{ name }}`:
   - `name` (string, `[A-Za-z_][A-Za-z0-9_]*`)
-  - `required` (bool, default `false`) — the caller must supply it; mutually exclusive with `default`
-  - `default` (string) — value used when the caller omits it
+  - `required` (bool, default `false`) — the caller must supply it on every request the template applies to, whether or not a decorator references it; mutually exclusive with `default`
+  - `default` (string) — value used when the caller omits it; an optional variable with no default renders as the empty string
 - `[[prompt_templates.templates.decorators]]` — a message injected around the caller's own messages:
   - `role` (string, default `system`) — `system`, `assistant`, or `user`
   - `position` (string, default `prepend`) — `prepend` (before the caller's messages) or `append` (after), both in declared order

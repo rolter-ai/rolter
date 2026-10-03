@@ -138,6 +138,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         config.server.port = port;
     }
 
+    for warning in config.project_scoped_warnings() {
+        tracing::warn!("{warning}");
+    }
+
     if let Err(problems) = config.validate() {
         tracing::warn!(
             count = problems.len(),
