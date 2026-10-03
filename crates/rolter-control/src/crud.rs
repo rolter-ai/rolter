@@ -5276,6 +5276,20 @@ pub(crate) fn last_superadmin() -> ApiError {
     }
 }
 
+/// stable code of the 409 for a write that would leave an org with no active
+/// org-scoped admin (#2311)
+pub(crate) const LAST_ORG_ADMIN: &str = "last_org_admin";
+
+/// the refusal for revoking an org's last admin grant. a superadmin is exempt
+pub(crate) fn last_org_admin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_ORG_ADMIN,
+        message: "this is the organization's last admin grant; grant admin to another person \
+                  first, or ask a superadmin"
+            .to_string(),
+    }
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -5530,7 +5544,15 @@ async fn delete_membership(
     };
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("membership", Delete)).await?;
-    MembershipRepo(pool).delete(id).await?;
+    // a superadmin can always repair an org, so only the other callers are
+    // kept from leaving it without an admin (#2311)
+    if MembershipRepo(pool)
+        .delete_guarded(id, !matches!(principal, Principal::Superadmin))
+        .await?
+        == LockoutGuard::WouldLockOut
+    {
+        return Err(last_org_admin());
+    }
     log_audit(
         &state,
         &principal,

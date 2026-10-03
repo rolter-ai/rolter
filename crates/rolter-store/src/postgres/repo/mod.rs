@@ -3684,6 +3684,70 @@ impl MembershipRepo<'_> {
         .map_err(store_err)
     }
 
+    /// delete a grant, refused with [`LockoutGuard::WouldLockOut`] when it is
+    /// an org-scoped `admin` grant held by an active account and no other
+    /// active account holds one for that org (#2311). a per-org advisory lock
+    /// held to the end of the transaction orders two concurrent revocations of
+    /// two different admins, so the second one counts the first one's commit.
+    /// `protect_last_admin = false` skips the check (the superadmin override).
+    pub async fn delete_guarded(
+        &self,
+        id: Uuid,
+        protect_last_admin: bool,
+    ) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if protect_last_admin {
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "select org_id from memberships where id = $1 and role = 'admin'",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?
+            .flatten();
+            if let Some(org) = org {
+                sqlx::query(
+                    "select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))",
+                )
+                .bind(org)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                // read again under the lock: a concurrent revoke may have
+                // committed while this one waited
+                let last: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id = $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     ) and not exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if last {
+                    return Ok(LockoutGuard::WouldLockOut);
+                }
+            }
+        }
+        let res = sqlx::query("delete from memberships where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("membership {id}")));
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from memberships where id = $1")
             .bind(id)

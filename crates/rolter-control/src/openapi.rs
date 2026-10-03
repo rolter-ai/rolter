@@ -131,6 +131,10 @@ const LAST_SUPERADMIN_409: &str =
 /// the `409` a provider delete answers while something still references it
 const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
 
+/// the `409` revoking an org's last admin grant answers (#2311)
+const LAST_ORG_ADMIN_409: &str =
+    "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
+
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -851,7 +855,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
-            ),
+            )
+            .conflict(LAST_ORG_ADMIN_409),
         ],
     ));
 

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AlertChannels, AlertHistory, AlertRules } from "./Alerting";
@@ -197,13 +197,13 @@ const empty = routes([
 // operator actually sees — worth a story of its own rather than a generic error
 const forbidden = scoped(async () => json({ error: { message: "forbidden" } }, 403));
 
-// an empty history links to the rules screen, so it renders under a router
+// an empty history links to the rules screen, under the harness's router
 function HistoryScreen() {
   return (
-    <MemoryRouter initialEntries={["/alerting-history"]}>
+    <>
       <AlertHistory />
       <PathProbe />
-    </MemoryRouter>
+    </>
   );
 }
 
@@ -1168,7 +1168,7 @@ export const EvaluatesARule: Story = {
 
 export const HistoryLoaded: Story = {
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1208,7 +1208,7 @@ export const HistoryLoading: Story = {
 
 export const HistoryEmpty: Story = {
   render: () => (
-    <Harness fetchStub={empty}>
+    <Harness fetchStub={empty} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1224,7 +1224,7 @@ export const HistoryEmpty: Story = {
 // link, so the path changes and the page stays (#2126)
 export const TheEmptyHistoryLinksToTheRulesInApp: Story = {
   render: () => (
-    <Harness fetchStub={empty}>
+    <Harness fetchStub={empty} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1242,7 +1242,7 @@ export const TheEmptyHistoryLinksToTheRulesInApp: Story = {
 
 export const HistoryForbidden: Story = {
   render: () => (
-    <Harness fetchStub={forbidden}>
+    <Harness fetchStub={forbidden} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1387,7 +1387,7 @@ export const RuleStatesReadInRussian: Story = {
 export const HistoryReadInRussian: Story = {
   globals: { locale: "ru" },
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1432,7 +1432,7 @@ const cappedHistory = recording(
 // the screen asked for 200 and stopped there with no word about it (#2126)
 export const HistorySaysWhenItIsCapped: Story = {
   render: () => (
-    <Harness fetchStub={cappedHistory.stub}>
+    <Harness fetchStub={cappedHistory.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1467,7 +1467,7 @@ const historyByRule = recording(
 
 export const HistoryFiltersByRule: Story = {
   render: () => (
-    <Harness fetchStub={historyByRule.stub}>
+    <Harness fetchStub={historyByRule.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1486,7 +1486,7 @@ export const HistoryFiltersByRule: Story = {
 
 export const HistoryFiltersByStateAndDelivery: Story = {
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1518,7 +1518,7 @@ export const HistoryFiltersByStateAndDelivery: Story = {
 export const HistoryStateAndDeliveryAreInViewOnAPhone: Story = {
   ...atMobile,
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1547,7 +1547,7 @@ export const HistoryReadInRussianOnAPhone: Story = {
   ...atMobile,
   globals: { locale: "ru" },
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1626,7 +1626,7 @@ async function expectDetailsInFull(canvasElement: HTMLElement, name: string) {
 export const HistoryDetailIsReadInFullOnADesktop: Story = {
   ...atWide,
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1641,7 +1641,7 @@ export const HistoryDetailIsReadInFullOnADesktop: Story = {
 export const HistoryDetailIsReadInFullOnAPhone: Story = {
   ...atMobile,
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1654,7 +1654,7 @@ export const HistoryDetailIsReadInFullInRussianOnADesktop: Story = {
   ...atWide,
   globals: { ...atWide.globals, locale: "ru" },
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1667,7 +1667,7 @@ export const HistoryDetailIsReadInFullInRussianOnAPhone: Story = {
   ...atMobile,
   globals: { ...atMobile.globals, locale: "ru" },
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1759,7 +1759,7 @@ export const HistoryLoadFailsAndRetries: Story = {
   render: () => {
     historyDown.reset();
     return (
-      <Harness fetchStub={historyDown.stub}>
+      <Harness fetchStub={historyDown.stub} route="/alerting-history">
         <HistoryScreen />
       </Harness>
     );
@@ -1835,7 +1835,7 @@ export const RulesRefusedToAViewer: Story = {
 
 export const HistoryRefusedToAnAdmin: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="admin">
+    <Harness fetchStub={loaded} role="admin" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1844,7 +1844,7 @@ export const HistoryRefusedToAnAdmin: Story = {
 
 export const HistoryRefusedToAViewer: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="viewer">
+    <Harness fetchStub={loaded} role="viewer" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
