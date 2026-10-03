@@ -18,7 +18,9 @@ use rolter_core::Error;
 use rolter_store::postgres::models::Label;
 use rolter_store::postgres::repo::{CustomLabelInput, LabelFilter, LabelRepo};
 
-use crate::crud::{log_audit, pool, publish_config_change, ApiError, ApiResult, SafeJson};
+use crate::crud::{
+    log_audit, name_taken, pool, publish_config_change, ApiError, ApiResult, SafeJson,
+};
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
@@ -141,7 +143,7 @@ fn validate_value(value: Option<&str>) -> ApiResult<()> {
 fn created(row: Option<Label>, key: &str) -> ApiResult<(StatusCode, Json<Label>)> {
     match row {
         Some(row) => Ok((StatusCode::CREATED, Json(row))),
-        None => Err(ApiError::Conflict(format!(
+        None => Err(name_taken(format!(
             "label '{key}' is already set on this subject"
         ))),
     }

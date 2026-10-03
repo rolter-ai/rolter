@@ -53,7 +53,7 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::auth::CurrentUser;
-use crate::crud::{pool, ApiError, ApiResult, SafeJson};
+use crate::crud::{name_taken, pool, ApiError, ApiResult, SafeJson};
 use crate::me::bad_request;
 use crate::rbac::{Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
@@ -466,9 +466,9 @@ async fn audit(state: &ControlState, user: Uuid, action: &str, view: &SavedView,
 
 fn collision(outcome: SavedViewWrite, id: Option<Uuid>) -> ApiError {
     match outcome {
-        SavedViewWrite::DuplicateName => ApiError::Conflict(
-            "a saved view with that name already exists on this surface".to_string(),
-        ),
+        SavedViewWrite::DuplicateName => {
+            name_taken("a saved view with that name already exists on this surface")
+        }
         SavedViewWrite::LimitReached => ApiError::Conflict(format!(
             "at most {MAX_VIEWS_PER_SURFACE} saved views per surface; delete one first"
         )),

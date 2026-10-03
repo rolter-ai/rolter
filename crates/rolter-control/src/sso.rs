@@ -202,7 +202,8 @@ fn api_error_message(err: ApiError) -> String {
         ApiError::Core(e) => e.to_string(),
         ApiError::Curated(msg)
         | ApiError::Conflict(msg)
-        | ApiError::CodedConflict { message: msg, .. } => msg,
+        | ApiError::CodedConflict { message: msg, .. }
+        | ApiError::InvalidField { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
         ApiError::TooManyAttempts(remaining) => {

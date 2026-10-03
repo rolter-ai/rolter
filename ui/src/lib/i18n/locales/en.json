@@ -277,13 +277,18 @@
         "invalid_credentials": "The email or password is wrong.",
         "invalid_cursor": "The page position is no longer valid. Reload the list.",
         "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_field": "One of the values is not accepted. Correct it and try again.",
         "invalid_query": "The filter is not valid.",
         "invalid_time_bound": "The time range is not valid.",
+        "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
         "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "name_taken": "That name is already taken. Choose another.",
         "no_such_endpoint": "This control plane does not offer that feature.",
         "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
         "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "referenced": "Other items still depend on this one. Move or delete them first.",
+        "scope_mismatch": "A provider here is scoped to a different project. Use an org-wide provider or one scoped to the same project.",
         "too_many_attempts": "Too many failed attempts. Try again later.",
         "unauthenticated": "Your session is missing or has expired. Sign in again."
       }

@@ -143,6 +143,11 @@ impl From<rolter_core::Error> for ScimError {
             // text; the crud api answers the same error with a 400 too
             rolter_core::Error::Config(message) => Self::invalid(message),
             rolter_core::Error::Unauthorized => Self::unauthorized(),
+            rolter_core::Error::AlreadyExists(_) => Self::new(
+                StatusCode::CONFLICT,
+                Some("uniqueness"),
+                "a resource with that identifier already exists",
+            ),
             other => {
                 tracing::warn!(error = %other, "internal scim error");
                 Self::new(
@@ -779,9 +784,12 @@ impl From<ApiError> for ScimError {
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }
-            ApiError::CodedConflict { message, .. } => {
-                Self::new(StatusCode::CONFLICT, None, message)
+            ApiError::CodedConflict { code, message } => {
+                // a taken name is what scim calls a uniqueness conflict
+                let scim_type = (code == crate::crud::NAME_TAKEN).then_some("uniqueness");
+                Self::new(StatusCode::CONFLICT, scim_type, message)
             }
+            ApiError::InvalidField { message, .. } => Self::invalid(message),
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 None,
