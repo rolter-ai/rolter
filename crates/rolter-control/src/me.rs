@@ -301,7 +301,7 @@ impl Preferences {
             )?;
         }
         if let Some(zone) = &self.chart_time_zone {
-            if !is_iana_zone_shape(zone) {
+            if !is_known_zone(zone) {
                 return Err(bad_request(
                     "chart_time_zone must be an IANA time zone name such as Europe/Berlin or UTC",
                 ));
@@ -320,11 +320,17 @@ impl Preferences {
     }
 }
 
+/// Whether `zone` is a name in the IANA tz database (`chrono-tz` with default
+/// features off, so no serde or regex pulled in). The shape
+/// check runs first so an oversized or malformed string never reaches the
+/// lookup. The dashboard offers the browser's `Intl` list, a subset of this one
+/// plus aliases, so every zone it can pick is accepted.
+fn is_known_zone(zone: &str) -> bool {
+    is_iana_zone_shape(zone) && zone.parse::<chrono_tz::Tz>().is_ok()
+}
+
 /// Whether `zone` has the shape of an IANA name: `UTC`, `Europe/Berlin`,
-/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`. The workspace carries no
-/// tz database (`chrono-tz` is not a dependency and is heavy), so this checks
-/// shape only; the browser's `Intl` rejects a well-formed name it does not
-/// know, and the dashboard falls back to the local zone when it does.
+/// `America/Argentina/Buenos_Aires`, `Etc/GMT+5`.
 fn is_iana_zone_shape(zone: &str) -> bool {
     if zone.is_empty() || zone.len() > MAX_TIME_ZONE_LEN {
         return false;
@@ -809,6 +815,46 @@ mod tests {
             assert!(!is_iana_zone_shape(bad), "{bad}");
         }
         assert!(!is_iana_zone_shape(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn time_zone_must_exist_in_the_tz_database() {
+        for ok in ["UTC", "Europe/Berlin", "Asia/Kolkata", "Etc/GMT+5"] {
+            assert!(is_known_zone(ok), "{ok}");
+        }
+        for bad in ["Foo/Bar", "Europe/Berlinn", "", "../etc"] {
+            assert!(!is_known_zone(bad), "{bad}");
+        }
+        let prefs = Preferences {
+            chart_time_zone: Some("Foo/Bar".into()),
+            ..Default::default()
+        };
+        let err = prefs.validated().unwrap_err();
+        assert!(format!("{err:?}").contains("chart_time_zone"), "{err:?}");
+    }
+
+    /// every catalog under `ui/src/lib/i18n/locales` must be an accepted
+    /// language and the reverse, so adding a catalog without the code (or the
+    /// code without a catalog) fails here rather than at a user's `PUT`
+    #[test]
+    fn languages_match_the_dashboard_locale_catalogs() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/lib/i18n/locales");
+        let mut catalogs: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .filter_map(|e| {
+                let path = e.ok()?.path();
+                (path.extension()? == "json")
+                    .then(|| path.file_stem()?.to_str().map(String::from))?
+            })
+            .collect();
+        catalogs.sort();
+        let mut langs: Vec<String> = LANGUAGES.iter().map(|l| l.to_string()).collect();
+        langs.sort();
+        assert_eq!(
+            catalogs, langs,
+            "LANGUAGES in me.rs and the locale catalogs in ui/src/lib/i18n/locales have drifted"
+        );
     }
 
     #[test]
