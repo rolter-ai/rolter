@@ -2014,7 +2014,9 @@ fn operations() -> Vec<Op> {
                 "the identity provider's authorization endpoint. While the provider's org has \
                  single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
                  dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
-                 other caller gets a `403` with `error.code` `sso_disabled`",
+                 other caller gets a `403` with `error.code` `sso_disabled`. A slug no enabled provider \
+                 answers to sends a browser to `/login` with `sso_error=unknown_provider`, and any \
+                 other caller a `400`",
             ),
             Op::get(
                 "/auth/sso/{slug}/callback",
@@ -2355,8 +2357,15 @@ fn error_schemas(p: &Prim) -> Value {
                     "properties": {
                         "message": string,
                         "type": string,
-                        "code": string,
-                        "param": nullable_string
+                        "code": {
+                            "type": "string",
+                            "description": "stable, never renamed; a client branches on it \
+                                rather than on `message`. The common ones are `name_taken`, \
+                                `invalid_field`, `referenced` and `scope_mismatch` (#2567)"
+                        },
+                        "param": nullable_string,
+                        // the field an `invalid_field` refusal is about
+                        "field": string
                     }
                 }
             }
@@ -2613,7 +2622,7 @@ fn provider_schemas(p: &Prim) -> Value {
     json!({
         "Provider": {
             "type": "object",
-            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at"],
+            "required": ["id", "org_id", "name", "slug", "kind", "api_base", "created_at", "has_stored_key"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string,
                 "slug": {"type": "string", "description": "stable identity for `provider-slug/model` addressing"},
@@ -2623,7 +2632,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "has_stored_key": {"type": "boolean", "description": "whether a sealed key is stored for the provider (a row in `provider_keys`). An `api_key_env` does not count. The key, its ciphertext and its nonce are never returned"}
             }
         },
         "CreateProvider": {
