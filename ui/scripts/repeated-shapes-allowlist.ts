@@ -17,8 +17,4 @@ import type { ShapeAllowList } from "./check-ui-primitives";
 export const REPEATED_SHAPES: ShapeAllowList = {
   "div|flex flex-col gap-3.5 max-w-[840px] mx-auto p-[22px]":
     "the deployment-settings page shell, in all eight settings screens and in each of their loading, error and content states. a `SettingsPage` wrapper is #1711's first item; it is the largest of the nine and the one worth doing on its own",
-  "section|border border-[color:var(--border-subtle)] flex flex-col gap-3.5 p-4 rounded-[10px]":
-    "`SettingsPanel`'s own outer markup, hand-written in five settings screens that never adopted it. converting them is #1711 and needs each call site checked for the title/description/fieldset structure the primitive imposes",
-  "section|border border-[color:var(--border-subtle)] flex flex-col gap-2.5 p-4 rounded-[10px]":
-    "the same panel as the `gap-3.5` entry above with a tighter gap; both collapse into one primitive with a prop, tracked in #1711",
 };
