@@ -305,7 +305,7 @@ export const RefusedToAViewer: Story = {
 // the same screen at a phone's width in both languages: Russian runs a third
 // longer than English and overflowed twice as many screens (#2004)
 const modelFits = phoneFits({
-  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
+  render: () => <Harness fetchStub={answering(CONFIGURED)} />,
   ready: (canvas) => canvas.findByLabelText("Default model"),
 });
 export const MobileFits: Story = modelFits("mobile", "en");
