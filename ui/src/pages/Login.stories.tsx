@@ -1017,6 +1017,7 @@ const SSO_MESSAGES: Record<string, RegExp> = {
   idp_error: /declined the sign-in/i,
   state_expired: /took too long or was already used/i,
   sso_disabled: /turned off for this organization/i,
+  unknown_provider: /no longer available/i,
   no_mapped_group: /not in any group/i,
   account_deactivated: /has been deactivated/i,
   idp_verification_failed: /could not be reached or its response/i,
@@ -1057,6 +1058,11 @@ export const SsoErrorDisabled: Story = {
   beforeEach: atQuery("sso_error=sso_disabled"),
   render: refusalRender,
   play: refusalPlay(SSO_MESSAGES.sso_disabled),
+};
+export const SsoErrorUnknownProvider: Story = {
+  beforeEach: atQuery("sso_error=unknown_provider"),
+  render: refusalRender,
+  play: refusalPlay(SSO_MESSAGES.unknown_provider),
 };
 export const SsoErrorNoMappedGroup: Story = {
   beforeEach: atQuery("sso_error=no_mapped_group&sso=okta"),

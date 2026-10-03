@@ -114,6 +114,7 @@ export function ProfileCard() {
           error={me.error}
           resource={t("errors.resources.yourProfile")}
           onRetry={() => void me.refetch()}
+          target="profile"
         />
       )}
       {me.data && (

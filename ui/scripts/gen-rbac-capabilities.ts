@@ -1,32 +1,20 @@
 #!/usr/bin/env bun
-// Regenerate the checked-in copy of the control plane's capability table:
+// Refresh the dashboard's copy of the control plane's capability matrix:
 //
-//   bun run gen:rbac
+//   bun run gen:rbac          (or `just gen-rbac` from the repository root,
+//                              which rewrites the Rust artifact first)
 //
-// The stories' RBAC fixture is derived from that copy, and
-// `rbac-matrix-source.test.ts` fails when the two disagree — so this script is
-// what you run after adding a resource or changing an authority in
-// `crates/rolter-control/src/rbac_matrix.rs` (#1298).
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+// `crates/rolter-control/rbac-matrix.json` is written and verified by the
+// rolter-control test suite from `CAPABILITIES` itself, so this script only
+// copies it — byte for byte, because `rbac-matrix-artifact.test.ts` compares
+// the two that way (#1369). Run it after changing a resource or an authority
+// in `crates/rolter-control/src/rbac_matrix.rs` and regenerating the artifact.
+import { copyFileSync } from "node:fs";
 
-import { readCapabilities } from "./rbac-matrix-source";
+import { ARTIFACT, SNAPSHOT, readMatrix } from "./rbac-matrix-artifact";
 
-const ROOT = join(import.meta.dir, "..");
-const MATRIX = join(ROOT, "..", "crates", "rolter-control", "src", "rbac_matrix.rs");
-const SNAPSHOT = join(ROOT, "src", "lib", "rbac-capabilities.json");
-
-const capabilities = readCapabilities(MATRIX);
-writeFileSync(
-  SNAPSHOT,
-  `${JSON.stringify(
-    {
-      $comment:
-        "generated from crates/rolter-control/src/rbac_matrix.rs by `bun run gen:rbac` — do not edit by hand",
-      capabilities,
-    },
-    null,
-    2,
-  )}\n`,
-);
-console.log(`wrote ${capabilities.length} capabilities to ${SNAPSHOT}`);
+// parse before copying so a truncated or hand-mangled artifact fails here
+// rather than inside every gating story
+const { resources } = readMatrix(ARTIFACT);
+copyFileSync(ARTIFACT, SNAPSHOT);
+console.log(`copied ${resources.length} capabilities to ${SNAPSHOT}`);

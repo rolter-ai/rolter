@@ -1,15 +1,25 @@
-import type { RbacAction, RbacActionView, RbacEffective, RbacMatrix, Role } from "@/lib/api";
+import type {
+  RbacAction,
+  RbacActionView,
+  RbacEffective,
+  RbacMatrix,
+  RbacResourceView,
+  RbacRoleView,
+  Role,
+} from "@/lib/api";
 import snapshot from "@/lib/rbac-capabilities.json";
 
-// The control plane's capability table, and the two RBAC payloads derived from
-// it the way the control plane derives them (#1298).
+// The control plane's capability matrix, and the two RBAC payloads the gating
+// stories stub from it (#1298, #1369).
 //
-// `src/lib/rbac-capabilities.json` is a generated copy of `CAPABILITIES` in
-// `crates/rolter-control/src/rbac_matrix.rs` — `bun run gen:rbac` writes it and
-// `scripts/rbac-matrix-source.test.ts` fails the build when the two disagree.
-// The gating stories stub both endpoints from here rather than from a
-// hand-written table, so a resource, action or authority added to the control
-// plane cannot go missing from the roles the stories render as.
+// `src/lib/rbac-capabilities.json` is a copy of
+// `crates/rolter-control/rbac-matrix.json`, which a rolter-control unit test
+// writes from `CAPABILITIES` and verifies on every `cargo test`: it *is*
+// `GET /api/v1/rbac/matrix` minus the per-tenant custom roles. `bun run
+// gen:rbac` refreshes the copy and `scripts/rbac-matrix-artifact.test.ts`
+// fails the build while the two differ. So the matrix payload needs no port of
+// the control plane's rendering, and the effective payload is derived from it
+// the way `allowed_for` derives it.
 //
 // Test-and-story fixture only: nothing the dashboard ships imports it, and the
 // real screens read the answers off the wire like any deployment does.
@@ -27,14 +37,41 @@ export interface CapabilityRow {
   delete: Authority | null;
 }
 
-/** The table, in the order the control plane publishes it. */
-export const CAPABILITIES = snapshot.capabilities as CapabilityRow[];
+const ROLES = snapshot.roles as RbacRoleView[];
+const RESOURCES = snapshot.resources as RbacResourceView[];
 
 /** every action, in the order the matrix presents them (`Action::ALL`) */
 export const ACTIONS: RbacAction[] = ["read", "create", "update", "delete"];
 
-/** total order over roles: viewer `0` < member `1` < admin `2` (`role_rank`) */
-const RANK: Record<Role, number> = { viewer: 0, member: 1, admin: 2 };
+/** The one authority a published action view stands for. */
+function authorityOf(view: RbacActionView): Authority {
+  if (view.superadmin_only) return "superadmin";
+  if (view.authenticated_only) return "authenticated";
+  // `resource_view` sets exactly one of the three, and `readMatrix` in
+  // `scripts/rbac-matrix-artifact.ts` refuses a copy that does not; the
+  // fallback is the least generous reading, never an open door
+  return view.minimum_role ?? "superadmin";
+}
+
+/** The table, one row per resource, in the order the control plane publishes it. */
+export const CAPABILITIES: CapabilityRow[] = RESOURCES.map(({ resource, scope, actions }) => {
+  const row: CapabilityRow = {
+    resource,
+    scope,
+    read: null,
+    create: null,
+    update: null,
+    delete: null,
+  };
+  for (const view of actions) row[view.action] = authorityOf(view);
+  return row;
+});
+
+/** total order over roles, as the matrix ranks them (`role_rank`) */
+const RANK = Object.fromEntries(ROLES.map(({ role, rank }) => [role, rank])) as Record<
+  Role,
+  number
+>;
 
 /**
  * One membership, by the scope ids it carries (`Membership`).
@@ -84,8 +121,9 @@ function callerOf(holder: Holder): Caller {
 /**
  * The chain fields `chain_at` clears for a row of each scope: an org-scoped
  * guard asks at the org alone, a team-scoped one at org + team, and anything
- * else at the whole chain. `scripts/rbac-matrix-source.test.ts` pins this to
- * the match arms in `crates/rolter-control/src/rbac_matrix.rs`.
+ * else at the whole chain. `scripts/rbac-matrix-artifact.test.ts` pins this to
+ * the `chain_at` table the rolter-control test suite writes into
+ * `crates/rolter-control/rbac-matrix.json` by calling `chain_at` itself.
  */
 export const CHAIN_TRIMS: Record<string, (keyof ScopeChain)[]> = {
   org: ["teamId", "projectId"],
@@ -168,35 +206,14 @@ export function allowedFor(holder: Holder, superadmin = false): string[] {
   return allowed;
 }
 
-/** The port of `resource_view`: one published row per resource. */
-function actionViews(capability: CapabilityRow): RbacActionView[] {
-  return ACTIONS.filter((action) => capability[action] !== null).map((action) => {
-    const authority = capability[action] as Authority;
-    return {
-      action,
-      minimum_role:
-        authority === "superadmin" || authority === "authenticated" ? null : (authority as Role),
-      superadmin_only: authority === "superadmin",
-      authenticated_only: authority === "authenticated",
-    };
-  });
-}
-
-/** `GET /api/v1/rbac/matrix`, as this deployment's table publishes it. */
+/**
+ * `GET /api/v1/rbac/matrix`, as this deployment's table publishes it.
+ *
+ * A fresh copy per call, so a story that edits its payload cannot leak the
+ * edit into the next one.
+ */
 export function matrixFixture(): RbacMatrix {
-  return {
-    roles: [
-      { role: "viewer", rank: RANK.viewer },
-      { role: "member", rank: RANK.member },
-      { role: "admin", rank: RANK.admin },
-    ],
-    resources: CAPABILITIES.map((capability) => ({
-      resource: capability.resource,
-      scope: capability.scope,
-      actions: actionViews(capability),
-    })),
-    custom_roles: [],
-  };
+  return structuredClone({ roles: ROLES, resources: RESOURCES, custom_roles: [] });
 }
 
 /**

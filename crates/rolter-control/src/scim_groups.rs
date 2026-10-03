@@ -676,11 +676,14 @@ fn grant_matches(membership: &Membership, want: &ScopedGrant) -> bool {
 /// database every time, never from the request, so replaying a sync is a no-op
 /// and a dropped group membership revokes the role that group granted. The
 /// one exception is an org's last active admin grant, which is kept and
-/// audited until the org has another admin (#2558).
+/// audited until the org has another admin (#2558). `protect` is false only
+/// when a superadmin deletes a mapping, which may revoke that grant like
+/// `delete_membership` does (#2673); every IdP-driven sync passes true.
 pub(crate) async fn reconcile_user(
     state: &ControlState,
     org_id: Uuid,
     user_id: Uuid,
+    protect: bool,
 ) -> ApiResult<Vec<String>> {
     let db = pool(state);
     let mut wanted: Vec<ScopedGrant> = Vec::new();
@@ -713,7 +716,7 @@ pub(crate) async fn reconcile_user(
         // the org's last admin grant outlives the group change rather than
         // failing the sync; the next sync revokes it once another admin exists
         // (#2558)
-        if crate::crud::revoke_idp_grant(state, stale).await? {
+        if crate::crud::revoke_idp_grant(state, stale, protect).await? {
             granted.push(stale.role.clone());
         }
     }
@@ -733,7 +736,7 @@ pub(crate) async fn reconcile_user(
 
 async fn reconcile_users(state: &ControlState, org_id: Uuid, user_ids: &[Uuid]) -> ApiResult<()> {
     for user_id in user_ids {
-        reconcile_user(state, org_id, *user_id).await?;
+        reconcile_user(state, org_id, *user_id, true).await?;
     }
     Ok(())
 }
@@ -751,7 +754,7 @@ pub(crate) async fn forget_user(
     for group in repo.groups_for_user(org_id, user_id).await? {
         repo.remove_member(group.id, user_id).await?;
     }
-    reconcile_user(state, org_id, user_id).await?;
+    reconcile_user(state, org_id, user_id, true).await?;
     Ok(())
 }
 
@@ -815,8 +818,9 @@ async fn create_mapping(
             &body.role,
         )
         .await?;
-    // take effect now rather than at the next sync
-    reconcile_group_members(&state, org_id, &mapping.group_name).await?;
+    // take effect now rather than at the next sync. a new mapping only adds
+    // grants, so the last-admin guard stays on whoever created it
+    reconcile_group_members(&state, org_id, &mapping.group_name, true).await?;
     log_audit(
         &state,
         &principal,
@@ -860,8 +864,10 @@ async fn delete_mapping(
     )
     .await?;
     repo.delete(id).await?;
-    // the role the mapping granted goes away with it
-    reconcile_group_members(&state, mapping.org_id, &mapping.group_name).await?;
+    // the role the mapping granted goes away with it. a superadmin may take an
+    // org's last admin grant with it, as delete_membership allows (#2673)
+    let protect = !matches!(principal, Principal::Superadmin);
+    reconcile_group_members(&state, mapping.org_id, &mapping.group_name, protect).await?;
     log_audit(
         &state,
         &principal,
@@ -881,13 +887,14 @@ async fn reconcile_group_members(
     state: &ControlState,
     org_id: Uuid,
     group_name: &str,
+    protect: bool,
 ) -> ApiResult<()> {
     let repo = ScimGroupRepo(pool(state));
     let Some(group) = repo.find_by_display_name(org_id, group_name).await? else {
         return Ok(());
     };
     for user_id in repo.members(group.id).await? {
-        reconcile_user(state, org_id, user_id).await?;
+        reconcile_user(state, org_id, user_id, protect).await?;
     }
     Ok(())
 }

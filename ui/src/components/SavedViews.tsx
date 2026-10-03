@@ -162,6 +162,7 @@ export function SavedViews({ surface, current, onApply }: SavedViewsProps) {
               error={views.error}
               resource={t("errors.resources.savedViews")}
               onRetry={() => void views.refetch()}
+              target="saved-views"
             />
           ) : (
             <>

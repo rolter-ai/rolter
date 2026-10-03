@@ -3,6 +3,8 @@ import { Building } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { Overline } from "@/components/ui/overline";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -16,7 +18,7 @@ import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // teams: card per team with member count, the
 // team-scoped budget (when one exists), and the team admin
@@ -40,7 +42,6 @@ export default function Teams() {
 
   useScreenReady(!teams.isLoading);
 
-  useErrorState(!!teams.error, "teams");
   const memberships = useQuery({
     queryKey: ["memberships", scope.orgId],
     queryFn: () => fetchMemberships(scope.orgId as string),
@@ -100,6 +101,7 @@ export default function Teams() {
           error={teams.error}
           resource={t("errors.resources.teams")}
           onRetry={() => void teams.refetch()}
+          target="teams"
         />
       )}
       {teams.isSuccess && teams.data.length === 0 && (
@@ -131,9 +133,9 @@ export default function Teams() {
               className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
-                <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+                <IconFrame>
                   <Building className="h-4 w-4" />
-                </span>
+                </IconFrame>
                 <div className="min-w-0">
                   <div className="font-mono text-sm font-semibold">{team.name}</div>
                   <div className="truncate text-xs text-muted-foreground">
@@ -143,17 +145,13 @@ export default function Teams() {
               </div>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <div>
-                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    {t("pages.teams.members")}
-                  </div>
+                  <Overline>{t("pages.teams.members")}</Overline>
                   <div className="font-mono text-sm text-[color:var(--text-secondary)]">
                     {memberships.isError ? "—" : members.length}
                   </div>
                 </div>
                 <div>
-                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    {t("pages.teams.budget")}
-                  </div>
+                  <Overline>{t("pages.teams.budget")}</Overline>
                   <div className="font-mono text-sm text-[color:var(--text-secondary)]">
                     {budget
                       ? `${fmt.currency(Number(budget.limit_usd), currency)} / ${budget.period}`

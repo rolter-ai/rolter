@@ -20,7 +20,7 @@ Redis pub/sub + `config_version` reconciliation; gateway watcher that atomically
 
 ## Phase 3 — Auth & RBAC ✅
 
-Local accounts (argon2id) + sessions, RBAC enforcement across the API, pluggable OAuth2/OIDC SSO and LDAP identity providers, SCIM user and group provisioning, and the audit log with its dashboard surface.
+Local accounts (argon2id) + sessions, RBAC enforcement across the API, pluggable OAuth2/OIDC SSO (an LDAP provider exists but is not yet wired to sign-in, #1826), SCIM user and group provisioning, and the audit log with its dashboard surface.
 
 ## Phase 4 — Cost, limits & pricing ✅
 

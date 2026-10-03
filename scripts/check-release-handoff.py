@@ -62,9 +62,10 @@ import copy
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable
 
 import yaml
 
@@ -165,18 +166,18 @@ def disabled(node: dict) -> bool:
     return cond is False or (isinstance(cond, str) and expression(cond) == "false")
 
 
-def job(wf: Workflow, name: str) -> Optional[dict]:
+def job(wf: Workflow, name: str) -> dict | None:
     found = (wf.get("jobs") or {}).get(name)
     return found if isinstance(found, dict) and not disabled(found) else None
 
 
-def needs(j: Optional[dict]) -> set:
+def needs(j: dict | None) -> set:
     # `needs: a`, `needs: [a, b]` and a block sequence are the same to actions
     value = (j or {}).get("needs") or []
     return {value} if isinstance(value, str) else set(value)
 
 
-def steps(j: Optional[dict]) -> list:
+def steps(j: dict | None) -> list:
     return [s for s in (j or {}).get("steps") or [] if isinstance(s, dict) and not disabled(s)]
 
 
@@ -229,7 +230,7 @@ def shell_commands(script: str) -> Iterator[str]:
             yield line
 
 
-def run_text(j: Optional[dict]) -> str:
+def run_text(j: dict | None) -> str:
     # the shell every step of one job runs, comments removed; textual checks look
     # here and only here. each step is its own script, so a quote left open in
     # one never swallows the next
@@ -284,7 +285,7 @@ def can_dispatch(wf: Workflow, name: str) -> bool:
     return isinstance(grant, dict) and grant.get("actions") == "write"
 
 
-def step_with(j: Optional[dict], key: str, value: str) -> bool:
+def step_with(j: dict | None, key: str, value: str) -> bool:
     return any((s.get("with") or {}).get(key) == value for s in steps(j))
 
 
@@ -295,7 +296,7 @@ def expression(value: Any) -> str:
     return re.sub(r"\s+", "", match.group(1) if match else text)
 
 
-def required_jobs_default(j: Optional[dict]) -> set:
+def required_jobs_default(j: dict | None) -> set:
     # the fallback list in `vars.RELEASE_REQUIRED_JOBS || '<job names>'`
     for text in strings(j):
         match = re.search(r"vars\.RELEASE_REQUIRED_JOBS\s*\|\|\s*'([^']*)'", text)
@@ -580,7 +581,7 @@ def runs_on_verified(cond: Any) -> bool:
     return any(term.strip("()") in VERIFIED for term in expression(cond).split("&&"))
 
 
-def runs_quality(j: Optional[dict]) -> bool:
+def runs_quality(j: dict | None) -> bool:
     return bool(
         re.search(r"\.github/workflows/quality\.ya?ml(?:@|$)", str((j or {}).get("uses", "")))
     )
@@ -984,7 +985,7 @@ def comment_out(
     return mutate
 
 
-def disable(file: str, name: str, step_mentioning: Optional[str] = None) -> Callable[[Tree], None]:
+def disable(file: str, name: str, step_mentioning: str | None = None) -> Callable[[Tree], None]:
     # `if: false` on the job, or on the step whose shell mentions the given text
     def mutate(tree: Tree) -> None:
         j = jobs_of(tree, file)[name]
@@ -2053,7 +2054,7 @@ def self_test(root: Path) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--self-test",

@@ -9,6 +9,22 @@ The left rail (`ui/src/components/ui/nav-sidebar.tsx`) is the dashboard's
 primary navigation. It has three shapes, one per breakpoint, and two
 independent size controls within them.
 
+## The scope switcher and the create-project dialog
+
+`ScopeSwitcher` (`ui/src/components/ScopeSwitcher.tsx`) sits in the rail's
+account menu, and that menu is only in the document while it is open. Anything
+another screen has to reach therefore cannot live in the switcher. The
+create-project dialog is the one case so far: `CreateProjectHost`, from the same
+file, is mounted once by the shell in `App.tsx` and registers itself with
+`useCreateProjectOpener`, and any screen opens it with `openCreateProject()` from
+`ui/src/lib/scope.ts` (#2611). It is the dialog the **+** beside Project raises,
+under the team in scope, and does nothing when no team is in scope, the same
+condition that hides that **+**. A broadcast rather than a `?create=project`
+query parameter, because there is nothing to keep in the url or strip from it
+afterwards. The Getting started card is the first caller; the
+`GettingStartedOpensCreateProject` story in `ui/src/App.stories.tsx` opens it
+through the whole shell with the menu closed.
+
 ## Breakpoints
 
 The shape is chosen in javascript, not only in CSS: below `md` the rail is a

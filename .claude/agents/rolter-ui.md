@@ -95,6 +95,7 @@ bun run check:stories
 bun run check:primitives
 bun run check:focus
 bun run check:waits
+bun run check:load-error-targets
 bun run test
 bun run build
 bun run test:stories <the story files you touched>

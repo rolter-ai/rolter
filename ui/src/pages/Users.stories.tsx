@@ -103,6 +103,29 @@ const MEMBERSHIPS: MembershipRow[] = [
 ];
 
 // the per-grant controls name the grant they act on (#1214, #2053)
+// a second org admin: the grant that makes ada's one not the last
+const GRACE_ORG_ADMIN: MembershipRow = {
+  id: "m-9",
+  user_id: "user-2",
+  org_id: "org-1",
+  team_id: null,
+  project_id: null,
+  role: "admin",
+  created_at: "2026-04-01T00:00:00Z",
+};
+const REVOKE_ADA = "Revoke Admin on the whole organization from ada@example.com";
+const CHANGE_ADA = "Change ada@example.com's Admin role on the whole organization";
+// what the control plane answers when a revoke would leave the org without one (#2311)
+const lastAdminRefusal = () =>
+  json(
+    {
+      error: {
+        code: "last_org_admin",
+        message: "this is the organization's last admin grant",
+      },
+    },
+    409,
+  );
 const REVOKE_GRACE = "Revoke Member on the Platform team from grace@example.com";
 const CHANGE_GRACE = "Change grace@example.com's Member role on the Platform team";
 const revokeInvitationName = (email: string) => `Revoke the invitation for ${email}`;
@@ -911,9 +934,11 @@ function directory(
   answers: {
     onDelete?: (id: string) => Promise<Response | null> | Response | null;
     onPost?: () => Promise<Response | null> | Response | null;
+    /** grants held on top of `MEMBERSHIPS` */
+    extra?: MembershipRow[];
   } = {},
 ): FetchStub {
-  let grants = [...MEMBERSHIPS];
+  let grants = [...MEMBERSHIPS, ...(answers.extra ?? [])];
   let created = 0;
   return scoped(async (input, init) => {
     const url = String(input);
@@ -1030,6 +1055,7 @@ export const RevokeRefusedByTheServer: Story = {
   render: () => (
     <Harness
       fetchStub={directory({
+        extra: [GRACE_ORG_ADMIN],
         onDelete: () => json({ error: { message: "requires admin at this scope" } }, 403),
       })}
     >
@@ -1180,6 +1206,123 @@ export const ChangeWhoseRevokeFailsSaysSoAndRetries: Story = {
     await expect(partial.calls.filter((c) => c.method === "POST")).toHaveLength(1);
     await expect(partial.calls.filter((c) => c.method === "DELETE")).toHaveLength(2);
     await waitFor(() => expect(canvas.queryByRole("button", { name: REVOKE_GRACE })).toBeNull());
+  },
+};
+
+/**
+ * The org's last admin grant is not offered to anyone but a superadmin: the
+ * control plane would refuse it (#2311), so both actions on it are disabled
+ * and say why. A deactivated admin does not count as another one, and an admin
+ * grant on a team is not an org admin at all.
+ */
+export const LastOrgAdminGrantIsNotOffered: Story = {
+  render: () => (
+    <Harness
+      fetchStub={directory({
+        extra: [
+          { ...GRACE_ORG_ADMIN, id: "m-8", user_id: "user-3" },
+          { ...GRACE_ORG_ADMIN, id: "m-7", org_id: null, team_id: "team-1" },
+        ],
+      })}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const revoke = await canvas.findByRole("button", { name: REVOKE_ADA });
+    // story-wait-allow: disabled by its own prop from the first paint
+    await expect(revoke).toBeDisabled();
+    // story-wait-allow: disabled by its own prop from the first paint
+    await expect(canvas.getByRole("button", { name: CHANGE_ADA })).toBeDisabled();
+    const reason =
+      "ada@example.com's Admin role on the whole organization is the organization's last admin grant. Grant admin to someone else first.";
+    await expect(revoke).toHaveAttribute("title", reason);
+    // the other grants keep their controls
+    await expect(canvas.getByRole("button", { name: REVOKE_GRACE })).toBeEnabled();
+  },
+};
+
+/** Another active admin makes the grant revocable again. */
+export const AnotherAdminLiftsTheLastAdminHold: Story = {
+  render: () => (
+    <Harness fetchStub={directory({ extra: [GRACE_ORG_ADMIN] })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: REVOKE_ADA })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: CHANGE_ADA })).toBeEnabled();
+  },
+};
+
+/** A superadmin is exempt on the server, so the dashboard offers the action. */
+export const SuperadminMayRevokeTheLastAdminGrant: Story = {
+  render: () => (
+    <SignedInAs user={USERS[0]}>
+      <Harness fetchStub={directory()}>
+        <Users />
+      </Harness>
+    </SignedInAs>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: REVOKE_ADA })).toBeEnabled();
+  },
+};
+
+/**
+ * The list was stale: someone else's admin grant went away meanwhile, so the
+ * control plane refuses with `last_org_admin`. The dialog stays open and says
+ * why in the dashboard's words, branching on the code and not the message.
+ */
+export const RevokeRefusedAsTheLastAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={directory({ extra: [GRACE_ORG_ADMIN], onDelete: lastAdminRefusal })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: REVOKE_ADA }));
+    const dialog = within(await confirmation());
+    await userEvent.click(dialog.getByRole("button", { name: "Revoke role" }));
+    await waitFor(() =>
+      expect(dialog.getByRole("alert")).toHaveTextContent(
+        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
+      ),
+    );
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+/**
+ * A role change on the last admin grant lands its grant half and is refused on
+ * the revoke half: the dialog is in its partial state and carries the same
+ * message instead of the raw one.
+ */
+export const ChangeOfTheLastAdminIsRefusedAfterTheGrant: Story = {
+  render: () => (
+    <Harness fetchStub={directory({ extra: [GRACE_ORG_ADMIN], onDelete: lastAdminRefusal })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: CHANGE_ADA }));
+    const dialog = within(await confirmation());
+    await pickOption(dialog.getByLabelText("New role"), "Member");
+    await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
+    await waitFor(() =>
+      expect(
+        dialog.getByText(/Member was granted, but Admin could not be revoked\./),
+      ).toBeVisible(),
+    );
+    await expect(dialog.getByRole("alert")).toHaveTextContent(
+      "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
+    );
+    await expect(dialog.getByRole("button", { name: "Retry revoking Admin" })).toBeVisible();
   },
 };
 
@@ -1585,9 +1728,13 @@ export const PendingInvitationsAreListed: Story = {
 
     const row = (email: string) =>
       within(section.getByText(email).closest('[role="row"]') as HTMLElement);
+    // the rows land with the invitations read, but the sender column is drawn
+    // from the users read and the scope column from the org's teams and
+    // projects, each a skeleton until its own read answers. under load either
+    // can land a commit after the rows, so wait for both before reading a row
+    await expect(await row("newcomer@example.com").findByText("ada@example.com")).toBeVisible();
+    await expect(await row("newcomer@example.com").findByText("Gateway")).toBeVisible();
     await expect(row("newcomer@example.com").getByText("Member")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("Gateway")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("ada@example.com")).toBeVisible();
     await expect(
       row("newcomer@example.com").getByText(expiryDate(INVITATIONS[0].expires_at)),
     ).toBeVisible();

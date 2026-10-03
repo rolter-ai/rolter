@@ -12,11 +12,14 @@ import {
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
+  uxEvents,
   type FetchStub,
   type Recorder,
   type StoryRole,
@@ -26,6 +29,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const fmt = formattersFor("en");
 
@@ -1364,5 +1368,131 @@ export const ASavedViewChangesTheWindow: Story = {
       "/api/v1/me/saved-views",
     );
     await expect(body).toEqual({ surface: "dashboard", name: "Mine", filters: { window: "7d" } });
+  },
+};
+
+/** `render`, under the screen key the app shell supplies, for a story reading the UX stream */
+const renderOnScreen = (stub: FetchStub) => (
+  <UxScreenProvider screen="dashboard">{render(stub)}</UxScreenProvider>
+);
+
+/** the regions of every `error_state` recorded so far, in order */
+const errorRegions = () =>
+  uxEvents()
+    .filter((e) => e.action === "error_state")
+    .map((e) => e.target);
+
+/**
+ * The error states come from the alerts on screen, which record their own
+ * (#2444): three failed cards are three rows, one per card under its own
+ * region, and the card that loaded adds none. No screen-level row is recorded
+ * for what is not an outage.
+ */
+export const EachFailedCardRecordsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(mostDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-recent"),
+      /failed to return recent requests/i,
+    );
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(3));
+    const figures = await expectUxEvent("error_state", "dashboard");
+    await expect(figures.screen).toBe("dashboard");
+    await waitFor(() =>
+      expect([...errorRegions()].sort()).toEqual([
+        "dashboard",
+        "dashboard-recent",
+        "dashboard-spend",
+      ]),
+    );
+  },
+};
+
+/**
+ * The traffic share and the by-model bars read one endpoint and show one alert,
+ * so its failure is one row, under the card that holds the alert.
+ */
+export const TheSharedReadRecordsOneErrorState: Story = {
+  beforeEach: () => {
+    modelsDown = true;
+    return recordUxEvents();
+  },
+  render: () => renderOnScreen(byModelDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-traffic"),
+      /failed to return the traffic share/i,
+    );
+    await expectUxEvent("error_state", "dashboard-traffic");
+    await expect(errorRegions()).toEqual(["dashboard-traffic"]);
+  },
+};
+
+/**
+ * Every read failing is one alert for the screen, and one screen-level row for
+ * it, `dashboard-analytics`, however long the alert stays up.
+ */
+export const AnOutageRecordsOneScreenLevelErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(failing.stub),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    const outage = await expectUxEvent("error_state", "dashboard-analytics");
+    await expect(outage.screen).toBe("dashboard");
+    await expect(errorRegions().filter((r) => r === "dashboard-analytics")).toHaveLength(1);
+  },
+};
+
+/**
+ * A poll that fails over figures already on screen shows no alert, so it is not
+ * an `error_state` of a `LoadError`, but it is data going stale and it records
+ * one (#2640): under the card's region with `-stale` after it, one per card per
+ * appearance. Polls that fail again while the line is up add none, and a line
+ * that went away and came back is a second appearance.
+ */
+export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
+  beforeEach: () => {
+    upstream = "ok";
+    return recordUxEvents();
+  },
+  render: () => (
+    <UxScreenProvider screen="dashboard">
+      {render(flaky.stub, undefined, FAST_POLL_MS)}
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(errorRegions()).toEqual([]);
+
+    upstream = "failing";
+    const stale = [
+      "dashboard-by-model-stale",
+      "dashboard-recent-stale",
+      "dashboard-spend-stale",
+      "dashboard-stale",
+      "dashboard-traffic-stale",
+    ];
+    // one line per stale region: the four cards' and the recent feed's
+    await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(stale.length));
+    await waitFor(() => expect([...errorRegions()].sort()).toEqual(stale));
+    const first = await expectUxEvent("error_state", "dashboard-stale");
+    await expect(first.screen).toBe("dashboard");
+    await expect(first.outcome).toBe("error");
+    // the polls go on failing under the lines, and none of them is a new row
+    await sleep(FAST_POLL_MS * 3);
+    await expect([...errorRegions()].sort()).toEqual(stale);
+
+    // the lines go when a poll lands, and a failure after that is a new one
+    upstream = "ok";
+    await waitFor(() => expect(canvas.queryAllByText(REFRESH_FAILED)).toHaveLength(0));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    upstream = "failing";
+    await waitFor(() => expect(errorRegions()).toHaveLength(stale.length * 2));
+    await expect([...errorRegions()].sort()).toEqual([...stale, ...stale].sort());
   },
 };

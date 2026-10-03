@@ -66,7 +66,7 @@ import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface Draft {
   variables: PromptTemplateVariable[];
@@ -166,7 +166,6 @@ export default function PromptRepository() {
 
   useScreenReady(!templates.isLoading);
 
-  useErrorState(!!templates.error, "prompt-repository");
   const selected = templates.data?.find((template) => template.id === selectedId);
 
   React.useEffect(() => {
@@ -398,6 +397,7 @@ export default function PromptRepository() {
           error={templates.error}
           resource={t("errors.resources.promptTemplates")}
           onRetry={() => void templates.refetch()}
+          target="prompt-list"
         />
       </div>
     );
@@ -1819,6 +1819,7 @@ function MakeLiveDialog({
               <Skeleton width="100%" height={36} radius={6} />
             </LoadingRegion>
           ) : scopesError ? (
+            // load-error-allow: a scope summary inside the publish dialog; nothing to be empty
             <LoadError
               error={scopesError}
               resource={t("errors.resources.promptTemplateScopes")}
@@ -1826,6 +1827,7 @@ function MakeLiveDialog({
                 void targetScopes.refetch();
                 if (live) void liveScopes.refetch();
               }}
+              target="prompt-publish-scopes"
             />
           ) : unscoped ? (
             <p className="text-[color:var(--status-warning-text)]">

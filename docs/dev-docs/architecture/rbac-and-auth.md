@@ -480,6 +480,8 @@ An org also keeps one active org-scoped `admin` grant (#2311). `MembershipRepo::
 
 The identity-provider paths are guarded too (#2558), each in the way that fits who is on the other end. **SCIM deactivation** (`DELETE /scim/v2/Users/{id}`, `active: false` through `PATCH`, `PUT` or a provisioning `POST`) goes through `UserRepo::set_deactivated_guarding_org_admins`, which in one transaction takes the superadmin lock, then the `org_admins` lock of every org where the account holds an active org-scoped `admin` grant in ascending org order (so two deactivations cannot deadlock), and returns `DeactivationGuard::LastOrgAdmin(org)` when no other active account holds one there. It answers a SCIM `409`, like the last-superadmin refusal: a SCIM token is not a superadmin who could repair the org afterwards, the IdP surfaces the error and retries, and the account is global, so every org it administers counts, not only the token's. The message does not name the org, which the token's tenant may not be able to see. **Group reconciliation** (SSO on login, SCIM group sync) instead revokes each stale `sso`/`scim` grant through `crud::revoke_idp_grant`, which calls `delete_guarded(id, true)` and, on `WouldLockOut`, keeps the grant, logs a warning and writes a `membership.last_admin_kept` audit row. Failing there would turn an IdP group change into a sign-in the admin cannot complete, or a group sync that never converges; keeping the grant is safe because both paths derive the wanted set from the IdP on every run, so the next login or sync revokes it once the org has another admin. On SSO the kept role is reported in the login's `granted_roles`, since it is still in force.
 
+Deleting a SCIM group mapping through the operator API (`DELETE /api/v1/scim-group-mappings/{id}`) reconciles the group's members on the spot, through the same `revoke_idp_grant`, but there it is an operator action rather than an IdP sync, so it follows `delete_membership`: `scim_groups::reconcile_user` takes a `protect` flag and the handler passes `!principal.is_superadmin()` (#2673). A superadmin's deletion therefore revokes the org's last admin grant like a direct revoke would, while an org admin's deletion keeps it and writes `membership.last_admin_kept`. Every IdP-driven path (SCIM group create/replace/patch/delete, user deprovisioning, mapping creation, which only adds grants) passes `true`. Deleting an SSO group mapping reconciles nothing at once, because the control plane only learns a user's groups when they sign in; the next login applies the change with `protect = true`, so a superadmin who wants the last SSO admin grant gone revokes the membership directly.
+
 Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
 
 ```mermaid
@@ -560,10 +562,15 @@ stays superadmin-only. It goes through `UserRepo::set_profile`, which names only
 `display_name` and `bio`, so the `users` trigger from `0075` (which fires on
 `deactivated_at` and `is_superadmin`) does not bump `config_version`. Who owns
 the display name is decided by `scim_identities`: SCIM writes `displayName` into
-`users.display_name` on create and replace, so an account with such a row is
-`display_name_managed` and the route answers `409` for a change to it. OIDC's
-`preferred_username` and LDAP's name attribute are read at sign-in but never
-persisted, so those accounts edit their name freely. The audit row
+`users.display_name` on create, replace and patch (last sync wins when two orgs
+provision the same account, see [SCIM provisioning](scim-provisioning.md)), so
+an account with such a row is `display_name_managed` and the route answers
+`409` for a change to it. OIDC's `preferred_username` is only a default: the
+first sign-in of an account with no name writes it through
+`UserRepo::default_display_name` (`where display_name is null`, so it never
+replaces a name), and the account stays unmanaged and edits it freely. LDAP's
+name attribute is read into `Identity` but the LDAP provider is not yet wired
+into a sign-in route, so nothing persists it today. The audit row
 `user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
@@ -656,8 +663,10 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories (#241), the next
-  provider to implement `IdentityProvider`.
+- **LDAP** — bind + group mapping for enterprise directories. The provider
+  implements `IdentityProvider` (#241) but no configuration, route or screen
+  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
+  [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.
