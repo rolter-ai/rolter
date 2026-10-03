@@ -1039,17 +1039,22 @@ pub(crate) struct AccessRevoked {
 }
 
 /// Re-run the upgrade's key, model and route gates against `snap` for a
-/// session that is already open (#1881).
+/// session that is already open (#1881), returning the key as `snap` now has
+/// it.
 ///
 /// Authentication happens once, at the WebSocket upgrade, so without this a
 /// disabled, expired or deleted key would keep its session until the client
 /// left. The gates are the upgrade's own: the key lookup [`authenticate`] does,
-/// then [`authorize_model`], the route lookup and [`authorize_route`].
-pub(crate) fn recheck_session_access(
-    snap: &Snapshot,
+/// then [`authorize_model`], the route lookup and [`authorize_route`]. On top
+/// of those, `provider` is the one the session is pinned to, and it must still
+/// be on the key's provider allow-list (#2384): the route gate only asks that
+/// some provider on the route is, and the session cannot move to another.
+pub(crate) fn recheck_session_access<'a>(
+    snap: &'a Snapshot,
     digest: &str,
     model: &str,
-) -> Result<(), AccessRevoked> {
+    provider: &str,
+) -> Result<&'a KeyMeta, AccessRevoked> {
     let denied = |denial: AccessDenial| {
         let (message, code) = denial.message_and_code();
         AccessRevoked {
@@ -1077,7 +1082,16 @@ pub(crate) fn recheck_session_access(
             message: format!("no route for model '{model}'"),
         });
     };
-    authorize_route(Some(key), entry).map_err(denied)
+    authorize_route(Some(key), entry).map_err(denied)?;
+    if !key.provider_allowed(provider) {
+        return Err(AccessRevoked {
+            status: StatusCode::FORBIDDEN,
+            code: "provider_not_allowed",
+            message: "the provider this session is pinned to is no longer allowed for this key"
+                .to_string(),
+        });
+    }
+    Ok(key)
 }
 
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
