@@ -408,7 +408,16 @@ function SpendFigure({
 }
 
 /** the spend line on one unit's or customer's card */
-function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }) {
+function CardSpend({
+  row,
+  read,
+  liveKeyCount,
+}: {
+  row?: AttributionSpendRow;
+  read: ReadState;
+  /** live keys attributed to the card's unit or customer, when the listing said */
+  liveKeyCount?: number;
+}) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
@@ -420,6 +429,28 @@ function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }
     return <Skeleton width={120} height={16} data-testid="card-spend-loading" />;
   if (!read.isSuccess) return null;
   if (!row) {
+    // "no spend" alone cannot tell an idle unit from one nothing could ever
+    // bill, so a card with no live key says so and points at where keys are
+    // attributed (#2581). an absent count is an older control plane, not a zero
+    if (liveKeyCount === 0) {
+      return (
+        <div
+          className="font-mono text-xs text-[color:var(--text-subtle)]"
+          data-testid="card-no-key"
+        >
+          <Trans
+            i18nKey="pages.costAttribution.noSpendNoKey"
+            components={[
+              <Link
+                key="keys"
+                to="/virtual-keys"
+                className="font-sans text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              />,
+            ]}
+          />
+        </div>
+      );
+    }
     return (
       <div className="font-mono text-xs text-[color:var(--text-subtle)]">
         {t("pages.costAttribution.noSpend")}
@@ -657,7 +688,11 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </div>
                   <RetiredBadge retiredAt={row.retired_at} />
                 </div>
-                <CardSpend row={spendById.get(row.id)} read={spendRead} />
+                <CardSpend
+                  row={spendById.get(row.id)}
+                  read={spendRead}
+                  liveKeyCount={row.live_key_count}
+                />
                 {kind === "customer" && (
                   <div className="text-xs text-muted-foreground">
                     {assigned ? (

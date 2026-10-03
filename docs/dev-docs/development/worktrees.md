@@ -117,10 +117,11 @@ commits and publication:
 ```bash
 prek run --all-files
 git push --set-upstream origin HEAD
-gh pr create --base master --draft
+gh pr create --base master
 ```
 
-Use the immediate parent instead of `master` for a stacked pull request. Fill
+Open the PR ready for review: a draft reports `mergeStateStatus: BLOCKED` however green
+its checks are. Use the immediate parent instead of `master` for a stacked pull request. Fill
 the PR template, use a Conventional Commit title, and link the issue with
 `Closes #N` only when the PR completes its acceptance criteria.
 
