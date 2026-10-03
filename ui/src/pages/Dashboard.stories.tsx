@@ -1445,3 +1445,53 @@ export const AnOutageRecordsOneScreenLevelErrorState: Story = {
     await expect(errorRegions().filter((r) => r === "dashboard-analytics")).toHaveLength(1);
   },
 };
+
+/**
+ * A poll that fails over figures already on screen shows no alert, so it is not
+ * an `error_state` of a `LoadError`, but it is data going stale and it records
+ * one (#2640): under the card's region with `-stale` after it, one per card per
+ * appearance. Polls that fail again while the line is up add none, and a line
+ * that went away and came back is a second appearance.
+ */
+export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
+  beforeEach: () => {
+    upstream = "ok";
+    return recordUxEvents();
+  },
+  render: () => (
+    <UxScreenProvider screen="dashboard">
+      {render(flaky.stub, undefined, FAST_POLL_MS)}
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(errorRegions()).toEqual([]);
+
+    upstream = "failing";
+    await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(4));
+    const stale = [
+      "dashboard-by-model-stale",
+      "dashboard-recent-stale",
+      "dashboard-spend-stale",
+      "dashboard-stale",
+      "dashboard-traffic-stale",
+    ];
+    await waitFor(() => expect([...errorRegions()].sort()).toEqual(stale));
+    const first = await expectUxEvent("error_state", "dashboard-stale");
+    await expect(first.screen).toBe("dashboard");
+    await expect(first.outcome).toBe("error");
+    // the polls go on failing under the lines, and none of them is a new row
+    await sleep(FAST_POLL_MS * 3);
+    await expect([...errorRegions()].sort()).toEqual(stale);
+
+    // the lines go when a poll lands, and a failure after that is a new one
+    upstream = "ok";
+    await waitFor(() => expect(canvas.queryAllByText(REFRESH_FAILED)).toHaveLength(0));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    upstream = "failing";
+    await waitFor(() => expect(errorRegions()).toHaveLength(stale.length * 2));
+    await expect([...errorRegions()].sort()).toEqual([...stale, ...stale].sort());
+  },
+};
