@@ -1470,7 +1470,6 @@ export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
     await expect(errorRegions()).toEqual([]);
 
     upstream = "failing";
-    await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(4));
     const stale = [
       "dashboard-by-model-stale",
       "dashboard-recent-stale",
@@ -1478,6 +1477,8 @@ export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
       "dashboard-stale",
       "dashboard-traffic-stale",
     ];
+    // one line per stale region: the four cards' and the recent feed's
+    await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(stale.length));
     await waitFor(() => expect([...errorRegions()].sort()).toEqual(stale));
     const first = await expectUxEvent("error_state", "dashboard-stale");
     await expect(first.screen).toBe("dashboard");
