@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import { ScopeSwitcher } from "./ScopeSwitcher";
+import { CreateProjectHost, ScopeSwitcher } from "./ScopeSwitcher";
 import { openCreateProject } from "@/lib/scope";
 import { UxScreenProvider } from "@/lib/ux-react";
 import {
@@ -172,7 +172,12 @@ export const CreatesATeam: Story = {
   },
 };
 
-/** Another screen opens the project dialog through `openCreateProject()`. */
+/**
+ * Another screen opens the project dialog through `openCreateProject()`, with no
+ * switcher mounted (#2611). That is the shell's real situation: the switcher
+ * lives in the account menu and is unmounted whenever the menu is closed, so the
+ * dialog belongs to `CreateProjectHost`, which the shell always mounts.
+ */
 export const OpensCreateProjectFromElsewhere: Story = {
   render: () => {
     const recorder = recording(chain());
@@ -182,14 +187,15 @@ export const OpensCreateProjectFromElsewhere: Story = {
         <button type="button" onClick={openCreateProject}>
           Open from another screen
         </button>
-        <ScopeSwitcher />
+        <CreateProjectHost />
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByRole("combobox", { name: "Team" });
-    await waitFor(() => expect(canvas.getByLabelText("Team")).toHaveValue(TEAM.name));
+    // the team's project list is only asked for once a team is in scope, which
+    // is what the host needs before it has anything to open
+    await calls.expectSent("GET", `/teams/${TEAM.id}/projects`);
     await userEvent.click(canvas.getByRole("button", { name: "Open from another screen" }));
     const dialog = within(await confirmation());
     await expect(dialog.getByText("New project")).toBeVisible();
