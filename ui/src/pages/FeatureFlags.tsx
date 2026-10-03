@@ -19,6 +19,7 @@ import {
   type FeatureFlagsDto,
   type UnavailableFlagDto,
 } from "@/lib/api";
+import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -41,6 +42,7 @@ const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
 // than as a switch that silently does nothing (#535)
 function FeatureFlagsScreen() {
   const { t } = useTranslation();
+  const fmt = useFormat();
   // one entry per allowlisted flag; the order here is the order on screen
   const copy: Record<FeatureFlagKey, FlagCopy> = {
     response_cache: {
@@ -171,7 +173,7 @@ function FeatureFlagsScreen() {
         <span className="mr-auto text-xs text-[color:var(--text-subtle)]">
           {flags.data?.updated_at
             ? t("pages.featureFlags.lastSaved", {
-                when: new Date(flags.data.updated_at).toLocaleString(),
+                when: fmt.dateTime(flags.data.updated_at),
               })
             : t("pages.featureFlags.neverSaved")}
         </span>
