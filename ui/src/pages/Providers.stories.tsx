@@ -31,7 +31,15 @@ import {
   type Recorder,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  atMobile,
+  atTablet,
+  expectInFrame,
+  expectNoHorizontalOverflow,
+  phoneFits,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: ProviderRow[] = [
@@ -981,3 +989,24 @@ export const ProjectAdminOnAMixedList: Story = {
     await expectRefused(canvasElement, "Delete provider anthropic-eu");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const providersFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  ready: async (canvas, locale) => {
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    // the list scrolls sideways, but a row's buttons stay at the frame's edge:
+    // they sat at x=663 on a 375px phone, a scroll away from being pressed
+    const frame = canvas.getByRole("table");
+    const copy = (locale === "ru" ? ru : en).pages.providers.editOne;
+    const edit = canvas.getByRole("button", { name: copy.replace("{{name}}", "openai-prod") });
+    await expectInFrame(edit, frame);
+  },
+});
+export const MobileInRussian: Story = providersFit("mobile", "ru");
+export const ActionsStayInReachAtMobile: Story = providersFit("mobile", "en");
