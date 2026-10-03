@@ -408,7 +408,36 @@ const SAVED_VIEW_QUERY: &[QueryParam] = &[QueryParam::new(
     "only presets of one screen: llm_logs or dashboard",
 )];
 
-/// The window plus the bucket only the timeseries endpoint reads.
+/// The row filters the dashboard's reads and the invocation log share, with
+/// the same shapes on both (#2453). Each narrows inside the caller's row
+/// visibility and an omitted one applies no filter.
+const MODEL_FILTER: QueryParam =
+    QueryParam::new("model", "string", "exact model name; omit for every model");
+const KEY_FILTER: QueryParam =
+    QueryParam::new("key", "string", "exact virtual key id; omit for every key");
+const BUSINESS_UNIT_FILTER: QueryParam = QueryParam::new(
+    "business_unit",
+    "string",
+    "comma-separated business unit ids; omit for every unit",
+);
+const CUSTOMER_FILTER: QueryParam = QueryParam::new(
+    "customer",
+    "string",
+    "comma-separated customer ids; omit for every customer",
+);
+
+/// The dashboard's summary and by-model reads: the window plus the row filters.
+const DASHBOARD_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
+];
+
+/// The window plus the bucket only the timeseries endpoint reads, and the
+/// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
     SINCE,
     UNTIL,
@@ -417,6 +446,10 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
         "string",
         "time bucket: `hour`, `day`, `week` or `month`",
     ),
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -498,18 +531,10 @@ const ATTRIBUTION_QUERY: &[QueryParam] = &[
 const INVOCATIONS_QUERY: &[QueryParam] = &[
     SINCE,
     UNTIL,
-    QueryParam::new("model", "string", "exact model name; omit for every model"),
-    QueryParam::new("key", "string", "exact virtual key id; omit for every key"),
-    QueryParam::new(
-        "business_unit",
-        "string",
-        "comma-separated business unit ids; omit for every unit",
-    ),
-    QueryParam::new(
-        "customer",
-        "string",
-        "comma-separated customer ids; omit for every customer",
-    ),
+    MODEL_FILTER,
+    KEY_FILTER,
+    BUSINESS_UNIT_FILTER,
+    CUSTOMER_FILTER,
     QueryParam::new("status", "string", "all|error|success; defaults to all"),
     QueryParam::new(
         "request_id",
@@ -1719,7 +1744,7 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsSummary",
                 "Spend, tokens and request counts over a window",
             )
-            .query(WINDOW_QUERY),
+            .query(DASHBOARD_QUERY),
             Op::get(
                 "/api/v1/analytics/timeseries",
                 "getAnalyticsTimeseries",
@@ -1731,7 +1756,7 @@ fn operations() -> Vec<Op> {
                 "getAnalyticsByModel",
                 "Spend and usage grouped by model",
             )
-            .query(WINDOW_QUERY),
+            .query(DASHBOARD_QUERY),
             Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
@@ -3302,6 +3327,47 @@ mod tests {
             .filter(|op| op["responses"]["303"].is_object())
             .count();
         assert_eq!(redirects, 2);
+    }
+
+    #[test]
+    fn the_dashboard_reads_document_the_invocation_logs_row_filters() {
+        let doc = document();
+        let names_of = |path: &str| -> BTreeSet<String> {
+            doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path} declares its query parameters"))
+                .iter()
+                .map(|p| {
+                    p["name"]
+                        .as_str()
+                        .expect("a parameter has a name")
+                        .to_string()
+                })
+                .collect()
+        };
+        let invocations = names_of("/api/v1/analytics/invocations");
+        for path in [
+            "/api/v1/analytics/summary",
+            "/api/v1/analytics/timeseries",
+            "/api/v1/analytics/by-model",
+        ] {
+            let names = names_of(path);
+            for filter in [
+                "since",
+                "until",
+                "model",
+                "key",
+                "business_unit",
+                "customer",
+            ] {
+                assert!(names.contains(filter), "{path} lacks {filter}: {names:?}");
+                assert!(invocations.contains(filter), "invocations lacks {filter}");
+            }
+            // the list's own paging and lookups are not the rollups' to take
+            for absent in ["status", "cursor", "limit", "request_id"] {
+                assert!(!names.contains(absent), "{path} documents {absent}");
+            }
+        }
     }
 
     #[test]

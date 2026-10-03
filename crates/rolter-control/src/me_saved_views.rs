@@ -19,7 +19,9 @@
 //! * `llm_logs` mirrors `GET /api/v1/analytics/invocations`: `window`,
 //!   `status`, `model`, `key`, `business_unit` and `customer`.
 //! * `dashboard` mirrors the summary / timeseries / by-model routes the
-//!   dashboard calls, which filter by window only: `window` and `bucket`.
+//!   dashboard calls: `window`, `bucket`, `model`, `key`, `business_unit` and
+//!   `customer` (#2453). The four row filters take the same shapes as on
+//!   `llm_logs`, because the routes read them as the invocation list does.
 //!
 //! `window` is a rolling window's *name* (`24h`, `7d`, ...), never a pair of
 //! timestamps: a saved "last 7 days" has to mean the seven days before it is
@@ -82,7 +84,14 @@ const LLM_LOGS_KEYS: &[&str] = &[
     "business_unit",
     "customer",
 ];
-const DASHBOARD_KEYS: &[&str] = &["window", "bucket"];
+const DASHBOARD_KEYS: &[&str] = &[
+    "window",
+    "bucket",
+    "model",
+    "key",
+    "business_unit",
+    "customer",
+];
 
 pub(super) fn router() -> Router<ControlState> {
     Router::new()
@@ -625,13 +634,42 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_takes_the_window_and_bucket_and_nothing_else() {
-        assert_eq!(
-            ok("dashboard", json!({"window": "mtd", "bucket": "day"})).len(),
-            2
+    fn dashboard_takes_the_window_bucket_and_the_row_filters() {
+        let id = "0b9f3c1e-6f1a-4a7e-9a52-0f7d6c1a2b3c";
+        let got = ok(
+            "dashboard",
+            json!({
+                "window": "mtd", "bucket": "day", "model": " gpt-4o ",
+                "key": id.to_uppercase(), "business_unit": [id, id], "customer": [id],
+            }),
         );
-        assert!(refused("dashboard", json!({"model": "gpt-4o"})));
+        assert_eq!(got.len(), 6);
+        // the same normalisation llm_logs applies
+        assert_eq!(got["model"], "gpt-4o");
+        assert_eq!(got["key"], id);
+        assert_eq!(got["business_unit"], json!([id]));
+        assert_eq!(got["customer"], json!([id]));
+    }
+
+    #[test]
+    fn dashboard_refuses_what_its_routes_do_not_read() {
+        // status is the invocation list's alone; the rollups count errors
         assert!(refused("dashboard", json!({"status": "error"})));
+        assert!(refused("dashboard", json!({"limit": 50})));
+        assert!(refused(
+            "dashboard",
+            json!({"since": "2020-01-01T00:00:00Z"})
+        ));
+        // and the filters it does read keep llm_logs' shapes
+        assert!(refused("dashboard", json!({"key": "not-a-uuid"})));
+        assert!(refused(
+            "dashboard",
+            json!({"business_unit": "0b9f3c1e-6f1a-4a7e-9a52-0f7d6c1a2b3c"})
+        ));
+        assert!(refused("dashboard", json!({"customer": ["nope"]})));
+        assert!(refused("dashboard", json!({"model": ""})));
+        // and llm_logs does not take the dashboard's bucket
+        assert!(refused("llm_logs", json!({"bucket": "day"})));
     }
 
     #[test]

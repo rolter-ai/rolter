@@ -262,6 +262,68 @@ pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
     ]
 }
 
+/// Query params for the dashboard's summary, timeseries and by-model reads:
+/// the shared time window plus the row filters the LLM Logs screen already
+/// sends to the invocation list (#2453).
+///
+/// The four filters have exactly [`InvocationsQuery`]'s shapes: `model` and
+/// `key` are one exact value, `business_unit` and `customer` a comma-separated
+/// set, and an empty or omitted one applies no filter. They narrow what the
+/// caller's row visibility (#1820) already lets through and never widen it,
+/// because [`DASHBOARD_FILTERS`] is `and`-ed beside `ROW_VISIBLE` rather than
+/// in place of it.
+#[derive(Debug, Deserialize)]
+pub struct DashboardQuery {
+    #[serde(flatten)]
+    pub(crate) window: WindowQuery,
+    /// exact model name to filter to; empty/omitted means all models
+    pub(crate) model: Option<String>,
+    /// exact virtual key id to filter to; empty/omitted means all keys
+    pub(crate) key: Option<String>,
+    /// comma-separated business unit ids to filter to; empty/omitted means
+    /// every unit, and an id nothing was attributed to matches nothing
+    pub(crate) business_unit: Option<String>,
+    /// comma-separated customer ids to filter to; empty/omitted means every
+    /// customer
+    pub(crate) customer: Option<String>,
+}
+
+impl TimeBounds for DashboardQuery {
+    fn time_bounds(&self) -> (Option<&str>, Option<&str>) {
+        self.window.time_bounds()
+    }
+}
+
+impl DashboardQuery {
+    /// The window bindings plus one `param_*` per filter [`DASHBOARD_FILTERS`]
+    /// reads. Every filter is bound, an absent one as the empty string the
+    /// predicate short-circuits on, so the SQL never changes shape with the
+    /// filters a caller happened to send.
+    pub(crate) fn params(&self) -> Vec<(String, String)> {
+        let mut params = window_params(&self.window);
+        for (name, value) in [
+            ("param_model", &self.model),
+            ("param_key", &self.key),
+            ("param_business_unit", &self.business_unit),
+            ("param_customer", &self.customer),
+        ] {
+            params.push((name.to_string(), value.clone().unwrap_or_default()));
+        }
+        params
+    }
+}
+
+/// The row filters of [`DashboardQuery`], every value a bound ClickHouse
+/// parameter and never spliced text. Word for word the predicate the
+/// invocation list applies, so a filter means the same rows on the Dashboard
+/// as on LLM Logs; a unit test holds the two together.
+pub(crate) const DASHBOARD_FILTERS: &str = "({model:String} = '' or model = {model:String}) \
+     and ({key:String} = '' or virtual_key_id = {key:String}) \
+     and ({business_unit:String} = '' \
+          or has(splitByChar(',', {business_unit:String}), business_unit_id)) \
+     and ({customer:String} = '' \
+          or has(splitByChar(',', {customer:String}), customer_id))";
+
 /// `params` plus the caller's scope filter, which every analytics and health
 /// query binds (#1820).
 pub(crate) fn with_access(
@@ -444,7 +506,7 @@ pub(crate) fn query_failed(
 async fn summary(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -460,24 +522,23 @@ async fn summary(
                 uniqIf(model, unpriced = 1) as unpriced_models, \
                 countIf(status >= 400) as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} format JSON"
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
+         format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
         Err(resp) => return resp,
     };
-    let bucket = q.bucket.as_deref().unwrap_or("day");
+    let bucket = q.window.bucket.as_deref().unwrap_or("day");
     let Some(bucket_expr) = bucket_fn(bucket) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -490,19 +551,17 @@ async fn timeseries(
                 count() as requests, \
                 sum(total_tokens) as tokens, \
                 round(sum(cost_usd), 6) as cost_usd \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
          group by bucket order by bucket format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
 /// Per-model aggregates: requests, tokens, cost, error rate, latency percentiles.
 async fn by_model(
     access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
-    Query(q): Query<WindowQuery>,
+    Query(q): Query<DashboardQuery>,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -517,12 +576,10 @@ async fn by_model(
                 countIf(status >= 400) as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
          group by model order by cost_usd desc format JSON"
     );
-    run(ch
-        .query(&sql, &with_access(window_params(&q), &access))
-        .await)
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
 /// Query params for the cost-attribution rollup: the shared time window plus
@@ -1009,6 +1066,128 @@ mod tests {
             .count();
         assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_dashboard_reads_filter_rows_as_the_invocation_list_does() {
+        // one predicate, word for word, so a filter means the same rows on the
+        // dashboard as on llm logs (#2453)
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        assert!(sql.contains(DASHBOARD_FILTERS), "{sql}");
+    }
+
+    #[test]
+    fn every_dashboard_read_filters_beside_the_callers_visibility() {
+        // and-ed next to ROW_VISIBLE, never in its place: a filter narrows what
+        // the caller may read and cannot reach past it (#1820, #2453)
+        // built with format! so this test's own text never matches itself
+        let source = include_str!("analytics.rs");
+        let table = "request_logs";
+        let filtered = source
+            .matches(&format!(
+                "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{DASHBOARD_FILTERS}}"
+            ))
+            .count();
+        assert_eq!(filtered, 3, "summary, timeseries, by-model");
+    }
+
+    #[test]
+    fn dashboard_filters_bind_every_value_as_a_param() {
+        for param in [
+            "{model:String}",
+            "{key:String}",
+            "{business_unit:String}",
+            "{customer:String}",
+        ] {
+            assert!(DASHBOARD_FILTERS.contains(param), "{param}");
+            // each one short-circuits when empty, so an omitted filter is no filter
+            assert!(
+                DASHBOARD_FILTERS.contains(&format!("{param} = ''")),
+                "{param}"
+            );
+        }
+        assert!(DASHBOARD_FILTERS
+            .contains("has(splitByChar(',', {business_unit:String}), business_unit_id)"));
+        assert!(DASHBOARD_FILTERS.contains("has(splitByChar(',', {customer:String}), customer_id)"));
+        // no quoted literal on the column side of a comparison
+        for column in ["model", "virtual_key_id", "business_unit_id", "customer_id"] {
+            assert!(
+                !DASHBOARD_FILTERS.contains(&format!("{column} = '")),
+                "{column}"
+            );
+        }
+    }
+
+    fn dashboard_query(query: &str) -> DashboardQuery {
+        let uri: axum::http::Uri = format!("/api/v1/analytics/summary?{query}")
+            .parse()
+            .expect("uri");
+        axum::extract::Query::<DashboardQuery>::try_from_uri(&uri)
+            .expect("parses")
+            .0
+    }
+
+    fn param<'a>(params: &'a [(String, String)], name: &str) -> &'a str {
+        params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_else(|| panic!("{name} is bound"))
+    }
+
+    #[test]
+    fn a_dashboard_query_reads_the_filters_beside_the_window() {
+        let q = dashboard_query(
+            "since=2026-01-01T00:00:00Z&bucket=hour&model=gpt-4o&key=k-1\
+             &business_unit=bu-1,bu-2&customer=c-1",
+        );
+        assert_eq!(q.window.bucket.as_deref(), Some("hour"));
+        let params = q.params();
+        assert_eq!(param(&params, "param_since"), "2026-01-01T00:00:00Z");
+        assert_eq!(param(&params, "param_until"), "");
+        assert_eq!(param(&params, "param_model"), "gpt-4o");
+        assert_eq!(param(&params, "param_key"), "k-1");
+        // the set travels as one bound value; splitByChar splits it in sql
+        assert_eq!(param(&params, "param_business_unit"), "bu-1,bu-2");
+        assert_eq!(param(&params, "param_customer"), "c-1");
+    }
+
+    #[test]
+    fn an_absent_or_empty_dashboard_filter_binds_the_empty_string() {
+        for query in ["", "model=&key=&business_unit=&customer="] {
+            let params = dashboard_query(query).params();
+            for name in [
+                "param_model",
+                "param_key",
+                "param_business_unit",
+                "param_customer",
+            ] {
+                assert_eq!(param(&params, name), "", "{name} from {query:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hostile_dashboard_filter_stays_a_value() {
+        let hostile = "x') or 1=1 --";
+        let q = dashboard_query(&format!("model={}", url_escape(hostile)));
+        assert_eq!(param(&q.params(), "param_model"), hostile);
+    }
+
+    fn url_escape(raw: &str) -> String {
+        raw.bytes().map(|b| format!("%{b:02X}")).collect()
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_query_still_refuses_a_malformed_window() {
+        use axum::extract::FromRequestParts;
+        let (mut parts, ()) = axum::http::Request::builder()
+            .uri("/api/v1/analytics/summary?model=gpt-4o&since=yesterday")
+            .body(())
+            .expect("request")
+            .into_parts();
+        let refused = Query::<DashboardQuery>::from_request_parts(&mut parts, &()).await;
+        assert!(refused.is_err(), "a bad since is a 400, filters or not");
     }
 
     #[test]
