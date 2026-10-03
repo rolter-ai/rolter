@@ -244,11 +244,12 @@ scope switch re-keys the query, so a viewer in one org does not carry a cached
 ## The stories render as a role from the real table
 
 `<Harness role="viewer">` stubs both RBAC endpoints, and it derives the answers
-from `ui/src/lib/rbac-capabilities.json` — a generated copy of `CAPABILITIES`,
-written by `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`).
-`ui/src/lib/rbac-capabilities.ts` turns that copy into the two payloads the
-same way the control plane does: `matrixFixture()` is the port of
-`resource_view`, `effectiveFor()` of `allowed_for`.
+from `ui/src/lib/rbac-capabilities.json` — a copy of
+`crates/rolter-control/rbac-matrix.json`, which is `GET /api/v1/rbac/matrix`
+minus the per-tenant custom roles, rendered by the control plane itself from
+`CAPABILITIES`. `ui/src/lib/rbac-capabilities.ts` serves that copy as
+`matrixFixture()` unchanged and derives `effectiveFor()` from it the way
+`allowed_for` does.
 
 It used to be a table typed out by hand in `story-harness.tsx`, and nothing
 compared the two. So it drifted — #1258 found it calling `model` and
@@ -258,13 +259,24 @@ only a superadmin writes, which let two screens gate on `model:create` and
 their stories passed. A fixture more generous than the deployment makes a
 gating story assert behaviour nobody runs.
 
-`ui/scripts/rbac-matrix-source.test.ts` is the gate (#1298): it re-parses
-`rbac_matrix.rs` on every `bun run test` and fails when the copy disagrees,
-naming the pair — `model_price:update takes superadmin in
-crates/rolter-control/src/rbac_matrix.rs, admin in the fixture`. **Change the
-capability table, run `bun run gen:rbac` and commit the JSON with it.** The
-generator parses the Rust source because the control plane emits no artifact to
-read; #1369 tracks replacing that with a snapshot the Rust test suite writes.
+Two tests keep the copy honest, one per hop:
+
+- `the_checked_in_matrix_artifact_is_what_the_endpoint_publishes` in
+  `crates/rolter-control/src/rbac_matrix.rs` renders the matrix through the
+  same `builtin_matrix()` the endpoint serves and fails `cargo test` when
+  `rbac-matrix.json` differs from it by a byte (the module builds only under
+  `--features postgres`, as CI tests it). Run with
+  `ROLTER_UPDATE_RBAC_MATRIX=1`, it rewrites the file instead.
+- `ui/scripts/rbac-matrix-artifact.test.ts` fails `bun run test` while
+  `ui/src/lib/rbac-capabilities.json` is not a byte-for-byte copy of the
+  artifact. `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`) makes
+  the copy.
+
+**Change the capability table, run `just gen-rbac` and commit both JSON files
+with it.** The recipe does both hops. Until #1369 the generator parsed the Rust
+source for the table, which tied it to the exact shape of a `const` struct
+literal; the artifact is the control plane's own rendering, so the table can
+be reorganised freely (#1298).
 
 ## Adding a screen
 

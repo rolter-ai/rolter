@@ -915,6 +915,18 @@ async fn get_matrix(
         None => Vec::new(),
     };
     Ok(Json(MatrixView {
+        custom_roles,
+        ..builtin_matrix()
+    }))
+}
+
+/// The matrix this build defines, before any org's custom roles are added.
+///
+/// Shared by [`get_matrix`] and the test that writes `rbac-matrix.json`, so the
+/// checked-in artifact the dashboard's fixtures are copied from is the same
+/// value the endpoint serves rather than a second rendering of the table (#1369).
+fn builtin_matrix() -> MatrixView {
+    MatrixView {
         roles: ROLES
             .iter()
             .map(|&role| RoleView {
@@ -923,8 +935,8 @@ async fn get_matrix(
             })
             .collect(),
         resources: CAPABILITIES.iter().map(resource_view).collect(),
-        custom_roles,
-    }))
+        custom_roles: Vec::new(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1788,5 +1800,69 @@ mod tests {
         // guard look it up among a caller's explicit custom grants
         assert_eq!(cap!("provider", Delete).resource, "provider");
         assert_eq!(cap!("provider", Delete).action, Action::Delete);
+    }
+
+    /// `rbac-matrix.json` at the crate root: the published matrix minus the
+    /// per-tenant custom roles, checked in so the dashboard's story fixtures
+    /// can be copied from it without a running control plane (#1369)
+    const MATRIX_ARTIFACT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/rbac-matrix.json");
+
+    /// set to rewrite the artifact instead of comparing against it
+    const UPDATE_ARTIFACT: &str = "ROLTER_UPDATE_RBAC_MATRIX";
+
+    #[derive(Serialize)]
+    struct MatrixArtifact {
+        #[serde(rename = "$comment")]
+        comment: &'static str,
+        roles: Vec<RoleView>,
+        resources: Vec<ResourceView>,
+    }
+
+    fn render_artifact() -> String {
+        let MatrixView {
+            roles, resources, ..
+        } = builtin_matrix();
+        let artifact = MatrixArtifact {
+            comment: "written by the rolter-control test suite from CAPABILITIES in \
+                      src/rbac_matrix.rs (`just gen-rbac`) — do not edit by hand",
+            roles,
+            resources,
+        };
+        let mut json = serde_json::to_string_pretty(&artifact).expect("the matrix serializes");
+        json.push('\n');
+        json
+    }
+
+    #[test]
+    fn the_checked_in_matrix_artifact_is_what_the_endpoint_publishes() {
+        let rendered = render_artifact();
+        if std::env::var_os(UPDATE_ARTIFACT).is_some() {
+            std::fs::write(MATRIX_ARTIFACT, &rendered).expect("write rbac-matrix.json");
+            return;
+        }
+        // compared as text rather than as parsed json: the artifact is copied
+        // byte for byte into the dashboard, so a reformatted file is drift too
+        let checked_in = std::fs::read_to_string(MATRIX_ARTIFACT).unwrap_or_default();
+        assert!(
+            checked_in == rendered,
+            "crates/rolter-control/rbac-matrix.json is out of date with CAPABILITIES; \
+             run `just gen-rbac` (or `{UPDATE_ARTIFACT}=1 cargo test -p rolter-control \
+             --features postgres the_checked_in_matrix_artifact` then `bun run gen:rbac` \
+             in ui/) and commit both files",
+        );
+    }
+
+    #[test]
+    fn the_matrix_artifact_omits_only_the_custom_roles() {
+        // the dashboard serves the artifact as `GET /api/v1/rbac/matrix` with
+        // an empty `custom_roles`, so every other field the endpoint carries
+        // has to be in it
+        let endpoint = serde_json::to_value(builtin_matrix()).expect("the matrix serializes");
+        let mut artifact: serde_json::Value =
+            serde_json::from_str(&render_artifact()).expect("the artifact parses");
+        let artifact = artifact.as_object_mut().expect("an object");
+        artifact.remove("$comment");
+        artifact.insert("custom_roles".into(), serde_json::json!([]));
+        assert_eq!(serde_json::Value::Object(artifact.clone()), endpoint);
     }
 }
