@@ -77,10 +77,12 @@ A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
 unconfirmed part shape fails loudly instead of producing a shortened body.
 
-Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
-the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
-reset the schema per test, so they run in a single-threaded group to avoid
-clobbering each other.
+[`.config/nextest.toml`](../../.config/nextest.toml) defines no test group: the
+Postgres-backed `rolter-store`/`rolter-control` suites run in parallel, because
+every test owns a `TestSchema` and every worktree its own database. They used to
+share a single-threaded `serial-db` group; removing it (#1429) took the two suites
+from 389-572s to 155-342s on a 4-core machine with all 781 tests green in each of
+six runs. The file records the numbers.
 
 ## The Postgres test database
 
@@ -182,11 +184,9 @@ A test holds about one connection at a time, so a worktree costs roughly one
 connection per test thread plus a handful for the harness. The pool size barely
 moves the peak; the number of tests running at once does. That is why the stock
 limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
-24-thread workstation. Under `cargo nextest` the `serial-db` group in
-[`.config/nextest.toml`](../../../.config/nextest.toml) runs one postgres test at a
-time per worktree, so a worktree holds only a few connections there; the numbers
-above are the case for `cargo test`, and for nextest too if that group goes
-(#1429).
+24-thread workstation. The numbers above apply to `cargo nextest` as well as
+`cargo test`: the `serial-db` group that used to hold a worktree to one postgres
+test at a time was removed (#1429).
 
 So the budget is kept in two places:
 
