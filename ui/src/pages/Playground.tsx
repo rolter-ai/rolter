@@ -35,7 +35,6 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ApiError,
   fetchConfigProblems,
   fetchModels,
   mintPlaygroundKey,
@@ -65,6 +64,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
+import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -311,22 +311,6 @@ function usePlaygroundKeyState(): PlaygroundKeyState {
 }
 
 /**
- * The current time, re-read every `intervalMs`.
- *
- * A minted key is good for half an hour, so "expires in 29 min" has to count
- * down on its own — a countdown that only moves when something else re-renders
- * is how a key reads as live several minutes after it stopped working.
- */
-function useNow(intervalMs = 15_000): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
-/**
  * Whether a minted key has run out, flipped by a timer at the instant it does.
  *
  * Kept apart from `useNow` so the screen as a whole re-renders once, at the
@@ -346,16 +330,16 @@ function useExpired(expiresAt: string | null): boolean {
 }
 
 /**
- * Whether a mint was refused because the project routes nothing.
+ * Whether a key rolter minted reaches the built-in `fake-llm` and nothing else.
  *
- * The mint takes no body, so the one client error it answers is that one:
- * `mint_playground_key` in crates/rolter-control/src/me.rs returns `400`
- * exactly when the project has no routes, and `control_integration.rs` pins
- * the status. The message is prose and free to be reworded, so it is not read
- * (#2061).
+ * That is the key `mint_playground_key` in crates/rolter-control/src/me.rs
+ * mints for a project with no routes yet (#2300): an empty list would reach
+ * every model, so the control plane scopes it to the one model a fresh
+ * deployment can answer. It works, so Send stays live; the band only says
+ * what it cannot reach yet and how to widen it.
  */
-function isRouteless(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 400;
+function isBuiltinOnly(state: PlaygroundKeyState): boolean {
+  return state.minted && state.models.length === 1 && state.models[0] === FAKE;
 }
 
 /**
@@ -375,7 +359,7 @@ interface KeySession {
   /** a project is in scope and the role is not refused, so a mint can be asked for */
   canMint: boolean;
   mint: UseMutationResult<MintedKey, Error, void>;
-  /** the last mint was refused because the project routes nothing */
+  /** the minted key reaches only the built-in, because the project routes nothing yet */
   routeless: boolean;
 }
 
@@ -407,12 +391,15 @@ function useKeySession(): KeySession {
   const mint = useMutation({
     mutationFn: () => mintPlaygroundKey(projectId as string),
     onSuccess: (minted) =>
-      setPlaygroundKey(minted.key, { expiresAt: minted.expires_at ?? null, minted: true }),
+      setPlaygroundKey(minted.key, {
+        expiresAt: minted.expires_at ?? null,
+        minted: true,
+        models: minted.models,
+      }),
   });
 
-  // one automatic attempt per project, not one per render: a refusal — a
-  // project with no routes answers 400 — must not turn into a mint loop, and
-  // the operator mints by hand from here on
+  // one automatic attempt per project, not one per render: a refusal must not
+  // turn into a mint loop, and the operator mints by hand from here on
   const { mutate } = mint;
   const asked = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -434,7 +421,7 @@ function useKeySession(): KeySession {
     refused,
     canMint: !!projectId && !refused,
     mint,
-    routeless: isRouteless(mint.error),
+    routeless: isBuiltinOnly(state),
   };
 }
 
@@ -466,10 +453,11 @@ function keyMessage(
 ): KeyMessage {
   const { state } = session;
   if (session.pending) return "pending";
-  if (session.mint.error) return session.routeless ? "routeless" : "failed";
+  if (session.mint.error) return "failed";
   if (state.key) {
     if (state.minted && session.expired) return "expired";
     if (gateway.rejected) return "rejected";
+    if (session.routeless) return "routeless";
     return state.minted ? "active" : "pasted";
   }
   if (gateway.keyless) return "keyless";
@@ -481,7 +469,6 @@ function keyMessage(
 /** the states in which the screen could not get a key itself, so pasting one is the way on */
 const OFFERS_PASTE: ReadonlySet<KeyMessage> = new Set([
   "failed",
-  "routeless",
   "rejected",
   "noProject",
   "refused",
@@ -509,7 +496,8 @@ function SessionKeyBar({
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const now = useNow();
+  // a minted key is good for half an hour, so "expires in 29 min" has to count down on its own
+  const now = useNow(15_000);
   const can = useCan();
   const { state, expired, mint, pending, projectId } = session;
   const message = keyMessage(session, { rejected, keyless });
@@ -556,7 +544,7 @@ function SessionKeyBar({
           ) : (
             <KeyStatus state={state} expired={expired} rejected={rejected} />
           )}
-          {!pending && message === "active" && state.expiresAt && (
+          {!pending && (message === "active" || message === "routeless") && state.expiresAt && (
             <span className="text-xs text-[color:var(--text-subtle)]">
               {t("playground.key.expires", { when: fmt.relative(state.expiresAt, now) })}
             </span>
@@ -579,9 +567,9 @@ function SessionKeyBar({
         {text && (
           <p role="status" className="text-xs leading-snug text-[color:var(--text-subtle)]">
             {text}
-            {/* the fix for a routeless project is a route, so the band points
-                at the screen that makes one. only an explicit "no" on reading
-                routes hides it, the rule the rail follows for that leaf */}
+            {/* what widens a routeless project's key is a route, so the band
+                points at the screen that makes one. only an explicit "no" on
+                reading routes hides it, the rule the rail follows for that leaf */}
             {message === "routeless" && can("route", "read") !== false && (
               <>
                 {" "}
@@ -601,8 +589,6 @@ function SessionKeyBar({
           onSaved={() => mint.reset()}
         />
       </div>
-      {/* a routeless project has its own line above and no retry: minting
-          again cannot succeed until the project routes something */}
       {message === "failed" && (
         <LoadError
           error={mint.error}

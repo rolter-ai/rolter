@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, WalletCards } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -364,12 +365,36 @@ function SpendStrip({
               })
             : undefined
         }
+        hint={
+          unattributed > 0 ? (
+            <Trans
+              i18nKey="pages.costAttribution.spendUnattributedHint"
+              components={[
+                <Link
+                  key="keys"
+                  to="/virtual-keys"
+                  className="underline underline-offset-2 hover:text-foreground"
+                />,
+              ]}
+            />
+          ) : undefined
+        }
       />
     </div>
   );
 }
 
-function SpendFigure({ label, value, note }: { label: string; value: string; note?: string }) {
+function SpendFigure({
+  label,
+  value,
+  note,
+  hint,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  hint?: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
@@ -377,12 +402,22 @@ function SpendFigure({ label, value, note }: { label: string; value: string; not
       </span>
       <span className="font-mono text-lg leading-none text-foreground">{value}</span>
       {note && <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{note}</span>}
+      {hint && <span className="max-w-64 text-[0.6875rem] text-muted-foreground">{hint}</span>}
     </div>
   );
 }
 
 /** the spend line on one unit's or customer's card */
-function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }) {
+function CardSpend({
+  row,
+  read,
+  liveKeyCount,
+}: {
+  row?: AttributionSpendRow;
+  read: ReadState;
+  /** live keys attributed to the card's unit or customer, when the listing said */
+  liveKeyCount?: number;
+}) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
@@ -394,6 +429,28 @@ function CardSpend({ row, read }: { row?: AttributionSpendRow; read: ReadState }
     return <Skeleton width={120} height={16} data-testid="card-spend-loading" />;
   if (!read.isSuccess) return null;
   if (!row) {
+    // "no spend" alone cannot tell an idle unit from one nothing could ever
+    // bill, so a card with no live key says so and points at where keys are
+    // attributed (#2581). an absent count is an older control plane, not a zero
+    if (liveKeyCount === 0) {
+      return (
+        <div
+          className="font-mono text-xs text-[color:var(--text-subtle)]"
+          data-testid="card-no-key"
+        >
+          <Trans
+            i18nKey="pages.costAttribution.noSpendNoKey"
+            components={[
+              <Link
+                key="keys"
+                to="/virtual-keys"
+                className="font-sans text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              />,
+            ]}
+          />
+        </div>
+      );
+    }
     return (
       <div className="font-mono text-xs text-[color:var(--text-subtle)]">
         {t("pages.costAttribution.noSpend")}
@@ -631,7 +688,11 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                   </div>
                   <RetiredBadge retiredAt={row.retired_at} />
                 </div>
-                <CardSpend row={spendById.get(row.id)} read={spendRead} />
+                <CardSpend
+                  row={spendById.get(row.id)}
+                  read={spendRead}
+                  liveKeyCount={row.live_key_count}
+                />
                 {kind === "customer" && (
                   <div className="text-xs text-muted-foreground">
                     {assigned ? (
@@ -735,7 +796,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   );
 }
 
-// business units: roll teams up into cost-attributed units (#539, #563)
+// business units: cost-attributed units that keys and customers are assigned to (#539, #563)
 export function BusinessUnits() {
   const { t } = useTranslation();
   const toast = useToast();

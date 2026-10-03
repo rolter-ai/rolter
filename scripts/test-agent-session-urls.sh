@@ -180,6 +180,12 @@ expect_output() {
     failures=$((failures + 1))
   fi
 }
+expect_no_output() {
+  if grep -qF -- "$1" "$case_dir/out"; then
+    echo "FAIL [$case_name] output has: $1" >&2
+    failures=$((failures + 1))
+  fi
+}
 finish_case() {
   if [ "$failures" -ne "${failures_before:-0}" ]; then
     echo "---- output of [$case_name] ----" >&2
@@ -198,6 +204,7 @@ start_case "a url added after the event fired is caught"
 set_live_body "$dirty"
 run_step pull_request
 expect_rc 1
+expect_no_output "checked:"
 expect_output "agent session or remote-connection url found in pr body for #2035"
 expect_calls "$one_pr"
 expect_slept ""
@@ -209,6 +216,7 @@ start_case "a url stripped before the step ran passes"
 payload_body=$dirty
 run_step pull_request
 expect_rc 0
+expect_output "checked: the body of rolter-ai/rolter#2035 (read live), 12 character(s) scanned"
 expect_calls "$one_pr"
 finish_case
 
@@ -223,6 +231,7 @@ start_case "a pr with no body passes"
 set_live_body null
 run_step pull_request
 expect_rc 0
+expect_output "checked: the body of rolter-ai/rolter#2035 (read live), 0 character(s) scanned"
 finish_case
 
 start_case "a flaking api is retried and the dirty body still found"
@@ -281,9 +290,16 @@ expect_output "agent session or remote-connection url found in pr body for fix/2
 expect_calls "$open_prs"
 finish_case
 
+start_case "dispatch on a clean pr says which body it read"
+run_step workflow_dispatch "" fix/2035-live-body
+expect_rc 0
+expect_output "checked: the body of rolter-ai/rolter#2035 (head ref fix/2035-live-body), 12 character(s) scanned"
+finish_case
+
 start_case "dispatch on a ref with no open pr passes with a notice"
 run_step workflow_dispatch "" some/other-branch
 expect_rc 0
+expect_no_output "checked:"
 expect_output "no open pull request has some/other-branch as its head"
 finish_case
 
@@ -309,10 +325,79 @@ expect_rc 1
 expect_output "agent session or remote-connection url found in pr body for #2035 (merge queue)"
 finish_case
 
+start_case "a clean queue run says which body it read"
+run_step merge_group "" "$queue_ref"
+expect_rc 0
+expect_output "checked: the body of rolter-ai/rolter#2035 (merge-queue ref $queue_ref), 12 character(s) scanned"
+finish_case
+
 start_case "a queue run whose pr is not open fails closed"
 run_step merge_group "" "gh-readonly-queue/master/pr-9999-0123456789abcdef0123456789abcdef01234567"
 expect_rc 1
 expect_output "pull request #9999 from gh-readonly-queue/master/pr-9999-"
+finish_case
+
+# ── the commit-message modes, against a throwaway repository ──────────────────
+# these call the script directly: the range modes read the local clone, so the
+# fixture is a repo with a clean commit, a dirty one, and a clean one on top
+repo="$work/repo"
+git init -q "$repo"
+git -C "$repo" config user.email t@example.com
+git -C "$repo" config user.name t
+git -C "$repo" config commit.gpgsign false
+git -C "$repo" commit -q --allow-empty -m "base"
+base_sha=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" commit -q --allow-empty -m "first" -m "Closes #1"
+git -C "$repo" commit -q --allow-empty -m "second"
+clean_head=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" commit -q --allow-empty -m "third" -m "https://claude.ai/code/session_0123456789"
+dirty_head=$(git -C "$repo" rev-parse HEAD)
+
+# run_range ARGS...: the script from inside the fixture repo
+run_range() {
+  local rc=0
+  (cd "$repo" && PATH="$bin:$PATH" FAKE="$case_dir" bash "$root/scripts/check-agent-session-urls.sh" "$@") \
+    >"$case_dir/out" 2>&1 || rc=$?
+  echo "$rc" >"$case_dir/rc"
+}
+
+start_case "a clean commit range says what it scanned"
+run_range --commit-range "${base_sha}..${clean_head}"
+expect_rc 0
+expect_output "checked: commit range ${base_sha}..${clean_head}, 2 commit message(s) scanned"
+finish_case
+
+start_case "an empty commit range says it scanned none"
+run_range --commit-range "${clean_head}..${clean_head}"
+expect_rc 0
+expect_output "checked: commit range ${clean_head}..${clean_head}, 0 commit message(s) scanned"
+finish_case
+
+start_case "a dirty commit range fails without a summary"
+run_range --commit-range "${base_sha}..${dirty_head}"
+expect_rc 1
+expect_output "agent session or remote-connection url found in commit ${dirty_head}"
+expect_no_output "checked:"
+finish_case
+
+# the range modes resolved from a ref: the fixture listing names the shas
+jq -n --arg base "$base_sha" --arg head "$clean_head" '[
+  {number: 2035, body: "Closes #2035",
+   head: {ref: "fix/2035-live-body", sha: $head}, base: {sha: $base}}
+]' >"$work/ref-pulls.json"
+ref_pulls="$work/ref-pulls.json"
+
+start_case "a clean range resolved from a ref says which range"
+ROLTER_PULLS_JSON="$ref_pulls" run_range --commit-range-for-ref rolter-ai/rolter fix/2035-live-body
+expect_rc 0
+expect_output "checked: commit range for fix/2035-live-body (rolter-ai/rolter), ${base_sha}..${clean_head}, 2 commit message(s) scanned"
+finish_case
+
+start_case "a ref with no open pr scans no commits and says so"
+ROLTER_PULLS_JSON="$ref_pulls" run_range --commit-range-for-ref rolter-ai/rolter some/other-branch
+expect_rc 0
+expect_output "there are no commits to check"
+expect_no_output "checked:"
 finish_case
 
 if [ "$failures" -ne 0 ]; then
