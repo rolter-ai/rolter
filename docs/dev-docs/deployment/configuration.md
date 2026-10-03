@@ -265,7 +265,7 @@ Each `[[guardrails.rules]]` entry:
 - `builtin` (string) — one of `email`, `phone`, `api_token`, `payment_card`; **or** `pattern` (string) for a custom regex. Set exactly one.
 - `stage` (string, default `pre_call`) — `pre_call` scans request content before proxying; `post_call` masks the response body before it reaches the client
 - `action` (string, default `annotate`) — `annotate` (count only, forward unchanged), `block` (reject with an OpenAI-compatible `guardrail_blocked` error), or `redact` (replace each match with `replacement`)
-- `replacement` (string) — redaction token; defaults to the built-in entity token (e.g. `[REDACTED:EMAIL]`) or `[REDACTED]`; an empty or whitespace-only value counts as omitted, so a match is never deleted outright
+- `replacement` (string) — redaction token; defaults to the built-in entity token (e.g. `[REDACTED:EMAIL]`) or `[REDACTED]`
 - `include_system` (bool, default `false`) — also scan operator-authored `system`/`developer` messages; excluded by default
 
 > `default_on` was removed. It documented a per-request client opt-in that was

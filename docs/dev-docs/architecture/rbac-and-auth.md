@@ -143,76 +143,9 @@ the project the route lives in, and a key of another project gets the same
 miss. It is off by default (a route is visible to its whole org), and an admin
 turns it on as **This project** under the model's **Access & permissions**. A
 key from the gateway's config file is not narrowed. It narrows the named route
-only. Confining the provider or group behind it is a separate scope on the
-provider or group itself, below (#1919).
-
-### Project-scoped providers and groups (#1919)
-
-A provider or provider group carries an optional project scope, stored as
-`providers.project_id` / `provider_groups.project_id` (migration `0082`) and
-served in the snapshot as `tenancy.project_id` (for a provider or group that
-field is the scope; on a route it is the route's own project and narrows
-nothing without `project_only`). Unset is org-wide, which every existing row is:
-every project of the org may use it, so shared providers stay available as
-fallbacks and options. Set, only keys minted in that project may reach it, and
-a key with an org but no project is refused as well. A project is not a team
-child for this purpose: only a project is scopable, and a team scope is not
-modelled.
-
-The gateway enforces it in `RouteEntry::in_tenancy_of`, the one gate every
-resolution path and `model_visible_to` already pass through, with
-`RouteEntry::project_scope`:
-
-- a pinned `provider-slug/model` takes its provider's scope;
-- a pinned `group-slug/model` takes the group's scope, or failing that the scope
-  of a member it finds scoped;
-- a named route takes the scope of the first provider behind its targets or
-  variants that is scoped, so a route listed org-wide still cannot hand a
-  project's credential to another project's key.
-
-The refusal is the miss every other tenancy refusal is: `404 model_not_found`,
-and `GET /v1/models` lists neither the address nor the models only a scoped
-route would reveal. A key from the gateway's own config file carries no org and
-is not narrowed.
-
-The write path keeps rows inside the rule, and answers `409` when it cannot:
-
-- A route (its project) or group may use org-wide providers and its own
-  project's. A route may not use another project's provider.
-- An org-wide group may hold only org-wide providers: its `slug/model` address
-  answers every project of the org, so a scoped member would be reachable by
-  all of them. A scoped group may hold its own project's providers and org-wide
-  ones. Groups resolve to their members' providers by name, with no per-key
-  filtering, which is why the rule is "no scoped member in a wider group"
-  rather than "hide the member from other projects".
-- Changing a scope is checked against what already uses the row: scoping an
-  org-wide provider fails while a route of another project or a group not
-  scoped to the same project holds it; moving a group fails while it holds a
-  provider of another project.
-- The project must belong to the row's org (`400` otherwise, the same message
-  for an unknown id). A trigger on both tables repeats that check for writes
-  that bypass the API, since a foreign key cannot reach the org two joins away.
-- `project_id` has no `on delete` action. `set null` would silently widen a
-  project's private provider to the whole org, and `cascade` would destroy its
-  credential, so deleting a project (or a team holding one) is refused with a
-  `409` naming what it still owns. Deleting an org still works: the check runs
-  at the end of the statement, after the cascade removed both sides.
-
-Authorization: creating or deleting a scoped provider or group needs the
-`provider` / `provider_group` capability at that project (so a project admin can
-manage their own project's), where an org-wide one needs it at the org. Making a
-row org-wide, moving it, and naming an environment variable for a credential
-(`api_key_env`, a read of the control plane's environment) stay an org admin's.
-Listing shows a project member the org-wide rows and their own project's;
-an org-level reader sees everything.
-
-Rows that break the rule anyway (SQL, a seed) are not served:
-`GatewayConfig::sanitize_for_snapshot` prunes the offending target or member
-with a line in `/api/v1/config/problems` and drops a route left with no target,
-the same per-row resilience as #926, #2306 and #2279, so one bad row never
-withholds the snapshot. `rolter-seed --import` and `rolter config export`
-round-trip the scope as `project_scoped = true`, meaning the project the file
-is imported into.
+only: the provider or group behind it stays reachable org-wide as
+`provider-slug/model` or `group-slug/model`, so confining a provider to one
+project takes the key's `providers` allow-list (#1919).
 
 The write path keeps the snapshot inside that rule:
 
@@ -255,9 +188,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. `GET /api/v1/config` still lists
-every org's providers, routes and groups, so it needs a session of any role
-(#1840).
+every key's org, team, project and creator. The unauthenticated
+`GET /api/v1/config` still lists every org's providers, routes and groups;
+whether it may describe that topology at all is #1840.
 
 ### One org never reaches another (#1844, #1845)
 
@@ -291,9 +224,9 @@ the project the route lives in, and a key of another project gets the same
 miss. It is off by default (a route is visible to its whole org), and an admin
 turns it on as **This project** under the model's **Access & permissions**. A
 key from the gateway's config file is not narrowed. It narrows the named route
-only; confining the provider or group behind it is the provider's own project
-scope, described under
-[Project-scoped providers and groups](#project-scoped-providers-and-groups-1919).
+only: the provider or group behind it stays reachable org-wide as
+`provider-slug/model` or `group-slug/model`, so confining a provider to one
+project takes the key's `providers` allow-list (#1919).
 
 The write path keeps the snapshot inside that rule:
 
@@ -336,9 +269,9 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. `GET /api/v1/config` still lists
-every org's providers, routes and groups, so it needs a session of any role
-(#1840).
+every key's org, team, project and creator. The unauthenticated
+`GET /api/v1/config` still lists every org's providers, routes and groups;
+whether it may describe that topology at all is #1840.
 
 ### Empty key sets
 
@@ -468,10 +401,6 @@ Human users authenticate to the control plane. Two providers ship today: **local
 
 Roles are granted via `memberships` at an **org / team / project** scope. Permission checks resolve the most specific membership for the target resource.
 
-The deployment always keeps one active superadmin (`is_superadmin` and not deactivated, #2344). `UserRepo::update_account`, `set_deactivated` and `delete` take one transaction-scoped advisory lock (`pg_advisory_xact_lock(hashtextextended('superadmins', 0))`) before they count the other active superadmins, and return `LockoutGuard::WouldLockOut` when the target is the last one. The API maps that to `409` with `error.code = last_superadmin`; SCIM deprovisioning and `active: false` answer a SCIM `409`. The lock is one key for the whole set rather than a row lock on the target because two concurrent demotions of two different superadmins would each lock only their own row and each see the other still active. `ROLTER_ADMIN_TOKEN` is not an account and never counts as a remaining superadmin, nor is it exempt. The `rolter-seed` bootstrap and `rolter mfa reset` only create or promote accounts or clear a second factor, so they cannot shrink the set.
-
-An org also keeps one active org-scoped `admin` grant (#2311). `MembershipRepo::delete_guarded` takes `pg_advisory_xact_lock(hashtextextended('org_admins:' || org, 0))`, re-counts the other admin grants held by non-deactivated users under it, and returns `LockoutGuard::WouldLockOut` when the target is the last; `delete_membership` maps that to `409` with `error.code = last_org_admin` and passes `protect_last_admin = !principal.is_superadmin()`. The control plane has no membership update route (the dashboard's role change is grant-then-revoke), so the revoke is the downgrade path and is covered by the same guard. Deleting or deactivating a user is superadmin-only and therefore exempt; SCIM deactivation and SSO group reconciliation are not guarded.
-
 Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
 
 ```mermaid
@@ -544,19 +473,6 @@ the org), so a team admin can revoke an invitation they could send.
 `scope_team_id` filled in, and the dashboard's scope switcher uses them to land
 a project member on their own project instead of the first team of the first
 org.
-
-`PATCH /api/v1/me/profile` (#1823) is the one self-service route that writes the
-account itself. It is a bare `CurrentUser` route with no `CAPABILITIES` row: it
-touches only `current.user.id`, so there is nothing to authorize and `user:update`
-stays superadmin-only. It goes through `UserRepo::set_profile`, which names only
-`display_name` and `bio`, so the `users` trigger from `0075` (which fires on
-`deactivated_at` and `is_superadmin`) does not bump `config_version`. Who owns
-the display name is decided by `scim_identities`: SCIM writes `displayName` into
-`users.display_name` on create and replace, so an account with such a row is
-`display_name_managed` and the route answers `409` for a change to it. OIDC's
-`preferred_username` and LDAP's name attribute are read at sign-in but never
-persisted, so those accounts edit their name freely. The audit row
-`user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
 builds its principal with `Principal::for_user`, which turns `is_superadmin`

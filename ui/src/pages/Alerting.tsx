@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
+import { Gavel, History, Loader2, Megaphone, Play } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -10,32 +10,24 @@ import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton, ListSkeleton } from "@/components/LoadingState";
+import { CardGridSkeleton, TableSkeleton } from "@/components/LoadingState";
 import {
   ListCell,
-  ListEmptyRow,
   ListHeader,
   ListHeaderCell,
-  ListLoadingRow,
   ListRow,
   ListSummary,
   ListTable,
   PageBody,
   Pill,
-  RowIconButton,
   StatusDot,
   Toolbar,
 } from "@/components/screen";
-import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
-import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
-import { Segmented } from "@/components/ui/segmented";
 import {
-  ALERT_COMPARISONS,
-  ALERT_NO_DATA_POLICIES,
   ALERT_SIGNALS,
   createAlertChannel,
   createAlertRule,
@@ -48,81 +40,38 @@ import {
   updateAlertChannel,
   updateAlertRule,
   type AlertChannelRow,
-  type AlertComparison,
-  type AlertNoDataPolicy,
   type AlertRuleRow,
 } from "@/lib/api";
 import {
+  ALERT_SIGNAL_SPECS,
   defaultThresholdInput,
   formatSignalValue,
   fromFormValue,
   isAlertSignal,
   signalDescription,
   signalLabel,
-  signalSpec,
   thresholdInputMax,
   thresholdLabel,
   thresholdRangeKey,
-  supportsNoData,
   thresholdValid,
-  toFormValue,
   type AlertSignal,
 } from "@/lib/alert-signals";
-import {
-  channelKindLabel,
-  deliveryLabel,
-  DELIVERY_STATUSES,
-  HISTORY_STATES,
-  stateLabel,
-} from "@/lib/alert-states";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
-import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-// a state's three colours. the pill label is the -text half of the hue, because
-// a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
-// so it takes the fill. a rule is `unknown`, `ok`, `firing` or `error` (its
-// evaluation failed); a history row is `firing` or `resolved`
-interface StateTone {
-  fill: string;
-  text: string;
-  tint: string;
-}
-
-// `error` is amber and `firing` is red on purpose: a rule that could not be
-// evaluated has no reading to compare, and the two must not look alike. the
-// same amber colours the `last_error` line under the card, so one fault has one
-// tone
-const STATE_TONE: Record<string, StateTone> = {
-  ok: {
-    fill: "var(--status-success)",
-    text: "var(--status-success-text)",
-    tint: "rgba(22,163,74,.14)",
-  },
-  resolved: {
-    fill: "var(--status-success)",
-    text: "var(--status-success-text)",
-    tint: "rgba(22,163,74,.14)",
-  },
-  firing: {
-    fill: "var(--status-danger)",
-    text: "var(--status-danger-text)",
-    tint: "var(--red-tint)",
-  },
-  error: {
-    fill: "var(--status-warning)",
-    text: "var(--status-warning-text)",
-    tint: "rgba(245,158,11,.14)",
-  },
-  unknown: {
-    fill: "var(--zinc-500)",
-    text: "var(--text-secondary)",
-    tint: "var(--surface-subtle)",
-  },
+// `[label, tint]`: the label colour is the -text half of the hue, because a
+// state pill is a glyph on a tint rather than a shape (#1181). a rule is
+// `unknown`, `ok`, `firing` or `error` (its evaluation failed); a history row
+// is `firing` or `resolved`
+const STATE_TONE: Record<string, [string, string]> = {
+  ok: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
+  resolved: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
+  firing: ["var(--status-danger-text)", "var(--red-tint)"],
+  error: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
+  unknown: ["var(--text-secondary)", "var(--surface-subtle)"],
 };
 
 const stateTone = (state: string) => STATE_TONE[state] ?? STATE_TONE.unknown;
@@ -141,9 +90,8 @@ const deliveryTone = (status: string) => DELIVERY_TONE[status] ?? DELIVERY_TONE.
 const WINDOW_MIN_SECS = 60;
 const WINDOW_MAX_SECS = 86_400;
 
-// the signal and window a new rule starts from
+// the signal a new rule starts from
 const DEFAULT_SIGNAL: AlertSignal = ALERT_SIGNALS[0];
-const DEFAULT_WINDOW_SECS = 300;
 
 // ---------------------------------------------------------------------------
 // channels: webhook destinations alerts are delivered to
@@ -179,14 +127,7 @@ function AlertChannelsScreen() {
   });
   const remove = useMutation({ mutationFn: deleteAlertChannel, onSuccess: invalidate });
 
-  const [sheetOpen, setSheetOpen] = React.useState(false);
-  // the channel the sheet edits, or `null` when it adds one. kept after the
-  // sheet closes, so a closing edit does not turn into the add form on its way out
-  const [editTarget, setEditTarget] = React.useState<AlertChannelRow | null>(null);
-  const openSheet = (channel: AlertChannelRow | null) => {
-    setEditTarget(channel);
-    setSheetOpen(true);
-  };
+  const [addOpen, setAddOpen] = React.useState(false);
   // deleting a channel silently strands every rule delivering through it, so
   // the name and the consequence are stated before the request (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<AlertChannelRow | null>(null);
@@ -207,10 +148,9 @@ function AlertChannelsScreen() {
           gate="alert_channel:create"
           control="alert-channel-new"
           className="ml-auto"
-          onClick={() => openSheet(null)}
+          onClick={() => setAddOpen(true)}
         >
-          <Plus className="h-4 w-4" />
-          {t("pages.alerting.channels.add")}
+          + {t("pages.alerting.channels.add")}
         </GatedButton>
       </Toolbar>
 
@@ -232,7 +172,7 @@ function AlertChannelsScreen() {
             <GatedButton
               gate="alert_channel:create"
               control="alert-channel-new-empty"
-              onClick={() => openSheet(null)}
+              onClick={() => setAddOpen(true)}
             >
               {t("pages.alerting.channels.add")}
             </GatedButton>
@@ -264,35 +204,24 @@ function AlertChannelsScreen() {
             </div>
             <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
               <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
-                {channelKindLabel(c.kind, t)}
+                {c.kind}
               </Pill>
               {c.secret_configured && (
                 <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
                   {t("pages.alerting.channels.secretSet")}
                 </Pill>
               )}
-              {/* the labels name the channel: a column of cards each
+              {/* the label names the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
                   cannot tell apart (#1214) */}
-              <div className="ml-auto flex items-center gap-1.5">
-                <RowIconButton
-                  gate="alert_channel:update"
-                  control="alert-channel-edit"
-                  className="p-1.5"
-                  title={t("pages.alerting.channels.editAria", { name: c.name })}
-                  aria-label={t("pages.alerting.channels.editAria", { name: c.name })}
-                  onClick={() => openSheet(c)}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </RowIconButton>
-                <DeleteIconButton
-                  gate="alert_channel:delete"
-                  control="alert-channel-delete"
-                  label={t("pages.alerting.channels.deleteAria", { name: c.name })}
-                  pending={remove.isPending && remove.variables === c.id}
-                  onClick={() => startDelete(c)}
-                />
-              </div>
+              <DeleteIconButton
+                gate="alert_channel:delete"
+                control="alert-channel-delete"
+                className="ml-auto"
+                label={t("pages.alerting.channels.deleteAria", { name: c.name })}
+                pending={remove.isPending && remove.variables === c.id}
+                onClick={() => startDelete(c)}
+              />
             </div>
           </div>
         ))}
@@ -326,57 +255,46 @@ function AlertChannelsScreen() {
         }}
       />
 
-      <ChannelSheet
-        open={sheetOpen}
-        onOpenChange={setSheetOpen}
-        existing={editTarget}
-        onDone={invalidate}
-      />
+      <AddChannelDialog open={addOpen} onOpenChange={setAddOpen} onDone={invalidate} />
     </PageBody>
   );
 }
 
-function ChannelSheet({
+function AddChannelDialog({
   open,
   onOpenChange,
-  existing,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** the channel to edit, or `null` to add one */
-  existing: AlertChannelRow | null;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [name, setName] = React.useState("");
   const [endpoint, setEndpoint] = React.useState("");
-  // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
 
-  const save = useMutation({
-    mutationFn: () => {
-      // a blank secret is left out, which an update reads as "keep the stored one"
-      const input = { name, endpoint, ...(secret.trim() ? { managed_secret: secret } : {}) };
-      // PUT replaces the whole row, so an edit sends the switch back as it
-      // found it; a new channel starts on
-      return existing
-        ? updateAlertChannel(existing.id, { ...input, enabled: existing.enabled })
-        : createAlertChannel({ ...input, enabled: true });
-    },
+  React.useEffect(() => {
+    if (open) {
+      setName("");
+      setEndpoint("");
+      setSecret("");
+    }
+  }, [open]);
+
+  const create = useMutation({
+    mutationFn: () =>
+      createAlertChannel({
+        name,
+        endpoint,
+        enabled: true,
+        ...(secret.trim() ? { managed_secret: secret } : {}),
+      }),
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push(
-        existing
-          ? {
-              tone: "success",
-              title: t("toast.saved"),
-              detail: t("toast.savedDetail", { what: name }),
-            }
-          : { tone: "success", title: t("toast.created", { what: name }) },
-      );
+      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
       onDone();
       onOpenChange(false);
     },
@@ -389,46 +307,19 @@ function ChannelSheet({
     },
   });
 
-  React.useEffect(() => {
-    if (open) {
-      setName(existing?.name ?? "");
-      setEndpoint(existing?.endpoint ?? "");
-      setSecret("");
-      // a refusal for one channel must not greet the next one opened
-      save.reset();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, existing]);
-
-  // what happens to the stored secret on save, said beside the field that
-  // decides it
-  const secretHint = !existing
-    ? undefined
-    : !existing.secret_configured
-      ? t("pages.alerting.channels.secretNoneHint")
-      : secret.trim() === "" && movesOrigin(existing.endpoint, endpoint)
-        ? t("pages.alerting.channels.secretDroppedHint")
-        : t("pages.alerting.channels.secretKeepHint");
-
   return (
     <EditorSheet
-      name={existing ? "alert-channel-edit" : "alert-channel-create"}
+      name="alert-channel-create"
       open={open}
       onOpenChange={onOpenChange}
-      title={
-        existing
-          ? t("pages.alerting.channels.editTitle", { name: existing.name })
-          : t("pages.alerting.channels.sheetTitle")
-      }
+      title={t("pages.alerting.channels.sheetTitle")}
       subtitle={t("pages.alerting.channels.sheetSubtitle")}
-      dirty={
-        name !== (existing?.name ?? "") || endpoint !== (existing?.endpoint ?? "") || secret !== ""
-      }
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
-      saveLabel={existing ? t("common.save") : t("common.create")}
+      dirty={Boolean(name || endpoint || secret)}
+      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      saveLabel={t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
-      saving={save.isPending}
-      onSave={() => save.mutate()}
+      saving={create.isPending}
+      onSave={() => create.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.channels.fieldName")}>
@@ -442,7 +333,7 @@ function ChannelSheet({
             placeholder="https://alerts.example.com/rolter"
           />
         </Field>
-        <Field label={t("pages.alerting.channels.fieldSecret")} hint={secretHint}>
+        <Field label={t("pages.alerting.channels.fieldSecret")}>
           <Input
             type="password"
             value={secret}
@@ -461,8 +352,6 @@ function ChannelSheet({
 function AlertRulesScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  // the "Evaluated" figures are relative, so they read the same clock
-  const now = useNow();
   // `spend_velocity` is spend in the settlement currency, not in dollars
   const currency = useCurrencyCode();
   const queryClient = useQueryClient();
@@ -490,9 +379,6 @@ function AlertRulesScreen() {
     name: r.name,
     signal: r.signal,
     threshold: r.threshold,
-    // `no_data` is left out: a PUT keeps it, and a signal without the policy
-    // would answer 400
-    comparison: r.comparison,
     window_secs: r.window_secs,
     channel_id: r.channel_id,
     enabled: r.enabled,
@@ -518,11 +404,7 @@ function AlertRulesScreen() {
       // a transition says what became of it: a delivery that failed is an
       // alert nobody received, which a green "evaluated" toast would hide
       const n = result.notification;
-      // the state reads mid-sentence, so it is lowercased in the locale's own rules
-      const vars = {
-        state: n ? stateLabel(n.state, t).toLocaleLowerCase(fmt.locale) : undefined,
-        detail: n?.detail ?? "—",
-      };
+      const vars = { state: n?.state, detail: n?.detail ?? "—" };
       toast.push({
         tone: n?.delivery_status === "failed" ? "error" : "success",
         title: t("pages.alerting.rules.evaluated", { name: ruleName(id) }),
@@ -549,14 +431,7 @@ function AlertRulesScreen() {
   });
   const remove = useMutation({ mutationFn: deleteAlertRule, onSuccess: invalidate });
 
-  const [sheetOpen, setSheetOpen] = React.useState(false);
-  // the rule the sheet edits, or `null` when it adds one, kept after the sheet
-  // closes for the reason the channel's is
-  const [editTarget, setEditTarget] = React.useState<AlertRuleRow | null>(null);
-  const openSheet = (rule: AlertRuleRow | null) => {
-    setEditTarget(rule);
-    setSheetOpen(true);
-  };
+  const [addOpen, setAddOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<AlertRuleRow | null>(null);
   const startDelete = (rule: AlertRuleRow) => {
     remove.reset();
@@ -573,10 +448,9 @@ function AlertRulesScreen() {
           gate="alert_rule:create"
           control="alert-rule-new"
           className="ml-auto"
-          onClick={() => openSheet(null)}
+          onClick={() => setAddOpen(true)}
         >
-          <Plus className="h-4 w-4" />
-          {t("pages.alerting.rules.add")}
+          + {t("pages.alerting.rules.add")}
         </GatedButton>
       </Toolbar>
 
@@ -602,7 +476,7 @@ function AlertRulesScreen() {
             <GatedButton
               gate="alert_rule:create"
               control="alert-rule-new-empty"
-              onClick={() => openSheet(null)}
+              onClick={() => setAddOpen(true)}
             >
               {t("pages.alerting.rules.add")}
             </GatedButton>
@@ -620,12 +494,12 @@ function AlertRulesScreen() {
               className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
-                <StatusDot color={tone.fill} />
+                <StatusDot color={tone[0]} />
                 <span id={nameId} className="min-w-0 truncate font-mono text-sm font-semibold">
                   {r.name}
                 </span>
-                <Pill color={tone.text} tint={tone.tint}>
-                  {stateLabel(r.state, t)}
+                <Pill color={tone[0]} tint={tone[1]}>
+                  {r.state}
                 </Pill>
                 <GatedSwitch
                   gate="alert_rule:update"
@@ -647,12 +521,7 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statThreshold")}
-                  value={t(
-                    `pages.alerting.rules.reading.${r.comparison === "below" ? "below" : "above"}`,
-                    {
-                      value: reading(r, r.threshold),
-                    },
-                  )}
+                  value={reading(r, r.threshold)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statWindow")}
@@ -660,33 +529,15 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statLastValue")}
-                  value={
-                    r.last_value !== null
-                      ? reading(r, r.last_value)
-                      : r.last_evaluated_at
-                        ? // evaluated, but the window held nothing to measure
-                          t("pages.alerting.rules.noDataReading")
-                        : "—"
-                  }
-                  mono={r.last_value !== null || !r.last_evaluated_at}
+                  value={r.last_value === null ? "—" : reading(r, r.last_value)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statEvaluated")}
                   value={
-                    r.last_evaluated_at ? (
-                      // a clock time alone read the same a minute or three days
-                      // on; the full stamp is on hover
-                      <time
-                        dateTime={r.last_evaluated_at}
-                        title={fmt.dateTime(r.last_evaluated_at)}
-                      >
-                        {fmt.relative(r.last_evaluated_at, now)}
-                      </time>
-                    ) : (
-                      t("pages.alerting.rules.statNever")
-                    )
+                    r.last_evaluated_at
+                      ? fmt.time(r.last_evaluated_at)
+                      : t("pages.alerting.rules.statNever")
                   }
-                  mono={false}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statChannel")}
@@ -694,9 +545,7 @@ function AlertRulesScreen() {
                 />
               </dl>
               {r.last_error && (
-                <p className="text-xs" style={{ color: STATE_TONE.error.text }}>
-                  {r.last_error}
-                </p>
+                <p className="text-xs text-[color:var(--status-danger-text)]">{r.last_error}</p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* running a rule writes an alert-history row, which is the
@@ -711,31 +560,20 @@ function AlertRulesScreen() {
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   {evaluate.isPending && evaluate.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <Play className="h-3.5 w-3.5" />
                   )}
                   {t("pages.alerting.rules.evaluateNow")}
                 </GatedButton>
-                <div className="ml-auto flex items-center gap-1.5">
-                  <RowIconButton
-                    gate="alert_rule:update"
-                    control="alert-rule-edit"
-                    className="p-1.5"
-                    title={t("pages.alerting.rules.editAria", { name: r.name })}
-                    aria-label={t("pages.alerting.rules.editAria", { name: r.name })}
-                    onClick={() => openSheet(r)}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </RowIconButton>
-                  <DeleteIconButton
-                    gate="alert_rule:delete"
-                    control="alert-rule-delete"
-                    label={t("pages.alerting.rules.deleteAria", { name: r.name })}
-                    pending={remove.isPending && remove.variables === r.id}
-                    onClick={() => startDelete(r)}
-                  />
-                </div>
+                <DeleteIconButton
+                  gate="alert_rule:delete"
+                  control="alert-rule-delete"
+                  className="ml-auto"
+                  label={t("pages.alerting.rules.deleteAria", { name: r.name })}
+                  pending={remove.isPending && remove.variables === r.id}
+                  onClick={() => startDelete(r)}
+                />
               </div>
             </article>
           );
@@ -770,10 +608,9 @@ function AlertRulesScreen() {
         }}
       />
 
-      <RuleSheet
-        open={sheetOpen}
-        onOpenChange={setSheetOpen}
-        existing={editTarget}
+      <AddRuleDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
         channels={channels.data ?? []}
         onDone={invalidate}
       />
@@ -783,15 +620,7 @@ function AlertRulesScreen() {
 
 // a figure with its unit wraps rather than truncates: `10 failed health events
 // in 5m` cut to `10 failed hea…` is a number with its meaning cut off
-function RuleStat({
-  label,
-  value,
-  mono = true,
-}: {
-  label: string;
-  value: React.ReactNode;
-  mono?: boolean;
-}) {
+function RuleStat({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="min-w-0">
       <dt className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
@@ -809,116 +638,60 @@ function RuleStat({
   );
 }
 
-interface RuleDraft {
-  name: string;
-  signal: string;
-  /** typed in the signal's form unit: a percentage for `error_rate` */
-  threshold: string;
-  comparison: AlertComparison;
-  noData: AlertNoDataPolicy;
-  windowSecs: string;
-  channelId: string;
-}
-
-// the form as it opens: an existing rule's own values, with the threshold in
-// the form's unit (a stored 0.05 error rate opens as 5), or a new rule's
-// defaults
-function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): RuleDraft {
-  return existing
-    ? {
-        name: existing.name,
-        signal: existing.signal,
-        threshold: String(toFormValue(existing.signal, existing.threshold)),
-        comparison: existing.comparison ?? "above",
-        noData: existing.no_data ?? "ignore",
-        windowSecs: String(existing.window_secs),
-        channelId: existing.channel_id ?? "",
-      }
-    : {
-        name: "",
-        signal: DEFAULT_SIGNAL,
-        threshold: defaultThresholdInput(DEFAULT_SIGNAL),
-        comparison: "above",
-        noData: "ignore",
-        windowSecs: String(DEFAULT_WINDOW_SECS),
-        channelId: channels[0]?.id ?? "",
-      };
-}
-
-function RuleSheet({
+function AddRuleDialog({
   open,
   onOpenChange,
-  existing,
   channels,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** the rule to edit, or `null` to add one */
-  existing: AlertRuleRow | null;
   channels: AlertChannelRow[];
   onDone: () => void;
 }) {
   const { t } = useTranslation();
   const toast = useToast();
   const currency = useCurrencyCode();
-  const seed = ruleSeed(existing, channels);
-  const [name, setName] = React.useState(seed.name);
-  // a string rather than an `AlertSignal`: an existing rule may carry a signal
-  // this build does not know, and an edit sends it back as it found it
-  const [signal, setSignal] = React.useState(seed.signal);
-  const [threshold, setThreshold] = React.useState(seed.threshold);
-  const [comparison, setComparison] = React.useState<AlertComparison>(seed.comparison);
-  const [noData, setNoData] = React.useState<AlertNoDataPolicy>(seed.noData);
-  const [windowSecs, setWindowSecs] = React.useState(seed.windowSecs);
-  const [channelId, setChannelId] = React.useState(seed.channelId);
-  const comparisonLabelId = React.useId();
-  const noDataLabelId = React.useId();
+  const [name, setName] = React.useState("");
+  const [signal, setSignal] = React.useState<AlertSignal>(DEFAULT_SIGNAL);
+  // typed in the signal's form unit: a percentage for `error_rate`
+  const [threshold, setThreshold] = React.useState(defaultThresholdInput(DEFAULT_SIGNAL));
+  const [windowSecs, setWindowSecs] = React.useState("300");
+  const [channelId, setChannelId] = React.useState("");
+
+  React.useEffect(() => {
+    if (open) {
+      setName("");
+      setSignal(DEFAULT_SIGNAL);
+      setThreshold(defaultThresholdInput(DEFAULT_SIGNAL));
+      setWindowSecs("300");
+      setChannelId(channels[0]?.id ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // a threshold means something only in its signal's unit, so another signal
-  // starts from its own default rather than carrying 5 % over as 5 ms. picking
-  // the signal already chosen is no change, and keeps what the rule had
+  // starts from its own default rather than carrying 5 % over as 5 ms
   const chooseSignal = (next: string) => {
-    if (!isAlertSignal(next) || next === signal) return;
+    if (!isAlertSignal(next)) return;
     setSignal(next);
     setThreshold(defaultThresholdInput(next));
   };
 
-  const save = useMutation({
-    mutationFn: () => {
-      const input = {
+  const create = useMutation({
+    mutationFn: () =>
+      createAlertRule({
         name,
         signal,
-        // an untouched threshold goes back as stored rather than through the
-        // form's twelve digits, so renaming a rule cannot nudge it
-        threshold:
-          existing && signal === existing.signal && threshold === seed.threshold
-            ? existing.threshold
-            : fromFormValue(signal, Number(threshold)),
-        comparison,
-        // the API answers 400 for a signal with no data policy, so it is not sent
-        ...(supportsNoData(signal) ? { no_data: noData } : {}),
+        threshold: fromFormValue(signal, Number(threshold)),
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
-      };
-      // PUT replaces the whole row, so an edit sends the switch back as it
-      // found it; a new rule starts on
-      return existing
-        ? updateAlertRule(existing.id, { ...input, enabled: existing.enabled })
-        : createAlertRule({ ...input, enabled: true });
-    },
+        enabled: true,
+      }),
     onSuccess: () => {
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push(
-        existing
-          ? {
-              tone: "success",
-              title: t("toast.saved"),
-              detail: t("toast.savedDetail", { what: name }),
-            }
-          : { tone: "success", title: t("toast.created", { what: name }) },
-      );
+      toast.push({ tone: "success", title: t("toast.created", { what: name }) });
       onDone();
       onOpenChange(false);
     },
@@ -930,23 +703,6 @@ function RuleSheet({
       });
     },
   });
-
-  // seeded straight from the row rather than through `chooseSignal`, so an
-  // existing rule opens on its own threshold instead of its signal's default
-  React.useEffect(() => {
-    if (open) {
-      setName(seed.name);
-      setSignal(seed.signal);
-      setThreshold(seed.threshold);
-      setComparison(seed.comparison);
-      setNoData(seed.noData);
-      setWindowSecs(seed.windowSecs);
-      setChannelId(seed.channelId);
-      // a refusal for one rule must not greet the next one opened
-      save.reset();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, existing]);
 
   // the same bounds the API checks, so a window the form accepts is never a 400
   const windowNumber = Number(windowSecs);
@@ -963,36 +719,28 @@ function RuleSheet({
   const thresholdRange = t(thresholdRangeKey(signal));
   const thresholdMax = thresholdInputMax(signal);
 
-  // the draft is seeded with the row or with defaults rather than blanks, so
-  // "dirty" is a diff against the seed instead of a plain emptiness check
+  // the draft is seeded with defaults rather than blanks, so "dirty" is a diff
+  // against the seed instead of a plain emptiness check
   const dirty =
-    name !== seed.name ||
-    signal !== seed.signal ||
-    threshold !== seed.threshold ||
-    comparison !== seed.comparison ||
-    noData !== seed.noData ||
-    windowSecs !== seed.windowSecs ||
-    channelId !== seed.channelId;
+    name !== "" ||
+    signal !== DEFAULT_SIGNAL ||
+    threshold !== defaultThresholdInput(signal) ||
+    windowSecs !== "300" ||
+    channelId !== (channels[0]?.id ?? "");
 
   return (
     <EditorSheet
-      name={existing ? "alert-rule-edit" : "alert-rule-create"}
+      name="alert-rule-create"
       open={open}
       onOpenChange={onOpenChange}
-      title={
-        existing
-          ? t("pages.alerting.rules.editTitle", { name: existing.name })
-          : t("pages.alerting.rules.sheetTitle")
-      }
-      subtitle={
-        existing ? t("pages.alerting.rules.editSubtitle") : t("pages.alerting.rules.sheetSubtitle")
-      }
+      title={t("pages.alerting.rules.sheetTitle")}
+      subtitle={t("pages.alerting.rules.sheetSubtitle")}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
-      saveLabel={existing ? t("common.save") : t("common.create")}
+      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      saveLabel={t("common.create")}
       canSave={Boolean(name.trim() && thresholdOk && windowValid)}
-      saving={save.isPending}
-      onSave={() => save.mutate()}
+      saving={create.isPending}
+      onSave={() => create.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.alerting.rules.fieldName")}>
@@ -1002,8 +750,7 @@ function RuleSheet({
             placeholder={t("pages.alerting.rules.namePlaceholder")}
           />
         </Field>
-        {/* the option's second line is the id the API and the docs use; a
-            signal this build does not know is offered under its id alone */}
+        {/* the option's second line is the id the API and the docs use */}
         <Field
           label={t("pages.alerting.rules.fieldSignal")}
           hint={signalDescription(signal, t, currency)}
@@ -1011,14 +758,11 @@ function RuleSheet({
           <Combobox
             value={signal}
             onChange={chooseSignal}
-            options={[
-              ...(isAlertSignal(signal) ? [] : [{ value: signal, label: signal }]),
-              ...ALERT_SIGNALS.map((s) => ({
-                value: s,
-                label: signalLabel(s, t),
-                description: s,
-              })),
-            ]}
+            options={ALERT_SIGNALS.map((s) => ({
+              value: s,
+              label: signalLabel(s, t),
+              description: s,
+            }))}
           />
         </Field>
         {/* one per row: the label carries the unit, and the longest one would
@@ -1032,46 +776,11 @@ function RuleSheet({
             type="number"
             min={0}
             max={thresholdMax}
-            step={signalSpec(signal)?.step ?? "any"}
+            step={ALERT_SIGNAL_SPECS[signal].step}
             value={threshold}
             onChange={(e) => setThreshold(e.target.value)}
           />
         </Field>
-        <div className="space-y-1.5">
-          <FieldLabel label={t("pages.alerting.rules.fieldComparison")} id={comparisonLabelId} />
-          <Segmented
-            labelledBy={comparisonLabelId}
-            value={comparison}
-            onChange={setComparison}
-            options={ALERT_COMPARISONS.map((c) => ({
-              value: c,
-              label: t(`pages.alerting.rules.comparison.${c}`),
-            }))}
-          />
-          <p className="text-xs text-muted-foreground">
-            {t("pages.alerting.rules.thresholdInclusive")}
-          </p>
-          {signal === "request_volume" && comparison === "below" && Number(threshold) === 0 && (
-            <p className="text-xs text-muted-foreground">
-              {t("pages.alerting.rules.trafficStoppedHelp")}
-            </p>
-          )}
-        </div>
-        {supportsNoData(signal) && (
-          <div className="space-y-1.5">
-            <FieldLabel label={t("pages.alerting.rules.fieldNoData")} id={noDataLabelId} />
-            <Segmented
-              labelledBy={noDataLabelId}
-              value={noData}
-              onChange={setNoData}
-              options={ALERT_NO_DATA_POLICIES.map((p) => ({
-                value: p,
-                label: t(`pages.alerting.rules.noData.${p}`),
-              }))}
-            />
-            <p className="text-xs text-muted-foreground">{t("pages.alerting.rules.noDataHint")}</p>
-          </div>
-        )}
         <Field
           label={t("pages.alerting.rules.fieldWindow")}
           hint={windowValid ? windowRange : undefined}
@@ -1104,29 +813,14 @@ function RuleSheet({
 // ---------------------------------------------------------------------------
 // history: every state change a rule recorded, with what became of its delivery
 
-// how many of the newest rows the screen asks for. the endpoint clamps to 500
-// and has no cursor, so this is also the most the screen can ever show: when a
-// read comes back this full, older rows exist that nothing here reaches
-const HISTORY_LIMIT = 200;
-
-// state and delivery lead because they are what the table is for, and because
-// the list scrolls sideways on a phone: a later column sits off the right edge
-// at 375px, so these two are the ones that have to fit in the first screenful
-const HISTORY_GRID = "100px 130px 150px 1.4fr 2fr";
+const HISTORY_GRID = "150px 1.4fr 110px 130px 2fr";
 
 function AlertHistoryScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  // the rule filter is sent to the API, so it reaches that rule's own newest
-  // rows instead of filtering what the newest 200 of every rule happen to hold.
-  // the endpoint has no state or delivery filter, so those two narrow the rows
-  // already read
-  const [ruleId, setRuleId] = React.useState("");
-  const [state, setState] = React.useState("");
-  const [delivery, setDelivery] = React.useState("");
   const history = useQuery({
-    queryKey: ["alert-history", ruleId],
-    queryFn: () => fetchAlertHistory(HISTORY_LIMIT, ruleId || undefined),
+    queryKey: ["alert-history"],
+    queryFn: () => fetchAlertHistory(200),
     retry: false,
   });
 
@@ -1136,61 +830,12 @@ function AlertHistoryScreen() {
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
-  const rows = (history.data ?? []).filter(
-    (n) =>
-      (state === "" || n.state === state) && (delivery === "" || n.delivery_status === delivery),
-  );
-  const filtering = ruleId !== "" || state !== "" || delivery !== "";
-  const capped = history.data !== undefined && history.data.length >= HISTORY_LIMIT;
-  const clearFilters = () => {
-    setRuleId("");
-    setState("");
-    setDelivery("");
-  };
-
   return (
     <PageBody>
-      <Toolbar>
-        <ListSummary data={history.data}>
-          {() => t("pages.alerting.historySummary", { count: rows.length })}
-        </ListSummary>
-        {/* half a row each on a phone, so the two short pickers share a line
-            under the rule picker instead of each taking its own */}
-        <div className="flex w-full flex-wrap items-center gap-3 sm:ml-auto sm:w-auto">
-          {rules.data && rules.data.length > 0 && (
-            <Combobox
-              className="w-full sm:w-56"
-              aria-label={t("pages.alerting.history.ruleFilterAria")}
-              value={ruleId}
-              onChange={setRuleId}
-              options={[
-                { value: "", label: t("pages.alerting.history.allRules") },
-                ...rules.data.map((r) => ({ value: r.id, label: r.name })),
-              ]}
-            />
-          )}
-          <Combobox
-            className="w-[calc(50%-0.375rem)] sm:w-44"
-            aria-label={t("pages.alerting.history.stateFilterAria")}
-            value={state}
-            onChange={setState}
-            options={[
-              { value: "", label: t("pages.alerting.history.allStates") },
-              ...HISTORY_STATES.map((s) => ({ value: s, label: stateLabel(s, t) })),
-            ]}
-          />
-          <Combobox
-            className="w-[calc(50%-0.375rem)] sm:w-44"
-            aria-label={t("pages.alerting.history.deliveryFilterAria")}
-            value={delivery}
-            onChange={setDelivery}
-            options={[
-              { value: "", label: t("pages.alerting.history.allDeliveries") },
-              ...DELIVERY_STATUSES.map((d) => ({ value: d, label: deliveryLabel(d, t) })),
-            ]}
-          />
-        </div>
-      </Toolbar>
+      <ListSummary data={history.data}>
+        {(rows) => t("pages.alerting.historySummary", { count: rows.length })}
+      </ListSummary>
+      {history.isLoading && <TableSkeleton rows={5} />}
       {history.isError && (
         <LoadError
           error={history.error}
@@ -1198,86 +843,57 @@ function AlertHistoryScreen() {
           onRetry={() => void history.refetch()}
         />
       )}
-      {capped && (
-        <p className="text-xs text-muted-foreground">
-          {ruleId === ""
-            ? t("pages.alerting.history.cappedAll", { limit: fmt.number(HISTORY_LIMIT) })
-            : t("pages.alerting.history.cappedRule", { limit: fmt.number(HISTORY_LIMIT) })}
-        </p>
+      {history.data && history.data.length === 0 && (
+        <EmptyState
+          uxTarget="alert-history"
+          icon={<History />}
+          title={t("pages.alerting.history.emptyTitle")}
+          description={t("pages.alerting.history.emptyBody")}
+          actions={
+            <a
+              href="/alerting-rules"
+              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("pages.alerting.history.emptyAction")}
+            </a>
+          }
+        />
       )}
-      <ListTable label={t("screens.alerting-history.title")}>
-        <ListHeader grid={HISTORY_GRID}>
-          <ListHeaderCell>{t("pages.alerting.history.colState")}</ListHeaderCell>
-          <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
-          <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
-          <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
-          <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
-        </ListHeader>
-        <ListLoadingRow read={history}>
-          <ListSkeleton rows={5} className="p-3" />
-        </ListLoadingRow>
-        {rows.map((n) => {
-          const tone = stateTone(n.state);
-          return (
-            <ListRow key={n.id} grid={HISTORY_GRID}>
-              <ListCell className="grid">
-                <Pill color={tone.text} tint={tone.tint}>
-                  {stateLabel(n.state, t)}
-                </Pill>
-              </ListCell>
-              <ListCell className="grid">
-                <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
-                  {deliveryLabel(n.delivery_status, t)}
-                </Pill>
-              </ListCell>
-              <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
-                {fmt.dateTime(n.sent_at)}
-              </ListCell>
-              {/* the rule name is what tells two rows of one state apart, so it wraps
-                  rather than truncates (#2428) */}
-              <ListCell className="min-w-0 break-words font-mono text-xs">
-                {ruleName(n.rule_id)}
-              </ListCell>
-              {/* the diagnosis of a failed delivery wraps rather than truncates:
-                  `channel secret could not be unsealed; check ROLTER_KEK` cut to
-                  `channel secret could not be…` names the fault and hides what to
-                  do about it, and a title is a hover a keyboard or a phone never
-                  reaches. `min-w-0` lets a long unbroken token break inside its
-                  column instead of widening it (#2335) */}
-              <ListCell className="min-w-0 break-words text-xs text-muted-foreground">
-                {n.detail ?? "—"}
-              </ListCell>
-            </ListRow>
-          );
-        })}
-        <ListEmptyRow read={history} rows={rows.length}>
-          <EmptyState
-            uxTarget="alert-history"
-            icon={<History />}
-            title={
-              filtering
-                ? t("pages.alerting.history.noMatchTitle")
-                : t("pages.alerting.history.emptyTitle")
-            }
-            description={
-              filtering
-                ? t("pages.alerting.history.noMatchBody")
-                : t("pages.alerting.history.emptyBody")
-            }
-            actions={
-              filtering ? (
-                <Button variant="outline" onClick={clearFilters}>
-                  {t("pages.alerting.history.clearFilters")}
-                </Button>
-              ) : (
-                <EmptyStateLink to="/alerting-rules">
-                  {t("pages.alerting.history.emptyAction")}
-                </EmptyStateLink>
-              )
-            }
-          />
-        </ListEmptyRow>
-      </ListTable>
+      {history.data && history.data.length > 0 && (
+        <ListTable label={t("screens.alerting-history.title")}>
+          <ListHeader grid={HISTORY_GRID}>
+            <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colState")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
+            <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
+          </ListHeader>
+          {history.data.map((n) => {
+            const tone = stateTone(n.state);
+            return (
+              <ListRow key={n.id} grid={HISTORY_GRID}>
+                <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
+                  {fmt.dateTime(n.sent_at)}
+                </ListCell>
+                <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+                <ListCell className="grid">
+                  <Pill color={tone[0]} tint={tone[1]}>
+                    {n.state}
+                  </Pill>
+                </ListCell>
+                <ListCell className="grid">
+                  <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">
+                    {n.delivery_status}
+                  </Pill>
+                </ListCell>
+                <ListCell className="truncate text-xs text-muted-foreground">
+                  {n.detail ?? "—"}
+                </ListCell>
+              </ListRow>
+            );
+          })}
+        </ListTable>
+      )}
     </PageBody>
   );
 }

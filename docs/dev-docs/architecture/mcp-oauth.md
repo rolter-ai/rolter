@@ -354,53 +354,6 @@ versus drop it — which an `Option` alone cannot express. serde collapses both 
 `explicit_null`, which returns `Some(None)` for a present null. Without it
 "stop overriding" silently means "leave it".
 
-## The tool-call log
-
-The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
-`mcp_tool_call_logs` (#2395). Before this nothing did: the control plane's
-`POST /api/v1/mcp/events` had no caller, so Observability → MCP Logs was empty.
-
-- **Hook.** `mcp_proxy::proxy` parses a `POST` body into a `PendingCall` once the
-  server and key are resolved and before any credential is chosen, so the
-  refusals below are recorded too. Only a request whose `method` is `tools/call`
-  and that carries an `id` is recorded; `initialize`, `tools/list`,
-  notifications and JSON-RPC batches are not. A cheap byte search for
-  `tools/call` runs before the JSON parse, and with no `clickhouse_url` the sink
-  is disabled and nothing is parsed at all.
-- **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
-  bounded channel and a batch writer, built like the request-log and
-  health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`
-  and `queue_capacity`. `emit` is a `try_send`: a full queue drops the event and
-  counts it in `rolter_mcp_events_dropped_total` (`..._written_total` counts
-  rows that landed), and a call is never delayed or failed by the log. The
-  writer is stopped through `SinkTasks` by `AppState::drain_sinks`, so queued
-  events survive a `SIGTERM`.
-- **Attribution.** `org_id`, `team_id`, `project_id` and `virtual_key_id` are the
-  calling virtual key's. `user_id` is the key's owner, which on an `oauth`
-  server is the OAuth session owner: the proxy selects the session by
-  `(server, key owner)`, so the two are one id by construction. The control
-  plane scopes MCP log reads by these columns.
-- **Status** is the closed set the ingest route validates. A JSON-RPC `error`
-  reply or a `result` with `isError: true` is `error`; a refused session
-  (missing, expired, scope not covered) or an upstream `401`/`403` is
-  `auth_denied`; a forwarder timeout, `408` or `504` is `timeout`; an
-  unreachable or failing upstream (`5xx`, broken body) is `transport_error`; any
-  other upstream `4xx` is `error`. The `error` column holds a fixed category,
-  never upstream text.
-- **Capture.** `arguments` and `result` use `rolter_core::mcp_log::capture`, the
-  same helper the ingest route calls: empty unless `[logging.payload_capture]`
-  is `enabled`, redacted with `redact_fields` and then truncated to `max_bytes`.
-  The `models` and `virtual_key_ids` allow-lists apply to LLM payloads only, as
-  they do on the ingest route. `result` holds the JSON-RPC `result`, or the
-  `error` object for an error reply.
-- **Streaming.** The response body is passed through untouched and a bounded
-  copy (1 MiB) is kept. The call is recorded when the body ends, or when the
-  client hangs up, and `latency_ms` is the time to that point, not to the first
-  byte. For an SSE body the reply is the `data:` event whose `id` matches the
-  request, among any progress notifications. A body over 1 MiB is recorded with
-  the status the HTTP layer gave and no `result`; a client that disconnects
-  before the reply arrived is a `transport_error`.
-
 ### Not supported, and why
 
 - **stdio** — removed as a transport in #783, since a hosted control plane

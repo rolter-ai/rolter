@@ -75,8 +75,6 @@ The control-plane-to-gateway snapshot is a separate matter and is not yet versio
 
 Roll the gateways out before the control plane when you upgrade from v0.1.0 or earlier with [payload capture](/observability/log-settings#payload-capture) on.
 
-ClickHouse migrations under `clickhouse/` add columns that newer gateways write, for example `log_id` on `request_logs` and `request_payloads` (`012_request_log_key.sql`). Gateways insert with `input_format_skip_unknown_fields=1`, so a gateway upgraded before the migration is applied keeps logging and simply drops the new field until it is. Apply the migration to keep the new column filled; until you do, captured bodies join their log rows the old way, by request id and timestamp.
-
 The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
 
 ## A checklist

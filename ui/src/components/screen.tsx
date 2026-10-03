@@ -103,12 +103,6 @@ export function Pill({
 // empty `ListStateRow` — is put in the body rowgroup here, the way a browser
 // puts a `<tbody>` round rows written straight into a `<table>`, so no caller
 // can leave it out. the header has to be a direct child to be told apart
-//
-// the table is also a size container, so a `ListStateRow` can be as wide as
-// what the reader sees (`100cqw`) rather than as wide as the floor (#2362).
-// containment takes the table's own width off its content: in a block or a
-// column flex that changes nothing, but a table that is itself a row-flex item
-// collapses to its border unless it is given `flex-1 min-w-0`
 export function ListTable({
   label,
   className,
@@ -134,7 +128,7 @@ export function ListTable({
         // resolve against the page and drag the *document* out to the table's
         // unscrolled width, which is the overflow this scroll container exists
         // to prevent
-        "relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] [container-type:inline-size] [&>*]:min-w-[var(--rl-list-min-w)]",
+        "relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] [&>*]:min-w-[var(--rl-list-min-w)]",
         className,
       )}
       style={{ "--rl-list-min-w": `${minWidth}px`, ...style } as React.CSSProperties}
@@ -211,46 +205,27 @@ export function ListCell(props: React.HTMLAttributes<HTMLDivElement>) {
   return <div role="cell" {...props} />;
 }
 
-// `STICKY_ACTIONS` pins the buttons column to the frame's right edge below
-// `md`, where the table scrolls sideways: a row's edit button sat at x=663 on a
-// 375px phone, a scroll away from being pressed (#2004). the header takes the
-// same class so its band stays unbroken, and the cell is content-sized so the
-// opaque ground covers what it holds and nothing more
-export const STICKY_ACTIONS = {
-  header:
-    "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-[color:var(--surface-subtle)]",
-  cell: "max-md:sticky max-md:right-0 max-md:justify-self-end max-md:bg-background max-md:pl-2",
-};
-
 // the header over a row's buttons shows no text, but a column header with no
 // name is announced as an empty column (axe `empty-table-header`), so it says
 // what the column holds to a screen reader. a table whose buttons take more
 // than one column passes `label` so each column has its own name
-export function ListActionsHeader({ label, className }: { label?: string; className?: string }) {
+export function ListActionsHeader({ label }: { label?: string }) {
   const { t } = useTranslation();
   return (
-    <ListHeaderCell className={className}>
+    <ListHeaderCell>
       <span className="sr-only">{label ?? t("common.rowActions")}</span>
     </ListHeaderCell>
   );
 }
 
 // what the body shows in place of rows — the loading skeleton, the empty
-// state — as one row holding one cell. a skeleton's `role="status"` or an empty
-// state's button placed straight in the rowgroup is content no row owns, which
-// a screen reader reads outside the table and axe fails as
-// `aria-required-children`
-//
-// the row is as wide as the table's visible frame, not as its column floor:
-// below the floor the table scrolls sideways, and a row the width of the floor
-// put the title and the button centred in a band that begins off the right
-// edge of a phone (#2362). `sticky left-0` holds it at the frame's left edge
-// while the header and the rowgroup scroll beneath, so a reader who scrolls the
-// table still has the state in front of them. the header and the body keep
-// their floor, so the band and the rows stay aligned
+// state — as one row holding one cell the width of the table. a skeleton's
+// `role="status"` or an empty state's button placed straight in the rowgroup
+// is content no row owns, which a screen reader reads outside the table and
+// axe fails as `aria-required-children`
 export function ListStateRow({ children }: { children: React.ReactNode }) {
   return (
-    <div role="row" className="sticky left-0 w-[100cqw]">
+    <div role="row">
       <div role="cell">{children}</div>
     </div>
   );

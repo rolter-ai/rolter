@@ -8,13 +8,10 @@ COPY crates ./crates
 # ui/ is a workspace member (rolter-ui marker crate for release-plz changelog
 # tracking); copy its manifest + stub lib so cargo can resolve the workspace
 COPY ui/Cargo.toml ui/changelog.rs ./ui/
-# workspace features, `postgres` by default so the published image, compose and
-# the Helm chart all get a control plane with its postgres-backed store, CRUD
-# API and migrations, plus the launcher's `config export`, `mfa reset` and
-# `kek verify` (#2405). `--workspace --features postgres` enables the feature
-# on every member that declares it. pass --build-arg CARGO_FEATURES= to build
-# the in-memory-only variant
-ARG CARGO_FEATURES="postgres"
+# optional workspace features (empty by default, so the shipping image is
+# unchanged). set CARGO_FEATURES=postgres to build the control plane with its
+# postgres-backed store, CRUD API and migrations (the e2e harness does this).
+ARG CARGO_FEATURES=""
 # the crate registry, the git checkouts and the target directory are buildkit
 # cache mounts, so a rebuild reuses downloaded crates and compiled dependency
 # artifacts instead of starting from nothing. without them a one-line source

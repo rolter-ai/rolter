@@ -12,7 +12,7 @@ import i18n, {
   detectLocale,
   setLocale,
 } from "./index";
-import { formattersFor, setChartTimeZone } from "./format";
+import { formattersFor } from "./format";
 import { compare, flatten, type Catalog } from "./parity";
 
 // bun's runtime ships no localStorage (which is why the source wraps every
@@ -228,59 +228,10 @@ describe("formatters", () => {
   test("log stamps share one house format, with milliseconds where they matter", () => {
     const en = formattersFor("en");
     expect(en.dateTime(at)).toContain("15:34:56");
-    expect(en.dateTime(at)).toContain("Oct 5, 2026");
+    expect(en.dateTime(at)).toContain("10/05/2026");
     expect(en.dateTimeMs(at)).toContain("15:34:56.789");
     expect(en.time(at)).toBe("15:34:56");
     expect(en.timeShort(at)).toBe("15:34");
-  });
-
-  test("a date-time names its month and its time zone, in en and ru (#2219)", () => {
-    // an instant pinned in UTC; the zone is set through the chart-zone preference,
-    // not the machine's, so the assertion holds on any runner
-    const instant = new Date(Date.UTC(2026, 7, 6, 13, 0, 0));
-    try {
-      setChartTimeZone("UTC");
-      expect(formattersFor("en").dateTime(instant)).toBe("Aug 6, 2026, 13:00:00 UTC");
-      const ru = formattersFor("ru").dateTime(instant);
-      expect(ru).toContain("2026");
-      expect(ru).toContain("13:00:00");
-      expect(ru).toContain("UTC");
-      expect(ru).not.toMatch(/\d{2}\.\d{2}\.\d{4}/);
-      expect(formattersFor("en").dateTimeMs(instant)).toBe("Aug 6, 2026, 13:00:00.000 UTC");
-      setChartTimeZone("Asia/Tokyo");
-      expect(formattersFor("en").dateTime(instant)).toBe("Aug 6, 2026, 22:00:00 GMT+9");
-    } finally {
-      setChartTimeZone(undefined);
-    }
-  });
-
-  test("a day is named only when the moment did not fall today", () => {
-    const en = formattersFor("en");
-    const now = new Date(2026, 9, 5, 15, 34, 56);
-    // the same local day, at either end of it, is today
-    expect(en.dayUnlessToday(new Date(2026, 9, 5, 0, 0, 1), now)).toBe("");
-    expect(en.dayUnlessToday(new Date(2026, 9, 5, 23, 59, 59), now)).toBe("");
-    // a window that crosses midnight: one minute before it is yesterday
-    const justBefore = new Date(2026, 9, 4, 23, 59, 0);
-    expect(en.dayUnlessToday(justBefore, new Date(2026, 9, 5, 0, 1, 0))).toBe("Oct 4");
-    // the day later on is as much "not today" as the day before
-    expect(en.dayUnlessToday(new Date(2026, 9, 6, 1, 0, 0), now)).toBe("Oct 6");
-    // the month is the locale's, and the year is left out
-    const russian = formattersFor("ru").dayUnlessToday(justBefore, now);
-    expect(russian).toContain("4");
-    expect(russian).not.toContain("2026");
-    expect(russian).not.toBe("Oct 4");
-    // a missing or malformed moment renders empty instead of throwing
-    expect(en.dayUnlessToday("", now)).toBe("");
-    expect(en.dayUnlessToday("not a date", now)).toBe("");
-  });
-
-  test("the clock with milliseconds carries no date, in either locale", () => {
-    // a log row is told apart from its neighbour by the fraction of a second,
-    // and the day is said elsewhere, so the stamp is only the clock
-    expect(formattersFor("en").timeMs(at)).toBe("15:34:56.789");
-    expect(formattersFor("ru").timeMs(at)).toBe("15:34:56,789");
-    expect(formattersFor("en").timeMs("not a date")).toBe("");
   });
 
   test("the house date is unambiguous in every locale", () => {

@@ -38,10 +38,6 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 5. The id token is verified against the provider's JWKS: signature by `kid`,
    issuer, audience (`client_id`), expiry, and the `nonce` from step 1.
 
-6. The callback answers on `Accept` (#2297). A caller that is not a browser
-   gets the session as JSON, as it always did. A browser is sent a `303` to the
-   dashboard; see [Ending a browser sign-in](#ending-a-browser-sign-in).
-
 Rules that hold on every path:
 
 - The **redirect URI comes from configuration** (`ROLTER_PUBLIC_URL`), never
@@ -52,72 +48,6 @@ Rules that hold on every path:
 - The discovery document's `issuer` must equal the configured issuer.
 - A failed token exchange reports the HTTP status only. The provider's error
   body can echo the client secret back, and that must not reach a log.
-
-## Ending a browser sign-in
-
-The provider sends the browser to the callback, which is a top-level
-navigation: there is no script to read a JSON body, and the dashboard reads its
-session from `localStorage`. Answering with the session JSON left the bearer
-token printed in a stray tab and the dashboard signed out (#2297). The callback
-therefore negotiates on `Accept`, with the same test as the MCP consent callback
-(#2166, `prefers_html`), and varies on it.
-
-**Success.** The identity is verified and its grants reconciled exactly as
-before, then the callback stores a **one-time exchange code** and redirects:
-
-```
-303 {public_url}/login?sso_code=<code>
-```
-
-The dashboard posts the code to `POST /auth/sso/exchange` with `{"code": "…"}`
-and receives the same body the JSON callback returns (`token`, `expires_at`,
-`user`, `granted_roles`), then strips `sso_code` from the address bar.
-
-- **Why a code and not the token.** A bearer token must not travel in a query
-  string: history, access logs and `Referer` all keep it. A URL fragment
-  (`#token=…`) avoids logs and `Referer` but still lands in history and puts a
-  live credential in the address bar. The code is worthless once redeemed, so
-  whatever keeps it keeps nothing.
-- **Single use.** The redemption is one `DELETE … RETURNING`, so two concurrent
-  redemptions cannot both win.
-- **Sixty seconds.** The dashboard redeems it as soon as it loads. The clock is
-  the database's, and an expired row is swept on the next redemption.
-- **Hashed at rest.** `sso_exchange_codes` holds the SHA-256 of the code, so
-  reading the table is not a sign-in. The code is 256 random bits, which is why
-  the exchange needs no throttle of its own: the login throttle is keyed on an
-  email and an address and there is nothing here to key on.
-- **The session is minted at redemption**, not at the callback, so no bearer
-  token rests in the database in between. The sign-in is audited once, as
-  `auth.sso_login` at the callback; the exchange does not audit a second time,
-  and a refused one is logged.
-- An unknown, spent or expired code is one answer: `400` with
-  `error.code = "invalid_exchange_code"`. A user deactivated between the
-  callback and the redemption gets the same answer.
-- The table is not read by the data plane, so it has no
-  `bump_config_version()` trigger.
-
-**Refusal.** A browser is sent to `{public_url}/login?sso_error=<code>`, plus
-`&sso=<slug>` once the login state has vouched for the provider. The code is
-from a closed set (`SsoFailure` in `sso.rs`); never rename one, and add a
-dashboard translation for each new one. Nothing the identity provider said is
-in the URL.
-
-| `sso_error`               | When                                                                 |
-| ------------------------- | -------------------------------------------------------------------- |
-| `idp_error`               | the provider answered with an `error` (declined, policy)             |
-| `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
-| `sso_disabled`            | the org turned SSO off                                               |
-| `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
-| `account_deactivated`     | the account is deactivated                                           |
-| `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
-| `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`         |
-| `internal_error`          | anything else                                                        |
-
-**What the dashboard's `/login` screen handles:** `sso_code` (call the exchange,
-store the token as a local sign-in does, clear the query string, route on) and
-`sso_error` (show the translated message, with `sso` naming the provider's
-slug, which is to be looked up against `/api/v1/auth/methods` and never
-rendered raw). `/auth/sso/*` must be proxied to the control plane in dev.
 
 ## Groups become memberships
 
@@ -165,24 +95,11 @@ not silently gain a second, weaker credential.
   password form.
 - `allow_sso` — when false, callbacks for this org's providers are refused
   without deleting the provider rows, so an IdP can be cut off in one request.
-  An account a provider created has no password, so while this is off those
-  members cannot sign in at all, whatever `allow_password_login` says. The
-  dashboard confirms the change when the org has an enabled provider (#2326).
 
-Three guard rails, all returning `409`:
+Two guard rails, both returning `409`:
 
 - Both flags off is not a policy, it is an outage.
 - Password login cannot be disabled before an enabled provider exists.
-- The inverse: while password login is off, the org's last enabled provider can
-  be neither disabled (`PUT /sso-providers/{id}` with `enabled: false`) nor
-  deleted (#2233). The superadmin exemption below would still let someone in,
-  but the guard is about every other member.
-
-Both directions are checked per org, inside the write's transaction, under one
-`pg_advisory_xact_lock` keyed on the org (`lock_org_sign_in` in the store). A
-row lock on either table could not order a provider write against a policy
-write, and without the lock two concurrent disables of different providers
-would each see the other still enabled.
 
 And one exemption: **a superadmin can always log in with a password**, whatever
 the policy says. A mistyped issuer or an IdP outage would otherwise lock the
@@ -200,28 +117,6 @@ somewhere the IdP does not gate.
 
 Register the redirect URI `"$ROLTER_PUBLIC_URL/auth/sso/{slug}/callback"` with
 the identity provider.
-
-A provider's slug is in that URI, so it is fixed at creation (`PUT` does not
-accept one) and has one rule, `^[a-z0-9][a-z0-9-]{0,62}$`: lowercase letters,
-digits and hyphens, starting with a letter or digit, at most 63 characters. It
-is enforced in three places that have to agree (#2304):
-
-- the `sso_providers_slug_charset` check constraint in
-  `0047_sso_providers.sql`, which is the rule itself;
-- `validate_slug()` in `sso.rs`, which `create_provider` runs before the insert
-  so a bad slug is a `400` that states the rule and not a store error carrying
-  the constraint name. The slug is checked as sent, never trimmed or lowercased;
-- `ui/src/lib/sso-slug.ts`, which the add sheet uses to mark the field, hide the
-  redirect URI preview and block Save. It never rewrites the input, because the
-  slug is registered at the identity provider and the admin has to see exactly
-  what will be saved; it only suggests a corrected value.
-
-`sso_slug_outside_the_charset_is_a_400_that_states_the_rule` in
-`crates/rolter-control/tests/control_integration.rs` asks the store and the
-endpoint about the same table of slugs and requires the same answer, and
-`sso-slug.test.ts` reads the migration and compares the pattern, so a change to
-one is caught by the others. Widening the rule means a new migration (the
-applied one is never edited) plus both mirrors.
 
 The dashboard never assembles that URI, or the login URL, from the browser's
 origin (#2083). Every provider row the admin API returns carries both, built by
@@ -246,8 +141,6 @@ The endpoint also reports `configured: false` when `ROLTER_PUBLIC_URL` is unset,
 and the screen warns that the default only reaches rolter from a browser on the
 control plane's own host. It is deployment-wide rather than SSO-specific so the
 User Provisioning screen can build its SCIM base URL from the same value (#2079).
-Both screens read it through `usePublicUrl()` (`ui/src/lib/use-public-url.ts`),
-the one place its query key and options are written, so they share one request.
 
 ## Testing
 

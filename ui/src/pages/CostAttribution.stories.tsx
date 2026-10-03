@@ -7,8 +7,8 @@ import { BusinessUnits, Customers } from "./CostAttribution";
 import {
   cancelConfirmation,
   confirmDestructive,
-  expectAnalyticsUnavailable,
   expectInStatusRegion,
+  expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
   expectSheetClosed,
@@ -25,9 +25,6 @@ import {
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
-import en from "@/lib/i18n/locales/en.json";
-import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { TIME_WINDOW_STORAGE_KEY } from "@/lib/time-window";
 
 // the formatter the screen itself uses, so a story asserts the house format
@@ -565,9 +562,8 @@ export const SpendLoading: Story = {
 
 /**
  * Analytics is optional; governance is not. A deployment with no ClickHouse
- * gets the informational `AnalyticsUnavailable` panel where the spend strip
- * would be: a `status` naming the setting it lacks, with no retry that cannot
- * help and no red alert announced on every visit (#1270, #2016). It keeps the
+ * gets the `noAnalytics` load error where the spend strip would be — the
+ * setting it lacks, and no retry that cannot help (#1270) — and keeps the
  * postgres-backed roster it can still serve.
  */
 export const SpendUnavailableKeepsTheRoster: Story = {
@@ -582,45 +578,11 @@ export const SpendUnavailableKeepsTheRoster: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectAnalyticsUnavailable(
-      canvasElement,
-      en.pages.costAttribution.noAnalytics.title,
-      "analytics is not configured",
-    );
+    await expectLoadError(canvasElement, /Analytics are not configured[\s\S]*attribution spend/);
+    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
     await expect(canvas.getByText("Platform Engineering")).toBeVisible();
-    // the roster is still there to work with, not blanked by the missing store
-    await expect(canvas.getByRole("button", { name: "Edit Platform Engineering" })).toBeVisible();
     await expect(canvas.queryAllByTestId("card-spend-loading")).toHaveLength(0);
     await expectNoFalseEmpty(canvasElement, /No spend in this window/);
-  },
-};
-
-/**
- * The customers screen shares the strip, so it says the same thing at 375px in
- * Russian, where the title wraps inside the screen rather than pushing the
- * page sideways.
- */
-export const CustomersSpendUnavailableAtMobileInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => (
-    <Harness
-      fetchStub={router({
-        spend: () => json({ error: { message: "analytics is not configured" } }, 404),
-      })}
-    >
-      <Customers />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectAnalyticsUnavailable(
-      canvasElement,
-      ru.pages.costAttribution.noAnalytics.title,
-      "analytics is not configured",
-    );
-    await expect(canvas.getByText("Acme Corp")).toBeVisible();
-    await expectNoHorizontalOverflow();
   },
 };
 

@@ -7,7 +7,6 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { DocsLink } from "@/components/DocsLink";
-import { ProjectScopeField, useMayWiden } from "@/components/ProjectScopeField";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -101,29 +100,6 @@ function TestOutcome({ result }: { result: ProviderTestResult }) {
   );
 }
 
-/**
- * What a create leaves on screen (#2142).
- *
- * The sheet stays open on the provider it just made, since the next step is to
- * check it before a route depends on it, and that check is a button in this
- * footer. It does not run by itself: the test is a call to the upstream.
- */
-function CreatedNote({ name }: { name: string }) {
-  const { t } = useTranslation();
-  return (
-    <div
-      role="status"
-      className={`mx-[22px] mt-2.5 rounded-md border px-3 py-2 text-xs ${OUTCOME_STYLES.ok}`}
-    >
-      <div className="flex items-center gap-1.5 font-medium">
-        <CheckCircle2 className="size-3.5 text-[color:var(--status-success-text)]" />
-        <span className="min-w-0 break-words">{t("providerSheet.created", { name })}</span>
-      </div>
-      <p className="mt-1 text-muted-foreground">{t("providerSheet.createdNext")}</p>
-    </div>
-  );
-}
-
 interface ProviderDraft {
   name: string;
   slug: string;
@@ -132,8 +108,6 @@ interface ProviderDraft {
   apiKey: string;
   apiKeyEnv: string;
   egressProxy: string;
-  /** the project the provider is scoped to; `""` is the whole organization */
-  projectId: string;
 }
 
 function blankDraft(): ProviderDraft {
@@ -145,7 +119,6 @@ function blankDraft(): ProviderDraft {
     apiKey: "",
     apiKeyEnv: "",
     egressProxy: "",
-    projectId: "",
   };
 }
 
@@ -158,7 +131,6 @@ function fromProvider(p: ProviderRow): ProviderDraft {
     apiKey: "",
     apiKeyEnv: p.api_key_env ?? "",
     egressProxy: p.egress_proxy ?? "",
-    projectId: p.project_id ?? "",
   };
 }
 
@@ -168,11 +140,6 @@ export interface ProviderSheetProps {
   onOpenChange: (open: boolean) => void;
   orgId: string | null;
   provider?: ProviderRow | null;
-  /**
-   * The project the dashboard is open on. Someone who may not make a provider
-   * org-wide has to name a project, and this is the one they start on (#1919).
-   */
-  defaultProjectId?: string | null;
   onDone: (created?: ProviderRow) => void;
 }
 
@@ -182,27 +149,23 @@ export function ProviderSheet({
   onOpenChange,
   orgId,
   provider,
-  defaultProjectId,
   onDone,
 }: ProviderSheetProps) {
   const [draft, setDraft] = React.useState<ProviderDraft>(() => blankDraft());
   const initialRef = React.useRef("");
-  // the row a create just made. while it is set the sheet is an edit sheet for
-  // that row, open on the test instead of closing over it (#2142)
-  const [created, setCreated] = React.useState<ProviderRow | null>(null);
-  const editing = mode === "edit" || created !== null;
-  // the row the control plane holds, which is what the connection test probes
-  const stored = created ?? (mode === "edit" ? (provider ?? null) : null);
 
   const seededRef = React.useRef(false);
-  // a caller who may not make a provider org-wide can only scope it to a
-  // project, so the picker has no org option for them and their current
-  // project stands in until they pick another
-  const mayWiden = useMayWiden("provider", editing ? "edit" : "add");
-  const scopeValue = draft.projectId || (!stored && !mayWiden ? (defaultProjectId ?? "") : "");
-  // the server keeps `api_key_env` at org level, since it reads the control
-  // plane's own environment, so a scoped provider's is an org admin's to set
-  const envLocked = !mayWiden && scopeValue !== "";
+  React.useEffect(() => {
+    if (!open) {
+      seededRef.current = false;
+      return;
+    }
+    if (seededRef.current) return;
+    seededRef.current = true;
+    const d = mode === "edit" && provider ? fromProvider(provider) : blankDraft();
+    setDraft(d);
+    initialRef.current = JSON.stringify(d);
+  }, [open, mode, provider]);
 
   const set = (patch: Partial<ProviderDraft>) => setDraft((d) => ({ ...d, ...patch }));
 
@@ -240,7 +203,7 @@ export function ProviderSheet({
   // form lifecycle for the UX stream (#805). the target names the form and the
   // mode, never anything the operator typed into it — this sheet holds provider
   // credentials, so the distinction is not academic
-  const ux = useFormTelemetry(editing ? "provider-edit" : "provider-create", open, {
+  const ux = useFormTelemetry(mode === "add" ? "provider-create" : "provider-edit", open, {
     dirty,
   });
 
@@ -250,11 +213,11 @@ export function ProviderSheet({
   // without shipping it somewhere first
   const toast = useToast();
 
-  const test = useMutation({ mutationFn: () => testProvider(stored!.id) });
+  const test = useMutation({ mutationFn: () => testProvider(provider!.id) });
 
   const save = useMutation({
     mutationFn: () => {
-      if (!stored) {
+      if (mode === "add") {
         return createProvider(orgId as string, {
           name: draft.name,
           slug: draft.slug.trim() || undefined,
@@ -263,44 +226,31 @@ export function ProviderSheet({
           api_key: draft.apiKey || undefined,
           api_key_env: draft.apiKeyEnv || undefined,
           egress_proxy: draft.egressProxy || undefined,
-          project_id: scopeValue || undefined,
         });
       }
-      const p = stored;
+      const p = provider!;
       return updateProvider(p.id, {
         kind: draft.kind !== p.kind ? draft.kind : undefined,
         api_base: draft.apiBase !== p.api_base ? draft.apiBase : undefined,
         api_key: draft.apiKey ? draft.apiKey : undefined,
         api_key_env: draft.apiKeyEnv !== (p.api_key_env ?? "") ? draft.apiKeyEnv : undefined,
         egress_proxy: draft.egressProxy !== (p.egress_proxy ?? "") ? draft.egressProxy : undefined,
-        // sent only when it moved: `null` is the word for org-wide again, and a
-        // project admin's unchanged edit must not carry a scope the server refuses
-        project_id: scopeValue !== (p.project_id ?? "") ? scopeValue || null : undefined,
       });
     },
-    onSuccess: (row) => {
+    onSuccess: (created) => {
       ux.saved();
-      if (!stored) {
-        // a create keeps the sheet open on the new row, so the outcome is
-        // announced by the sheet itself rather than by a toast that would
-        // say it a second time. the form is re-seeded from what the control
-        // plane stored, which also clears the typed key
-        const seeded = fromProvider(row);
-        setCreated(row);
-        setDraft(seeded);
-        initialRef.current = JSON.stringify(seeded);
-        test.reset();
-        onDone(row);
-        return;
-      }
-      // the sheet closes on a save, so the outcome is announced somewhere
+      // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
-      toast.push({
-        tone: "success",
-        title: t("toast.saved"),
-        detail: t("toast.savedDetail", { what: row.name }),
-      });
-      onDone(row);
+      toast.push(
+        mode === "add"
+          ? { tone: "success", title: t("toast.created", { what: created.name }) }
+          : {
+              tone: "success",
+              title: t("toast.saved"),
+              detail: t("toast.savedDetail", { what: created.name }),
+            },
+      );
+      onDone(created);
       onOpenChange(false);
     },
     onError: (error) => {
@@ -313,41 +263,12 @@ export function ProviderSheet({
     },
   });
 
-  // seeded once per opening. a result or a refusal belongs to the opening that
-  // produced it, so it is cleared as the sheet closes: a probe of one provider
-  // must not greet the next one opened, not even for the frame before an effect
-  // on opening would have cleared it
-  React.useEffect(() => {
-    if (!open) {
-      seededRef.current = false;
-      setCreated(null);
-      test.reset();
-      save.reset();
-      return;
-    }
-    if (seededRef.current) return;
-    seededRef.current = true;
-    const d = mode === "edit" && provider ? fromProvider(provider) : blankDraft();
-    setDraft(d);
-    initialRef.current = JSON.stringify(d);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, mode, provider]);
-
-  // the next step after a create is the test, so focus moves to it: the button
-  // that was pressed is now Save, with nothing to save
-  const testRef = React.useRef<HTMLButtonElement>(null);
-  React.useEffect(() => {
-    if (created) testRef.current?.focus();
-  }, [created]);
-
-  const testHintId = React.useId();
-
-  const title = editing
-    ? t("providerSheet.title.edit", { name: stored?.name ?? "" })
-    : t("providerSheet.title.add");
-  const subtitle = editing
-    ? `${draft.slug || "—"} · ${draft.kind}`
-    : t("providerSheet.subtitle.add");
+  const title =
+    mode === "add"
+      ? t("providerSheet.title.add")
+      : t("providerSheet.title.edit", { name: provider?.name ?? "" });
+  const subtitle =
+    mode === "add" ? t("providerSheet.subtitle.add") : `${draft.slug || "—"} · ${draft.kind}`;
   // the sheet's own dismissal paths (Escape, scrim, close, Cancel) all run
   // through the shared discard prompt (#1463)
   const { guard, close, locked, prompt } = useDiscardGuard({
@@ -356,35 +277,31 @@ export function ProviderSheet({
     onOpenChange,
   });
 
-  const cta = editing ? t("providerSheet.cta.save") : t("providerSheet.cta.create");
+  const cta = mode === "add" ? t("providerSheet.cta.create") : t("providerSheet.cta.save");
   const canSave =
     !!draft.name.trim() &&
     !!draft.apiBase.trim() &&
     !save.isPending &&
-    (editing ? true : !!orgId) &&
-    // no org-wide option to fall back on: a project has to be named
-    (mayWiden || scopeValue !== "") &&
-    // right after a create there is nothing to save until something is edited
-    (created === null || dirty);
+    (mode === "add" ? !!orgId : true);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>
         <p className="text-xs leading-snug text-muted-foreground">
-          {editing ? t("providerSheet.fields.edit") : t("providerSheet.fields.add")}
+          {mode === "add" ? t("providerSheet.fields.add") : t("providerSheet.fields.edit")}
         </p>
 
-        <Field label={t("providerSheet.fields.name")} hint={t("providerSheet.fields.nameHint")}>
+        <Field label={t("providerSheet.fields.name")}>
           <Input
             value={draft.name}
             onChange={(e) => set({ name: e.target.value })}
             placeholder="openai-primary"
-            disabled={editing}
+            disabled={mode === "edit"}
           />
         </Field>
 
-        {!editing ? (
+        {mode === "add" ? (
           <Field
             label={t("providerSheet.fields.slugOptional")}
             hint={t("providerSheet.fields.slugOptionalHint")}
@@ -412,25 +329,15 @@ export function ProviderSheet({
                 disabled
                 className="font-mono"
               />
-              {stored && (
+              {provider && (
                 <CopyButton
-                  value={`${stored.slug}/`}
+                  value={`${provider.slug}/`}
                   label={t("providerSheet.fields.copyPrefix")}
                 />
               )}
             </div>
           </Field>
         )}
-
-        <ProjectScopeField
-          resource="provider"
-          mode={editing ? "edit" : "add"}
-          orgId={orgId}
-          id="provider-scope"
-          value={scopeValue}
-          onChange={(projectId) => set({ projectId })}
-          mayWiden={mayWiden}
-        />
 
         <Field label={t("providerSheet.fields.kind")}>
           <Combobox
@@ -479,9 +386,9 @@ export function ProviderSheet({
           label={t("providerSheet.fields.providerKey")}
           hint={
             <>
-              {editing
-                ? t("providerSheet.fields.providerKeyHintEdit")
-                : t("providerSheet.fields.providerKeyHintAdd")}{" "}
+              {mode === "add"
+                ? t("providerSheet.fields.providerKeyHintAdd")
+                : t("providerSheet.fields.providerKeyHintEdit")}{" "}
               {/* the hint stands alone; the link only adds depth, and is absent
                   on a deployment that configured no documentation host (#1164) */}
               <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
@@ -493,30 +400,22 @@ export function ProviderSheet({
             value={draft.apiKey}
             onChange={(e) => set({ apiKey: e.target.value })}
             autoComplete="off"
-            placeholder={editing ? t("providerSheet.fields.apiKeyUnchanged") : undefined}
+            placeholder={mode === "edit" ? t("providerSheet.fields.apiKeyUnchanged") : undefined}
           />
         </Field>
 
         <Field
           label={t("providerSheet.fields.providerKeyEnv")}
-          hint={
-            envLocked
-              ? t("providerSheet.fields.providerKeyEnvScoped")
-              : t("providerSheet.fields.providerKeyEnvHint")
-          }
+          hint={t("providerSheet.fields.providerKeyEnvHint")}
         >
           <Input
             value={draft.apiKeyEnv}
             onChange={(e) => set({ apiKeyEnv: e.target.value })}
             placeholder="OPENAI_API_KEY"
-            disabled={envLocked}
           />
         </Field>
 
-        <Field
-          label={t("providerSheet.fields.egressProxy")}
-          hint={t("providerSheet.fields.egressProxyHint")}
-        >
+        <Field label={t("providerSheet.fields.egressProxy")}>
           <Input
             value={draft.egressProxy}
             onChange={(e) => set({ egressProxy: e.target.value })}
@@ -527,33 +426,23 @@ export function ProviderSheet({
 
       <SheetFooter>
         <SheetError message={save.isError ? (save.error as Error).message : undefined} />
-        {created && test.isIdle && <CreatedNote name={created.name} />}
         {test.data && <TestOutcome result={test.data} />}
         <SheetError message={test.isError ? (test.error as Error).message : undefined} />
-        {/* the probe reads the stored row, so with edits sitting in the form its
-            answer would speak for the old values: the button is off and this
-            says why, where a disabled button cannot */}
-        {stored && dirty && (
-          <p id={testHintId} className="px-[22px] pt-2.5 text-xs text-muted-foreground">
-            {t("providerSheet.testSavedOnly")}
-          </p>
-        )}
         <SheetActions
           start={
             // only for a saved provider: the probe reads the stored row, so it
             // cannot speak for edits still sitting in the form
-            stored && (
+            mode === "edit" &&
+            provider && (
               <Button
-                ref={testRef}
                 variant="outline"
                 className="mr-auto"
-                disabled={test.isPending || dirty}
-                aria-describedby={dirty ? testHintId : undefined}
+                disabled={test.isPending}
                 onClick={() => test.mutate()}
               >
                 {test.isPending ? (
                   <>
-                    <Loader2 className="size-4 motion-safe:animate-spin" />
+                    <Loader2 className="size-4 animate-spin" />
                     {t("providerSheet.testing")}
                   </>
                 ) : (
@@ -564,7 +453,7 @@ export function ProviderSheet({
           }
         >
           <Button variant="ghost" disabled={locked} onClick={close}>
-            {created ? t("common.done") : t("common.cancel")}
+            {t("common.cancel")}
           </Button>
           <Button
             disabled={!canSave}

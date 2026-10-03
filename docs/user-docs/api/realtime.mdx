@@ -7,13 +7,10 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
 <Warning>
   **Experimental.** `/v1/realtime` carries the `realtime`
   [stability marker](/api/stability) and may change shape in a minor release.
-  Budgets, rate limits, usage recording, guardrails, the guardrail webhook and
-  `pre_upstream` plugins apply to a session's text events, and guardrails to
-  the arguments of the model's function calls. The PII sanitizer and
-  `pre_route` / `post_response` plugins do not run on a session. A
-  `fail_closed` PII sanitizer refuses the session with
-  `sanitizer_unsupported_on_realtime`; under `fail_open` the session is
-  admitted unsanitized.
+  Budgets, rate limits and usage recording apply to a session, but guardrails,
+  PII redaction and plugins do not run on its events yet, so content a
+  guardrail would stop on `/v1/chat/completions` reaches the provider
+  unchecked ([#1880](https://github.com/rolter-ai/rolter/issues/1880)).
 </Warning>
 
 `/v1/realtime` is a WebSocket relay compatible with the OpenAI Realtime API.
@@ -94,16 +91,6 @@ It then receives a close frame with code `1008` (policy violation). A session
 can overspend by at most one flush window, plus the response in flight when the
 budget ran out; lower `usage_flush_secs` to tighten that.
 
-**When the key is revoked mid-session**, rolter closes the session too. Every flush
-tick looks the session's virtual key up again in the current configuration. A key
-that was disabled, has expired or was deleted, a `models` list that no longer
-names the session's model, and a route the key can no longer reach all end the
-session, so revoking access is not left waiting on `max_session_secs`. The client
-receives a Realtime `error` event with code `invalid_api_key` (key gone),
-`model_not_allowed` or `route_not_allowed`, then a close frame with code `1008`.
-The bound is one flush interval, `usage_flush_secs` (one second when that is `0`),
-plus the time for the change to reach the gateway.
-
 **A response cut short** (the client leaves, the upstream drops, or the session
 is closed mid-answer) never reports its usage, although the provider bills
 what it generated. Its row is written with `usage_unknown = 1` so the gap is
@@ -122,11 +109,10 @@ Before the process exits, each session's usage so far is charged to budgets and
 `tpm`, including turns still waiting for the next `usage_flush_secs`, and its
 request-log rows are queued. A response in flight at that moment is logged with
 status `503` and `usage_unknown = 1`. The gateway waits up to 10 seconds for
-this, then up to 5 more seconds for the request-log writer, the health-event
-writer and the budget and `tpm` recording queue to flush what they hold, so
-give the process a termination grace period of at least 15 seconds on top of
-your longest HTTP request. If ClickHouse or Redis is unreachable at that
-moment, the rows and charges still queued are lost after those 5 seconds.
+this, so give the process a termination grace period of at least that on top of
+your longest HTTP request. Rows queued in the last `[logging] flush_ms` before
+exit can still be lost, for HTTP and realtime alike
+([#1924](https://github.com/rolter-ai/rolter/issues/1924)).
 
 ## Current limits
 
@@ -134,20 +120,13 @@ moment, the rows and charges still queued are lost after those 5 seconds.
   WebSocket-first flow is supported today.
 - **No failover.** A dropped upstream ends the session; there is no
   session-affinity retry the way HTTP routes get.
-- **Content policy is narrower than on chat.** Built-in guardrails, the
-  guardrail webhook and `pre_upstream` plugins check client text events
-  (`conversation.item.create`, `session.update` instructions, `response.create`)
-  and, for guardrails, the model's text and transcript output. A blocked event
-  is not forwarded and the client receives an `error` event with code
-  `guardrail_blocked` (or `plugin_blocked`); the session stays open, and a
-  blocked response is cancelled. Output is checked as it streams, so the part
-  of a match before the delta that completes it can already have been
-  delivered. The PII sanitizer and `pre_route`/`post_response` plugins do not
-  run on realtime events (a `fail_closed` sanitizer refuses the session with
-  `sanitizer_unsupported_on_realtime`), audio itself is not inspected, and a binary frame is
-  refused while a policy applies. See
-  [Content policy](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/architecture/realtime-metering.md#content-policy-on-a-bidirectional-stream-1880)
-  for the detail.
+- **Guardrails and plugins do not run on realtime events.** Budgets and rate
+  limits apply; content policy does not yet
+  ([#1880](https://github.com/rolter-ai/rolter/issues/1880)).
+- **A revoked key does not end a live session.** Disabling or deleting a key
+  stops new sessions at once, but one already open runs until it ends or hits
+  `max_session_secs`
+  ([#1881](https://github.com/rolter-ai/rolter/issues/1881)).
 - **Audio and text tokens share one price.** A model price has one input and
   one output rate, so set them to the blend you expect
   ([#1882](https://github.com/rolter-ai/rolter/issues/1882)). Input-audio

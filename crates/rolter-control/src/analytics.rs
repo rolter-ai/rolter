@@ -12,8 +12,6 @@
 //! `Query`, not axum's, so a `since`/`until` ClickHouse would misread as the
 //! epoch is a `400` before any SQL is built (#1192).
 
-use std::time::Duration;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -32,55 +30,11 @@ pub struct ClickHouseClient {
     client: reqwest::Client,
 }
 
-/// How long a connection to ClickHouse may take to open. A healthy server on
-/// the same network answers in milliseconds, so three seconds already means it
-/// is down or unreachable; failing fast keeps a dashboard request from waiting
-/// on a host that will not answer. Matches the gateway's client (#2373).
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Whole-request bound for every ClickHouse call the control plane makes: the
-/// analytics and health reads, the alert signal reads, and the MCP and UX
-/// ingest inserts.
-///
-/// Fifteen seconds is above what an interactive dashboard read over the
-/// indexed `request_logs` window should ever need, yet short enough that the
-/// operator gets an error rather than a spinner, and it stays under the 30s an
-/// alert pass allows one signal query ([`crate::alerting`]). The gateway uses
-/// ten seconds for its inserts; the control plane's inserts are small
-/// single-batch posts of the same shape, so one bound serves them too rather
-/// than a second client. The retention DDL runs under [`DDL_TIMEOUT`] since
-/// `alter table ... modify ttl` is not an interactive read.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Bound for the log-retention `alter table` statements, which may rewrite
-/// table metadata on a large table and are run by an admin, not a dashboard
-/// poll.
-const DDL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Build the one `reqwest` client every ClickHouse call goes through, so a
-/// stalled server can never hold a request, an ingest handler or an alert pass
-/// open (#1951).
-fn build_http(connect: Duration, request: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(connect)
-        .timeout(request)
-        .build()
-        // building only fails when the TLS backend cannot initialise, which
-        // `Client::new()` would hit as well; fall back to it rather than panic
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
 impl ClickHouseClient {
     pub fn new(url: &str) -> Self {
-        Self::with_timeouts(url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
-    }
-
-    /// [`ClickHouseClient::new`] with explicit bounds, so a test can prove a
-    /// stalled server is cut off without waiting out the production values.
-    pub(crate) fn with_timeouts(url: &str, connect: Duration, request: Duration) -> Self {
         Self {
             base: url.trim_end_matches('/').to_string(),
-            client: build_http(connect, request),
+            client: reqwest::Client::new(),
         }
     }
 
@@ -104,13 +58,13 @@ impl ClickHouseClient {
         for (k, v) in params {
             req = req.query(&[(k.as_str(), v.as_str())]);
         }
-        let resp = req.body(sql.to_string()).send().await.map_err(strip_url)?;
+        let resp = req.body(sql.to_string()).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("clickhouse query failed ({status}): {body}");
         }
-        let value: Value = resp.json().await.map_err(strip_url)?;
+        let value: Value = resp.json().await?;
         Ok(value
             .get("data")
             .and_then(|d| d.as_array())
@@ -134,10 +88,8 @@ impl ClickHouseClient {
                 .client
                 .post(format!("{}/", self.base))
                 .body(statement.clone())
-                .timeout(DDL_TIMEOUT)
                 .send()
-                .await
-                .map_err(strip_url)?;
+                .await?;
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
@@ -164,8 +116,7 @@ impl ClickHouseClient {
             ))
             .body(serde_json::to_vec(event)?)
             .send()
-            .await
-            .map_err(strip_url)?;
+            .await?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -201,8 +152,7 @@ impl ClickHouseClient {
             ))
             .body(body)
             .send()
-            .await
-            .map_err(strip_url)?;
+            .await?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -210,14 +160,6 @@ impl ClickHouseClient {
         let text = response.text().await.unwrap_or_default();
         anyhow::bail!("clickhouse UX event insert failed ({status}): {text}")
     }
-}
-
-/// Drop the request URL from a transport error. `CLICKHOUSE_URL` can carry
-/// userinfo, and reqwest's message quotes the URL, which would put the password
-/// in the warn log and in an alert rule's stored `last_error`. The error keeps
-/// its type, so `is_timeout()` and `is_connect()` still classify it.
-fn strip_url(err: reqwest::Error) -> anyhow::Error {
-    err.without_url().into()
 }
 
 /// Map a bucket name to a ClickHouse start-of-interval function. Whitelisted so
@@ -282,17 +224,6 @@ pub(crate) fn with_access(
 /// yields an unused epoch value and the `if` still picks the default bound.
 pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffortOrZero({since:String})) \
      and ts < if({until:String} = '', now64(3), parseDateTime64BestEffortOrZero({until:String}))";
-
-/// The key a captured body is joined to its log row on, evaluated against
-/// whichever table the clause sits in; both carry the same columns it reads.
-///
-/// A keyed row (`log_id` set) is `log_id|org_id|project_id`: the gateway-minted
-/// id, plus the tenancy the gateway copied onto the payload so a body can never
-/// meet a row of another project even if an id were reused. An unkeyed row
-/// predates `log_id` and keeps the `request_id|ts` pair. The two shapes cannot
-/// equal each other (a UUID holds no `|`), so a keyed row never falls back.
-const PAYLOAD_KEY: &str = "if(log_id != '', concat(log_id, '|', org_id, '|', project_id), \
-     concat(request_id, '|', toString(ts)))";
 
 pub fn router() -> Router<crate::ControlState> {
     Router::new()
@@ -613,9 +544,6 @@ pub struct InvocationsQuery {
     pub(crate) request_id: Option<String>,
     /// exact trace id, the W3C trace a request's spans were recorded under
     pub(crate) trace_id: Option<String>,
-    /// `true` narrows the log to requests the gateway recorded as unpriced;
-    /// `false` or omitted applies no filter
-    pub(crate) unpriced: Option<bool>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -663,27 +591,17 @@ impl TimeBounds for InvocationsQuery {
 /// same one. Joining on the id alone let a caller log a bodiless request under
 /// an id they had seen in another project and read that project's prompt
 /// through their own row, which the mask above passes because it is evaluated
-/// against the row, not against the body. Adding the row's `ts` narrowed that
-/// to one millisecond but did not close it: a client that sends a constant id
-/// still collides with itself, and a caller can reproduce a `ts` (#1937).
-///
-/// The join is therefore on `log_id`, a UUID the gateway mints per request and
-/// writes to both tables, together with the row's `org_id` and `project_id`
-/// as defence in depth (see [`PAYLOAD_KEY`]). A row with a `log_id` never falls
-/// back to anything weaker. Only a row written before the key existed, where
-/// it is empty, joins on `(request_id, ts)` as it always did, so old bodies
-/// stay attached until they expire. The payload side is bounded by the same
-/// window as the rows, since a body outside it has no row to join to, and
-/// grouped on the key so a row never repeats.
+/// against the row, not against the body. The join is therefore on
+/// `(request_id, ts)`: the gateway stamps a payload with its log row's own
+/// `ts`, through the same serializer, so the pair names one request. The
+/// payload side is bounded by the same window as the rows, since a body outside
+/// it has no row to join to, and grouped on the pair so a row never repeats.
 ///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
 /// applied at the time, so a caller that instead re-derives it from today's
-/// model prices re-judges old rows against new prices and drifts (#1226). The
-/// `unpriced` filter reads that same recorded flag, in the database, for the
-/// reason the attribution dimensions do: a page cut first and filtered after
-/// would hold fewer rows than `limit` asked for.
+/// model prices re-judges old rows against new prices and drifts (#1226).
 ///
 /// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
@@ -711,10 +629,10 @@ fn invocations_sql(status_expr: &str) -> String {
                     as payload_withheld \
          from request_logs \
          left join ( \
-             select {PAYLOAD_KEY} as payload_key, any(request_payload) as request_payload, \
+             select request_id, ts, any(request_payload) as request_payload, \
                     any(response_payload) as response_payload \
-             from request_payloads where {WHERE_WINDOW} group by payload_key \
-         ) as payload on payload.payload_key = {PAYLOAD_KEY} \
+             from request_payloads where {WHERE_WINDOW} group by request_id, ts \
+         ) as payload using (request_id, ts) \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
            and ({{model:String}} = '' or model = {{model:String}}) \
@@ -725,7 +643,6 @@ fn invocations_sql(status_expr: &str) -> String {
                 or has(splitByChar(',', {{customer:String}}), customer_id)) \
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
-           and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -782,10 +699,6 @@ async fn invocations(
     params.push(("param_request_id".to_string(), request_id));
     params.push(("param_trace_id".to_string(), trace_id));
     params.push((
-        "param_unpriced".to_string(),
-        u8::from(q.unpriced.unwrap_or(false)).to_string(),
-    ));
-    params.push((
         "param_model".to_string(),
         q.model.clone().unwrap_or_default(),
     ));
@@ -828,97 +741,10 @@ fn retention_statements(retention_days: u32, payload_retention_hours: u32) -> [S
     ]
 }
 
-/// Test support: a stand-in for a ClickHouse that has stopped answering.
-#[cfg(test)]
-pub(crate) mod testing {
-    /// A listener that accepts connections and never replies, so a client
-    /// without a request timeout waits forever. The accepted sockets are held
-    /// open (dropping one would be a reset, not a stall).
-    pub(crate) struct Stalled {
-        pub(crate) url: String,
-        _task: tokio::task::JoinHandle<()>,
-    }
-
-    /// The password in a stalled server's url. Interpolated rather than
-    /// written into a url literal, so secret scanners see no credential
-    pub(crate) const STALLED_USERINFO_SECRET: &str = "stalled-userinfo";
-
-    impl Stalled {
-        pub(crate) async fn start() -> Self {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind a local port");
-            let port = listener.local_addr().expect("a local address").port();
-            let task = tokio::spawn(async move {
-                let mut held = Vec::new();
-                while let Ok((socket, _)) = listener.accept().await {
-                    held.push(socket);
-                }
-            });
-            Self {
-                // userinfo on purpose: it must never reach an error or a log
-                url: format!("http://ch:{STALLED_USERINFO_SECRET}@127.0.0.1:{port}"),
-                _task: task,
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use std::time::Duration;
-
-    /// A regression must fail the test, not hang the suite.
-    const CEILING: Duration = Duration::from_secs(10);
-
-    #[tokio::test]
-    async fn a_stalled_clickhouse_read_times_out_without_leaking_the_url() {
-        let stalled = testing::Stalled::start().await;
-        let ch = ClickHouseClient::with_timeouts(
-            &stalled.url,
-            Duration::from_secs(1),
-            Duration::from_millis(300),
-        );
-        let result = tokio::time::timeout(CEILING, ch.query("select 1 format JSON", &[]))
-            .await
-            .expect("the client bounds the request itself");
-        let err = result.expect_err("a stalled server is an error");
-        let source = err
-            .downcast_ref::<reqwest::Error>()
-            .expect("a transport error");
-        assert!(source.is_timeout(), "{err}");
-        let text = format!("{err:#}");
-        // the message carries neither the error text nor the secret, so a
-        // failure cannot itself print the credential
-        assert!(
-            !text.contains(testing::STALLED_USERINFO_SECRET) && !text.contains("127.0.0.1"),
-            "the error text names the stalled server's userinfo or host"
-        );
-        // the route-level mapping carries no driver text either
-        let response = run(Err(err));
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[tokio::test]
-    async fn a_stalled_clickhouse_insert_times_out() {
-        let stalled = testing::Stalled::start().await;
-        let ch = ClickHouseClient::with_timeouts(
-            &stalled.url,
-            Duration::from_secs(1),
-            Duration::from_millis(300),
-        );
-        let event = json!({"event_id": "e"});
-        let ui = tokio::time::timeout(CEILING, ch.insert_ui_events(std::slice::from_ref(&event)))
-            .await
-            .expect("ui-event insert is bounded");
-        assert!(ui.is_err());
-        let mcp = tokio::time::timeout(CEILING, ch.insert_mcp_tool_call(&event))
-            .await
-            .expect("mcp insert is bounded");
-        assert!(mcp.is_err());
-    }
 
     #[test]
     fn bucket_fn_whitelists() {
@@ -979,14 +805,9 @@ mod tests {
         // request_id is whatever the caller sent as x-request-id, so joining on
         // it alone hands one tenant's captured body to another tenant's row
         // under the same id. the log row's own ts is what names the request
-        assert!(sql.contains(&format!("on payload.payload_key = {PAYLOAD_KEY}")));
-        assert!(!sql.contains("using (request_id"));
-        assert!(sql.contains("group by payload_key"));
-        // a keyed row joins on the gateway's own key and its tenancy, and only
-        // an unkeyed (pre-#1937) row falls back to the caller's id and ts
-        assert!(PAYLOAD_KEY.contains("log_id != ''"));
-        assert!(PAYLOAD_KEY.contains("concat(log_id, '|', org_id, '|', project_id)"));
-        assert!(PAYLOAD_KEY.contains("concat(request_id, '|', toString(ts))"));
+        assert!(sql.contains("as payload using (request_id, ts)"));
+        assert!(!sql.contains("using (request_id)"));
+        assert!(sql.contains("group by request_id, ts"));
         // no aggregate may reach across every row that shares an id
         assert!(!sql.contains("argMax(request_payload"));
         assert!(!sql.contains("group by request_id "));
@@ -1047,30 +868,6 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
-    }
-
-    #[test]
-    fn invocations_sql_filters_unpriced_on_the_recorded_flag_as_a_param() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
-        // the flag the gateway recorded, bound as a value: the filter must not
-        // re-derive "unpriced" from the live catalogue (#1226), and an unset
-        // filter has to let every row through
-        assert!(sql.contains("({unpriced:UInt8} = 0 or unpriced = 1)"));
-    }
-
-    #[test]
-    fn the_unpriced_filter_reads_true_and_nothing_else_narrows() {
-        let read = |query: &str| {
-            let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
-                .parse()
-                .expect("a valid uri");
-            axum::extract::Query::<InvocationsQuery>::try_from_uri(&uri).map(|q| q.0.unpriced)
-        };
-        assert_eq!(read("").expect("no filter"), None);
-        assert_eq!(read("?unpriced=true").expect("on"), Some(true));
-        assert_eq!(read("?unpriced=false").expect("off"), Some(false));
-        // a value that is neither is a refused query, not a filter left off
-        assert!(read("?unpriced=maybe").is_err());
     }
 
     #[test]

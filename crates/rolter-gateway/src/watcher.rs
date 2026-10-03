@@ -168,7 +168,7 @@ async fn run(
                 .metrics
                 .config_reload_failures_total
                 .fetch_add(1, Relaxed);
-            tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "config snapshot poll failed");
+            tracing::warn!(error = %err, "config snapshot poll failed");
         }
     }
 }
@@ -281,7 +281,7 @@ async fn poll_once(
         return Ok(None);
     }
     // never apply a broken snapshot; keep serving the last good config
-    if let Err(problems) = body.config.validate_snapshot() {
+    if let Err(problems) = body.config.validate() {
         anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
     }
     state.reload(&body.config, body.version);

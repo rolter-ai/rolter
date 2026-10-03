@@ -39,10 +39,6 @@ cd ui && bun install && bun run dev  # http://localhost:3000 (proxies /api -> :4
 docker compose -f docker/docker-compose.yml up -d                 # postgres, redis, clickhouse, gateway, control
 ```
 
-That is the open local stack. The team shape for a shared host is
-`docker/docker-compose.team.yml` layered over it with `--env-file .env`; see
-[Docker deployment](../deployment/docker.md#team-shape).
-
 ClickHouse asks for 262144 open files, its production recommendation. A
 container runtime cannot grant more than its own hard limit, and rootless
 Docker or Podman, sandboxed CI runners and locked-down VMs often have less. There

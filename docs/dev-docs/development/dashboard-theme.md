@@ -127,16 +127,10 @@ which is exactly how the gold avatar chip came to carry white initials at
 
 Both palettes live in `ui/src/index.css`:
 
-| Tokens                                     | Used by                                                                                   | Floor                                               |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s model donut and bars | 3:1 — a fill carries a shape                        |
-| `--avatar-1` … `--avatar-6`                | the `Users.tsx` chips                                                                     | 4.5:1 against `#ffffff` — the chip carries initials |
-
-An avatar chip takes its entry from `avatarColor(id)` in `ui/src/lib/avatar.ts`,
-a stable hash of the person's id. The row's position is never the input: picked
-by index, a chip changed colour whenever a search or a status tab moved the
-person up the list (#2059). Hash the id a row is keyed by, not an email the
-person can change.
+| Tokens                                     | Used by                                                                            | Floor                                               |
+| ------------------------------------------ | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `--chart-1` … `--chart-8`, `--chart-other` | `donut.tsx`, `scatter-plot.tsx`, `line-chart.tsx`, `Dashboard.tsx`'s provider bars | 3:1 — a fill carries a shape                        |
+| `--avatar-1` … `--avatar-6`                | the `Users.tsx` chips                                                              | 4.5:1 against `#ffffff` — the chip carries initials |
 
 The ratio for each entry is recorded in the comment beside it. For the chart
 hues that is the worst of the four surfaces — a chart can sit on a card, a
@@ -150,17 +144,10 @@ track — which is `--surface-subtle` (`#27272a`) for every entry:
 | `--chart-3`     | `--status-info` `#3b82f6`    | 4.05:1                  | 5.13:1       |
 | `--chart-4`     | `--status-success` `#16a34a` | 4.52:1                  | 5.72:1       |
 | `--chart-5`     | `--status-warning` `#f59e0b` | 6.94:1                  | 8.78:1       |
-| `--chart-6`     | cyan `#22d3ee`               | 8.24:1                  | 10.44:1      |
+| `--chart-6`     | `--red-500` `#ff4017`        | 4.25:1                  | 5.39:1       |
 | `--chart-7`     | `--zinc-500` `#71717a`       | 3.08:1                  | 3.90:1       |
 | `--chart-8`     | `--zinc-300` `#d4d4d8`       | 10.08:1                 | 12.76:1      |
 | `--chart-other` | `--zinc-700` `#3f3f46`       | 1.43:1, exempt          | 1.81:1       |
-
-`--chart-6` used to be `--red-500` (`#ff4017`), one lightness step from
-`--chart-1`, so the first and sixth series of every categorical chart read as
-one colour (#2436). No two of `--chart-1` … `--chart-8` may be closer than CIE76
-ΔE 17, in plain vision and under simulated protanopia, deuteranopia and
-tritanopia (Machado 2009, full severity). The current minima are 18.6, 17.9,
-18.6 and 18.5. Re-run that check when a hue changes.
 
 `--chart-1` used to be `--red-folk` (2.23:1 worst) and `--chart-7` used to be
 `--zinc-600` (1.93:1 worst). Both were lifted in #1269. `--chart-1` matters

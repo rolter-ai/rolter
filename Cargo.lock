@@ -2841,7 +2841,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "libc",
  "rand 0.10.3",
  "reqwest 0.12.28",
  "rolter-control",

@@ -852,17 +852,6 @@ pub struct ProviderConfig {
     /// from the gateway's own config file (see [`Tenancy`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenancy: Option<Tenancy>,
-    /// scope the provider to one project: only keys minted in that project may
-    /// reach it, through a route or through `provider-slug/model`. Unset (the
-    /// default) keeps it org-wide, usable by every project of the org.
-    ///
-    /// In a file this means "the project the file is imported into" (see
-    /// `rolter-seed --import`); a file has no project names of its own. The
-    /// store is authoritative at runtime, where the scope is
-    /// `tenancy.project_id`, so a gateway reading a file directly ignores the
-    /// flag: its keys carry no project to compare against.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub project_scoped: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1125,7 +1114,7 @@ pub enum BalancingStrategy {
 /// requested model name). The `slug` shares the provider slug namespace, so a
 /// left segment resolves to at most one of {provider, group} — providers win a
 /// tie deterministically.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderGroupConfig {
     /// display name
     pub name: String,
@@ -1143,13 +1132,6 @@ pub struct ProviderGroupConfig {
     /// gateway's own config file (see [`Tenancy`])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenancy: Option<Tenancy>,
-    /// scope the group to one project, exactly as [`ProviderConfig::project_scoped`]
-    /// does for a provider. A project-scoped group may hold that project's
-    /// providers and org-wide ones; an org-wide group may hold only org-wide
-    /// providers, since a member scoped to a project would otherwise be
-    /// reachable by every project through the group.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub project_scoped: bool,
 }
 
 /// One member of a [`ProviderGroupConfig`]: a provider plus optional upstream
@@ -1278,24 +1260,6 @@ impl Tenancy {
         match tenancy {
             None => true,
             Some(owner) => key_org.is_empty() || owner.org_id == key_org,
-        }
-    }
-
-    /// Whether a key minted in `key_project` of `key_org` may use a provider or
-    /// provider group owned by `tenancy`.
-    ///
-    /// [`admits`](Self::admits) for the org, plus the optional project scope: a
-    /// provider or group whose `project_id` is set serves only that project, and
-    /// a key with an org but no project is refused too. Unset means org-wide.
-    /// Only for providers and groups: on a route `project_id` names the
-    /// route's own project and narrows nothing unless `project_only` is set.
-    pub fn admits_scoped(tenancy: Option<&Tenancy>, key_org: &str, key_project: &str) -> bool {
-        if !Self::admits(tenancy, key_org) {
-            return false;
-        }
-        match tenancy.and_then(|t| t.project_id.as_deref()) {
-            Some(scope) => key_org.is_empty() || scope == key_project,
-            None => true,
         }
     }
 }
@@ -1535,11 +1499,6 @@ impl ParamPolicy {
     }
 }
 
-/// The example virtual key that ships in `rolter.example.toml`, the image's
-/// baked config and `easy-up`. It is public, allows every model and is for
-/// local development only.
-pub const PUBLIC_EXAMPLE_KEY: &str = "sk-rolter-dev";
-
 /// A virtual api key that clients present to the gateway.
 ///
 /// `Default` is a nameless, unscoped, non-expiring key with an empty secret —
@@ -1573,11 +1532,6 @@ pub struct VirtualKeyConfig {
 }
 
 impl VirtualKeyConfig {
-    /// Whether this is the example key every rolter checkout publishes.
-    pub fn is_public_example_key(&self) -> bool {
-        self.key == PUBLIC_EXAMPLE_KEY
-    }
-
     /// Whether the key may authenticate at `now`: not disabled and not expired.
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         !self.disabled && self.expires_at.is_none_or(|exp| now < exp)
@@ -1843,39 +1797,6 @@ pub enum BudgetPeriod {
 }
 
 impl BudgetPeriod {
-    /// Every spelling of a period a stored budget may carry, with the window
-    /// each one means.
-    ///
-    /// The named forms are the ones `rolter.toml` takes. The shorthands are
-    /// what budgets stored through the control plane have always used, `30d`
-    /// above all since it is the column default, and they keep their meaning:
-    /// `30d` is the calendar month, not a rolling thirty days. There are no
-    /// rolling windows, so `7d` is not here (#1902).
-    pub const SPELLINGS: [(&'static str, BudgetPeriod); 8] = [
-        ("daily", BudgetPeriod::Daily),
-        ("1d", BudgetPeriod::Daily),
-        ("24h", BudgetPeriod::Daily),
-        ("monthly", BudgetPeriod::Monthly),
-        ("30d", BudgetPeriod::Monthly),
-        ("total", BudgetPeriod::Total),
-        ("lifetime", BudgetPeriod::Total),
-        ("all", BudgetPeriod::Total),
-    ];
-
-    /// Read a stored period, ignoring case and surrounding whitespace.
-    ///
-    /// `None` for anything outside [`SPELLINGS`](Self::SPELLINGS). The control
-    /// plane refuses such a value on write, and the snapshot loader, which has
-    /// to produce a config whatever an older row says, falls back to monthly
-    /// and reports the row as a config problem.
-    pub fn parse(value: &str) -> Option<BudgetPeriod> {
-        let value = value.trim();
-        Self::SPELLINGS
-            .iter()
-            .find(|(spelling, _)| spelling.eq_ignore_ascii_case(value))
-            .map(|(_, period)| *period)
-    }
-
     /// Identifier of the current window at `now`; part of the Redis spend key so
     /// a new window starts with a zero counter.
     pub fn bucket(&self, now: DateTime<Utc>) -> String {
@@ -2298,13 +2219,6 @@ impl Default for ClientConfig {
 /// Deployment-wide ingress policy, owned by the control plane's Security
 /// screen and carried to every gateway in the snapshot (#1162).
 ///
-/// There is no "enforce virtual keys" rule here (#2357). Whether a gateway
-/// holding no keys refuses a request is decided by
-/// [`ServerConfig::require_auth`] and by how the gateway was started: a
-/// managed gateway fails closed, a file-configured one stays open for local
-/// development. A dashboard switch only ever reached managed gateways, which
-/// were already closed, so it changed nothing and was removed.
-///
 /// Everything here is a *refusal* rule: each field can only make the gateway
 /// reject a request it would otherwise have served, or — for
 /// [`Self::auth_bypass_routes`] — serve a path the operator explicitly named.
@@ -2313,6 +2227,11 @@ impl Default for ClientConfig {
 /// deployment it was closing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyConfig {
+    /// refuse an unauthenticated request even where the gateway holds no keys
+    /// at all. `server.require_auth` in the config file still wins, in either
+    /// direction: a file is a deliberate local override of the database
+    #[serde(default)]
+    pub virtual_key_required: bool,
     /// lowercase header name -> exact value every request must carry. A
     /// request missing one, or carrying a different value, is refused before
     /// authentication — this is an ingress filter (a mesh identity header, a
@@ -2884,43 +2803,6 @@ fn provider_slug(p: &ProviderConfig) -> String {
         .unwrap_or_else(|| crate::slug::slugify(&p.name))
 }
 
-/// Remove the retired `security.virtual_key_required` key from a parsed
-/// document, returning its value when it was there (#2357).
-///
-/// Shared by the loader, which honours a `true` as `server.require_auth`, and
-/// by [`crate::config_lint`], which must not report the key as silently ignored
-/// when the loader did act on it.
-pub(crate) fn take_retired_virtual_key_required(doc: &mut toml::Table) -> Option<toml::Value> {
-    doc.get_mut("security")?
-        .as_table_mut()?
-        .remove("virtual_key_required")
-}
-
-/// Carry a file's retired `security.virtual_key_required` forward.
-///
-/// The key used to close a file-configured gateway that held no keys, which is
-/// exactly what `server.require_auth = true` does. Dropping it on the floor
-/// would open such a gateway on upgrade, so a `true` becomes
-/// `require_auth = true` unless the file already says otherwise there, and the
-/// operator is told to move it either way.
-fn fold_retired_virtual_key_required(server: &mut ServerConfig, value: &toml::Value) {
-    if value.as_bool() == Some(true) && server.require_auth.is_none() {
-        server.require_auth = Some(true);
-        tracing::warn!(
-            "security.virtual_key_required is retired (#2357); it is honoured as \
-             server.require_auth = true. move the setting to [server] require_auth"
-        );
-    } else {
-        // `false` was the default, and an explicit `require_auth` always won
-        // over the key, so in both cases ignoring it changes nothing
-        tracing::warn!(
-            "security.virtual_key_required is retired (#2357) and has no effect here; \
-             remove it. [server] require_auth decides whether a gateway holding no \
-             keys refuses requests"
-        );
-    }
-}
-
 /// Effective slug for a provider group.
 fn group_slug(g: &ProviderGroupConfig) -> String {
     g.slug
@@ -2967,13 +2849,7 @@ impl GatewayConfig {
                 (group_readonly, group_defaults) = split_section(v)?;
             }
         }
-        let retired_vk = doc
-            .as_table_mut()
-            .and_then(take_retired_virtual_key_required);
         let mut config: Self = doc.try_into()?;
-        if let Some(value) = retired_vk {
-            fold_retired_virtual_key_required(&mut config.server, &value);
-        }
         config.providers = provider_readonly;
         config.provider_defaults = provider_defaults;
         config.provider_groups = group_readonly;
@@ -3120,23 +2996,6 @@ impl GatewayConfig {
         self.providers.iter().find(|p| p.name == name)
     }
 
-    /// Drop the public example key from a file config. Callers decide *when*:
-    /// only a deployment that is not in open mode has any business refusing it,
-    /// since `easy-up` serves it on purpose. Returns a problem line when a key
-    /// was dropped.
-    pub fn prune_public_example_key(&mut self) -> Option<String> {
-        let before = self.virtual_keys.len();
-        self.virtual_keys.retain(|k| !k.is_public_example_key());
-        (self.virtual_keys.len() != before).then(|| {
-            format!(
-                "virtual key '{PUBLIC_EXAMPLE_KEY}' omitted from the snapshot: it is the public \
-                 example key from the bundled rolter.example.toml and allows every model, so a \
-                 deployment with auth enforced must not hand it to gateways. Remove the \
-                 [[virtual_keys]] entry from the control plane's config file"
-            )
-        })
-    }
-
     /// Validate internal consistency and surface every problem at once so an
     /// operator can fix a whole config in one pass rather than one error per
     /// restart. Checks: unique/non-empty provider names, well-formed provider
@@ -3161,7 +3020,6 @@ impl GatewayConfig {
     /// dropping one of two colliding rows would be worse than refusing.
     pub fn sanitize_for_snapshot(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
-        self.prune_invalid_prompt_templates(&mut warnings);
 
         // a provider whose own definition is invalid cannot serve traffic, but
         // it is exactly one row: withholding the other fourteen providers and
@@ -3197,9 +3055,6 @@ impl GatewayConfig {
                 ));
             }
         }
-
-        self.report_denied_operator_urls(&mut warnings);
-        self.prune_cross_project_targets(&mut warnings);
 
         let provider_names: std::collections::HashSet<&str> = self
             .providers
@@ -3244,170 +3099,7 @@ impl GatewayConfig {
                 ));
             }
         }
-
-        // a route override naming a guardrail rule the effective set lacks is
-        // pruned here, not refused: the store loads only enabled rows, so a
-        // rule paused, renamed or deleted in the dashboard leaves its overrides
-        // dangling, and refusing would freeze propagation of every config
-        // change (#2306). Pruning is safe in both directions: an `enable` for a
-        // missing rule has nothing to enable, and a `disable` for a rule that is
-        // not running has nothing to switch off. `validate` keeps rejecting an
-        // unknown name in a file config, where it is a typo and a typo in
-        // `disable` must not read as "this rule is off here"; only the snapshot
-        // path, which is store-sourced, prunes
-        let rule_names: Vec<String> = self
-            .guardrails
-            .rules
-            .iter()
-            .map(|rule| rule.name.trim().to_string())
-            .collect();
-        for route in &mut self.routes {
-            let unknown = route.advanced.guardrails.unknown_rules(&rule_names);
-            if unknown.is_empty() {
-                continue;
-            }
-            route
-                .advanced
-                .guardrails
-                .disable
-                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
-            route
-                .advanced
-                .guardrails
-                .enable
-                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
-            let mut seen = std::collections::HashSet::new();
-            for name in unknown.into_iter().filter(|name| seen.insert(name.clone())) {
-                warnings.push(format!(
-                    "route '{}' override of guardrail rule '{name}' omitted from the snapshot: \
-                     no enabled rule has that name (paused, renamed or deleted)",
-                    route.model
-                ));
-            }
-        }
         warnings
-    }
-
-    /// Report each gateway-side URL the egress policy denies in `warnings`,
-    /// without removing or switching off anything.
-    ///
-    /// The webhook, the sanitizer and a plugin are guards with a failure mode.
-    /// Dropping one would turn a fail-closed control into a silent fail-open,
-    /// so it stays: the gateway refuses the call at request time and the
-    /// block's own failure mode decides what the request does. Nothing here
-    /// can withhold `/internal/snapshot`, since
-    /// [`validate_snapshot`](Self::validate_snapshot) does not repeat the
-    /// check; `validate` still rejects the same URLs in a file config.
-    fn report_denied_operator_urls(&self, warnings: &mut Vec<String>) {
-        for problem in self.operator_url_problems() {
-            warnings.push(format!(
-                "{problem}: calls will fail and follow the failure_mode of the control that uses it"
-            ));
-        }
-    }
-
-    /// Drop each route target and group member that reaches a provider scoped
-    /// to a project other than its owner's, saying why in `warnings` (#1919).
-    ///
-    /// The control plane refuses to write such a row, so one only exists when
-    /// it came from SQL, a seed or a scope narrowed around existing rows. It
-    /// must not be served, because the provider would then be reachable from
-    /// outside its project through the route or group. It is also not a reason
-    /// to withhold the whole snapshot, so only the offending target goes: a
-    /// route left with no servable target is dropped by the pass that follows,
-    /// and a group left with no member never resolves (#926 / #2306 / #2279).
-    ///
-    /// A route's owner is its project; a group's owner is its own scope, and an
-    /// org-wide group owns no project, so it may not hold a scoped provider. A
-    /// route or group from a file carries no tenancy, which is org-wide too.
-    fn prune_cross_project_targets(&mut self, warnings: &mut Vec<String>) {
-        let scoped: HashMap<&str, &str> = self
-            .providers
-            .iter()
-            .filter_map(|p| {
-                let scope = p.tenancy.as_ref()?.project_id.as_deref()?;
-                Some((p.name.as_str(), scope))
-            })
-            .collect();
-        if scoped.is_empty() {
-            return;
-        }
-        let foreign = |provider: &str, owner: Option<&str>| {
-            scoped
-                .get(provider)
-                .is_some_and(|scope| owner != Some(*scope))
-        };
-        for route in &mut self.routes {
-            let owner = route.tenancy.as_ref().and_then(|t| t.project_id.clone());
-            let model = route.model.clone();
-            let mut prune = |targets: &mut Vec<Target>, place: String| {
-                targets.retain(|t| {
-                    let keep = !foreign(&t.provider, owner.as_deref());
-                    if !keep {
-                        warnings.push(format!(
-                            "{place} target '{}' omitted from the snapshot: the provider is \
-                             scoped to a project other than the route's",
-                            t.provider
-                        ));
-                    }
-                    keep
-                });
-            };
-            prune(&mut route.targets, format!("route '{model}'"));
-            for variant in &mut route.variants {
-                let place = format!("route '{model}' variant '{}'", variant.name);
-                prune(&mut variant.targets, place);
-            }
-        }
-        for group in &mut self.provider_groups {
-            let owner = group.tenancy.as_ref().and_then(|t| t.project_id.clone());
-            let slug = group
-                .slug
-                .clone()
-                .unwrap_or_else(|| crate::slug::slugify(&group.name));
-            group.members.retain(|m| {
-                let keep = !foreign(&m.provider, owner.as_deref());
-                if !keep {
-                    warnings.push(format!(
-                        "provider group '{slug}' member '{}' omitted from the snapshot: the \
-                         provider is scoped to a project other than the group's",
-                        m.provider
-                    ));
-                }
-                keep
-            });
-        }
-    }
-
-    /// Drop each prompt template that fails validation on its own, saying why
-    /// in `warnings` (#2279).
-    ///
-    /// `validate` rejects the whole config over one malformed template, which
-    /// made a single bad published version stop `/internal/snapshot` for every
-    /// tenant. Granularity is one `(id, version)` entry, which is what the
-    /// snapshot carries. Nothing else references a template (scopes live on the
-    /// template itself and `validate` does not cross-check them against
-    /// routes), so dropping one leaves no dangling reference. A duplicated
-    /// `(id, version)` is a cross-entry defect and is left for `validate`.
-    fn prune_invalid_prompt_templates(&mut self, warnings: &mut Vec<String>) {
-        let before = self.prompt_templates.templates.len();
-        self.prompt_templates.templates.retain(|template| {
-            let problems =
-                crate::prompt_templates::PromptTemplatesConfig::template_problems(template);
-            if problems.is_empty() {
-                return true;
-            }
-            warnings.push(format!(
-                "prompt template '{}' version {} omitted from the snapshot: {}",
-                template.id.trim(),
-                template.version,
-                problems.join("; ")
-            ));
-            false
-        });
-        if before != 0 && self.prompt_templates.templates.is_empty() {
-            self.prompt_templates.enabled = false;
-        }
     }
 
     /// Every problem with `provider` considered on its own — everything
@@ -3553,24 +3245,7 @@ impl GatewayConfig {
                 problems.push(problem);
             }
         }
-        // fetched by the gateway (the status poller, the lmcache refresh, the
-        // kv-event subscriber) from a URL an operator wrote, so each is as
-        // much an SSRF target as api_base
-        if let Some(url) = &provider.status_page_url {
-            if let Err(problem) = self.egress.check_url(
-                url,
-                &format!("provider '{}' status_page_url", provider.name),
-            ) {
-                problems.push(problem);
-            }
-        }
         if let Some(kv) = &provider.kv_events {
-            if let Err(problem) = self.egress.check_url(
-                &kv.endpoint,
-                &format!("provider '{}' kv_events.endpoint", provider.name),
-            ) {
-                problems.push(problem);
-            }
             if !kv.endpoint.starts_with("tcp://") || kv.endpoint.len() <= "tcp://".len() {
                 problems.push(format!(
                     "provider '{}' kv_events.endpoint must be a non-empty tcp:// URL",
@@ -3585,12 +3260,6 @@ impl GatewayConfig {
             }
         }
         if let Some(lmcache) = &provider.lmcache {
-            if let Err(problem) = self.egress.check_url(
-                &lmcache.endpoint,
-                &format!("provider '{}' lmcache.endpoint", provider.name),
-            ) {
-                problems.push(problem);
-            }
             if !is_http_url(&lmcache.endpoint) {
                 problems.push(format!(
                     "provider '{}' lmcache.endpoint must be an http(s) URL",
@@ -3607,52 +3276,7 @@ impl GatewayConfig {
         problems
     }
 
-    /// Egress-policy problems with the gateway-side URLs an operator writes
-    /// outside a provider: the guardrail webhook, the PII sanitizer and each
-    /// plugin endpoint. A disabled block is never a problem, matching the
-    /// block's own `validate`. Provider URLs are covered by
-    /// [`provider_problems`](Self::provider_problems).
-    pub fn operator_url_problems(&self) -> Vec<String> {
-        let mut problems = Vec::new();
-        if self.guardrail_webhook.enabled {
-            problems.extend(
-                self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
-            );
-        }
-        if self.pii_sanitizer.enabled {
-            problems
-                .extend(self.egress_problem(self.pii_sanitizer.url.trim(), "pii_sanitizer.url"));
-            problems.extend(self.egress_problem(
-                self.pii_sanitizer.restore_url.trim(),
-                "pii_sanitizer.restore_url",
-            ));
-        }
-        for instance in &self.plugins.instances {
-            problems.extend(self.egress_problem(
-                instance.endpoint.trim(),
-                &format!("plugin '{}' endpoint", instance.slug),
-            ));
-        }
-        problems
-    }
-
-    fn egress_problem(&self, url: &str, what: &str) -> Option<String> {
-        self.egress.check_url(url, what).err()
-    }
-
     pub fn validate(&self) -> std::result::Result<(), Vec<String>> {
-        self.validate_with(true)
-    }
-
-    /// [`validate`](Self::validate) for a store-sourced snapshot, which keeps a
-    /// guardrail webhook, PII sanitizer or plugin whose URL the egress policy denies
-    /// (see [`sanitize_for_snapshot`](Self::sanitize_for_snapshot)). A file
-    /// config goes through the strict `validate`.
-    pub fn validate_snapshot(&self) -> std::result::Result<(), Vec<String>> {
-        self.validate_with(false)
-    }
-
-    fn validate_with(&self, strict_urls: bool) -> std::result::Result<(), Vec<String>> {
         let mut problems = Vec::new();
 
         if let Err(mut ca_problems) = self.validate_ca_bundles() {
@@ -3930,7 +3554,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.trim().to_string())
+            .map(|rule| rule.name.clone())
             .collect();
         for route in &self.routes {
             for unknown in route.advanced.guardrails.unknown_rules(&rule_names) {
@@ -3947,9 +3571,6 @@ impl GatewayConfig {
 
         // validate every enabled plugin instance's endpoint at load time
         problems.append(&mut self.plugins.validate());
-        if strict_urls {
-            problems.append(&mut self.operator_url_problems());
-        }
 
         // validate prompt templates: unique versions, well-formed variables, and
         // decorator placeholders that reference only declared variables
@@ -4138,46 +3759,6 @@ impl EgressPolicy {
                 allowed == *host || host_ip(&allowed).is_some_and(|allowed| allowed == ip)
             })
         })
-    }
-
-    /// Drop the resolved addresses this policy denies, for a connect-time
-    /// resolver: `host` is the name that was resolved and `addrs` what DNS
-    /// answered.
-    ///
-    /// A partial denial still connects: a multi-homed upstream with one denied
-    /// address is reachable on the others, and refusing the whole name would
-    /// take down a legitimate provider. Only a name left with *nothing* is an
-    /// error, and rebinding to a denied address leaves exactly nothing. An
-    /// empty answer is not a denial; that is the resolver's own failure to
-    /// report.
-    pub fn filter_resolved(
-        &self,
-        host: &str,
-        addrs: Vec<std::net::SocketAddr>,
-    ) -> std::result::Result<Vec<std::net::SocketAddr>, String> {
-        if self.host_is_allowed(host) {
-            return Ok(addrs);
-        }
-        let mut denied: Option<&'static str> = None;
-        let allowed: Vec<std::net::SocketAddr> = addrs
-            .into_iter()
-            .filter(|addr| match self.deny_reason(addr.ip()) {
-                Some(reason) => {
-                    denied = Some(reason);
-                    false
-                }
-                None => true,
-            })
-            .collect();
-        if allowed.is_empty() {
-            if let Some(reason) = denied {
-                return Err(format!(
-                    "'{host}' resolves only to {reason} addresses, which the egress policy denies \
-                     (allow it explicitly via egress.allow_hosts if this is intentional)"
-                ));
-            }
-        }
-        Ok(allowed)
     }
 
     /// Whether `host` is exempt from every check, matched against
@@ -5178,34 +4759,6 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
-    // #2357: the key left the security policy, but a file that set it to close
-    // a keyless gateway must not come back open after an upgrade
-    #[test]
-    fn a_retired_virtual_key_required_still_closes_a_file_gateway() {
-        let cfg =
-            GatewayConfig::from_toml_str("[security]\nvirtual_key_required = true\n").unwrap();
-        assert_eq!(cfg.server.require_auth, Some(true));
-
-        // an explicit require_auth always won over the key, and still does
-        let cfg = GatewayConfig::from_toml_str(
-            "[server]\nrequire_auth = false\n[security]\nvirtual_key_required = true\n",
-        )
-        .unwrap();
-        assert_eq!(cfg.server.require_auth, Some(false));
-
-        // `false` was the default, so it leaves the deployment default alone
-        let cfg =
-            GatewayConfig::from_toml_str("[security]\nvirtual_key_required = false\n").unwrap();
-        assert_eq!(cfg.server.require_auth, None);
-    }
-
-    #[test]
-    fn the_retired_virtual_key_required_is_not_linted_as_ignored() {
-        let src =
-            "[security]\nvirtual_key_required = true\nauth_bypass_routes = [\"/v1/models\"]\n";
-        assert!(crate::config_lint::unknown_keys(src).unwrap().is_empty());
-    }
-
     #[test]
     fn parses_keyless_ollama_provider_and_rejects_v1_suffix() {
         let raw = r#"
@@ -5584,39 +5137,6 @@ mod tests {
         assert_eq!(parsed.rates.get("EUR"), Some(&d("1.10")));
     }
 
-    /// #1902: a stored period is read strictly. `7d` used to fall through to
-    /// monthly without a word, so it has to come back as unrecognised rather
-    /// than as any window at all.
-    #[test]
-    fn a_budget_period_is_read_strictly() {
-        for (spelling, period) in [
-            ("daily", BudgetPeriod::Daily),
-            ("1d", BudgetPeriod::Daily),
-            (" 24H ", BudgetPeriod::Daily),
-            ("Monthly", BudgetPeriod::Monthly),
-            ("30d", BudgetPeriod::Monthly),
-            ("total", BudgetPeriod::Total),
-            ("LIFETIME", BudgetPeriod::Total),
-            ("all", BudgetPeriod::Total),
-        ] {
-            assert_eq!(BudgetPeriod::parse(spelling), Some(period), "{spelling}");
-        }
-        for unknown in ["7d", "weekly", "dialy", "", "  ", "30 d", "month"] {
-            assert_eq!(BudgetPeriod::parse(unknown), None, "{unknown:?}");
-        }
-        // every named form is the one serde writes for that window, so a
-        // period read from the database and one read from rolter.toml agree
-        for period in [
-            BudgetPeriod::Daily,
-            BudgetPeriod::Monthly,
-            BudgetPeriod::Total,
-        ] {
-            let named = serde_json::to_value(period).expect("serializes");
-            let named = named.as_str().expect("a string");
-            assert_eq!(BudgetPeriod::parse(named), Some(period), "{named}");
-        }
-    }
-
     /// A budget limit is compared, not reported, so the boundary has to be a
     /// state a test can name. `spend == limit` is over the cap, and the value
     /// just below it is not — neither of which is expressible when both sides
@@ -5950,111 +5470,6 @@ mod tests {
         cfg
     }
 
-    fn config_with_guardrail_override(disable: &[&str], enable: &[&str]) -> GatewayConfig {
-        let mut cfg: GatewayConfig = toml::from_str(
-            r#"
-            [[providers]]
-            name = "openai"
-            kind = "openai"
-            api_base = "https://api.openai.com/v1"
-
-            [[routes]]
-            model = "good"
-            [[routes.targets]]
-            provider = "openai"
-
-            [[guardrails.rules]]
-            name = "live"
-            pattern = "secret"
-            action = "block"
-            "#,
-        )
-        .unwrap();
-        let overrides = &mut cfg.routes[0].advanced.guardrails;
-        overrides.disable = disable.iter().map(|s| s.to_string()).collect();
-        overrides.enable = enable.iter().map(|s| s.to_string()).collect();
-        cfg
-    }
-
-    #[test]
-    fn sanitize_prunes_a_guardrail_override_naming_an_absent_rule() {
-        let mut cfg = config_with_guardrail_override(&["paused", "live"], &["gone"]);
-        let warnings = cfg.sanitize_for_snapshot();
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings.iter().any(|w| w.contains("'paused'")));
-        assert!(warnings.iter().any(|w| w.contains("'gone'")));
-        let overrides = &cfg.routes[0].advanced.guardrails;
-        assert_eq!(overrides.disable, vec!["live".to_string()]);
-        assert!(overrides.enable.is_empty());
-        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
-    }
-
-    #[test]
-    fn a_padded_guardrail_override_matches_the_trimmed_rule_name() {
-        let mut cfg = config_with_guardrail_override(&[" live "], &[]);
-        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
-        assert!(cfg.sanitize_for_snapshot().is_empty());
-        assert_eq!(cfg.routes[0].advanced.guardrails.disable.len(), 1);
-    }
-
-    #[test]
-    fn a_file_config_with_an_unknown_guardrail_override_still_fails_validation() {
-        let cfg = config_with_guardrail_override(&["typo"], &[]);
-        let problems = cfg.validate().expect_err("typo must be refused");
-        assert!(problems
-            .iter()
-            .any(|p| p.contains("overrides guardrail rule 'typo'")));
-    }
-
-    #[test]
-    fn sanitize_prunes_only_the_invalid_prompt_template() {
-        use crate::prompt_templates::{Decorator, PromptTemplate, TemplateVariable};
-        let template = |id: &str, content: &str, vars: Vec<TemplateVariable>| PromptTemplate {
-            id: id.to_string(),
-            version: 1,
-            routes: Vec::new(),
-            scopes: Vec::new(),
-            variables: vars,
-            decorators: vec![Decorator {
-                role: Default::default(),
-                position: Default::default(),
-                content: content.to_string(),
-            }],
-        };
-        let mut cfg = config_with_a_good_and_a_targetless_route();
-        cfg.routes.pop();
-        cfg.prompt_templates.enabled = true;
-        cfg.prompt_templates.templates = vec![
-            template("good", "plain", Vec::new()),
-            template("undeclared", "hi {{ who }}", Vec::new()),
-            template(
-                "both",
-                "x",
-                vec![TemplateVariable {
-                    name: "v".into(),
-                    required: true,
-                    default: Some("d".into()),
-                }],
-            ),
-        ];
-        assert!(cfg.validate().is_err(), "precondition: config invalid");
-
-        let warnings = cfg.sanitize_for_snapshot();
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings
-            .iter()
-            .any(|w| w.contains("'undeclared'") && w.contains("undeclared variable 'who'")));
-        assert!(warnings.iter().any(|w| w.contains("'both'")));
-        let ids: Vec<_> = cfg
-            .prompt_templates
-            .templates
-            .iter()
-            .map(|t| t.id.as_str())
-            .collect();
-        assert_eq!(ids, vec!["good"]);
-        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
-    }
-
     #[test]
     fn sanitize_drops_an_unservable_route_and_keeps_the_valid_one() {
         let mut cfg = config_with_a_good_and_a_targetless_route();
@@ -6282,156 +5697,6 @@ mod tests {
         assert!(problems.iter().any(|p| p.contains("duplicate route model")));
     }
 
-    fn scoped_provider(name: &str, org: &str, project: Option<&str>) -> ProviderConfig {
-        ProviderConfig {
-            name: name.to_string(),
-            kind: ProviderKind::OpenaiCompatible,
-            api_base: "https://example.com".to_string(),
-            tenancy: Some(Tenancy {
-                org_id: org.to_string(),
-                project_id: project.map(str::to_string),
-            }),
-            project_scoped: project.is_some(),
-            ..Default::default()
-        }
-    }
-
-    fn route_in(model: &str, project: &str, providers: &[&str]) -> ModelRoute {
-        ModelRoute {
-            model: model.to_string(),
-            strategy: BalancingStrategy::default(),
-            targets: providers
-                .iter()
-                .map(|provider| Target {
-                    provider: provider.to_string(),
-                    model: None,
-                    weight: 1,
-                })
-                .collect(),
-            params: Default::default(),
-            param_policy: Default::default(),
-            advanced: Default::default(),
-            variants: Vec::new(),
-            cache: None,
-            tenancy: Some(Tenancy {
-                org_id: "org-1".to_string(),
-                project_id: Some(project.to_string()),
-            }),
-        }
-    }
-
-    // #1919: the control plane refuses a target on a provider scoped to another
-    // project, so one that exists came from SQL or a seed. only that target is
-    // pruned, not the snapshot, and the route survives on what it may still use
-    #[test]
-    fn sanitize_prunes_a_target_on_a_provider_scoped_to_another_project() {
-        let mut cfg = GatewayConfig {
-            providers: vec![
-                scoped_provider("p1-private", "org-1", Some("proj-1")),
-                scoped_provider("shared", "org-1", None),
-            ],
-            routes: vec![
-                // its own project's provider plus an org-wide one: untouched
-                route_in("ok", "proj-1", &["p1-private", "shared"]),
-                // another project's provider: that target goes, the fallback stays
-                route_in("crossed", "proj-2", &["p1-private", "shared"]),
-                // nothing left to serve: dropped by the existing pass
-                route_in("only-foreign", "proj-2", &["p1-private"]),
-            ],
-            ..Default::default()
-        };
-        let warnings = cfg.sanitize_for_snapshot();
-        let targets = |model: &str| -> Option<Vec<String>> {
-            cfg.routes
-                .iter()
-                .find(|r| r.model == model)
-                .map(|r| r.targets.iter().map(|t| t.provider.clone()).collect())
-        };
-        assert_eq!(targets("ok").unwrap(), ["p1-private", "shared"]);
-        assert_eq!(targets("crossed").unwrap(), ["shared"]);
-        assert!(targets("only-foreign").is_none(), "{warnings:?}");
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("route 'crossed'") && w.contains("'p1-private'")),
-            "{warnings:?}"
-        );
-        // the snapshot itself is still valid
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn sanitize_prunes_a_group_member_scoped_to_a_project_the_group_is_not() {
-        let member = |provider: &str| GroupMember {
-            provider: provider.to_string(),
-            model: None,
-            weight: 1,
-        };
-        let group = |slug: &str, project: Option<&str>| ProviderGroupConfig {
-            name: slug.to_string(),
-            slug: Some(slug.to_string()),
-            members: vec![member("p1-private"), member("shared")],
-            tenancy: Some(Tenancy {
-                org_id: "org-1".to_string(),
-                project_id: project.map(str::to_string),
-            }),
-            project_scoped: project.is_some(),
-            ..Default::default()
-        };
-        let mut cfg = GatewayConfig {
-            providers: vec![
-                scoped_provider("p1-private", "org-1", Some("proj-1")),
-                scoped_provider("shared", "org-1", None),
-            ],
-            provider_groups: vec![
-                group("own", Some("proj-1")),
-                group("other", Some("proj-2")),
-                // an org-wide group would hand the private provider to every project
-                group("wide", None),
-            ],
-            ..Default::default()
-        };
-        let warnings = cfg.sanitize_for_snapshot();
-        let members = |slug: &str| -> Vec<String> {
-            cfg.provider_groups
-                .iter()
-                .find(|g| g.slug.as_deref() == Some(slug))
-                .unwrap()
-                .members
-                .iter()
-                .map(|m| m.provider.clone())
-                .collect()
-        };
-        assert_eq!(members("own"), ["p1-private", "shared"]);
-        assert_eq!(members("other"), ["shared"]);
-        assert_eq!(members("wide"), ["shared"]);
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-    }
-
-    #[test]
-    fn a_scoped_provider_admits_only_keys_of_its_project() {
-        let owned = |project: Option<&str>| {
-            Some(Tenancy {
-                org_id: "org-1".to_string(),
-                project_id: project.map(str::to_string),
-            })
-        };
-        let scoped = owned(Some("proj-1"));
-        assert!(Tenancy::admits_scoped(scoped.as_ref(), "org-1", "proj-1"));
-        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-1", "proj-2"));
-        // an org with no project is not the project
-        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-1", ""));
-        assert!(!Tenancy::admits_scoped(scoped.as_ref(), "org-2", "proj-1"));
-        // the operator's own key carries no org and is not narrowed
-        assert!(Tenancy::admits_scoped(scoped.as_ref(), "", ""));
-        // org-wide: every project of the org, nobody outside it
-        let wide = owned(None);
-        assert!(Tenancy::admits_scoped(wide.as_ref(), "org-1", "proj-2"));
-        assert!(Tenancy::admits_scoped(wide.as_ref(), "org-1", ""));
-        assert!(!Tenancy::admits_scoped(wide.as_ref(), "org-2", "proj-2"));
-        assert!(Tenancy::admits_scoped(None, "org-2", "proj-2"));
-    }
-
     // #634: a provider api_base pointed at instance metadata turns the gateway
     // into an SSRF primitive. link-local is denied by default; the private and
     // loopback ranges stay reachable because self-hosted upstreams live there
@@ -6439,7 +5704,7 @@ mod tests {
     fn egress_policy_denies_link_local_by_default() {
         let policy = EgressPolicy::default();
         let err = policy
-            .check_url("https://169.254.169.254/latest/meta-data/", "api_base")
+            .check_url("http://169.254.169.254/latest/meta-data/", "api_base")
             .unwrap_err();
         assert!(err.contains("link-local"), "{err}");
         // ipv6 metadata address, and with a port
@@ -6494,7 +5759,7 @@ mod tests {
             ..Default::default()
         };
         assert!(policy
-            .check_url("https://169.254.169.254/v1", "api_base")
+            .check_url("http://169.254.169.254/v1", "api_base")
             .is_ok());
     }
 
@@ -6512,13 +5777,13 @@ mod tests {
             "http://169.254.43518/",
             "http://0251.0376.0251.0376/",
             // a trailing dot, and percent-encoded digits
-            "https://169.254.169.254./",
+            "http://169.254.169.254./",
             "http://%31%36%39.254.169.254/",
             // ipv4-mapped ipv6, dialled as the ipv4 address it carries
             "http://[::ffff:169.254.169.254]/",
             "http://[::ffff:a9fe:a9fe]:80/",
             // a backslash ends the authority, so the host is before the '@'
-            "https://169.254.169.254\\@example.com/",
+            "http://169.254.169.254\\@example.com/",
             "HTTP://169.254.169.254/",
             // an egress proxy url: a socks scheme keeps its host opaque
             "socks5://2852039166:1080",
@@ -6622,7 +5887,7 @@ mod tests {
         assert_eq!(url_host("http://example.com:8080/v1"), Some("example.com"));
         assert_eq!(url_host("http://user:pw@10.0.0.1:80/v1"), Some("10.0.0.1"));
         assert_eq!(url_host("http://[::1]:4000/v1"), Some("::1"));
-        assert_eq!(url_host("https://169.254.169.254"), Some("169.254.169.254"));
+        assert_eq!(url_host("http://169.254.169.254"), Some("169.254.169.254"));
     }
 
     #[test]
@@ -6632,7 +5897,7 @@ mod tests {
             [[providers]]
             name = "evil"
             kind = "openai"
-            api_base = "https://169.254.169.254/latest"
+            api_base = "http://169.254.169.254/latest"
 
             [[routes]]
             model = "m"
@@ -6767,166 +6032,5 @@ mod tests {
         assert!(problems
             .iter()
             .any(|problem| problem.contains("required scopes")));
-    }
-
-    const METADATA: &str = "https://169.254.169.254/latest/meta-data/";
-
-    fn egress_config() -> GatewayConfig {
-        GatewayConfig::from_toml_str(
-            r#"
-            [[providers]]
-            name = "vllm"
-            kind = "openai"
-            api_base = "https://api.openai.com/v1"
-            api_key_env = "KEY"
-
-            [[routes]]
-            model = "m"
-            [[routes.targets]]
-            provider = "vllm"
-            model = "m"
-        "#,
-        )
-        .expect("a config")
-    }
-
-    fn plugin(slug: &str, endpoint: &str) -> crate::plugin_dispatch::PluginInstanceConfig {
-        crate::plugin_dispatch::PluginInstanceConfig {
-            slug: slug.to_string(),
-            org_id: "org".to_string(),
-            project_id: None,
-            stage: crate::plugin_dispatch::PluginStage::PreUpstream,
-            position: 0,
-            failure_mode: crate::guardrail_webhook::FailureMode::FailOpen,
-            endpoint: endpoint.to_string(),
-            auth: None,
-        }
-    }
-
-    /// #2383: every operator-written URL goes through the egress policy in a
-    /// file config, and `validate` names the field.
-    #[test]
-    fn validate_refuses_a_denied_url_in_every_operator_written_field() {
-        type Mutation = Box<dyn Fn(&mut GatewayConfig)>;
-        let cases: Vec<(&str, Mutation)> = vec![
-            (
-                "guardrail_webhook.url",
-                Box::new(|c| {
-                    c.guardrail_webhook.enabled = true;
-                    c.guardrail_webhook.url = METADATA.to_string();
-                }),
-            ),
-            (
-                "pii_sanitizer.url",
-                Box::new(|c| {
-                    c.pii_sanitizer.enabled = true;
-                    c.pii_sanitizer.url = METADATA.to_string();
-                }),
-            ),
-            (
-                "pii_sanitizer.restore_url",
-                Box::new(|c| {
-                    c.pii_sanitizer.enabled = true;
-                    c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
-                    c.pii_sanitizer.restore_url = METADATA.to_string();
-                }),
-            ),
-            (
-                "plugin 'audit' endpoint",
-                Box::new(|c| c.plugins.instances.push(plugin("audit", METADATA))),
-            ),
-            (
-                "status_page_url",
-                Box::new(|c| c.providers[0].status_page_url = Some(METADATA.to_string())),
-            ),
-            (
-                "lmcache.endpoint",
-                Box::new(|c| {
-                    c.providers[0].lmcache = Some(LmCacheConfig {
-                        endpoint: METADATA.to_string(),
-                        refresh_secs: 2,
-                        stale_secs: 10,
-                    })
-                }),
-            ),
-            (
-                "kv_events.endpoint",
-                Box::new(|c| {
-                    c.providers[0].kv_events = Some(KvEventsConfig {
-                        endpoint: "tcp://169.254.169.254:5557".to_string(),
-                        topic: "kv-events".to_string(),
-                        max_blocks: 10,
-                        stale_secs: 30,
-                    })
-                }),
-            ),
-        ];
-        for (field, mutate) in cases {
-            let mut config = egress_config();
-            assert!(
-                config.validate().is_ok(),
-                "{field}: the base config is valid"
-            );
-            mutate(&mut config);
-            let problems = config.validate().expect_err(field);
-            assert!(
-                problems
-                    .iter()
-                    .any(|p| p.contains(field) && p.contains("egress policy")),
-                "{field}: no problem names it"
-            );
-        }
-    }
-
-    #[test]
-    fn a_disabled_webhook_or_sanitizer_is_not_checked_for_egress() {
-        let mut config = egress_config();
-        config.guardrail_webhook.url = METADATA.to_string();
-        config.pii_sanitizer.url = METADATA.to_string();
-        assert!(config.validate().is_ok());
-    }
-
-    /// One denied endpoint must not withhold the snapshot from every tenant:
-    /// the row is pruned with a problem line instead.
-    #[test]
-    fn the_snapshot_keeps_a_guard_with_a_denied_url_and_reports_it() {
-        let mut config = egress_config();
-        config.guardrail_webhook.enabled = true;
-        config.guardrail_webhook.url = METADATA.to_string();
-        config.pii_sanitizer.enabled = true;
-        config.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
-        config.pii_sanitizer.restore_url = METADATA.to_string();
-        config.plugins.instances.push(plugin("bad", METADATA));
-        config
-            .plugins
-            .instances
-            .push(plugin("good", "https://plugins.example.com/hook"));
-        config.providers[0].status_page_url = Some(METADATA.to_string());
-
-        let warnings = config.sanitize_for_snapshot();
-
-        assert!(
-            config.validate_snapshot().is_ok(),
-            "a kept guard must not withhold the snapshot"
-        );
-        // file configs stay strict
-        assert!(config.validate().is_err());
-        // kept, not switched off: a fail-closed guard must not turn fail-open
-        assert!(config.guardrail_webhook.enabled);
-        assert!(config.pii_sanitizer.enabled);
-        assert_eq!(config.plugins.instances.len(), 2);
-        // the provider is dropped like one with a denied api_base
-        assert!(config.providers.is_empty());
-        for needle in [
-            "guardrail_webhook.url",
-            "pii_sanitizer.restore_url",
-            "plugin 'bad'",
-            "status_page_url",
-        ] {
-            assert!(
-                warnings.iter().any(|w| w.contains(needle)),
-                "no warning names {needle}"
-            );
-        }
     }
 }

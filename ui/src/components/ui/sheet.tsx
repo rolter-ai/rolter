@@ -116,22 +116,13 @@ export function SheetBody({ children }: { children: React.ReactNode }) {
  *
  * Renders nothing without a message, so a caller can pass its error straight
  * through rather than guarding at every call site.
- *
- * `message` is the dashboard's own, translated line. `detail` is what the
- * control plane said, which is English whatever the locale: it sits under the
- * lead in mono rather than standing in for it, the way a failed toast and
- * `LoadError` carry it. One live region holds both, so they are announced
- * together.
  */
-export function SheetError({ message, detail }: { message?: string; detail?: string }) {
+export function SheetError({ message }: { message?: string }) {
   if (!message) return null;
   return (
-    <div role="alert" className="px-[22px] pt-2.5 text-xs">
-      <p className="text-[color:var(--status-danger-text)]">{message}</p>
-      {detail && (
-        <p className="mt-1 break-words font-mono text-[color:var(--text-subtle)]">{detail}</p>
-      )}
-    </div>
+    <p role="alert" className="px-[22px] pt-2.5 text-xs text-[color:var(--status-danger-text)]">
+      {message}
+    </p>
   );
 }
 

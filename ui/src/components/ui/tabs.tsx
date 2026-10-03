@@ -24,26 +24,6 @@ export interface TabsProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "o
 export function Tabs({ tabs = [], value, onChange, className, ...props }: TabsProps) {
   const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
 
-  const strip = React.useRef<HTMLDivElement>(null);
-
-  // the scrollbar is hidden, so a strip wider than its frame says so with a
-  // fade on the edge that still has tabs past it (#2004). it is read from the
-  // DOM into data attributes, since a scroll should not re-render the strip
-  const markOverflow = React.useCallback(() => {
-    const el = strip.current;
-    if (!el) return;
-    el.dataset.moreStart = String(el.scrollLeft > 1);
-    el.dataset.moreEnd = String(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-  }, []);
-  React.useLayoutEffect(() => {
-    markOverflow();
-    const el = strip.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(markOverflow);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [markOverflow, tabs.length]);
-
   const selected = tabs.findIndex((t) => t.value === value);
   // a strip whose value matches nothing still needs one tab stop, so the
   // roving tabindex falls back to the first tab
@@ -82,13 +62,8 @@ export function Tabs({ tabs = [], value, onChange, className, ...props }: TabsPr
         // the page sideways (#1242); the scrollbar is hidden, the tabs stay
         // reachable by swipe and by Tab
         "flex items-center gap-1 overflow-x-auto border-b border-[color:var(--border-subtle)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-        "data-[more-end=true]:[mask-image:linear-gradient(to_right,#000_calc(100%-2rem),transparent)]",
-        "data-[more-start=true]:[mask-image:linear-gradient(to_left,#000_calc(100%-2rem),transparent)]",
-        "data-[more-start=true]:data-[more-end=true]:[mask-image:linear-gradient(to_right,transparent,#000_2rem,#000_calc(100%-2rem),transparent)]",
         className,
       )}
-      ref={strip}
-      onScroll={markOverflow}
       role="tablist"
       onKeyDown={onKeyDown}
       {...props}

@@ -17,13 +17,11 @@ pub mod currency;
 pub mod error;
 pub mod guardrail_webhook;
 pub mod guardrails;
-pub mod mcp_log;
 pub mod node_identity;
 pub mod pii_sanitizer;
 pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
-pub mod redact;
 pub mod slug;
 pub mod stability;
 pub mod telemetry;
@@ -40,7 +38,7 @@ pub use config::{
     QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
     RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy,
     TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig,
-    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
+    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, RESERVED_PATHS,
 };
 pub use config_lint::{unknown_keys, UnknownKey};
 pub use config_migrate::{

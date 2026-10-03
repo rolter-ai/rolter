@@ -26,25 +26,6 @@ Only the readonly rows of a file a process loads directly are deployment-wide: a
 
 </Note>
 
-### Project-scoped providers
-
-A provider or provider group is **org-wide** by default: every project of the organization can use it, so projects can share one as a fallback or an option. Give it a project and it becomes **project-scoped**: only virtual keys minted in that project can reach it, through a route or as `provider-slug/model` or `group-slug/model`. A key from another project of the organization, or a key with no project, gets `404 model_not_found`, as if the provider did not exist, and `GET /v1/models` does not list it. Existing providers stay org-wide.
-
-In the dashboard, the provider and provider group sheets have a **Scope** field: **Whole organization** (the default) or one project of the organization. The Providers and Provider Groups lists show it as a **Scope** column (`Project: Gateway`), and a route's target picker offers only its own project's providers and the org-wide ones. Someone who is not an organization admin can only pick their own project, cannot change the scope of an existing provider or group, and cannot set `api_key_env` on a project-scoped provider.
-
-| Where it is used                            | What is allowed                                                                         |
-| ------------------------------------------- | --------------------------------------------------------------------------------------- |
-| A route in project P                        | P's own providers and org-wide ones. A provider scoped to another project: `409`        |
-| A group scoped to project P                 | P's own providers and org-wide ones                                                     |
-| An org-wide group                           | Org-wide providers only: a scoped member would be reachable by every project through it |
-| Scoping an org-wide provider that is in use | Refused with `409` while a route of another project or a group not in P uses it         |
-
-Set it with `project_id` on `POST /api/v1/orgs/{org_id}/providers` and `/provider-groups`, or change it later with `PUT`; send `"project_id": null` to make it org-wide again. The project must belong to the organization. A project admin can create and delete their own project's providers; making one org-wide or moving it, and reading a credential from an environment variable (`api_key_env`), take an organization admin. Project members see their project's providers and the org-wide ones when they list. A project that still owns a provider or group cannot be deleted until they are removed or made org-wide, so deleting a project never widens access silently.
-
-<Note>
-  Rows that break these rules, written around the API with SQL, are left out of the gateway's snapshot one target at a time rather than failing it, and listed by `GET /api/v1/config/problems`.
-</Note>
-
 ### Provider kinds
 
 | Kind                | Use case                                                       |
@@ -187,8 +168,10 @@ organization has a route by that name. Within the organization, the sheet's
 - **Whole organization** (the default) — any key in the organization.
 - **This project** — only keys minted in the project the route lives in
   (`visibility.project_only`). This narrows the route, not the provider behind
-  it. To keep a provider to one project, scope the provider itself, see
-  [Project-scoped providers](#project-scoped-providers).
+  it: a key in another project of the organization can still call the provider
+  directly as `provider-slug/model`. To keep a provider to one project, set the
+  other projects' keys' **Providers** allow-list
+  ([#1919](https://github.com/rolter-ai/rolter/issues/1919)).
 - **Restricted** — only the teams, virtual keys and users you list.
 
 The gateway enforces the organization boundary, `project_only`,

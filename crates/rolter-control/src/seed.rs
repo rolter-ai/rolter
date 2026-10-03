@@ -418,9 +418,6 @@ async fn import_config(
         // import with no credential at all (#1514)
         let api_key_env = p.api_key_env_name();
         warn_on_surplus_api_keys(p);
-        // `project_scoped` means the project the file is imported into: a file
-        // names no projects of its own (#1919)
-        let scope = p.project_scoped.then_some(project_id);
         let existing = providers
             .list(org_id)
             .await?
@@ -437,25 +434,11 @@ async fn import_config(
                     && row.api_base == p.api_base
                     && row.api_key_env.as_deref() == api_key_env
                     && row.egress_proxy == p.egress_proxy
-                    && row.egress_proxies.0 == p.egress_proxies
-                    && row.project_id == scope;
+                    && row.egress_proxies.0 == p.egress_proxies;
                 if unchanged {
                     tracing::info!(provider = %p.name, "provider unchanged");
                     row
                 } else {
-                    // narrowing a provider to one project must not strand a
-                    // route or group of another project that already uses it
-                    if row.project_id != scope {
-                        let dependents = providers.dependents_outside(row.id, scope).await?;
-                        if !dependents.is_empty() {
-                            return Err(anyhow::anyhow!(
-                                "provider '{}' is marked project_scoped but {} use it from \
-                                 outside this project; scope or remove those first",
-                                p.name,
-                                dependents.join(", ")
-                            ));
-                        }
-                    }
                     let updated = providers
                         .update(
                             row.id,
@@ -468,7 +451,6 @@ async fn import_config(
                             Some(api_key_env),
                             Some(p.egress_proxy.as_deref()),
                             Some(&p.egress_proxies),
-                            Some(scope),
                         )
                         .await?;
                     tracing::info!(provider = %p.name, "updated provider from file");
@@ -494,7 +476,6 @@ async fn import_config(
                         api_key_env,
                         p.egress_proxy.as_deref(),
                         &p.egress_proxies,
-                        scope,
                     )
                     .await?;
                 tracing::info!(provider = %p.name, "created provider");
@@ -609,7 +590,7 @@ async fn import_config(
             }
         }
     }
-    import_provider_groups(pool, org_id, project_id, config, &provider_ids).await?;
+    import_provider_groups(pool, org_id, config, &provider_ids).await?;
     import_model_prices(pool, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
@@ -627,7 +608,6 @@ async fn import_config(
 async fn import_provider_groups(
     pool: &PgPool,
     org_id: Uuid,
-    project_id: Uuid,
     config: &GatewayConfig,
     provider_ids: &HashMap<String, Uuid>,
 ) -> anyhow::Result<()> {
@@ -638,7 +618,32 @@ async fn import_provider_groups(
     for g in &config.provider_groups {
         let slug = g.slug.clone().unwrap_or_else(|| slugify(&g.name));
         let strategy = strategy_column(g.strategy);
-        let scope = g.project_scoped.then_some(project_id);
+        let existing = groups
+            .list(org_id)
+            .await?
+            .into_iter()
+            .find(|row| row.slug == slug);
+        let row = match existing {
+            Some(row) if row.name == g.name && row.strategy == strategy => row,
+            // the slug is the stable identity, so it is never rewritten — the
+            // same rule providers follow
+            Some(row) => {
+                let updated = groups
+                    .update(row.id, Some(&g.name), None, Some(strategy))
+                    .await?;
+                tracing::info!(group = %g.name, "updated provider group from file");
+                updated
+            }
+            None => {
+                // groups share the provider slug namespace at the gateway
+                if ProviderRepo(pool).address_slug_in_use(&slug, None).await? {
+                    return Err(taken_elsewhere("provider group", &g.name));
+                }
+                let created = groups.create(org_id, &g.name, &slug, strategy).await?;
+                tracing::info!(group = %g.name, "created provider group");
+                created
+            }
+        };
 
         let mut members = Vec::with_capacity(g.members.len());
         let mut unresolved = false;
@@ -657,73 +662,6 @@ async fn import_provider_groups(
                 }
             }
         }
-        // a project-scoped group may hold its own project's providers and
-        // org-wide ones; an org-wide group only org-wide ones (#1919)
-        let member_ids: Vec<Uuid> = members.iter().map(|(id, _, _)| *id).collect();
-        let outside = ProviderRepo(pool)
-            .scoped_outside(&member_ids, scope)
-            .await?;
-        if !outside.is_empty() {
-            return Err(anyhow::anyhow!(
-                "provider group '{}' holds project-scoped provider(s) {} its own scope does \
-                 not cover; mark the group project_scoped too or use org-wide providers",
-                g.name,
-                outside.join(", ")
-            ));
-        }
-
-        let existing = groups
-            .list(org_id)
-            .await?
-            .into_iter()
-            .find(|row| row.slug == slug);
-        let row = match existing {
-            Some(row)
-                if row.name == g.name && row.strategy == strategy && row.project_id == scope =>
-            {
-                row
-            }
-            // the slug is the stable identity, so it is never rewritten — the
-            // same rule providers follow
-            Some(row) => {
-                // a scope change the file leaves the membership alone for must
-                // still suit the members the group already has
-                if unresolved && row.project_id != scope {
-                    let held: Vec<Uuid> = groups
-                        .members(row.id)
-                        .await?
-                        .into_iter()
-                        .map(|m| m.provider_id)
-                        .collect();
-                    let outside = ProviderRepo(pool).scoped_outside(&held, scope).await?;
-                    if !outside.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "provider group '{}' holds project-scoped provider(s) {} its new \
-                             scope does not cover",
-                            g.name,
-                            outside.join(", ")
-                        ));
-                    }
-                }
-                let updated = groups
-                    .update(row.id, Some(&g.name), None, Some(strategy), Some(scope))
-                    .await?;
-                tracing::info!(group = %g.name, "updated provider group from file");
-                updated
-            }
-            None => {
-                // groups share the provider slug namespace at the gateway
-                if ProviderRepo(pool).address_slug_in_use(&slug, None).await? {
-                    return Err(taken_elsewhere("provider group", &g.name));
-                }
-                let created = groups
-                    .create(org_id, &g.name, &slug, strategy, scope)
-                    .await?;
-                tracing::info!(group = %g.name, "created provider group");
-                created
-            }
-        };
-
         if !unresolved {
             groups.set_members(row.id, &members).await?;
         }
@@ -1251,121 +1189,6 @@ sample_rate = 1.0
             !settings.get().await.unwrap().ui_events,
             "a file silent about ui_events switched the stream back on"
         );
-    }
-
-    /// #1919: `project_scoped` scopes a provider or group to the project the
-    /// file is imported into, the file is the desired state for it in both
-    /// directions, and an export names it again.
-    #[tokio::test]
-    async fn project_scope_round_trips_through_import_and_export() {
-        use rolter_store::ConfigStore;
-        let Some(db) = scratch_db().await else {
-            return;
-        };
-        let pool = db.pool().clone();
-        let (org_id, project_id) = bootstrap_org(&pool).await;
-        let dir = tempdir("scope");
-        let path = dir.join("rolter.toml");
-
-        std::fs::write(
-            &path,
-            r#"
-[[providers]]
-name = "private"
-kind = "openai_compatible"
-api_base = "http://private:8000"
-project_scoped = true
-
-[[providers]]
-name = "shared"
-kind = "openai_compatible"
-api_base = "http://shared:8000"
-
-[[provider_groups]]
-name = "pool"
-project_scoped = true
-[[provider_groups.members]]
-provider = "private"
-[[provider_groups.members]]
-provider = "shared"
-
-[[routes]]
-model = "chat"
-[[routes.targets]]
-provider = "private"
-"#,
-        )
-        .unwrap();
-        import_bootstrap_toml(&pool, org_id, project_id, &path)
-            .await
-            .unwrap();
-        let scope_of = |name: &'static str| {
-            let pool = pool.clone();
-            async move {
-                ProviderRepo(&pool)
-                    .list(org_id)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .find(|row| row.name == name)
-                    .unwrap()
-                    .project_id
-            }
-        };
-        assert_eq!(scope_of("private").await, Some(project_id));
-        assert_eq!(scope_of("shared").await, None);
-        let group = rolter_store::postgres::repo::ProviderGroupRepo(&pool)
-            .list(org_id)
-            .await
-            .unwrap();
-        assert_eq!(group[0].project_id, Some(project_id));
-
-        // the export says the same, which is what makes it re-importable
-        let store = rolter_store::PostgresConfigStore::with_kek(pool.clone(), None);
-        let exported = crate::config_export::render(&store.load().await.unwrap());
-        assert_eq!(
-            exported.matches("project_scoped = true").count(),
-            2,
-            "the scoped provider and group should export as scoped:\n{exported}"
-        );
-
-        // an org-wide group may not hold a scoped provider
-        std::fs::write(
-            &path,
-            r#"
-[[providers]]
-name = "private"
-kind = "openai_compatible"
-api_base = "http://private:8000"
-project_scoped = true
-
-[[provider_groups]]
-name = "leaky"
-[[provider_groups.members]]
-provider = "private"
-"#,
-        )
-        .unwrap();
-        let err = import_bootstrap_toml(&pool, org_id, project_id, &path)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("leaky"), "{err}");
-
-        // the file is the desired state: dropping the flag makes it org-wide
-        std::fs::write(
-            &path,
-            r#"
-[[providers]]
-name = "private"
-kind = "openai_compatible"
-api_base = "http://private:8000"
-"#,
-        )
-        .unwrap();
-        import_bootstrap_toml(&pool, org_id, project_id, &path)
-            .await
-            .unwrap();
-        assert_eq!(scope_of("private").await, None);
     }
 
     /// The upsert must not reach into `provider_keys`: a key rotated through

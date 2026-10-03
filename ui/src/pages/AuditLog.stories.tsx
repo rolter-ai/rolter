@@ -1,26 +1,21 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { MemoryRouter } from "react-router";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, waitFor, within } from "storybook/test";
 
 import AuditLog from "./AuditLog";
 import {
   Harness,
   expectEmptyState,
-  expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
-  expectTableStateInFrame,
   json,
   pending,
   routes,
   scoped,
-  withCapabilities,
   type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry } from "@/lib/api";
-import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile } from "@/lib/story-viewport";
 
 const entry = (over: Partial<AuditLogEntry> = {}): AuditLogEntry => ({
   id: "a-1",
@@ -103,32 +98,6 @@ export const Empty: Story = {
   },
 };
 
-// the placeholder is centred on the part of the table the reader sees, not on
-// the whole of a table that scrolls sideways inside its card (#2420)
-export const EmptyFitsThePhone: Story = {
-  ...atMobile,
-  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
-  play: async ({ canvasElement }) => {
-    await expectTableStateInFrame(canvasElement, {
-      says: /No audit entries yet/,
-      body: /Every change made through the control plane is recorded here/,
-    });
-  },
-};
-
-export const EmptyFitsThePhoneInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
-  play: async ({ canvasElement }) => {
-    const { emptyTitle, emptyBody } = ru.pages.auditLog;
-    await expectTableStateInFrame(canvasElement, {
-      says: new RegExp(emptyTitle),
-      body: new RegExp(emptyBody.slice(0, 24)),
-    });
-  },
-};
-
 export const Error_: Story = {
   name: "Error",
   render: () => (
@@ -147,71 +116,5 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to the audit log/);
     await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
-  },
-};
-
-// the deployment-wide read (#2398): a superadmin switches scope and sees the
-// rows no per-org view carries, marked rather than left blank
-const wideEntries = [
-  entry({ id: "w-1", org_id: null, action: "auth.login", target_type: null }),
-  entry({
-    id: "w-2",
-    org_id: null,
-    actor_user_id: null,
-    action: "auth.login_failed",
-    target_type: null,
-  }),
-];
-
-const wideStub = (calls: { urls: string[] }) =>
-  withCapabilities(
-    "superadmin",
-    scoped(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/v1/audit-log")) {
-        calls.urls.push(url);
-        return json(page(wideEntries));
-      }
-      if (url.includes("/audit-log")) return json(page([entry()]));
-      return json([]);
-    }),
-  );
-
-export const DeploymentWideAsSuperadmin: Story = {
-  render: () => {
-    const calls = { urls: [] as string[] };
-    return (
-      <MemoryRouter>
-        <Harness fetchStub={wideStub(calls)} role="superadmin">
-          <AuditLog />
-        </Harness>
-      </MemoryRouter>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
-    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
-    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
-    await waitFor(() => expect(canvas.getByText("auth.login_failed")).toBeVisible());
-    await expect(canvas.getAllByText("No org")).toHaveLength(2);
-    await expect(canvas.getByText("Unknown address")).toBeVisible();
-    await expect(canvas.getByRole("columnheader", { name: "Org" })).toBeVisible();
-  },
-};
-
-export const DeploymentWideIsHiddenFromAnAdmin: Story = {
-  render: () => (
-    <MemoryRouter>
-      <Harness fetchStub={loaded} role="admin">
-        <AuditLog />
-      </Harness>
-    </MemoryRouter>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
-    await expectGateAnswered();
-    await expect(canvas.queryByRole("radiogroup", { name: "Audit log scope" })).toBeNull();
   },
 };

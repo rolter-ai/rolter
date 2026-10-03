@@ -26,90 +26,6 @@ honest — which is why both uncertain cases fall _open_.
 `crates/rolter-control/src/rbac_matrix.rs`, spelled exactly as the wire format
 spells it, so there is no second vocabulary to keep in step.
 
-## What `effective` answers per scope
-
-`allowed` is not one role applied to every row. Each capability is decided at
-the part of the queried chain its `scope` in `CAPABILITIES` names, which is
-exactly the chain its route's guard passes to `authorize`:
-
-| row `scope` | evaluated against    | so a membership held at… reaches it |
-| ----------- | -------------------- | ----------------------------------- |
-| `org`       | the org alone        | the org only                        |
-| `team`      | org + team           | the org, or that team               |
-| `project`   | org + team + project | the org, that team, or that project |
-
-A team admin asked at `(org, team, project)` therefore gets `route:create` (a
-team-scoped row) but not `team:create` or `custom_role:read` (org-scoped rows),
-which the guard would refuse with a 403. Custom-role grants are trimmed the
-same way, and `deployment` rows keep the whole chain because they name no
-tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
-`rbac_matrix.rs` walks every row against the guard's own decision, so the
-advisory answer cannot promise more than the guard grants (#1877).
-
-`provider` and `provider_group` are `project` rows although a row may also be
-org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
-a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
-on a provider scoped to that project, and an org admin still passes through the
-org membership. The page-level answer cannot tell an org-wide row from a scoped
-one: a project admin would see Edit on an org-wide provider and the handler
-would answer `403`, because `crud.rs` checks such a row at the org. That check,
-not this table, is the authority, so the two list screens gate each row at the
-row's own scope (#2522), see
-[Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
-membership reaches neither.
-
-`budget` and `rate_limit` are `project` rows for the same reason (#2527): a caller
-whose only role is on a project must read the caps that throttle their own keys,
-and a project membership never satisfied an org-scoped read. The row's own scope
-is still what the guard checks, so the writes are unchanged: a project admin may
-write caps on their project and its keys, never on the team or org above it. The
-list routes `GET /api/v1/budgets` and `GET /api/v1/rate-limits` take a
-`scope_type` and `scope_id`, and answer `200` for the caller's own project, and for
-the team and org above any place they hold a role; another project, a sibling team,
-a customer or a business unit answer `403`.
-
-The Roles & Permissions screen (`rbac` in `nav.tsx`) names no resource, so no
-capability gates the page: `GET /api/v1/rbac/matrix` publishes what roles can do,
-not anyone's data, and answers every signed-in caller. The org's custom roles on
-it keep their own check (a role anywhere in that org), and the write controls stay
-gated on `custom_role:create`, `:update` and `:delete`.
-
-## Gating a row at its own scope
-
-A capability whose rows may live at more than one scope (`provider`,
-`provider_group`) cannot be answered once for the page. Wrap the row's controls
-in `RowCapabilityScope` (`ui/src/lib/can.tsx`) and hand it
-`rowGateScope(row, orgScope.byTeam)` from `ui/src/lib/provider-scope.ts`:
-
-```tsx
-<RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
-  <GatedButton gate="provider:update" control="provider-edit">
-    …
-  </GatedButton>
-  <DeleteIconButton gate="provider:delete" control="provider-delete" … />
-</RowCapabilityScope>
-```
-
-It swaps the capability context for the controls below it, so the primitives
-stay as they are and keep recording their refusals. An org-wide row
-(`project_id` null) is asked at the org alone, where a project membership
-reaches nothing; a project row is asked at its org + team + project, the team
-read from the org's project list. The query key is the provider's, so rows
-sharing a scope share one request. A project the dashboard cannot place
-(deleted, or not listable by this caller) keeps the page's answer and the `403`
-stays the backstop. Stories play a project admin with
-`role={adminOfProject(id)}` on `Harness`, which answers `rbac/effective` per
-queried chain.
-
-Budgets and rate limits (#2529) are the second user. A cap names its own scope,
-so `capGateScope(row, { byTeam, keyProjectId })` (`ui/src/lib/limit-scope.ts`)
-maps `scope_type` to the chain: `org` is asked at the org alone, `team` at org +
-team (`RowScope` carries a `teamId` with no project for it), `project` at org +
-team + project, and `virtual_key` at the project the page lists keys of. A
-business unit or customer cap, and a project the dashboard cannot place, keep
-the page's answer. A project admin therefore edits their project's caps and is
-refused the team's and the org's above it, as the guard does.
-
 ## Three answers, not two
 
 `useCan()` returns `boolean | undefined`, and the third one is load-bearing:
@@ -180,16 +96,6 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
   screen a member opens (#1848).
-- **The pending invitations on the Users screen.** The section reads
-  `invitation:read` through `useCan()` for its presence, the way the checklist
-  does: it waits for the answer, is absent on an explicit `false`, and sends no
-  request then. The control plane filters the list below the org to the teams
-  and projects the caller administers, so a `403` from the list is an answer
-  too and hides the section instead of raising a `forbidden` `LoadError` on a
-  screen a viewer may open. The revoke button is a `RowIconButton` on
-  `invitation:delete`; the confirmation still says what revoking at the
-  invitation's own scope takes when the server refuses a click the gate allowed
-  (#2054).
 - **An action a screen takes on its own.** The Playground mints its session
   key as it opens, and minting is `my_virtual_key:create`, which takes the
   member role. So the automatic mint waits for the answer and does not go out
@@ -213,11 +119,9 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   `MemoryRouter`.
 - **The deployment-scoped settings screens.** Feature flags, the runtime,
   logging, compatibility, client, model-default, adaptive and security policy,
-  the cluster, connectors and alerting are wrapped in
+  the cluster, connectors, alerting and the MCP logs are wrapped in
   `superadminOnly()` (`ui/src/components/ForbiddenScreen.tsx`). A non-superadmin
-  never mounts them, so they send no request to be refused. The MCP logs are
-  scoped on the server since #1831 (`mcp_log:read` is a viewer-level project
-  capability); the screen stays wrapped until its dashboard half lands.
+  never mounts them, so they send no request to be refused.
 
 ## Disabled has to say why
 

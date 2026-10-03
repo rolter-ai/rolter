@@ -31,8 +31,8 @@ use rolter_store::postgres::repo::{
 use crate::access_control::{merge_policies, MergedPolicy};
 use crate::crud::{pool, ApiError, ApiResult};
 use crate::rbac::{
-    best_role, custom_base_role, custom_grants_allow, grant_applies, reaches_org, resolve_role,
-    role_rank, user_authorized, Principal, ScopeChain, ScopeFilter, ROLES,
+    best_role, custom_base_role, grant_applies, reaches_org, resolve_role, role_rank, Principal,
+    ScopeChain, ScopeFilter, ROLES,
 };
 use crate::ControlState;
 
@@ -171,14 +171,9 @@ const CAPABILITIES: &[Capability] = &[
         update: ADMIN,
         delete: NA,
     },
-    // a provider or group may be scoped to one project of an org (#1919), whose
-    // admin then manages it. The scope is `project` so the advisory answer
-    // reaches a project role; an org admin still passes there through the
-    // org membership. An org-wide row stays an org admin's: crud.rs checks
-    // the org for it, and that, not this table, is the authority
     Capability {
         resource: "provider",
-        scope: "project",
+        scope: "org",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -194,7 +189,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "provider_group",
-        scope: "project",
+        scope: "org",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -281,14 +276,9 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
-    // budgets and rate limits attach to any scope, so the scope is `project`:
-    // the read answer reaches a project member, who may see the caps that
-    // throttle their own keys (#2527). The writes are unchanged, the guard
-    // still checks the row's own scope, so an org or team row stays an
-    // admin's of that org or team; the list routes narrow what a reader sees
     Capability {
         resource: "budget",
-        scope: "project",
+        scope: "org",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -296,7 +286,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "rate_limit",
-        scope: "project",
+        scope: "org",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -527,15 +517,6 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
-    // org-less account events belong to no org, so no org read returns them
-    Capability {
-        resource: "deployment_audit_log",
-        scope: "deployment",
-        read: SUPER,
-        create: NA,
-        update: NA,
-        delete: NA,
-    },
     Capability {
         resource: "invitation",
         scope: "org",
@@ -721,15 +702,11 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
-    // MCP tool-call telemetry: written by the gateway, so only a superadmin
-    // (or the admin token) creates a row. Reads follow the request log
-    // (#1831): a user reads the rows of the orgs, teams and projects they hold
-    // a role in, plus every row of their own OAuth sessions, and the tool
-    // arguments and results need the `request_payload` floor
+    // MCP tool-call telemetry: written by the gateway, read by an operator
     Capability {
         resource: "mcp_log",
-        scope: "project",
-        read: VIEWER,
+        scope: "deployment",
+        read: SUPER,
         create: SUPER,
         update: NA,
         delete: NA,
@@ -1051,7 +1028,7 @@ async fn get_effective(
         resolve_role(&memberships, chain.org, chain.team, chain.project),
         custom_base_role(&grants, chain),
     );
-    let mut allowed = allowed_for(superadmin, &memberships, &grants, chain);
+    let mut allowed = allowed_for(superadmin, role, &grants, chain);
     // the matrix states the default `request_payload` floor; a project admin
     // may lower it to viewer for their own project (#1820). Any role at all is
     // at least a viewer's, so holding one there is enough
@@ -1130,38 +1107,17 @@ fn merged_policy(policies: &[AccessProfilePolicy]) -> Option<MergedPolicy> {
     (!merged.is_unrestricted()).then_some(merged)
 }
 
-/// The part of `chain` a guard on a `scope` resource asks about. An org-scoped
-/// route checks `ScopeChain::org` alone, so a team or project membership must
-/// not count there; a team-scoped one checks org + team.
-fn chain_at(scope: &str, chain: ScopeChain) -> ScopeChain {
-    match scope {
-        "org" => ScopeChain {
-            team: None,
-            project: None,
-            ..chain
-        },
-        "team" => ScopeChain {
-            project: None,
-            ..chain
-        },
-        _ => chain,
-    }
-}
-
-/// The `resource:action` pairs a caller (or superadmin) may perform. Each
-/// capability is decided at the part of `chain` its `scope` names, by the same
-/// rules `authorize` applies, so the advisory answer cannot promise what the
-/// guard then refuses. Default-deny: a caller with no membership reaching the
-/// scope gets only what needs none.
+/// The `resource:action` pairs a caller with `role` (or superadmin) may
+/// perform. Default-deny: a caller with no membership at the scope gets an
+/// empty list, exactly as `authorize` would.
 fn allowed_for(
     superadmin: bool,
-    memberships: &[Membership],
+    role: Option<Role>,
     grants: &[EffectiveGrant],
     chain: ScopeChain,
 ) -> Vec<String> {
     let mut allowed = Vec::new();
     for cap in CAPABILITIES {
-        let at = chain_at(cap.scope, chain);
         for action in Action::ALL {
             let Some(authority) = cap.authority(action) else {
                 continue;
@@ -1174,16 +1130,12 @@ fn allowed_for(
                 Authority::Authenticated => true,
                 Authority::Role(required) => {
                     superadmin
-                        || user_authorized(memberships, at, required)
-                        || custom_grants_allow(
-                            grants,
-                            at,
-                            Requirement {
-                                resource: cap.resource,
-                                action,
-                                authority,
-                            },
-                        )
+                        || role.is_some_and(|r| role_rank(r) >= role_rank(required))
+                        || grants.iter().any(|g| {
+                            grant_applies(g, chain)
+                                && g.resource.as_deref() == Some(cap.resource)
+                                && g.action.as_deref() == Some(action_key(action))
+                        })
                 }
             };
             if permitted {
@@ -1206,234 +1158,10 @@ pub(crate) const fn action_key(action: Action) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-
-    fn membership(
-        org: Option<Uuid>,
-        team: Option<Uuid>,
-        project: Option<Uuid>,
-        role: &str,
-    ) -> Membership {
-        Membership {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            org_id: org,
-            team_id: team,
-            project_id: project,
-            role: role.to_string(),
-            source: "manual".into(),
-            created_at: Utc::now(),
-        }
-    }
-
-    fn chain() -> ScopeChain {
-        ScopeChain {
-            org: Some(Uuid::from_u128(1)),
-            team: Some(Uuid::from_u128(2)),
-            project: Some(Uuid::from_u128(3)),
-        }
-    }
-
-    /// what `role` at the whole chain is allowed, via an org membership
-    fn as_role(role: Option<Role>) -> Vec<String> {
-        let memberships: Vec<Membership> = role
-            .map(|r| {
-                let name = match r {
-                    Role::Admin => "admin",
-                    Role::Member => "member",
-                    Role::Viewer => "viewer",
-                };
-                membership(chain().org, None, None, name)
-            })
-            .into_iter()
-            .collect();
-        allowed_for(false, &memberships, &[], chain())
-    }
-
-    #[test]
-    fn a_team_admin_is_not_promised_org_scoped_capabilities() {
-        let ms = [membership(chain().org, chain().team, None, "admin")];
-        let allowed = allowed_for(false, &ms, &[], chain());
-        // org is org-scoped: the guard checks the org alone and a team
-        // membership does not reach it
-        assert!(!allowed.contains(&"team:create".to_string()));
-        assert!(!allowed.contains(&"custom_role:read".to_string()));
-        // route is team-scoped, so the team membership does
-        assert!(allowed.contains(&"route:create".to_string()));
-    }
-
-    #[test]
-    fn a_project_member_does_not_read_org_scoped_resources() {
-        let ms = [membership(
-            chain().org,
-            chain().team,
-            chain().project,
-            "member",
-        )];
-        let allowed = allowed_for(false, &ms, &[], chain());
-        assert!(!allowed.contains(&"custom_role:read".to_string()));
-        assert!(!allowed.contains(&"team:read".to_string()));
-    }
-
-    /// the caps that throttle a project's keys are readable by anyone holding
-    /// a role on it, and only readable (#2527)
-    #[test]
-    fn a_project_viewer_reads_budgets_and_rate_limits_but_writes_none() {
-        let c = chain();
-        let viewer = [membership(c.org, c.team, c.project, "viewer")];
-        let allowed = allowed_for(false, &viewer, &[], c);
-        for res in ["budget", "rate_limit"] {
-            assert!(allowed.contains(&format!("{res}:read")), "{res}:read");
-            for action in ["create", "update", "delete"] {
-                assert!(
-                    !allowed.contains(&format!("{res}:{action}")),
-                    "{res}:{action}"
-                );
-            }
-        }
-        // asked at the org alone, or by a caller with no role, nothing is read
-        let org_only = ScopeChain::org(c.org.unwrap_or_default());
-        let allowed = allowed_for(false, &viewer, &[], org_only);
-        assert!(!allowed.contains(&"budget:read".to_string()));
-        let allowed = allowed_for(false, &[], &[], c);
-        assert!(!allowed.contains(&"rate_limit:read".to_string()));
-        // an org viewer still reads at any chain
-        let org_viewer = [membership(c.org, None, None, "viewer")];
-        for chain in [c, org_only] {
-            let allowed = allowed_for(false, &org_viewer, &[], chain);
-            assert!(allowed.contains(&"budget:read".to_string()));
-        }
-    }
-
-    /// a provider or group may be scoped to one project (#1919), so a project
-    /// admin's own project reaches the capability crud.rs grants them, while a
-    /// project viewer and a caller who names no project get no write
-    #[test]
-    fn a_project_admin_is_promised_provider_writes_on_their_project() {
-        let c = chain();
-        let admin = [membership(c.org, c.team, c.project, "admin")];
-        let allowed = allowed_for(false, &admin, &[], c);
-        for res in ["provider", "provider_group"] {
-            for action in ["read", "create", "update", "delete"] {
-                assert!(
-                    allowed.contains(&format!("{res}:{action}")),
-                    "{res}:{action}"
-                );
-            }
-        }
-        // still not an org-scoped capability
-        assert!(!allowed.contains(&"team:create".to_string()));
-
-        let viewer = [membership(c.org, c.team, c.project, "viewer")];
-        let allowed = allowed_for(false, &viewer, &[], c);
-        assert!(allowed.contains(&"provider:read".to_string()));
-        assert!(!allowed.contains(&"provider:create".to_string()));
-        assert!(!allowed.contains(&"provider_group:delete".to_string()));
-
-        // asked at the org alone, a project membership does not reach it
-        let org_only = ScopeChain::org(c.org.unwrap_or_default());
-        let allowed = allowed_for(false, &admin, &[], org_only);
-        assert!(!allowed.contains(&"provider:create".to_string()));
-
-        // an org admin still passes, with or without a project in the query
-        let org_admin = [membership(c.org, None, None, "admin")];
-        for chain in [c, org_only] {
-            let allowed = allowed_for(false, &org_admin, &[], chain);
-            assert!(allowed.contains(&"provider:create".to_string()));
-            assert!(allowed.contains(&"provider_group:update".to_string()));
-        }
-    }
-
-    fn grant(
-        org: Option<Uuid>,
-        team: Option<Uuid>,
-        resource: &str,
-        action: &str,
-    ) -> EffectiveGrant {
-        EffectiveGrant {
-            profile_id: Uuid::from_u128(10),
-            role_id: Uuid::from_u128(11),
-            role_slug: "custom".into(),
-            base_role: "none".into(),
-            org_id: org,
-            team_id: team,
-            project_id: None,
-            resource: Some(resource.into()),
-            action: Some(action.into()),
-        }
-    }
-
-    #[test]
-    fn a_team_custom_grant_is_trimmed_like_a_membership() {
-        let g = [grant(chain().org, chain().team, "team", "create")];
-        let allowed = allowed_for(false, &[], &g, chain());
-        assert!(!allowed.contains(&"team:create".to_string()));
-    }
-
-    /// `allowed_for` and the guard must not drift: for every row, the answer
-    /// equals what `authorize` decides at the chain that row's route asks at
-    #[test]
-    fn allowed_for_agrees_with_authorize_on_every_row() {
-        let c = chain();
-        let scopes = [
-            (c.org, None, None),
-            (c.org, c.team, None),
-            (c.org, c.team, c.project),
-            (None, c.team, None),
-            (None, None, c.project),
-        ];
-        let roles = ["viewer", "member", "admin"];
-        for (o, t, p) in scopes {
-            for role in roles {
-                let ms = [membership(o, t, p, role)];
-                let grants = [
-                    grant(c.org, None, "provider", "create"),
-                    grant(c.org, c.team, "route", "update"),
-                ];
-                for use_grants in [false, true] {
-                    let g: &[EffectiveGrant] = if use_grants { &grants } else { &[] };
-                    let allowed = allowed_for(false, &ms, g, c);
-                    for cap in CAPABILITIES {
-                        // what the route's guard passes to `authorize`
-                        let guard = match cap.scope {
-                            "org" => ScopeChain::org(c.org.unwrap_or_default()),
-                            "team" => ScopeChain {
-                                org: c.org,
-                                team: c.team,
-                                project: None,
-                            },
-                            _ => c,
-                        };
-                        for action in Action::ALL {
-                            let Some(authority) = cap.authority(action) else {
-                                continue;
-                            };
-                            let Authority::Role(required) = authority else {
-                                continue;
-                            };
-                            let requirement = Requirement {
-                                resource: cap.resource,
-                                action,
-                                authority,
-                            };
-                            let decided = user_authorized(&ms, guard, required)
-                                || custom_grants_allow(g, guard, requirement);
-                            let pair = format!("{}:{}", cap.resource, action_key(action));
-                            assert_eq!(
-                                allowed.contains(&pair),
-                                decided,
-                                "{pair} for a {role} membership at ({o:?}, {t:?}, {p:?}), grants {use_grants}",
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn a_viewer_may_read_everything_scoped_and_write_nothing() {
-        let allowed = as_role(Some(Role::Viewer));
+        let allowed = allowed_for(false, Some(Role::Viewer), &[], ScopeChain::default());
         assert!(allowed.contains(&"provider:read".to_string()));
         assert!(allowed.contains(&"route:read".to_string()));
         assert!(!allowed.iter().any(|a| a.ends_with(":create")));
@@ -1456,8 +1184,8 @@ mod tests {
     /// user's rows — the handlers narrow every one of them to the owner.
     #[test]
     fn a_member_may_act_on_their_own_behalf_and_nothing_more() {
-        let member = as_role(Some(Role::Member));
-        let viewer = as_role(Some(Role::Viewer));
+        let member = allowed_for(false, Some(Role::Member), &[], ScopeChain::default());
+        let viewer = allowed_for(false, Some(Role::Viewer), &[], ScopeChain::default());
         let extra: Vec<_> = member.iter().filter(|a| !viewer.contains(a)).collect();
         assert_eq!(
             extra,
@@ -1475,7 +1203,7 @@ mod tests {
 
     #[test]
     fn an_admin_writes_scoped_resources_but_not_deployment_policy() {
-        let allowed = as_role(Some(Role::Admin));
+        let allowed = allowed_for(false, Some(Role::Admin), &[], ScopeChain::default());
         assert!(allowed.contains(&"provider:create".to_string()));
         assert!(allowed.contains(&"virtual_key:delete".to_string()));
         assert!(allowed.contains(&"audit_log:read".to_string()));
@@ -1494,7 +1222,7 @@ mod tests {
     /// have no scope a membership could be held at (#766).
     #[test]
     fn no_membership_means_only_the_global_catalogs() {
-        let allowed = as_role(None);
+        let allowed = allowed_for(false, None, &[], ScopeChain::default());
         // model labels join the list for the same reason model prices are on
         // it: the pricing catalog is deployment-wide, so a label on a model
         // names no tenant and there is no membership to hold over it (#985)
@@ -1517,7 +1245,7 @@ mod tests {
 
     #[test]
     fn superadmin_holds_every_supported_action() {
-        let allowed = allowed_for(true, &[], &[], ScopeChain::default());
+        let allowed = allowed_for(true, None, &[], ScopeChain::default());
         let supported: usize = CAPABILITIES
             .iter()
             .map(|cap| {
@@ -1533,8 +1261,8 @@ mod tests {
     #[test]
     fn unsupported_actions_are_absent_for_everyone() {
         for allowed in [
-            allowed_for(true, &[], &[], ScopeChain::default()),
-            as_role(Some(Role::Admin)),
+            allowed_for(true, None, &[], ScopeChain::default()),
+            allowed_for(false, Some(Role::Admin), &[], ScopeChain::default()),
         ] {
             // an audit log is append-only; nobody deletes one through the API
             assert!(!allowed.contains(&"audit_log:delete".to_string()));
@@ -1581,7 +1309,6 @@ mod tests {
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
         ("crud.rs", include_str!("crud.rs")),
-        ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
@@ -1602,20 +1329,17 @@ mod tests {
         ),
         ("mcp_oauth_flow.rs", include_str!("mcp_oauth_flow.rs")),
         ("me.rs", include_str!("me.rs")),
-        ("me_saved_views.rs", include_str!("me_saved_views.rs")),
         ("mfa.rs", include_str!("mfa.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
-        ("public_routes.rs", include_str!("public_routes.rs")),
         ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),
         ("rbac_matrix.rs", include_str!("rbac_matrix.rs")),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),
-        ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),
         ("sso.rs", include_str!("sso.rs")),
@@ -1677,38 +1401,6 @@ mod tests {
             listed, on_disk,
             "add the new module to MODULES so its guards are checked",
         );
-    }
-
-    /// Every control-plane mutation body is decoded through `SafeJson`, which
-    /// rejects control characters in every string and answers in the OpenAI
-    /// error envelope (#1968). A plain `Json<T>` extractor skips both, so only
-    /// the modules below, which speak another wire format, may take one.
-    #[test]
-    fn no_handler_takes_a_plain_json_body() {
-        // login / sso exchange run before a session exists and answer their
-        // own envelope; scim speaks rfc 7644 errors; ui_events and mcp_logs
-        // are machine ingest endpoints with their own bounded schemas
-        const EXEMPT: &[&str] = &[
-            "auth.rs",
-            "sso.rs",
-            "scim.rs",
-            "scim_groups.rs",
-            "ui_events.rs",
-            "mcp_logs.rs",
-        ];
-        for (name, source) in MODULES {
-            if EXEMPT.contains(name) {
-                continue;
-            }
-            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-            for line in production.lines() {
-                let line = line.trim_start();
-                assert!(
-                    !(line.starts_with("Json(") && line.contains("): Json<")),
-                    "{name} takes a plain Json body ({line}); use SafeJson",
-                );
-            }
-        }
     }
 
     /// No handler names a `Role` — every guarded route resolves its requirement

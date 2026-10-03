@@ -12,7 +12,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - `cargo nextest run --workspace` — run tests (as CI does; install with `cargo install cargo-nextest`). Add `cargo test --doc --workspace` for doc tests, or run both via `just test`. Plain `cargo test --workspace` also works.
 - `cargo fmt --all` — format (run before committing)
 - `cargo clippy --workspace --all-targets -- -D warnings` — lint (must be clean)
-- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` — the `cargo doc (warnings = errors)` step of the `rust lint` job. Run it before pushing: it is the one CI check nothing local reproduces, and it fails on things clippy is silent about — most often a `[`Link`]` from a public item to a private one (`rustdoc::private_intra_doc_links`), which is easy to write while documenting _why_ a public thing exists in terms of the internals it wraps
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` — the `cargo doc (warnings = errors)` step of the `rust lint` job. Run it before pushing: it is the one CI check nothing local reproduces, and it fails on things clippy is silent about — most often a `[`Link`]` from a public item to a private one (`rustdoc::private_intra_doc_links`), which is easy to write while documenting _why_ a public thing exists in terms of the internals it wraps
 - `cargo run -p rolter-gateway -- --config rolter.toml` — run the data plane (add `--snapshot-url http://control:4001/internal/snapshot` to hot-reload config from the control plane without a restart)
 - `cargo run -p rolter-control` — run the control plane + UI host (add `--database-url`/`ROLTER_DATABASE_URL` for the postgres-backed store, CRUD API and `/internal/snapshot`)
 - `cargo run -p rolter-control --features postgres --bin rolter-seed -- --import rolter.example.toml` — idempotent DB bootstrap (org/team/project, optional admin user, providers/routes). The `--import` file is the **desired state**: re-importing an edited file updates the rows it already created, so the database ends up matching the file. It never overwrites a credential sealed through the dashboard, never changes a provider's slug, and never deletes rows the file no longer mentions
@@ -34,6 +34,43 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - Worktrunk is the lifecycle layer only. Commit and push with standard Git, publish and merge with `gh`/GitHub, and keep hosted `ci-ok` authoritative.
 - Do not use `wt merge`, `wt step commit`, `wt step squash`, or `wt step push`. Do not use `--force` or `--force-delete` in automated cleanup.
 - Preserve branches with `wt remove --no-delete-branch` whenever merge state is uncertain. Never clean another agent's dirty worktree.
+
+## Two build stations
+
+Two machines run Claude sessions against this repository at the same time:
+
+| Station       | Hardware                             | Owns                                                                                       |
+| ------------- | ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `station:mac` | macOS laptop                         | the dashboard (`ui/`), UI-facing docs, small control-plane glue a UI change needs          |
+| `station:rtx` | Linux, RTX 3090 + Ryzen 5900X, 64 GB | Rust crates, migrations, CI/infra, perf and load work, real-engine (vllm) integration runs |
+
+The split exists so two sessions never edit the same files or race the same
+branch. Every open issue and pull request carries exactly one of the two
+labels, or none when it is Ilya's alone (release PRs).
+
+- **Never start work on an issue or PR labelled for the other station.** Not a
+  branch, not a worktree, not a comment saying "I'll take this". The label is
+  the lock.
+- **Claim before you branch.** An unlabelled issue is unclaimed: add your
+  station's label, set Status to `In Progress`, then create the branch. Check
+  the label again right before pushing — a hand-over may have happened in
+  between.
+- **New issues get a label at filing time.** Decide from the "Owns" column;
+  when an issue has both a backend and a dashboard half, label it `station:rtx`
+  and let the rtx session open a child issue labelled `station:mac` for the UI
+  once the backend PR is up.
+- **Hand-over is explicit.** Swap the label, post one comment saying why and
+  where the branch is, and leave the branch pushed. The receiving session
+  continues that branch rather than starting a new one.
+- **PRs inherit the label of the issue they close.** A PR with no label is
+  fair game for either station to review, but only its station merges it.
+- **Merging is per-station too.** Each station merges only its own labelled
+  PRs; both rebase their queue on `master` after the other station lands
+  something.
+
+A session learns which station it is from its per-machine memory, not from
+the repo: on first use of a machine, tell the session "this machine is
+`station:mac`" (or `rtx`) and ask it to remember that.
 
 ## Code standards
 
@@ -117,10 +154,8 @@ docs(architecture): document reload-free config propagation
   authoring tool — the footer is injected on create only, so a direct patch
   sticks. Strip it as soon as you see it: `ci-ok` reads the live body after the
   gate, so the PR's opening run goes green on its own once the line is gone.
-  The `edited` run the strip starts waits for the opening run's gate and then
-  reports its verdict, so it ends green with it; a red `ci-ok` is never
-  superseded by a newer green one on the same sha, so a red one left over from
-  a failed gate has to be re-run (`gh run rerun <id> --failed`). This is a
+  The `edited` run the strip starts may go red first with _gate still running_;
+  leave it, the opening run's newer `ci-ok` supersedes it. This is a
   workaround for tooling this repo does not control; the check itself never
   gets a carve-out for it. See
   [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).

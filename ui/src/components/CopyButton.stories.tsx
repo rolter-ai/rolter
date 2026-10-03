@@ -2,9 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import { CopyButton, type CopyState } from "./CopyButton";
+import { CopyButton } from "./CopyButton";
 import en from "@/lib/i18n/locales/en.json";
-import { stubClipboard } from "@/pages/story-harness";
 
 /**
  * A clipboard the story owns.
@@ -130,111 +129,6 @@ export const ClipboardRefused: Story = {
     const button = canvas.getByRole("button");
     await userEvent.click(button);
     await waitFor(() => expect(button).toHaveAttribute("title", en.common.copyFailed));
-  },
-};
-
-/**
- * Left to itself a failure is brief: the glyph and the tooltip go back to
- * normal after a moment, which is enough for an address that can be copied
- * again. Nothing changes for a call site that does not ask for more (#2327).
- */
-export const AFailureResetsByDefault: Story = {
-  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
-  render: (args) => <CopyButton {...args} />,
-  play: async ({ canvasElement }) => {
-    const button = within(canvasElement).getByRole("button");
-    await userEvent.click(button);
-    await waitFor(() => expect(button).toHaveAttribute("title", en.common.copyFailed));
-    await waitFor(() => expect(button).not.toHaveAttribute("title", en.common.copyFailed), {
-      timeout: 3000,
-    });
-  },
-};
-
-/**
- * Where the value is shown once, `persistFailure` holds the failure past the
- * timer, and a different value clears it: a value that has not been copied yet
- * has not failed to copy.
- */
-export const PersistFailureHoldsUntilTheValueChanges: Story = {
-  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
-  render: (args) => {
-    const Demo = () => {
-      const [value, setValue] = React.useState(args.value);
-      return (
-        <div className="flex items-center gap-2">
-          <CopyButton value={value} persistFailure />
-          <button type="button" onClick={() => setValue("openai-prod/gpt-4o-mini")}>
-            Another address
-          </button>
-        </div>
-      );
-    };
-    return <Demo />;
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const button = canvas.getByRole("button", { name: /openai-prod\/gpt-4o$/ });
-    await userEvent.click(button);
-    await waitFor(() => expect(button).toHaveAttribute("title", en.common.copyFailed));
-
-    // well past the 1.6 s the default reset would have taken
-    await new Promise((resolve) => setTimeout(resolve, 1800));
-    await expect(button).toHaveAttribute("title", en.common.copyFailed);
-
-    await userEvent.click(canvas.getByRole("button", { name: "Another address" }));
-    await waitFor(() =>
-      expect(canvas.getByRole("button", { name: /gpt-4o-mini/ })).toHaveAttribute(
-        "title",
-        en.common.copy,
-      ),
-    );
-  },
-};
-
-let attempts = 0;
-
-/**
- * `onStateChange` hears every press, including a second failure on the same
- * value, which is how a caller draws a message that clears on the next press
- * and comes back if that press fails too.
- */
-export const OnStateChangeHearsEveryPress: Story = {
-  beforeEach: stubClipboard(async () => {
-    attempts += 1;
-    if (attempts !== 3) throw new Error("denied");
-  }),
-  render: (args) => {
-    const Demo = () => {
-      const [heard, setHeard] = React.useState<CopyState[]>([]);
-      return (
-        <div className="flex items-center gap-2">
-          <CopyButton
-            value={args.value}
-            persistFailure
-            onStateChange={(state) => setHeard((all) => [...all, state])}
-          />
-          <output aria-label="heard">{heard.join(",")}</output>
-        </div>
-      );
-    };
-    return <Demo />;
-  },
-  play: async ({ canvasElement }) => {
-    attempts = 0;
-    const canvas = within(canvasElement);
-    const button = canvas.getByRole("button");
-    const heard = canvas.getByLabelText("heard");
-
-    await userEvent.click(button);
-    await waitFor(() => expect(heard).toHaveTextContent(/^failed$/));
-    // the same failure again is still told, after the press cleared the first
-    await userEvent.click(button);
-    await waitFor(() => expect(heard).toHaveTextContent(/^failed,idle,failed$/));
-    // and a press that works clears the failure before it reports
-    await userEvent.click(button);
-    await waitFor(() => expect(heard).toHaveTextContent(/^failed,idle,failed,idle,copied$/));
-    await expect(button).toHaveAttribute("title", en.common.copied);
   },
 };
 

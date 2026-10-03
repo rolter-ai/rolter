@@ -177,11 +177,6 @@ fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]
         if !provider.egress_proxies.is_empty() {
             key(out, "egress_proxies", &provider.egress_proxies);
         }
-        // a file names no projects, so the scope round-trips as "the project
-        // this file is imported into" (#1919)
-        if provider.project_scoped {
-            key(out, "project_scoped", &true);
-        }
     }
 }
 
@@ -198,9 +193,6 @@ fn render_provider_group_tier(out: &mut String, tier: &str, entries: &[ProviderG
         key(out, "name", &group.name);
         key(out, "slug", &group_slug(group));
         key(out, "strategy", strategy_name(group.strategy));
-        if group.project_scoped {
-            key(out, "project_scoped", &true);
-        }
         // members attach to the most recent `[[provider_groups.<tier>]]`, so
         // this must stay inside the loop and after the group's own scalar keys
         for member in &group.members {

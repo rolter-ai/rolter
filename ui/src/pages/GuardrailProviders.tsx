@@ -269,7 +269,7 @@ function GuardrailProvidersScreen() {
                     disabled={remove.isPending && remove.variables === provider.id}
                   >
                     {remove.isPending && remove.variables === provider.id && (
-                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
                     {t("common.delete")}
                   </GatedButton>

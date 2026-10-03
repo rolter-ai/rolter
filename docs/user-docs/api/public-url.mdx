@@ -12,12 +12,7 @@ one base, `ROLTER_PUBLIC_URL`, and never from the incoming request, so a spoofed
 
 `GET /api/v1/public-url` returns that base. The dashboard's **Single Sign-On**
 screen reads it to preview a provider's redirect URI in the add sheet, before
-the provider exists, and to warn when the variable is unset. The **User
-Provisioning** screen reads the same value and appends `/scim/v2` to show the
-base URL an identity provider's SCIM connector calls, beside the token list and
-in the panel that reveals a new token, with the same warning. The **Connectors**
-screen's **Collector config** dialog appends `/api/v1/connectors/collector-config` to it to
-show the full address the collector config is served from, again with the warning. A client that needs
+the provider exists, and to warn when the variable is unset. A client that needs
 one of these addresses before the server has built it should append the path to
 this value, not to its own origin: behind a reverse proxy, or under a second
 hostname, the two differ, and the identity provider then refuses the sign-in
@@ -72,7 +67,6 @@ startup; a change needs a restart. See
 | ---------------------- | --------------------------- | --------------------------------------------------------------- |
 | SSO redirect URI       | `/auth/sso/{slug}/callback` | `redirect_uri` on every SSO provider row; the add sheet preview |
 | SSO login URL          | `/auth/sso/{slug}/start`    | `login_url` on every SSO provider row                           |
-| SCIM base URL          | `/scim/v2`                  | appended by the User Provisioning screen, beside the token      |
 | MCP OAuth redirect URI | `/auth/mcp/callback`        | `redirect_uri` on an MCP server's OAuth client                  |
 | Invitation accept link | `/invite/{token}`           | the link returned when an invitation is created                 |
 

@@ -27,7 +27,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ## Docker Compose (recommended)
 
-Docker Compose brings up the complete Rolter stack — gateway, control plane, Postgres, Redis, and ClickHouse — with a single command. Database schemas are applied automatically on first start. The steps below start the local stack, which is open on purpose and meant for one machine nobody else can reach. For a team on a shared host, use the closed team stack described on the [Docker page](/deployment/docker#team-stack).
+Docker Compose brings up the complete Rolter stack — gateway, control plane, Postgres, Redis, and ClickHouse — with a single command. Database schemas are applied automatically on first start.
 
 <Steps>
   <Step title="Clone the repository">
@@ -36,12 +36,16 @@ Docker Compose brings up the complete Rolter stack — gateway, control plane, P
     cd rolter
     ```
   </Step>
-  <Step title="Set your provider keys">
-    Compose reads variables from the shell and from `docker/.env`, not from a `.env` at the repository root. Export your provider API keys before starting the stack:
+  <Step title="Set your environment variables">
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` and add your provider API keys:
 
     ```bash
-    export OPENAI_API_KEY=sk-...
-    export ANTHROPIC_API_KEY=sk-ant-...
+    OPENAI_API_KEY=sk-...
+    ANTHROPIC_API_KEY=sk-ant-...
     ```
 
   </Step>

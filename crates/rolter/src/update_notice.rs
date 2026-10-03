@@ -179,19 +179,14 @@ mod tests {
 
     /// A client routed through a proxy nobody listens on: fails fast and
     /// stands in for "offline" without touching the real network.
-    fn offline_client() -> (tokio::net::TcpSocket, reqwest::Client) {
-        // bound but never listening: refused, and held so a parallel test
-        // cannot be handed the port
-        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
-        socket
-            .bind("127.0.0.1:0".parse().expect("addr"))
-            .expect("bind");
-        let port = socket.local_addr().expect("addr").port();
-        let client = reqwest::Client::builder()
+    fn offline_client() -> reqwest::Client {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        reqwest::Client::builder()
             .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).expect("proxy"))
             .build()
-            .expect("client");
-        (socket, client)
+            .expect("client")
     }
 
     fn cached(checked_at: i64, latest: &str) -> Cache {
@@ -343,8 +338,7 @@ mod tests {
             unix_now()
         ));
         let path = dir.join(CACHE_FILE);
-        let (_guard, client) = offline_client();
-        let printed = run(&client, &path, "0.1.0", 1_000).await;
+        let printed = run(&offline_client(), &path, "0.1.0", 1_000).await;
         assert_eq!(printed, None);
         assert_eq!(load(&path).checked_at, None);
         std::fs::remove_dir_all(&dir).ok();
@@ -360,7 +354,7 @@ mod tests {
         ));
         let path = dir.join(CACHE_FILE);
         store(&path, &cached(1_000, "9.9.9")).expect("store");
-        let (_guard, client) = offline_client();
+        let client = offline_client();
         let printed = run(&client, &path, "0.1.0", 1_000 + 60).await;
         assert!(printed.is_some_and(|m| m.contains("9.9.9 is available")));
         let after = load(&path);

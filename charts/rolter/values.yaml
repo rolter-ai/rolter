@@ -132,8 +132,7 @@ control:
   # newer stable rolter release exists, so the dashboard footer can hint at it
   # (#902). one bounded request carrying nothing but a user-agent; offline is
   # silent. set false for an air-gapped cluster or one that must make no
-  # outbound call. despite the key's home it covers the gateway pods' preflight
-  # initContainer too, which runs the same launcher (#2382)
+  # outbound call
   updateCheck: true
   extraEnv: []
 

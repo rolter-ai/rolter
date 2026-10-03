@@ -7,43 +7,24 @@ import {
   clickWhenEnabled,
   confirmation,
   confirmDestructive,
-  expectAllowed,
-  expectInStatusRegion,
-  expectLoadError,
   expectNoFalseEmpty,
-  expectNoUxEvent,
   expectRefused,
-  expectSheetClosed,
-  expectUxEvent,
   openOptions,
   PROJECT,
   TEAM,
   expectToast,
   Harness,
   json,
-  NEEDS_ADMIN,
   ORG,
   pending,
   pickOption,
-  recordUxEvents,
   recording,
   scoped,
   sheet,
   Toasted,
   type FetchStub,
-  type Recorder,
 } from "./story-harness";
-import type {
-  MembershipRow,
-  OrgAuthPolicy,
-  PublicUrl,
-  SsoGroupMappingRow,
-  SsoProviderRow,
-} from "@/lib/api";
-import en from "@/lib/i18n/locales/en.json";
-import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile } from "@/lib/story-viewport";
-import { UxScreenProvider } from "@/lib/ux-react";
+import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 
 const NOW = "2026-08-01T10:00:00Z";
 
@@ -135,14 +116,6 @@ const POLICY: OrgAuthPolicy = {
   updated_at: NOW,
 };
 
-// sign-in through an identity provider only: what makes the last enabled
-// provider the last way in for everyone but a superadmin
-const PASSWORDS_OFF: OrgAuthPolicy = { ...POLICY, allow_password_login: false };
-
-// single sign-on already off: every provider of the org is refused at the
-// callback, so turning it back on is what restores the way in
-const SSO_OFF: OrgAuthPolicy = { ...POLICY, allow_sso: false };
-
 /**
  * The screen's endpoints, routed by path.
  *
@@ -153,16 +126,12 @@ const SSO_OFF: OrgAuthPolicy = { ...POLICY, allow_sso: false };
 function api({
   providers = () => PROVIDERS as unknown,
   policy = () => POLICY as unknown,
-  memberships = () => [] as unknown,
   publicUrl = () => json(PUBLIC_URL),
   status = 200,
   putPolicy,
 }: {
   providers?: () => unknown;
   policy?: () => unknown;
-  /** answers the org's membership rows, one per grant, which the second-factor
-   * confirmation counts */
-  memberships?: () => unknown;
   /** answers `GET /api/v1/public-url`, which every signed-in caller may read,
    * so it keeps its own status rather than following `status` */
   publicUrl?: () => Response;
@@ -176,7 +145,6 @@ function api({
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/api/v1/public-url")) return publicUrl();
-    if (url.includes("/memberships")) return json(memberships(), status);
     if (url.includes("/group-mappings")) {
       if (method === "POST") return json(MAPPINGS["sso-1"][0], 201);
       const id = url.split("/sso-providers/")[1]?.split("/")[0] ?? "";
@@ -369,248 +337,6 @@ export const PreviewsTheRedirectUriFromTheSlug: Story = {
     await userEvent.clear(slug);
     await expect(within(preview).getByText("Type a slug to see the redirect URI.")).toBeVisible();
     await expect(within(preview).queryByRole("button")).toBeNull();
-  },
-};
-
-// the slug is registered at the identity provider as part of the redirect uri,
-// and the database refuses anything outside `^[a-z0-9][a-z0-9-]{0,62}$`. the
-// sheet states that rule up front and marks a slug outside it before anything
-// is saved, instead of letting the admin copy a uri the server would refuse
-// (#2304)
-const SLUG_RULE = /Lowercase letters, digits and hyphens.*up to 63 characters/;
-const SLUG_INVALID =
-  "Use only lowercase letters, digits and hyphens, and start with a letter or digit.";
-const REDIRECT_URI_INVALID =
-  "The slug above is not valid, so there is no redirect URI to register yet.";
-
-/** the fields other than the slug, so the slug is the only thing that can block Save */
-async function fillTheRest(panel: ReturnType<typeof within>): Promise<void> {
-  await userEvent.type(panel.getByLabelText("Name"), "Acme Okta");
-  await userEvent.type(panel.getByLabelText("Issuer URL"), "https://acme.okta.com");
-  await userEvent.type(panel.getByLabelText("Client ID"), "0oa1b2c3d4");
-}
-
-const refusals = recording(api({ providers: () => [provider()] }));
-
-export const RefusesASlugOutsideTheCharset: Story = {
-  render: () => (
-    <Harness fetchStub={refusals.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Add provider/);
-    await waitFor(() => expect(sheet()).toBeVisible());
-    const panel = within(sheet());
-    await fillTheRest(panel);
-    const slug = panel.getByLabelText("Slug");
-    const save = panel.getByRole("button", { name: "Add provider" });
-    const preview = await panel.findByRole("group", { name: "Redirect URI" });
-
-    // the rule is stated before a character is typed, and nothing is marked yet
-    await expect(slug).toHaveAccessibleDescription(SLUG_RULE);
-    await expect(slug).not.toHaveAttribute("aria-invalid");
-
-    await userEvent.type(slug, "Acme Okta");
-
-    // what was typed stays exactly as typed: the slug ends up at the identity
-    // provider, so the admin has to see what will be saved, not a rewrite of it
-    await expect(slug).toHaveValue("Acme Okta");
-    await expect(slug).toHaveAttribute("aria-invalid", "true");
-    const reason = `${SLUG_INVALID} Try acme-okta.`;
-    await expect(panel.getByText(reason)).toBeVisible();
-    // the field announces the rule and the reason together
-    await expect(slug).toHaveAccessibleDescription(/up to 63 characters.*Try acme-okta\./);
-
-    // there is nothing to copy for a slug the server would refuse
-    await expect(within(preview).getByText(REDIRECT_URI_INVALID)).toBeVisible();
-    await expect(within(preview).queryByRole("button")).toBeNull();
-    await expect(panel.queryByText(/\/auth\/sso\//)).toBeNull();
-
-    // and Save is blocked until it is fixed, so no request leaves
-    await expect(save).toBeDisabled();
-    refusals.expectNotSent("POST", "/sso-providers");
-  },
-};
-
-/**
- * Each way a slug can miss the rule is named, and a corrected value is offered
- * when one can be worked out. The boundary is the store's: 63 characters pass,
- * 64 do not.
- */
-export const NamesWhatIsWrongWithTheSlug: Story = {
-  render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()] })}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Add provider/);
-    await waitFor(() => expect(sheet()).toBeVisible());
-    const panel = within(sheet());
-    const slug = panel.getByLabelText("Slug");
-    const preview = await panel.findByRole("group", { name: "Redirect URI" });
-
-    // a leading hyphen is refused, and the suggestion drops it
-    await userEvent.type(slug, "-okta");
-    await expect(panel.getByText(`${SLUG_INVALID} Try okta.`)).toBeVisible();
-
-    // nothing Latin to fold down to: the rule is all there is to say
-    await userEvent.clear(slug);
-    await userEvent.type(slug, "日本語");
-    await expect(panel.getByText(SLUG_INVALID)).toBeVisible();
-    await expect(panel.queryByText(/Try /)).toBeNull();
-    await expect(slug).toHaveAttribute("aria-invalid", "true");
-
-    // 64 characters is one too many, and the message counts them
-    await userEvent.clear(slug);
-    await userEvent.click(slug);
-    await userEvent.paste("a".repeat(64));
-    await expect(
-      panel.getByText("A slug has at most 63 characters. This one has 64."),
-    ).toBeVisible();
-    await expect(within(preview).getByText(REDIRECT_URI_INVALID)).toBeVisible();
-
-    // 63 is the longest the store accepts: no error, and the uri is offered
-    await userEvent.clear(slug);
-    await userEvent.click(slug);
-    const longest = "a".repeat(63);
-    await userEvent.paste(longest);
-    await expect(panel.queryByText(/at most 63 characters\. This one/)).toBeNull();
-    await expect(slug).not.toHaveAttribute("aria-invalid");
-    await expect(
-      within(preview).getByText(`${PUBLIC_BASE}/auth/sso/${longest}/callback`),
-    ).toBeVisible();
-  },
-};
-
-/**
- * Correcting the slug clears the mark and brings the preview and Save back; the
- * request then carries the slug exactly as typed.
- */
-const corrected = recording(api({ providers: () => [provider()] }));
-
-export const SavesTheSlugOnceItIsCorrected: Story = {
-  render: () => (
-    <Harness fetchStub={corrected.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Add provider/);
-    await waitFor(() => expect(sheet()).toBeVisible());
-    const panel = within(sheet());
-    await fillTheRest(panel);
-    const slug = panel.getByLabelText("Slug");
-    const save = panel.getByRole("button", { name: "Add provider" });
-    const preview = await panel.findByRole("group", { name: "Redirect URI" });
-
-    await userEvent.type(slug, "Okta");
-    await expect(panel.getByText(`${SLUG_INVALID} Try okta.`)).toBeVisible();
-    await expect(save).toBeDisabled();
-
-    await userEvent.clear(slug);
-    await userEvent.type(slug, "acme-okta");
-    const uri = `${PUBLIC_BASE}/auth/sso/acme-okta/callback`;
-    await expect(panel.queryByText(/Use only lowercase letters/)).toBeNull();
-    await expect(slug).not.toHaveAttribute("aria-invalid");
-    // the hint stays once the error is gone, and is what the field describes itself with
-    await expect(slug).toHaveAccessibleDescription(SLUG_RULE);
-    await expect(within(preview).getByText(uri)).toBeVisible();
-    await expect(
-      within(preview).getByRole("button", { name: `Copy redirect URI: ${uri}` }),
-    ).toBeVisible();
-
-    await waitFor(() => expect(save).toBeEnabled());
-    await userEvent.click(save);
-    const created = await corrected.expectSentBody<Record<string, unknown>>(
-      "POST",
-      `/api/v1/orgs/${ORG.id}/sso-providers`,
-    );
-    await expect(created.slug).toBe("acme-okta");
-    await expect(created.name).toBe("Acme Okta");
-  },
-};
-
-/**
- * The server's own 400 is shown in the sheet, with what was typed kept.
- *
- * The dashboard's copy of the rule can lag the control plane it talks to, so a
- * slug it lets through can still be refused. The message is the server's, which
- * states the rule, and the sheet stays open so nothing has to be typed again.
- */
-export const ShowsTheServersRefusalOfASlug: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async (input, init) =>
-        (init?.method ?? "GET").toUpperCase() === "POST" && String(input).includes("/sso-providers")
-          ? json(
-              {
-                error: {
-                  message:
-                    "config error: slug must be lowercase letters, digits and hyphens, start with a letter or digit, and be at most 63 characters",
-                },
-              },
-              400,
-            )
-          : api({ providers: () => [provider()] })(input, init),
-      )}
-    >
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, /Add provider/);
-    await waitFor(() => expect(sheet()).toBeVisible());
-    const panel = within(sheet());
-    await fillTheRest(panel);
-    await userEvent.type(panel.getByLabelText("Slug"), "okta");
-    await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
-
-    await waitFor(() =>
-      expect(panel.getByRole("alert")).toHaveTextContent(
-        /slug must be lowercase letters, digits and hyphens.*at most 63 characters/,
-      ),
-    );
-    await expect(panel.getByLabelText("Slug")).toHaveValue("okta");
-    await expect(panel.getByLabelText("Issuer URL")).toHaveValue("https://acme.okta.com");
-  },
-};
-
-/**
- * The reason and the preview's note on a phone, in Russian, the longest copy
- * the sheet carries for this. Both read in Russian and stay inside the sheet's
- * width instead of running off it.
- */
-export const ExplainsAnInvalidSlugInRussianOnAPhone: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()] })}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const copy = ru.pages.sso.create;
-    await clickWhenEnabled(canvasElement, new RegExp(ru.pages.sso.providers.add));
-    await waitFor(() => expect(sheet()).toBeVisible());
-    const panel = within(sheet());
-    await userEvent.type(panel.getByLabelText(copy.slug), "Acme Okta");
-
-    const reason = await panel.findByText(copy.slugSuggest.replace("{{suggestion}}", "acme-okta"));
-    const note = panel.getByText(copy.redirectUriInvalid);
-    // the sheet slides in from the edge, so it is measured once it has come to rest
-    await waitFor(() =>
-      expect(sheet().getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth),
-    );
-    for (const text of [reason, note]) {
-      await expect(text).toBeVisible();
-      const box = text.getBoundingClientRect();
-      await expect(box.left).toBeGreaterThanOrEqual(0);
-      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
-      await expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth);
-    }
-    await expect(panel.getByLabelText(copy.slug)).toHaveAttribute("aria-invalid", "true");
   },
 };
 
@@ -853,8 +579,6 @@ export const EditsAProviderInPlace: Story = {
     // the slug is in the login url, so it is shown but not editable
     await expect(panel.getByLabelText("Slug")).toBeDisabled();
     await expect(panel.getByText(/cannot be changed/)).toBeVisible();
-    // and it is not held to the charset rule again: it was accepted once
-    await expect(panel.getByLabelText("Slug")).not.toHaveAttribute("aria-invalid");
     // and the redirect uri beside it is the saved provider's own, from the row
     const preview = await panel.findByRole("group", { name: "Redirect URI" });
     await waitFor(() =>
@@ -984,8 +708,7 @@ export const RemovesTheStoredSecretWithConfirmation: Story = {
   },
 };
 
-// a provider is taken out of service with a switch instead of a delete, and the
-// switch confirms first: people signing in through it lose that route at once
+// a provider is taken out of service with a switch instead of a delete
 const toggles = recording(api({ providers: () => [provider()] }));
 
 export const DisablesAProviderWithoutDeletingIt: Story = {
@@ -996,26 +719,10 @@ export const DisablesAProviderWithoutDeletingIt: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-
-    // it names the provider and says what stays. with password sign-in on
-    // nobody is locked out, so nothing warns of it
-    const dialogElement = await confirmation();
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const dialog = within(dialogElement);
-    await expect(
-      dialog.getByRole("heading", { name: "Take Acme Okta out of service?" }),
-    ).toBeInTheDocument();
-    await expect(dialog.getByText(/group mappings stay/)).toBeInTheDocument();
-    await expect(dialog.queryByRole("note")).toBeNull();
-
-    // backing out sends nothing, and the switch is still on
-    await cancelConfirmation();
-    toggles.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
-    await expect(canvas.getByRole("switch", { name: "Enable provider Acme Okta" })).toBeChecked();
-
-    await userEvent.click(canvas.getByRole("switch", { name: "Enable provider Acme Okta" }));
-    await confirmDestructive(/Take Acme Okta out of service/, "Take out of service");
+    const toggle = await canvas.findByRole("switch", {
+      name: "Enable provider Acme Okta",
+    });
+    await userEvent.click(toggle);
 
     const body = await toggles.expectSentBody<Record<string, unknown>>(
       "PUT",
@@ -1028,56 +735,6 @@ export const DisablesAProviderWithoutDeletingIt: Story = {
     // nothing was deleted: the group mappings that hang off this provider are
     // exactly what delete-and-recreate used to destroy
     toggles.expectNotSent("DELETE", "/sso-providers");
-    await expectSheetClosed();
-  },
-};
-
-// turning a provider back on restores a route, so it sends at once: a dialog
-// in front of it would only slow down the way back in
-const enables = recording(api({ providers: () => [provider({ enabled: false })] }));
-
-export const EnablingAProviderDoesNotConfirm: Story = {
-  render: () => (
-    <Harness fetchStub={enables.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-    const body = await enables.expectSentBody<Record<string, unknown>>(
-      "PUT",
-      "/api/v1/sso-providers/sso-1",
-    );
-    await expect(body.enabled).toBe(true);
-    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
-  },
-};
-
-// the control plane refuses the update: the dialog stays open with its words,
-// beside the button that caused it, and the provider stays on
-export const DisableRefusedByTheServerStaysInTheDialog: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async (input, init) =>
-        (init?.method ?? "GET").toUpperCase() === "PUT" && String(input).includes("/sso-providers/")
-          ? json({ error: { message: "the provider could not be updated" } }, 422)
-          : api({ providers: () => [provider()] })(input, init),
-      )}
-    >
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-    const dialog = within(await confirmation());
-    await userEvent.click(dialog.getByRole("button", { name: "Take out of service" }));
-    await waitFor(() =>
-      expect(dialog.getByRole("alert")).toHaveTextContent("the provider could not be updated"),
-    );
-    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
-    await expect(canvas.getByRole("switch", { name: "Enable provider Acme Okta" })).toBeChecked();
   },
 };
 
@@ -1096,564 +753,12 @@ export const DeletesWithConfirmation: Story = {
     await waitFor(() => expect(canvas.getByText("Acme Okta")).toBeVisible());
 
     await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
-    // password sign-in is on, so the last provider going is no lockout and the
-    // dialog carries no warning of one
-    await expect(within(await confirmation()).queryByRole("note")).toBeNull();
     await cancelConfirmation();
     deletes.expectNotSent("DELETE", "/sso-providers/sso-1");
 
     await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
     await confirmDestructive(/Acme Okta/, "Delete provider");
     await deletes.expectSent("DELETE", "/sso-providers/sso-1");
-  },
-};
-
-// --- a change that would shut members out (#2084, #2443) -------------------
-
-const REASON =
-  "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off";
-
-// password sign-in off and one enabled provider: the control plane refuses to
-// take it away (409), so the card holds the controls back instead of asking
-const lastOff = recording(api({ providers: () => [provider()], policy: () => PASSWORDS_OFF }));
-
-/**
- * The last enabled provider with password sign-in off cannot be disabled or
- * deleted: both controls are disabled and a reason beside them says what to do
- * instead. Nothing is confirmed and nothing is sent.
- */
-export const TheLastProviderCannotBeDisabledOrDeleted: Story = {
-  render: () => (
-    <Harness fetchStub={lastOff.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const toggle = await canvas.findByRole("switch", { name: "Enable provider Acme Okta" });
-    const remove = canvas.getByLabelText("Delete provider Acme Okta");
-    // story-wait-allow: disabled by the card's own prop from the first paint, not by the gate
-    await expect(toggle).toBeDisabled();
-    // story-wait-allow: disabled by the card's own prop from the first paint, not by the gate
-    await expect(remove).toBeDisabled();
-    await expect(toggle).toHaveAttribute("title", expect.stringContaining(REASON));
-    await expect(remove).toHaveAttribute("title", expect.stringContaining(REASON));
-
-    const reason = canvas.getByText(/Enable password sign-in or another provider first/);
-    await expect(reason).toBeVisible();
-    await expect(toggle).toHaveAccessibleDescription(reason.textContent ?? "");
-    await expect(remove).toHaveAccessibleDescription(reason.textContent ?? "");
-
-    // disabled controls open no dialog and send nothing
-    await userEvent.click(toggle);
-    await userEvent.click(remove);
-    await expect(within(document.body).queryByRole("alertdialog")).toBeNull();
-    lastOff.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
-    lastOff.expectNotSent("DELETE", "/sso-providers/sso-1");
-  },
-};
-
-// the control plane answers 409 anyway: another admin turned the other
-// provider off after this screen read the list
-const raced = recording(
-  scoped(async (input, init) => {
-    const method = (init?.method ?? "GET").toUpperCase();
-    if (method !== "GET" && String(input).includes("/sso-providers/")) {
-      return json(
-        {
-          error: {
-            message:
-              "cannot disable the last enabled sso provider while password sign-in is off: no member could sign in. Enable password sign-in or another sso provider first",
-          },
-        },
-        409,
-      );
-    }
-    return api({
-      providers: () => [
-        provider(),
-        provider({ id: "sso-2", name: "Entra staging", slug: "entra" }),
-      ],
-      policy: () => PASSWORDS_OFF,
-    })(input, init);
-  }),
-);
-
-/** A 409 from the server is shown in the dashboard's words, not the raw message. */
-export const AServerRefusalIsShownInTheDashboardsWords: Story = {
-  render: () => (
-    <Harness fetchStub={raced.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-    await confirmDestructive(/Take Acme Okta out of service/, "Take out of service");
-    await raced.expectSent("PUT", "/api/v1/sso-providers/sso-1");
-
-    const dialog = within(await confirmation());
-    await expect(await dialog.findByText(/the control plane refused this one/)).toBeInTheDocument();
-    await expect(dialog.queryByText(/cannot disable the last enabled sso provider/)).toBeNull();
-    await cancelConfirmation();
-
-    await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
-    await confirmDestructive(/Delete provider Acme Okta\?/, "Delete provider");
-    await expect(
-      await within(await confirmation()).findByText(/the control plane refused this one/),
-    ).toBeInTheDocument();
-  },
-};
-
-// password sign-in off, but two providers enabled: either one can go
-const oneOfTwo = recording(
-  api({
-    providers: () => [provider(), provider({ id: "sso-2", name: "Entra staging", slug: "entra" })],
-    policy: () => PASSWORDS_OFF,
-  }),
-);
-
-/**
- * The warning is for the last way in, not for every change while passwords are
- * off. With another provider enabled, members still have a route, and a
- * warning here would be the click-through the last one depends on being read.
- */
-export const AnotherEnabledProviderLeavesTheControlsOn: Story = {
-  render: () => (
-    <Harness fetchStub={oneOfTwo.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-    await expect(
-      within(await confirmation()).getByRole("heading", { name: "Take Acme Okta out of service?" }),
-    ).toBeInTheDocument();
-    await expect(within(await confirmation()).queryByRole("note")).toBeNull();
-    await cancelConfirmation();
-
-    await userEvent.click(canvas.getByLabelText("Delete provider Entra staging"));
-    await expect(
-      within(await confirmation()).getByRole("heading", { name: "Delete provider Entra staging?" }),
-    ).toBeInTheDocument();
-    await expect(within(await confirmation()).queryByRole("note")).toBeNull();
-    await cancelConfirmation();
-    oneOfTwo.expectNotSent("PUT", "/sso-providers/");
-    oneOfTwo.expectNotSent("DELETE", "/sso-providers/");
-  },
-};
-
-const passwordOff = recording(api({ providers: () => [provider()] }));
-
-/**
- * Turning password sign-in off confirms before it saves: from then on every
- * member but a superadmin signs in through a provider. Backing out sends
- * nothing; confirming sends the same body a plain save does.
- */
-export const TurningPasswordSignInOffConfirmsFirst: Story = {
-  beforeEach: recordUxEvents,
-  render: () => (
-    <Harness fetchStub={passwordOff.stub}>
-      <UxScreenProvider screen="sso">
-        <SingleSignOn />
-      </UxScreenProvider>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Password sign-in" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    const dialogElement = await confirmation();
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const dialog = within(dialogElement);
-    await expect(
-      dialog.getByRole("heading", { name: "Turn off password sign-in?" }),
-    ).toBeInTheDocument();
-    await expect(dialogElement).toHaveTextContent(
-      "Superadmins are exempt from this setting and can still sign in with a password",
-    );
-    // the one provider has a secret stored, so there is nothing to warn about
-    await expect(dialog.queryByRole("note")).toBeNull();
-
-    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-    await expectSheetClosed();
-    passwordOff.expectNotSent("PUT", "/auth-policy");
-    expectNoUxEvent("form_submit", "sso-password-off");
-
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await confirmDestructive(/Turn off password sign-in/, "Turn it off");
-    await expect(
-      await passwordOff.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
-    ).toEqual({
-      allow_password_login: false,
-      allow_sso: true,
-      mfa_policy: "off",
-      mfa_enforce_after: null,
-    });
-    await expectUxEvent("form_submit", "sso-password-off");
-    await expectUxEvent("save_confirmed", "sso-password-off");
-  },
-};
-
-const noSecretOff = recording(api({ providers: () => [provider({ has_client_secret: false })] }));
-
-/**
- * The control plane refuses passwords-off with no enabled provider, and accepts
- * it when the only one that is enabled carries "No client secret". The
- * confirmation names it, and says that without a secret nobody could finish a
- * sign-in. It is a warning, not a block: a public client has none on purpose.
- */
-export const PasswordsOffWarnsWhenTheOnlyProviderHasNoSecret: Story = {
-  render: () => (
-    <Harness fetchStub={noSecretOff.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Password sign-in" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    const dialogElement = await confirmation();
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const notice = within(dialogElement).getByRole("note");
-    await expect(notice).toHaveTextContent("1 enabled provider has no client secret");
-    await expect(notice).toHaveTextContent("Acme Okta");
-    await expect(within(notice).getByText("okta")).toBeInTheDocument();
-    await expect(notice).toHaveTextContent(
-      "If an identity provider expects a secret, sign-ins through it fail at the token exchange",
-    );
-    await expect(notice).toHaveTextContent("Every enabled provider is on this list");
-    await expect(notice).toHaveTextContent("Superadmins could still sign in with a password");
-
-    // the warning does not hold the save back
-    await userEvent.click(within(dialogElement).getByRole("button", { name: "Turn it off" }));
-    const body = await noSecretOff.expectSentBody<Record<string, unknown>>(
-      "PUT",
-      `/api/v1/orgs/${ORG.id}/auth-policy`,
-    );
-    await expect(body.allow_password_login).toBe(false);
-  },
-};
-
-const someNoSecret = recording(
-  api({
-    providers: () => [
-      provider(),
-      provider({ id: "sso-2", name: "Entra staging", slug: "entra", has_client_secret: false }),
-      // out of service and without a secret: not a route anybody has
-      provider({
-        id: "sso-3",
-        name: "Legacy SAML bridge",
-        slug: "legacy",
-        enabled: false,
-        has_client_secret: false,
-      }),
-    ],
-  }),
-);
-
-/**
- * With another enabled provider that has its secret, members still have a
- * working route. The notice lists only the enabled provider without one, and
- * does not claim nobody could sign in.
- */
-export const PasswordsOffNamesOnlyTheEnabledProvidersWithoutASecret: Story = {
-  render: () => (
-    <Harness fetchStub={someNoSecret.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Password sign-in" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    const dialogElement = await confirmation();
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const notice = within(dialogElement).getByRole("note");
-    await expect(notice).toHaveTextContent("1 enabled provider has no client secret");
-    await expect(notice).toHaveTextContent("Entra staging");
-    await expect(notice).not.toHaveTextContent("Acme Okta");
-    await expect(notice).not.toHaveTextContent("Legacy SAML bridge");
-    await expect(notice).not.toHaveTextContent("Every enabled provider is on this list");
-    await cancelConfirmation();
-    someNoSecret.expectNotSent("PUT", "/auth-policy");
-  },
-};
-
-const alreadyOff = recording(api({ providers: () => [provider()], policy: () => PASSWORDS_OFF }));
-
-/**
- * Only the switch going from on to off confirms. With passwords already off, a
- * save that changes something else takes nobody's route away.
- */
-export const SavingOtherFieldsWithPasswordsAlreadyOffDoesNotConfirm: Story = {
-  render: () => (
-    <Harness fetchStub={alreadyOff.stub}>
-      <Toasted>
-        <SingleSignOn />
-      </Toasted>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Second factor"), "Optional");
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await expect(
-      await alreadyOff.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
-    ).toEqual({
-      allow_password_login: false,
-      allow_sso: true,
-      mfa_policy: "optional",
-      mfa_enforce_after: null,
-    });
-    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
-    await expectToast(canvasElement, /the sign-in policy updated/i);
-  },
-};
-
-const both = recording(api({ providers: () => [provider()] }));
-
-/**
- * One save that turns passwords off and requires a second factor raises both
- * confirmations, the password one first, and sends a single request after the
- * second.
- */
-export const PasswordsOffAndASecondFactorAreConfirmedInTurn: Story = {
-  render: () => (
-    <Harness fetchStub={both.stub}>
-      <Toasted>
-        <SingleSignOn />
-      </Toasted>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Password sign-in" }));
-    await pickOption(canvas.getByLabelText("Second factor"), "Required for everyone");
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    await confirmDestructive(/Turn off password sign-in/, "Turn it off");
-    // the first answer only moves on: nothing is sent until the second
-    await waitFor(async () =>
-      expect(
-        within(await confirmation()).getByRole("heading", {
-          name: "Require a second factor to sign in?",
-        }),
-      ).toBeInTheDocument(),
-    );
-    both.expectNotSent("PUT", "/auth-policy");
-
-    await confirmDestructive(/before they get a session/, "Require it");
-    await expect(await both.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
-      allow_password_login: false,
-      allow_sso: true,
-      mfa_policy: "required_all",
-      mfa_enforce_after: null,
-    });
-    await expectToast(canvasElement, /the sign-in policy updated/i);
-  },
-};
-
-const ssoOff = recording(api({ providers: () => [provider()] }));
-
-/**
- * Turning single sign-on off while a provider is enabled confirms first and says
- * who it shuts out (#2326). An account a provider created has no password, so
- * password sign-in being on does not bring those members back; an account that
- * holds one keeps signing in. Backing out sends nothing, and confirming sends
- * the same body a plain save does.
- */
-export const TurningSingleSignOnOffConfirmsFirst: Story = {
-  beforeEach: recordUxEvents,
-  render: () => (
-    <Harness fetchStub={ssoOff.stub}>
-      <UxScreenProvider screen="sso">
-        <SingleSignOn />
-      </UxScreenProvider>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    const dialogElement = await confirmation();
-    // the dialog animates in, so visibility is polled rather than read once (#2287)
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const dialog = within(dialogElement);
-    await expect(
-      dialog.getByRole("heading", { name: "Turn off single sign-on?" }),
-    ).toBeInTheDocument();
-    await expect(dialogElement).toHaveTextContent(
-      "every sign-in through this organization's identity providers is refused",
-    );
-    const notice = dialog.getByRole("note");
-    await expect(notice).toHaveTextContent(
-      "Members who only sign in through a provider would be locked out",
-    );
-    await expect(notice).toHaveTextContent(
-      "Accounts created through a provider have no password, so they cannot sign in until single sign-on is back on or a superadmin sets one",
-    );
-    // and who still gets in
-    await expect(notice).toHaveTextContent(
-      "Accounts that have a password, such as those created from an invitation, keep signing in with it",
-    );
-
-    // backing out sends nothing and is recorded as a cancel, not a decision
-    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
-    await expectSheetClosed();
-    ssoOff.expectNotSent("PUT", "/auth-policy");
-    const abandon = await expectUxEvent("form_abandon", "sso-single-sign-on-off");
-    await expect(abandon.outcome).toBe("cancelled");
-    expectNoUxEvent("form_submit", "sso-single-sign-on-off");
-
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await confirmDestructive(/Turn off single sign-on/, "Turn it off");
-    await expect(await ssoOff.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
-      allow_password_login: true,
-      allow_sso: false,
-      mfa_policy: "off",
-      mfa_enforce_after: null,
-    });
-    await expectUxEvent("form_submit", "sso-single-sign-on-off");
-    await expectUxEvent("save_confirmed", "sso-single-sign-on-off");
-  },
-};
-
-/**
- * The play shared by the two cases with nobody to shut out: with no enabled
- * provider nobody signs in through one, so switching single sign-on off takes
- * nobody's route away and the save goes straight out.
- */
-const savesSingleSignOnOffAtOnce =
-  (sent: Recorder): NonNullable<Story["play"]> =>
-  async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await expect(await sent.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
-      allow_password_login: true,
-      allow_sso: false,
-      mfa_policy: "off",
-      mfa_enforce_after: null,
-    });
-    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
-    await expectToast(canvasElement, /the sign-in policy updated/i);
-  };
-
-// a provider that is out of service has no `/start`, so it is not a route either
-const ssoOffParked = recording(api({ providers: () => [provider({ enabled: false })] }));
-
-export const TurningSingleSignOnOffWithOnlyParkedProvidersDoesNotConfirm: Story = {
-  render: () => (
-    <Harness fetchStub={ssoOffParked.stub}>
-      <Toasted>
-        <SingleSignOn />
-      </Toasted>
-    </Harness>
-  ),
-  play: savesSingleSignOnOffAtOnce(ssoOffParked),
-};
-
-const ssoOffBare = recording(api({ providers: () => [] }));
-
-export const TurningSingleSignOnOffWithNoProviderDoesNotConfirm: Story = {
-  render: () => (
-    <Harness fetchStub={ssoOffBare.stub}>
-      <Toasted>
-        <SingleSignOn />
-      </Toasted>
-    </Harness>
-  ),
-  play: savesSingleSignOnOffAtOnce(ssoOffBare),
-};
-
-const ssoOn = recording(api({ providers: () => [provider()], policy: () => SSO_OFF }));
-
-/** Turning it back on restores a route, so it saves at once. */
-export const TurningSingleSignOnOnDoesNotConfirm: Story = {
-  render: () => (
-    <Harness fetchStub={ssoOn.stub}>
-      <Toasted>
-        <SingleSignOn />
-      </Toasted>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const sso = await canvas.findByRole("switch", { name: "Single sign-on" });
-    await expect(sso).not.toBeChecked();
-    await userEvent.click(sso);
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-    await expect(await ssoOn.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`)).toEqual({
-      allow_password_login: true,
-      allow_sso: true,
-      mfa_policy: "off",
-      mfa_enforce_after: null,
-    });
-    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
-    await expectToast(canvasElement, /the sign-in policy updated/i);
-  },
-};
-
-const ssoOffAndMfa = recording(api({ providers: () => [provider()] }));
-
-/**
- * One save that turns single sign-on off and requires a second factor raises
- * both confirmations, the single sign-on one first, and sends a single request
- * after the second. Only the last confirmation reports a landing.
- */
-export const SingleSignOnOffAndASecondFactorAreConfirmedInTurn: Story = {
-  beforeEach: recordUxEvents,
-  render: () => (
-    <Harness fetchStub={ssoOffAndMfa.stub}>
-      <UxScreenProvider screen="sso">
-        <Toasted>
-          <SingleSignOn />
-        </Toasted>
-      </UxScreenProvider>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("switch", { name: "Single sign-on" }));
-    await pickOption(canvas.getByLabelText("Second factor"), "Required for everyone");
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    await confirmDestructive(/Turn off single sign-on/, "Turn it off");
-    // the first answer only moves on: nothing is sent until the second
-    await waitFor(async () =>
-      expect(
-        within(await confirmation()).getByRole("heading", {
-          name: "Require a second factor to sign in?",
-        }),
-      ).toBeInTheDocument(),
-    );
-    ssoOffAndMfa.expectNotSent("PUT", "/auth-policy");
-
-    await confirmDestructive(/before they get a session/, "Require it");
-    await expect(
-      await ssoOffAndMfa.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
-    ).toEqual({
-      allow_password_login: true,
-      allow_sso: false,
-      mfa_policy: "required_all",
-      mfa_enforce_after: null,
-    });
-    await expectToast(canvasElement, /the sign-in policy updated/i);
-
-    // one request for two answers, and the landing belongs to the one that sent it
-    const puts = ssoOffAndMfa.calls.filter(
-      (call) => call.method === "PUT" && call.url.includes("/auth-policy"),
-    );
-    await expect(puts).toHaveLength(1);
-    await expectUxEvent("form_submit", "sso-single-sign-on-off");
-    await expectUxEvent("save_confirmed", "sso-mfa-policy");
-    expectNoUxEvent("save_confirmed", "sso-single-sign-on-off");
   },
 };
 
@@ -1678,8 +783,6 @@ export const SavesPolicy: Story = {
     await userEvent.click(canvas.getByRole("switch", { name: "Password sign-in" }));
     await waitFor(() => expect(save).toBeEnabled());
     await userEvent.click(save);
-    // password sign-in going off is the one flag here that confirms (#2084)
-    await confirmDestructive(/Turn off password sign-in/, "Turn it off");
 
     await expect(
       await policySave.expectSentBody("PUT", `/api/v1/orgs/${ORG.id}/auth-policy`),
@@ -1769,54 +872,6 @@ export const RequiringASecondFactorConfirmsFirst: Story = {
         mfa_enforce_after: null,
       },
     );
-  },
-};
-
-/** One grant of `role` to `user`, at the org or at a team inside it. */
-const grant = (
-  id: string,
-  user: string,
-  role: string,
-  at: Pick<MembershipRow, "org_id" | "team_id">,
-): MembershipRow => ({
-  id,
-  user_id: user,
-  org_id: null,
-  team_id: null,
-  project_id: null,
-  role,
-  created_at: NOW,
-  ...at,
-});
-
-// the org's memberships are one row per grant anywhere in its tree: ada holds
-// a role on the org and another on a team, grace holds one. three rows, two people
-const GRANTS: MembershipRow[] = [
-  grant("m-1", "user-ada", "admin", { org_id: ORG.id }),
-  grant("m-2", "user-ada", "member", { team_id: TEAM.id }),
-  grant("m-3", "user-grace", "member", { org_id: ORG.id }),
-];
-
-/**
- * "This organization has N members" counts people, not grants. A person with a
- * role on the org and another on a team is two rows and one member, and the
- * number sits in the dialog an admin reads before requiring a second factor.
- */
-export const TheSecondFactorConfirmationCountsEachPersonOnce: Story = {
-  render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()], memberships: () => GRANTS })}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await pickOption(await canvas.findByLabelText("Second factor"), "Required for everyone");
-    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
-
-    const dialog = await confirmation();
-    // the count is its own request, so it settles after the dialog is up
-    await waitFor(() => expect(dialog).toHaveTextContent("This organization has 2 members."));
-    await expect(dialog).not.toHaveTextContent("3 members");
   },
 };
 
@@ -2097,15 +1152,6 @@ export const RefusedToAMember: Story = {
     // writing an org-wide one, so the new scope select must not come with a
     // create button that only fails on submit
     await expectRefused(canvasElement, "Map a group in Acme Okta");
-    // #2084: the card's switch and pencil are updates, the same capability as
-    // clearing the secret beside them, and were live for a member
-    await expectRefused(canvasElement, "Enable provider Acme Okta", NEEDS_ADMIN, "switch");
-    await expectRefused(canvasElement, "Edit provider Acme Okta");
-    // a refused switch opens no confirmation to be refused again after it
-    await userEvent.click(
-      within(canvasElement).getByRole("switch", { name: "Enable provider Acme Okta" }),
-    );
-    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
   },
 };
 
@@ -2118,25 +1164,6 @@ export const RefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Add provider");
     await expectRefused(canvasElement, "Delete provider Acme Okta");
-    await expectRefused(canvasElement, "Enable provider Acme Okta", NEEDS_ADMIN, "switch");
-    await expectRefused(canvasElement, "Edit provider Acme Okta");
-  },
-};
-
-/**
- * The same two controls are offered to an admin: the gate repeats the control
- * plane's `sso_provider:update`, so over-gating would lock out the people the
- * screen is for.
- */
-export const AsAdminTheProviderSwitchAndEditAreOffered: Story = {
-  render: () => (
-    <Harness fetchStub={api()} role="admin">
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await expectAllowed(canvasElement, "Enable provider Acme Okta", "switch");
-    await expectAllowed(canvasElement, "Edit provider Acme Okta");
   },
 };
 
@@ -2247,17 +1274,11 @@ export const MapsAGroupToATeam: Story = {
       "/api/v1/sso-providers/sso-1/group-mappings",
     );
     await expect(body.group_name).toBe("gateway-oncall");
-    // the role is the one the row starts on: nothing was picked, so nothing
-    // more powerful than a viewer was granted (#2078)
-    await expect(body.role).toBe("viewer");
     // the narrower scope is the whole point: `team_id` set, and `project_id`
     // left out entirely rather than sent as null, which the server would read
     // as the more specific scope
     await expect(body.team_id).toBe(TEAM.id);
     await expect(body.project_id).toBeUndefined();
-    // a viewer on one team is the narrowest grant there is, so it saves at
-    // once, with no dialog between the press and the request
-    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
 
@@ -2307,345 +1328,5 @@ export const NamesTheScopeWhenRemovingAMapping: Story = {
     const dialog = within(await confirmation());
     await expect(dialog.getByText(new RegExp(TEAM.name))).toBeVisible();
     await cancelConfirmation();
-  },
-};
-
-// --- the add row: what it starts on, and what it asks before it grants (#2078) ---
-
-// the stub of the story being played, so `play` reads what `render` was given
-let sent: Recorder;
-
-const GROUP_MAPPINGS_URL = "/api/v1/sso-providers/sso-1/group-mappings";
-
-type Posted = { group_name: string; role: string; team_id?: string; project_id?: string };
-
-const reasonAdmin = en.groupMappings.grant.reasonAdmin;
-const reasonOrg = en.groupMappings.grant.reasonOrg;
-
-// the create is held until the story lets it land, so the dialog can be read
-// while the request is on the wire
-let releaseGrant: () => void = () => {};
-const heldGrant =
-  (inner: FetchStub): FetchStub =>
-  async (input, init) => {
-    if (
-      (init?.method ?? "GET").toUpperCase() === "POST" &&
-      String(input).includes("/group-mappings")
-    ) {
-      await new Promise<void>((resolve) => {
-        releaseGrant = resolve;
-      });
-    }
-    return inner(input, init);
-  };
-
-// every mapping read answered 500, and nothing else
-const mappingsFail =
-  (inner: FetchStub): FetchStub =>
-  async (input, init) =>
-    String(input).includes("/group-mappings") && (init?.method ?? "GET").toUpperCase() === "GET"
-      ? json({ error: { message: "mappings unavailable" } }, 500)
-      : inner(input, init);
-
-/**
- * A new mapping starts on the least powerful role. The row used to preselect
- * `admin` at the whole organization, so typing a name and pressing the button
- * made everyone in the group an org admin. It also had no visible labels, and
- * a placeholder that was the name of a mapping already listed.
- */
-export const NewMappingStartsOnViewer: Story = {
-  render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()] })}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Role to grant")).toHaveValue("Viewer");
-    // the picker is a skeleton until the org's teams and projects answer
-    await expect(await canvas.findByLabelText("Where the role applies")).toHaveValue(
-      "Whole organization",
-    );
-
-    // each control carries a label you can read, not only one a screen reader is told
-    for (const label of ["IdP group", "Where the role applies", "Role to grant"]) {
-      await expect(canvas.getByText(label, { selector: "label" })).toBeVisible();
-    }
-
-    // and the empty field cannot be taken for a filled one: the example is marked as
-    // one, and is not the name of a mapping that is listed
-    const group = canvas.getByLabelText("IdP group");
-    await expect(group).toHaveValue("");
-    const placeholder = group.getAttribute("placeholder");
-    await expect(placeholder).toBe(en.groupMappings.groupPlaceholder);
-    await expect(placeholder).toMatch(/^e\.g\. /);
-    await waitFor(() => expect(canvas.getByText("platform-engineering")).toBeVisible());
-    await expect(MAPPINGS["sso-1"].map((m) => m.group_name)).not.toContain(placeholder);
-  },
-};
-
-/**
- * Admin is asked about first, and the question names the group, the role and
- * the scope. Cancelling sends nothing and keeps what was typed; confirming
- * sends exactly the body the dialog described, and the form starts over on
- * Viewer rather than carrying the admin grant into the next mapping.
- */
-export const AdminGrantAsksFirst: Story = {
-  beforeEach: recordUxEvents,
-  render: () => {
-    sent = recording(heldGrant(api({ providers: () => [provider()] })));
-    return (
-      <Harness fetchStub={sent.stub}>
-        <UxScreenProvider screen="sso">
-          <SingleSignOn />
-        </UxScreenProvider>
-      </Harness>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText("IdP group");
-    await userEvent.type(group, "gateway-deployers");
-    await pickOption(await canvas.findByLabelText("Where the role applies"), TEAM.name);
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-
-    const dialogElement = await confirmation();
-    // the dialog animates in, so visibility is polled rather than read once (#2287)
-    await waitFor(() => expect(dialogElement).toBeVisible());
-    const dialog = within(dialogElement);
-    await expect(dialog.getByText("Map gateway-deployers to Admin?")).toBeVisible();
-    await expect(dialog.getByText(new RegExp(`gets Admin on ${TEAM.name}\\.`))).toBeVisible();
-    // this screen grants at sign-in, and says so rather than promising a sync
-    await expect(dialog.getByText(/at their next sign-in/)).toBeVisible();
-    // admin is the only reason: the scope is one team, so nothing says "whole organization"
-    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
-    await expect(dialog.queryByText(reasonOrg)).toBeNull();
-    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
-
-    // backing out sends nothing and is recorded as a cancel, not a decision
-    await cancelConfirmation();
-    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
-    const abandon = await expectUxEvent("form_abandon", "sso-group-mapping-grant");
-    await expect(abandon.outcome).toBe("cancelled");
-    expectNoUxEvent("form_submit", "sso-group-mapping-grant");
-    await expect(group).toHaveValue("gateway-deployers");
-    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Admin");
-
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-    await confirmDestructive("Map gateway-deployers to Admin?", "Map group");
-    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
-      group_name: "gateway-deployers",
-      role: "admin",
-      team_id: TEAM.id,
-    });
-
-    // in flight: the request is on the wire, so neither button can be pressed
-    const inFlight = within(await confirmation());
-    await waitFor(() => {
-      expect(inFlight.getByRole("button", { name: "Map group" })).toBeDisabled();
-      expect(inFlight.getByRole("button", { name: "Cancel" })).toBeDisabled();
-    });
-
-    releaseGrant();
-    await expectSheetClosed();
-    const submit = await expectUxEvent("form_submit", "sso-group-mapping-grant");
-    await expect(submit.outcome).toBe("ok");
-    await expectUxEvent("save_confirmed", "sso-group-mapping-grant");
-    await waitFor(() => expect(group).toHaveValue(""));
-    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Viewer");
-    await expect(canvas.getByLabelText("Where the role applies")).toHaveValue("Whole organization");
-  },
-};
-
-/**
- * A role across the whole organization is asked about too, however small the
- * role: the form starts there, so a viewer is the first thing an operator can
- * grant org-wide by pressing one button. The dialog says it is the scope that
- * raised it, and the request names no team or project.
- */
-export const WholeOrgGrantAsksFirst: Story = {
-  render: () => {
-    sent = recording(api({ providers: () => [provider()] }));
-    return (
-      <Harness fetchStub={sent.stub}>
-        <SingleSignOn />
-      </Harness>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("IdP group"), "ops-readers");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
-    await expect(dialog.getByText(/gets Viewer on the whole organization\./)).toBeVisible();
-    await expect(dialog.getByText(reasonOrg)).toBeVisible();
-    await expect(dialog.queryByText(reasonAdmin)).toBeNull();
-
-    await cancelConfirmation();
-    sent.expectNotSent("POST", GROUP_MAPPINGS_URL);
-
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-    await confirmDestructive("Map ops-readers to Viewer?", "Map group");
-    // an org-wide grant names no scope at all, rather than an empty one
-    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
-      group_name: "ops-readers",
-      role: "viewer",
-    });
-  },
-};
-
-// the two reasons stack: admin across the whole organization is the widest grant
-// there is, and the dialog says both rather than picking one
-export const AdminOnTheWholeOrgNamesBothReasons: Story = {
-  render: () => {
-    sent = recording(api({ providers: () => [provider()] }));
-    return (
-      <Harness fetchStub={sent.stub}>
-        <SingleSignOn />
-      </Harness>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("IdP group"), "platform-admins");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
-    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
-    await expect(dialog.getByText(reasonOrg)).toBeVisible();
-
-    await confirmDestructive("Map platform-admins to Admin?", "Map group");
-    await expect(await sent.expectSentBody<Posted>("POST", GROUP_MAPPINGS_URL)).toEqual({
-      group_name: "platform-admins",
-      role: "admin",
-    });
-  },
-};
-
-// the confirmation does not close itself: a refusal stays beside the button that
-// caused it, and cancelling does not leave it standing under the next attempt
-export const MapGroupRefusedInsideTheConfirmation: Story = {
-  render: () => (
-    <Harness
-      fetchStub={async (input, init) =>
-        String(input).includes("/group-mappings") &&
-        (init?.method ?? "GET").toUpperCase() === "POST"
-          ? json({ error: { message: "platform-admins is already mapped" } }, 409)
-          : api({ providers: () => [provider()] })(input, init)
-      }
-    >
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText("IdP group");
-    await userEvent.type(group, "platform-admins");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await clickWhenEnabled(canvasElement, "Map a group in Acme Okta");
-    await confirmDestructive("Map platform-admins to Admin?", "Map group");
-
-    const dialog = within(await confirmation());
-    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/already mapped/));
-    // said once: behind the dialog the form does not repeat it
-    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
-
-    await cancelConfirmation();
-    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
-    await expect(group).toHaveValue("platform-admins");
-  },
-};
-
-// a list that could not be read is a LoadError with the retry a read has, where
-// it used to be a line of red text with nothing to press
-export const GroupMappingsCannotLoad: Story = {
-  render: () => (
-    <Harness fetchStub={mappingsFail(api({ providers: () => [provider()] }))}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /failed to return group mappings/);
-    // the control plane's own words stay under the summary
-    await expect(canvas.getByText("mappings unavailable")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: en.errors.load.retry })).toBeVisible();
-    // a list that could not be read is not a list of nothing
-    await expect(canvas.queryByText(/everyone signing in through this provider gets/)).toBeNull();
-    // the form is still there: writing a mapping does not need the list
-    await expect(canvas.getByLabelText("IdP group")).toBeVisible();
-  },
-};
-
-export const GroupMappingsLoading: Story = {
-  render: () => (
-    <Harness
-      fetchStub={async (input, init) =>
-        String(input).includes("/group-mappings")
-          ? new Promise<Response>(() => {})
-          : api({ providers: () => [provider()] })(input, init)
-      }
-    >
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectInStatusRegion(canvasElement, "group-mappings-loading");
-    await expect(canvas.queryByText(/everyone signing in through this provider gets/)).toBeNull();
-  },
-};
-
-/**
- * The add row on a phone, in Russian. The group name shrank to three
- * characters and the role read "Администрато" because four controls shared one
- * wrapping line. Each control has its own line now, labelled, and all of them
- * are as wide as the card.
- */
-export const AddRowFitsAPhoneInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()] })}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const copy = ru.groupMappings;
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText(copy.groupLabel);
-    const scope = await canvas.findByLabelText(copy.scopeLabel);
-    const role = canvas.getByLabelText(copy.roleLabel);
-    const add = canvas.getByRole("button", {
-      name: ru.pages.sso.mappings.addNamed.replace("{{provider}}", "Acme Okta"),
-    });
-    // the row reads in Russian, and the default survives the language
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
-    await expect(canvas.getByText(copy.groupLabel, { selector: "label" })).toBeVisible();
-
-    // the name field is a field, not a sliver: it spans the card
-    await expect(group.getBoundingClientRect().width).toBeGreaterThan(240);
-    // every control sits inside the phone's width. the page is not asked: the
-    // provider cards have their own phone-width problems (#2090)
-    for (const control of [group, scope, role, add]) {
-      const box = control.getBoundingClientRect();
-      await expect(box.left).toBeGreaterThanOrEqual(0);
-      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
-    }
-
-    // a listed mapping keeps its name too: it was squeezed out by the chips on its row
-    const listed = await canvas.findByText("platform-engineering");
-    await expect(listed.getBoundingClientRect().width).toBeGreaterThan(100);
-    await expect(listed.scrollWidth).toBeLessThanOrEqual(listed.clientWidth);
-
-    // the widest role is spelled out in full, in the control that names it
-    await pickOption(role, ru.shell.roles.admin);
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
-    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
   },
 };

@@ -15,9 +15,6 @@ spec:
       app.kubernetes.io/component: control
   template:
     metadata:
-      annotations:
-        checksum/config: {{ .Values.config.file | sha256sum }}
-        {{- with .Values.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
       labels:
         app.kubernetes.io/name: {{ include "rolter.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
@@ -31,19 +28,12 @@ spec:
           image: {{ include "rolter.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["rolter-control"]
-          # the chart's own config, not the image's baked /app/rolter.toml: that
-          # one is the public example, `sk-rolter-dev` included, and a control
-          # plane that loads it hands the key to every gateway (#2408)
-          args: ["--config", "/etc/rolter/rolter.toml", "--gateway-url", "http://{{ include "rolter.fullname" . }}-gateway:{{ .Values.gateway.service.port }}"]
+          args: ["--gateway-url", "http://{{ include "rolter.fullname" . }}-gateway:{{ .Values.gateway.service.port }}"]
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: 4001
           env: {{- $controlEnv | nindent 12 }}
-          volumeMounts:
-            - name: config
-              mountPath: /etc/rolter
-              readOnly: true
           # /readyz checks the database and migrations; a failure only takes
           # the pod out of the Service. /healthz is pure liveness and never
           # touches Postgres, so a database blip cannot restart the fleet
@@ -63,7 +53,3 @@ spec:
             periodSeconds: {{ .Values.control.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.control.probes.startup.failureThreshold }}
           resources: {{ toYaml .Values.control.resources | nindent 12 }}
-      volumes:
-        - name: config
-          configMap:
-            name: {{ include "rolter.configMapName" . }}

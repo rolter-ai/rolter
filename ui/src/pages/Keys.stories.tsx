@@ -4,7 +4,6 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Keys from "./Keys";
 import {
   Harness,
-  answerSecretClosePrompt,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
@@ -21,10 +20,7 @@ import {
   recordUxEvents,
   recording,
   scoped,
-  secretClosePrompt,
-  StaleSession,
   sheet,
-  stubClipboard,
   type FetchStub,
   type Recorder,
   answerDiscardPrompt,
@@ -34,15 +30,7 @@ import {
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
-import en from "@/lib/i18n/locales/en.json";
-import ru from "@/lib/i18n/locales/ru.json";
-import {
-  atMobile,
-  atTablet,
-  expectInViewport,
-  expectNoHorizontalOverflow,
-  phoneFits,
-} from "@/lib/story-viewport";
+import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const UNIT_ID = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -320,226 +308,28 @@ export const Forbidden: Story = {
   },
 };
 
-const MINTED_KEY = "sk-rolter-plaintext-shown-once";
-
-/** a control plane that answers a mint with the plaintext key */
-const minting = () =>
-  scoped(async (input, init) =>
-    init?.method === "POST"
-      ? json({ ...KEYS[0], key: MINTED_KEY }, 201)
-      : (lookups(String(input)) ?? json(KEYS)),
-  );
-
-/** Fill the add sheet in and create the key, returning the reveal dialog. */
-async function mintAKey(canvasElement: HTMLElement) {
-  await clickWhenEnabled(canvasElement, /add virtual key/i);
-  const form = sheet();
-  await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
-  await userEvent.click(within(form).getByRole("button", { name: "Create" }));
-  return within(document.body).findByRole("dialog", { name: "Key created" });
-}
-
 export const CreatesAKey: Story = {
   render: () => (
-    <Harness fetchStub={minting()}>
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: "sk-rolter-plaintext-shown-once" }, 201)
+          : (lookups(String(input)) ?? json(KEYS)),
+      )}
+    >
       <Keys />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
+    await userEvent.click(within(form).getByRole("button", { name: "Create" }));
     // the plaintext key is shown exactly once, right after creation — losing
     // that dialog means the caller never gets their secret
-    await waitFor(() => expect(within(dialog).getByText(MINTED_KEY)).toBeInTheDocument());
-
-    // and the step after it. with no public base URL known there is no
-    // address to hand out: the /gw proxy needs a dashboard session an external
-    // client lacks, so the step asks for a base URL instead (#2486)
-    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
-      "Save your gateway base URL under Client Settings",
-    );
-    await expect(dialog.textContent ?? "").not.toContain("/gw/");
-  },
-};
-
-/**
- * A superadmin who saved a public base URL on Client Settings hands out that
- * address, not the dashboard's proxy, in the next step (#2218).
- */
-export const TheNextStepUsesTheSavedGatewayUrl: Story = {
-  render: () => (
-    <Harness
-      role="superadmin"
-      fetchStub={scoped(async (input, init) => {
-        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
-        if (String(input).includes("/client-settings")) {
-          return json({ public_base_url: "https://llm.example.com" });
-        }
-        return lookups(String(input)) ?? json(KEYS);
-      })}
-    >
-      <Keys />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
     await waitFor(() =>
-      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
-        "https://llm.example.com/v1",
-      ),
+      expect(within(document.body).getByText("sk-rolter-plaintext-shown-once")).toBeInTheDocument(),
     );
-    await expect(within(dialog).getByRole("region", { name: /First request/ })).toHaveTextContent(
-      "curl https://llm.example.com/v1/chat/completions",
-    );
-    await expect(dialog.textContent ?? "").not.toContain("/gw/");
-    // the key is referenced, never written out, and names the first model it may reach
-    const request = within(dialog).getByRole("region", { name: /First request/ });
-    await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
-    await expect(request).toHaveTextContent("$ROLTER_API_KEY");
-    await expect(request).not.toHaveTextContent(MINTED_KEY);
-  },
-};
-
-/**
- * An org admin cannot read client settings either, yet the saved public base
- * URL reaches the next step through `/auth/me` (#2512).
- */
-export const TheNextStepUsesTheSavedUrlForAnAdmin: Story = {
-  render: () => (
-    <Harness
-      role="admin"
-      fetchStub={scoped(async (input, init) => {
-        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
-        if (String(input).includes("/auth/me")) {
-          return json({
-            user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
-            memberships: [],
-            display_name_managed: false,
-            gateway_base_url: "https://llm.example.com",
-          });
-        }
-        return lookups(String(input)) ?? json(KEYS);
-      })}
-    >
-      <StaleSession>
-        <Keys />
-      </StaleSession>
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
-    await waitFor(() =>
-      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
-        "https://llm.example.com/v1",
-      ),
-    );
-    await expect(dialog.textContent ?? "").not.toContain("/gw/");
-  },
-};
-
-/** A key that reached the clipboard closes without a question. */
-export const ACopiedKeyClosesWithoutAsking: Story = {
-  beforeEach: stubClipboard(async () => {}),
-  render: () => (
-    <Harness fetchStub={minting()}>
-      <Keys />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
-    const copy = await within(dialog).findByRole("button", { name: /^Copy: / });
-    await userEvent.click(copy);
-    await waitFor(() => expect(copy).toHaveAttribute("title", en.common.copied));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
-  },
-};
-
-/**
- * Escape used to close the reveal with the key uncopied and nothing to bring
- * it back (#2217). It asks now; cancelling keeps the key on screen, and the
- * explicit confirm closes.
- */
-export const AnUncopiedKeyAsksBeforeClosing: Story = {
-  render: () => (
-    <Harness fetchStub={minting()}>
-      <Keys />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
-    await userEvent.keyboard("{Escape}");
-    const prompt = await secretClosePrompt();
-    await expect(prompt).toHaveAccessibleDescription(en.common.secret.closeBody);
-    await answerSecretClosePrompt(false);
-    await expect(within(dialog).getByText(MINTED_KEY)).toBeVisible();
-
-    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
-    await answerSecretClosePrompt(true);
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
-  },
-};
-
-/**
- * On a plain-http dashboard the clipboard is withheld. The copy says so in a
- * line that stays, and the key stays on screen to be copied by hand (#2327).
- */
-export const AFailedCopyKeepsTheKeyAndSaysSo: Story = {
-  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
-  render: () => (
-    <Harness fetchStub={minting()}>
-      <Keys />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const dialog = await mintAKey(canvasElement);
-    await userEvent.click(await within(dialog).findByRole("button", { name: /^Copy: / }));
-    const alert = await within(dialog).findByRole("alert");
-    await expect(alert).toHaveTextContent(en.common.copyFailed);
-    await expect(within(dialog).getByText(MINTED_KEY)).toBeVisible();
-    await expect(window.getSelection()?.toString()).toBe(MINTED_KEY);
-  },
-};
-
-/** 375 px and Russian: the reveal, its message and the snippet all fit the window. */
-export const TheRevealFitsAPhoneInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
-  render: () => (
-    // a saved base URL, so the step shows the snippet whose width is under test
-    <Harness
-      role="superadmin"
-      fetchStub={scoped(async (input, init) => {
-        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
-        if (String(input).includes("/client-settings")) {
-          return json({ public_base_url: "https://llm.example.com" });
-        }
-        return lookups(String(input)) ?? json(KEYS);
-      })}
-    >
-      <Keys />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, new RegExp(ru.pages.virtualKeys.add, "i"));
-    const form = within(sheet());
-    await userEvent.type(form.getByLabelText(ru.keyMint.name), "ci runner");
-    await userEvent.click(form.getByRole("button", { name: ru.common.create }));
-    const dialog = await within(document.body).findByRole("dialog", {
-      name: ru.pages.virtualKeys.createdTitle,
-    });
-    await userEvent.click(await within(dialog).findByRole("button", { name: /^Копировать: / }));
-    await within(dialog).findByRole("alert");
-    await within(dialog).findByRole("region", {
-      name: new RegExp(ru.common.secret.nextStep.request),
-    });
-    await expectInViewport(dialog);
-    await expectInViewport(within(dialog).getByRole("button", { name: ru.common.secret.select }));
-    // the snippet scrolls inside its own region instead of widening the panel
-    const panel = dialog.getBoundingClientRect();
-    for (const region of within(dialog).getAllByRole("region")) {
-      await expect(region.getBoundingClientRect().right).toBeLessThanOrEqual(panel.right);
-    }
   },
 };
 
@@ -994,17 +784,3 @@ export const DeleteIsConfirmedAndReported: Story = {
     ).toHaveLength(1);
   },
 };
-
-// the same screen at a phone's width in both languages: Russian runs a third
-// longer than English and overflowed twice as many screens (#2004)
-const keysFit = phoneFits({
-  render: () => (
-    <Harness fetchStub={withKeys(KEYS)}>
-      <Keys />
-    </Harness>
-  ),
-  ready: (canvas) => canvas.findByText("backend service"),
-});
-export const MobileInRussian: Story = keysFit("mobile", "ru");
-export const SmallPhone: Story = keysFit("small", "en");
-export const SmallPhoneInRussian: Story = keysFit("small", "ru");

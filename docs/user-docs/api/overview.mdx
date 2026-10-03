@@ -126,12 +126,12 @@ Rolter returns OpenAI-style JSON error bodies on every error path, so existing e
 }
 ```
 
-| Status                    | Meaning                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------- |
-| `401 Unauthorized`        | Missing or invalid virtual key (`type` `authentication_error`, `code` `invalid_api_key`) |
-| `403 Forbidden`           | Key is valid but not permitted to use the requested model                                |
-| `402 Payment Required`    | A spend budget for the key, project, team, or org has been exceeded                      |
-| `429 Too Many Requests`   | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header      |
-| `404 Not Found`           | No route matches the requested `model` name                                              |
-| `502 Bad Gateway`         | All upstream targets failed or were unreachable after retries                            |
-| `503 Service Unavailable` | Route has no available targets                                                           |
+| Status                    | Meaning                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `401 Unauthorized`        | Missing or invalid virtual key                                                      |
+| `403 Forbidden`           | Key is valid but not permitted to use the requested model                           |
+| `402 Payment Required`    | A spend budget for the key, project, team, or org has been exceeded                 |
+| `429 Too Many Requests`   | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header |
+| `404 Not Found`           | No route matches the requested `model` name                                         |
+| `502 Bad Gateway`         | All upstream targets failed or were unreachable after retries                       |
+| `503 Service Unavailable` | Route has no available targets                                                      |

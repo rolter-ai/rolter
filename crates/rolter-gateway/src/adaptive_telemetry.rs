@@ -111,13 +111,13 @@ fn ingest_url(snapshot_url: &str) -> Option<String> {
 pub fn spawn(state: AppState, snapshot_url: &str, internal_token: Option<String>) {
     let Some(url) = ingest_url(snapshot_url) else {
         tracing::warn!(
-            snapshot_url = %rolter_core::redact::redact_url(snapshot_url),
+            %snapshot_url,
             "snapshot url is not a control-plane /internal/snapshot endpoint; \
              adaptive-routing telemetry reporting is disabled"
         );
         return;
     };
-    tracing::info!(url = %rolter_core::redact::redact_url(&url), period_secs = REPORT_PERIOD.as_secs(), "adaptive-routing telemetry reporting enabled");
+    tracing::info!(%url, period_secs = REPORT_PERIOD.as_secs(), "adaptive-routing telemetry reporting enabled");
     tokio::spawn(async move {
         // short timeout: a wedged control plane must not pin this task
         let client = Client::builder()
@@ -142,7 +142,7 @@ async fn run(client: &Client, state: &AppState, url: &str, token: Option<&str>) 
         }
         reported = !routes.is_empty();
         if let Err(err) = report_once(client, url, token, TelemetryReport { routes }).await {
-            tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "adaptive-routing telemetry report failed");
+            tracing::warn!(error = %err, "adaptive-routing telemetry report failed");
         }
     }
 }

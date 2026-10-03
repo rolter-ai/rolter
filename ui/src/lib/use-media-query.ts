@@ -9,10 +9,6 @@ import * as React from "react";
 // `md` for both the media query and the tailwind class, not neither.
 export const BELOW_MD = "(max-width: 767.98px)";
 export const BELOW_LG = "(max-width: 1023.98px)";
-// tailwind's `xl`. the LLM Logs drawer is 380px beside a 232px sidebar, and the
-// table needs about 640px to hold its time, model, status and cost columns, so
-// it stays in the flow only from here up
-export const BELOW_XL = "(max-width: 1279.98px)";
 
 /**
  * Whether `query` currently matches.

@@ -314,11 +314,7 @@ pub(crate) fn resolve_role(
 /// reach (or too low a role) is `false`. DB-free so the whole `(role, scope,
 /// action)` matrix can be exhaustively unit-tested; [`authorize`] wraps this
 /// with the superadmin short-circuit and the membership fetch.
-pub(crate) fn user_authorized(
-    memberships: &[Membership],
-    chain: ScopeChain,
-    required: Role,
-) -> bool {
+fn user_authorized(memberships: &[Membership], chain: ScopeChain, required: Role) -> bool {
     match resolve_role(memberships, chain.org, chain.team, chain.project) {
         Some(role) => role_rank(role) >= role_rank(required),
         None => false,
@@ -426,22 +422,15 @@ impl ScopeFilter {
 
     /// The verdict [`authorize`] would give at `chain`.
     pub(crate) fn allows(&self, chain: ScopeChain) -> bool {
-        self.allows_as(chain, self.requirement)
-    }
-
-    /// [`Self::allows`] against another capability, reusing the memberships
-    /// and grants already loaded, for a caller that asks about several kinds
-    /// of resource in one request
-    pub(crate) fn allows_as(&self, chain: ScopeChain, requirement: Requirement) -> bool {
         if self.superadmin {
             return true;
         }
-        match requirement.authority {
+        match self.requirement.authority {
             Authority::Authenticated => true,
             Authority::Superadmin => false,
             Authority::Role(required) => {
                 user_authorized(&self.memberships, chain, required)
-                    || custom_grants_allow(&self.grants, chain, requirement)
+                    || custom_grants_allow(&self.grants, chain, self.requirement)
             }
         }
     }
@@ -973,8 +962,6 @@ mod tests {
             is_superadmin: flag,
             deactivated_at: None,
             created_at: Utc::now(),
-            display_name: None,
-            bio: None,
         }
     }
 

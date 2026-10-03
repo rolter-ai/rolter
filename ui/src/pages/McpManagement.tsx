@@ -538,7 +538,7 @@ function ConnectButton({ server }: { server: McpServerRow }) {
       onClick={() => connect.mutate()}
     >
       {connect.isPending ? (
-        <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
       ) : (
         <Link2 className="mr-2 h-4 w-4" aria-hidden />
       )}
@@ -736,7 +736,7 @@ export function McpCatalog() {
               <div className="mt-3">
                 <ToolBadges tools={server.tools} />
               </div>
-              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <Badge tone="info">{server.transport.replace("_", " ")}</Badge>
                 <AuthBadge server={server} />
                 <span className="ml-auto flex flex-wrap justify-end gap-1">
@@ -1303,7 +1303,7 @@ function ServerDialog({
             {t("common.cancel")}
           </Button>
           <Button disabled={!valid || pending} onClick={submit}>
-            {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+            {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
             {pending
               ? t("common.saving")
               : initial
@@ -1413,7 +1413,7 @@ export function McpLibrary() {
                   onClick={() => install.mutate(item)}
                 >
                   {install.isPending && install.variables?.slug === item.slug && (
-                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
                   )}
                   {item.installed ? t("pages.mcpLibrary.installed") : t("pages.mcpLibrary.install")}
                 </Button>
@@ -1534,18 +1534,14 @@ export function ToolGroups() {
                   </Badge>
                 ))}
               </div>
-              <div className="mt-4 flex flex-wrap justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="mcp_tool_group:delete"
                   control="tool-group-delete"
                   variant="ghost"
                   aria-label={t("pages.mcpCatalog.groups.deleteAria", { name: group.name })}
-                  disabled={remove.isPending && remove.variables === group.id}
                   onClick={() => startDelete(group)}
                 >
-                  {remove.isPending && remove.variables === group.id && (
-                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
-                  )}
                   {t("common.delete")}
                 </GatedButton>
                 <GatedButton
@@ -1625,7 +1621,7 @@ function ToolGroupDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.tool-groups.dialog.lead")}</DialogDescription>
       </DialogHeader>
-      <DialogBody className="grid gap-4 py-4">
+      <div className="grid gap-4 py-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name">
             <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
@@ -1680,7 +1676,7 @@ function ToolGroupDialog({
             {error.message}
           </p>
         )}
-      </DialogBody>
+      </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
@@ -1697,7 +1693,7 @@ function ToolGroupDialog({
             })
           }
         >
-          {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+          {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
           {pending ? t("common.saving") : t("pages.tool-groups.dialog.save")}
         </Button>
       </DialogFooter>
@@ -1877,9 +1873,7 @@ function McpSettingsForm({
       )}
       <div className="flex justify-end">
         <Button disabled={save.isPending} onClick={() => save.mutate()}>
-          {save.isPending && (
-            <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
-          )}
+          {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
           {save.isPending ? t("common.saving") : t("pages.mcpSettings.save")}
         </Button>
       </div>
