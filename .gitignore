@@ -97,3 +97,7 @@ videos/
 .impeccable/live/*
 !.impeccable/live/config.json
 .claude/settings.local.json
+
+# python bytecode from running scripts/ directly
+__pycache__/
+*.py[cod]

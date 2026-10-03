@@ -1118,6 +1118,11 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         // renew MCP OAuth sessions before they lapse, so a user consents once
         // rather than every hour (#707)
         mcp_oauth_flow::start_refresher(state.clone());
+        // abandoned sso logins and unredeemed exchange codes are otherwise
+        // only removed when the same flow returns, which it never does (#2414)
+        if let Some(pool) = state.pool.clone() {
+            sso::start_state_sweeper(pool);
+        }
         api = api
             .merge(access_control::router())
             .merge(alerting::router())

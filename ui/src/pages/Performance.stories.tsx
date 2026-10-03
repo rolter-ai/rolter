@@ -9,6 +9,7 @@ import {
   Harness as ScreenHarness,
   json,
   pickOption,
+  recording,
   Toasted,
   type FetchStub,
   type StoryRole,
@@ -106,6 +107,65 @@ export const BlockNeedsATimeout: Story = {
     await userEvent.clear(canvas.getByLabelText("Block timeout (ms)"));
     await userEvent.type(canvas.getByLabelText("Block timeout (ms)"), "500");
     await waitFor(() => expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled());
+  },
+};
+
+// the queue fields are disabled while the queue is off, so an out-of-range
+// stored value must neither show an error nor block saving (#2645); turning
+// the queue back on validates it again
+export const QueueOffIgnoresAnOutOfRangeCapacity: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json({ ...BASE, queue_enabled: false, queue_capacity: 0 })} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByLabelText("Capacity")).toBeDisabled());
+    await expect(canvas.queryByText(/Queue capacity must be/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled(),
+    );
+    await expect(canvas.getByText(/Queue capacity must be/)).toBeVisible();
+  },
+};
+
+// the block timeout is disabled unless the policy is `block`, so the same
+// holds for it: ignored under `error`, checked again once `block` is picked
+export const BlockTimeoutIgnoredOutsideBlockMode: Story = {
+  render: () => <Harness fetchStub={async () => json({ ...BASE, queue_block_ms: 999_999 })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const mode = await canvas.findByLabelText("When the queue is full");
+    await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
+    await expect(canvas.queryByText(/Block timeout must be/)).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await pickOption(mode, "block");
+    await waitFor(() => expect(canvas.getByText(/Block timeout must be/)).toBeVisible());
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+  },
+};
+
+const switchingOff = recording(async (_input, init) =>
+  init?.method === "PUT" ? json({ ...BASE, ...JSON.parse(String(init.body)) }) : json(BASE),
+);
+
+// a bad draft left behind by switching the queue off is not what gets saved:
+// the field cannot be reached any more, so the stored value is kept
+export const SwitchingTheQueueOffKeepsTheStoredValue: Story = {
+  render: () => <Harness fetchStub={switchingOff.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const capacity = await canvas.findByLabelText("Capacity");
+    await userEvent.clear(capacity);
+    await userEvent.type(capacity, "0");
+    await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
+    const save = canvas.getByRole("button", { name: "Save Changes" });
+    await expect(save).toBeEnabled();
+    await userEvent.click(save);
+    const body = await switchingOff.expectSentBody<RuntimePolicyDto>("PUT", "runtime-policy");
+    await expect(body.queue_enabled).toBe(false);
+    await expect(body.queue_capacity).toBe(BASE.queue_capacity);
   },
 };
 

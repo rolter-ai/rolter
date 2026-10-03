@@ -1,4 +1,5 @@
 import { CircleAlert, CircleCheck, Info, X } from "lucide-react";
+import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { useToast, type ToastTone } from "@/lib/toast";
@@ -56,17 +57,39 @@ function ToastCard({
   tone,
   title,
   detail,
+  duration,
   onDismiss,
 }: {
   tone: ToastTone;
   title: string;
   detail?: string;
+  duration: number | null;
   onDismiss: () => void;
 }) {
   const { t } = useTranslation();
   const Icon = ICON[tone];
+
+  // the card's own clock, stopped while the pointer or focus is on it so it is
+  // never taken away mid-read (WCAG 2.2.1), and restarted when it leaves
+  const [hovered, setHovered] = React.useState(false);
+  const [focused, setFocused] = React.useState(false);
+  const paused = hovered || focused;
+  const dismiss = React.useRef(onDismiss);
+  dismiss.current = onDismiss;
+  React.useEffect(() => {
+    if (duration === null || paused) return;
+    const timer = setTimeout(() => dismiss.current(), duration);
+    return () => clearTimeout(timer);
+  }, [duration, paused]);
+
   return (
     <div
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
+      }}
       className={cn(
         "rl-fade-in pointer-events-auto flex items-start gap-2.5 rounded-[10px] border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] px-3.5 py-3 shadow-[var(--shadow-lg)]",
       )}

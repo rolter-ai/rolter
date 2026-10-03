@@ -175,7 +175,7 @@ allow_custom_api_base = true
 <ParamField path="project_scoped" type="bool" default="false">
   Keep this provider to one project. By default a provider is org-wide: every project of the organization can use it, which is how projects share fallbacks. With `project_scoped = true`, only virtual keys minted in the project can reach it, whether by a route or as `provider-slug/model`, and a key from another project gets `404 model_not_found`.
 
-A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
+A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. It logs a startup warning naming each flagged provider or group, and `rolter check` reports the same as a warning; `rolter-seed --import` never warns. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
 
 In the dashboard and API, the provider's `project_id` is the same scope. See [Project-scoped providers](/concepts/providers-and-routes#project-scoped-providers).
 
@@ -769,6 +769,32 @@ This section is inert without a Redis URL: with no counter store there is nothin
 [usage_recording]
 queue_capacity = 10000
 workers = 4
+```
+
+---
+
+### \[security\]
+
+Ingress rules applied to every request on the `/v1/*` surface. A gateway managed by the control plane takes these from the dashboard's Security screen; a file-configured gateway reads them from this section. Both keys are optional and the section adds no rules when omitted.
+
+<ParamField path="required_headers" type="table">
+  Lowercase header name to the exact value every request must carry. A request that is missing one,
+  or carries a different value, is refused with `403` before authentication. This is an ingress
+  filter (a mesh identity header, a WAF marker), not an authorization decision. The `/healthz` and `/readyz`
+  probes are exempt.
+</ParamField>
+
+<ParamField path="auth_bypass_routes" type="array of strings">
+  Exact `/v1/...` paths served without authentication. Matching is exact: no prefixes and no
+  wildcards.
+</ParamField>
+
+```toml
+[security]
+auth_bypass_routes = ["/v1/models"]
+
+[security.required_headers]
+x-mesh-identity = "gateway"
 ```
 
 ---
