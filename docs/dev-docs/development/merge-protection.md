@@ -42,15 +42,18 @@ conflict semantically in any other type.
 
 ## The decision on merge order
 
-The repository **merges `master` through GitHub's merge queue**, and keeps
+The decision is to **merge `master` through GitHub's merge queue**, keeping
 `required_status_checks.strict = false` (branches need not be up to date).
 
-> The repository side of this — the `merge_group:` trigger and everything that
-> hangs off it — ships with #1318. Switching the queue **on** is a
-> branch-protection setting that no pull request can make; until someone with
-> admin runs the commands under _The settings, for whoever has admin_ below,
-> merging behaves exactly as it did before and the `merge_group` trigger is
-> inert. Nothing breaks in the meantime.
+> **Current state: the queue is off.** The repository side — the `merge_group:`
+> trigger and everything that hangs off it — shipped with #1318, but switching the
+> queue **on** is a branch-protection setting that no pull request can make, and
+> nobody with admin has done it. As of 2026-10-03 the repository has no merge
+> queue on `master`, no `merge_group` workflow run has ever existed, and `gh pr
+merge` merges directly. So today a semantic conflict between two green PRs still
+> reaches `master` and is only caught by its push run (#2029). Everything under
+> _How merging works now_ describes the behaviour **once the queue is enabled**;
+> until then, merging behaves exactly as it did before and the trigger is inert.
 
 This page used to record the opposite decision, with an explicit condition for
 revisiting it: _if a semantic conflict reaches `master` twice more, turn the
@@ -68,7 +71,7 @@ Three options were on the table:
 | Merge queue     | GitHub re-runs `ci-ok` against the prospective merge result, batching and ordering merges without anyone pushing rebases | One extra gate run per batch, and merging becomes asynchronous                                                                                                                                         |
 | Neither         | No new friction                                                                                                          | Semantic conflicts still reach `master`                                                                                                                                                                |
 
-### How merging works now
+### How merging works once the queue is on
 
 - **You still open and review PRs exactly as before.** `ci-ok` on the PR head is
   still required, and nothing enters the queue without it.
@@ -103,7 +106,7 @@ gh api -X PUT repos/rolter-ai/rolter/branches/master/protection/required_status_
 # the queue itself has no REST endpoint: Settings -> Branches -> master ->
 # "Require merge queue", then
 #   merge method                     squash
-#   build concurrency                5
+#   build concurrency                1-2
 #   minimum group size               1
 #   maximum group size               5
 #   wait time to meet minimum        5 minutes
@@ -111,7 +114,9 @@ gh api -X PUT repos/rolter-ai/rolter/branches/master/protection/required_status_
 #   status check timeout             90 minutes
 ```
 
-The numbers above are the starting point, not a law. `maximum group size` is the
+The numbers above are the starting point, not a law. Keep `build concurrency`
+at 1-2: one merge-group run is about 35 jobs (#2025) and the Free plan allows 20
+concurrent jobs, so five group builds at once would starve PR gates. `maximum group size` is the
 cost knob: it is how many PRs share one gate run, so raising it cuts CI spend and
 raises how much has to be re-tested when one entry in a batch fails. The timeout
 must comfortably exceed a full `quality` + `codeql` run.

@@ -274,9 +274,11 @@ wait.
 
 ## The merge queue
 
-`master` merges through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
-so `ci.yml` also triggers on `merge_group` (see
-[merge protection on `master`](merge-protection.md)). That run checks out a synthetic ref —
+`master` is meant to merge through a merge queue ([ADR-0033](../adr/2026-09-18-merge-queue.md)),
+so `ci.yml` also triggers on `merge_group`. **The queue is not switched on today**
+(#2029), so the trigger is inert and has never fired — see
+[merge protection on `master`](merge-protection.md). Read this section as how it
+behaves once it is. That run checks out a synthetic ref —
 `refs/heads/gh-readonly-queue/master/pr-<n>-<sha>` — holding `master` plus every
 entry ahead of this one in the queue, and reports the same `ci-ok` against it. It
 is the only run that ever sees the tree that will actually exist, which is the
@@ -693,6 +695,18 @@ Pull-request runs are unchanged: pushing again to a PR still cancels the
 in-flight run for the superseded commit, which is what you want, because nobody
 will ever merge that sha.
 
+## Runner image pin
+
+Every workflow runs on `ubuntu-24.04`, never `ubuntu-latest`. GitHub moves the
+`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), which changes the
+preinstalled tools, the default Docker and compose versions and the system
+libraries under the gate at once, so the compose smoke test, coverage, the
+Playwright `--with-deps` install and the release image build could all start
+failing on an unrelated pull request. The pin is deliberate. Moving to
+`ubuntu-26.04` is a tracked follow-up (#2736), done on a branch where a
+dispatch run of `quality.yml` and `extended.yml` shows what breaks. New
+workflows and matrix entries use the explicit `ubuntu-24.04` label too.
+
 ## `codeql (rust)` on a pull request with no Rust change
 
 `codeql (rust)` is the longest job `ci-ok` waits on (about 8 min), and about
@@ -722,3 +736,32 @@ that keep it safe:
 A skipped PR has no `/language:rust` analysis of its own, so GitHub's code
 scanning summary on it may say a configuration present on `master` was not
 found. That is expected and blocks nothing.
+
+## Suites that stay out of `ci-ok`
+
+Three workflows run heavy suites that `ci-ok` never waits on: `extended.yml`
+(macOS, compose smoke, msrv, coverage on `master`), `ui-e2e.yml` (the
+dashboard journeys) and `sso-e2e.yml`. Each one holds a runner for ten minutes
+or more, so running them on every pull request would take slots from the
+20-job pool that the gate itself queues on
+([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). They run nightly on
+`master` and on `workflow_dispatch` instead.
+
+A nightly that nothing reads is no check at all. The dashboard journeys failed
+on `master` every day from 2026-09-26, after #2421 and #2514 each broke one, and
+nobody noticed until the suite was dispatched by hand (#2677). So
+`extended.yml` and `ui-e2e.yml` each end in a `report failure` job that opens
+or comments on a tracking issue when a `master` run fails; see
+[Nightly extended checks](testing.md#nightly-extended-checks) and
+[Nightly dashboard journeys](testing.md#nightly-dashboard-journeys).
+
+`ui-e2e.yml` was deliberately kept off pull requests, even as a non-blocking
+path-filtered check. Most pull requests touch `ui/` or
+`crates/rolter-control`, so a filter on those paths would start the suite on
+almost every push, at about ten minutes a run, for a verdict that does not gate
+the merge. The cost of that choice is that a broken journey surfaces up to a
+day late, on the tracking issue, rather than on the PR that broke it. A PR
+that changes a journey's screen should dispatch the suite on its branch
+(`gh workflow run ui-e2e.yml --ref <branch>`). Making it a gate would mean
+adding it to `ci-ok`'s `needs:`, which only reaches jobs inside `ci.yml`, and
+re-measuring the runner budget first.

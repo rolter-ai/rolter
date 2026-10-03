@@ -415,7 +415,7 @@ export default function Providers() {
                     setLabelFilter("");
                   }}
                 >
-                  {t("common.clearSearch")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <GatedButton
