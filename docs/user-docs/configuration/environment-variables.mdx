@@ -131,6 +131,7 @@ What the check does and does not do:
 
 - One request, a 5-second timeout, carrying nothing but a `User-Agent: rolter/<version>` header. No installation id, no configuration, no credentials.
 - It never blocks a command, never changes an exit status, and never logs above `debug` when it fails. Offline, rate-limited and malformed answers all look the same: no hint, no notice.
+- The CLI remembers a failed attempt too: a host that cannot reach `api.github.com` tries once a day, not on every command, and keeps showing the last release it learned of.
 - Pre-release tags are never advertised. A pre-release build (`0.2.0-rc.1`) is told about the stable release it precedes; a build newer than the latest release stays quiet.
 - `rolter easy-up` supervises both planes in one process and prints the notice once.
 

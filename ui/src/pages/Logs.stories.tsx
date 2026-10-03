@@ -34,6 +34,7 @@ import {
   expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -249,6 +250,24 @@ export const Loaded: Story = {
     await expect(await canvas.findByText(fmt.currency(0.0123, "USD"))).toBeInTheDocument();
     // a fetch that succeeded is the one state the toolbar may call live (#1984)
     await expect(canvas.getByText("Streaming · 2 requests")).toBeVisible();
+  },
+};
+
+// a row's chevron is a 15px glyph; its button must still be a 24px target (WCAG 2.5.8, #2573)
+export const RowChevronHasA24pxHitArea: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [chevron] = await canvas.findAllByRole("button", {
+      name: en.analytics.openDetails.replace("{{model}}", "gpt-4o"),
+    });
+    const box = chevron.getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
   },
 };
 
@@ -801,10 +820,47 @@ export const Mobile: Story = {
     // the unpriced row says so in the cost column that is on screen
     await expect(within(shape.cells(1)[3]).getByText("unpriced")).toBeVisible();
     await expect(within(shape.cells(0)[3]).getByText(fmt.currency(0.0123, "USD"))).toBeVisible();
+    await expectStackedRow(canvasElement, 0, ROWS[0].model);
   },
 };
 
-// a model name long enough to wrap in the narrowest column it gets, and a row
+/**
+ * #2446: below 480px a row stacks. The model is on the first line with the
+ * status, time and cost on the second, the model is cut with an ellipsis and
+ * not wrapped, and its full name is in the row's accessible name.
+ */
+async function expectStackedRow(canvasElement: HTMLElement, rowIndex: number, model: string) {
+  const shape = tableShape(canvasElement);
+  const [time, modelCell, status, cost] = [
+    shape.cells(rowIndex)[0],
+    shape.cells(rowIndex)[1],
+    shape.cells(rowIndex)[2],
+    shape.cells(rowIndex)[3],
+  ];
+  await expect(modelCell).toHaveTextContent(model);
+  // one line: no taller than the line it is set in, and cut rather than wrapped
+  const style = getComputedStyle(modelCell);
+  await expect(style.whiteSpace).toBe("nowrap");
+  await expect(style.textOverflow).toBe("ellipsis");
+  await expect(modelCell.getBoundingClientRect().height).toBeLessThan(
+    parseFloat(style.lineHeight) * 1.5,
+  );
+  // the model and the status share the first line, the time and the cost the second
+  const top = (el: Element) => Math.round(el.getBoundingClientRect().top);
+  const bottom = (el: Element) => el.getBoundingClientRect().bottom;
+  await expect(Math.abs(top(modelCell) - top(status))).toBeLessThanOrEqual(6);
+  await expect(Math.abs(top(time) - top(cost))).toBeLessThanOrEqual(2);
+  await expect(top(time)).toBeGreaterThanOrEqual(bottom(modelCell) - 1);
+  await expect(cost.getBoundingClientRect().left).toBeGreaterThan(
+    time.getBoundingClientRect().left,
+  );
+  // the chevron is the row's own button, named by the full model
+  const button = within(shape.cells(rowIndex)[4]).getByRole("button");
+  await expect(button).toHaveAccessibleName(new RegExp(model));
+  await expectInViewport(button);
+}
+
+// a model name long enough to be cut in the narrowest row it gets, and a row
 // with no price, so the cost column holds both of the things it can hold
 const LONG_MODEL = row({
   request_id: "req-long-model",
@@ -816,8 +872,8 @@ const LONG_MODEL = row({
 
 /**
  * #1986 in Russian, the longer copy: Time, Status and Cost all stay in frame
- * at 375px with a model name that has to wrap, and the page does not scroll
- * sideways.
+ * at 375px with a model name that has to be cut, and the page does not scroll
+ * sideways. #2446: the long model stays on one line in every row.
  */
 export const TimeStatusAndCostStayInFrameInRussian: Story = {
   ...atMobile,
@@ -850,6 +906,8 @@ export const TimeStatusAndCostStayInFrameInRussian: Story = {
     await expect(within(shape.cells(2)[3]).getByText(ru.analytics.unpriced)).toBeVisible();
     // the clock is the locale's own: a comma before the milliseconds
     await expect(shape.cells(0)[0]).toHaveTextContent(/^\d{2}:\d{2}:\d{2},\d{3}$/);
+    for (const [index, model] of [ROWS[0].model, ROWS[1].model, LONG_MODEL.model].entries())
+      await expectStackedRow(canvasElement, index, model);
   },
 };
 
@@ -2617,3 +2675,17 @@ export const AKeyCanBePickedByName: Story = {
     await expect(picker).toHaveValue("");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const logsFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  ready: (canvas, locale) => canvas.findByText(formattersFor(locale).timeMs(ROWS[0].ts)),
+});
+// the feed's pager sat 47px past the edge at 320px, in English
+export const SmallPhone: Story = logsFit("small", "en");
+export const SmallPhoneInRussian: Story = logsFit("small", "ru");

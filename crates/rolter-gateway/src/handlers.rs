@@ -1039,17 +1039,22 @@ pub(crate) struct AccessRevoked {
 }
 
 /// Re-run the upgrade's key, model and route gates against `snap` for a
-/// session that is already open (#1881).
+/// session that is already open (#1881), returning the key as `snap` now has
+/// it.
 ///
 /// Authentication happens once, at the WebSocket upgrade, so without this a
 /// disabled, expired or deleted key would keep its session until the client
 /// left. The gates are the upgrade's own: the key lookup [`authenticate`] does,
-/// then [`authorize_model`], the route lookup and [`authorize_route`].
-pub(crate) fn recheck_session_access(
-    snap: &Snapshot,
+/// then [`authorize_model`], the route lookup and [`authorize_route`]. On top
+/// of those, `provider` is the one the session is pinned to, and it must still
+/// be on the key's provider allow-list (#2384): the route gate only asks that
+/// some provider on the route is, and the session cannot move to another.
+pub(crate) fn recheck_session_access<'a>(
+    snap: &'a Snapshot,
     digest: &str,
     model: &str,
-) -> Result<(), AccessRevoked> {
+    provider: &str,
+) -> Result<&'a KeyMeta, AccessRevoked> {
     let denied = |denial: AccessDenial| {
         let (message, code) = denial.message_and_code();
         AccessRevoked {
@@ -1077,7 +1082,16 @@ pub(crate) fn recheck_session_access(
             message: format!("no route for model '{model}'"),
         });
     };
-    authorize_route(Some(key), entry).map_err(denied)
+    authorize_route(Some(key), entry).map_err(denied)?;
+    if !key.provider_allowed(provider) {
+        return Err(AccessRevoked {
+            status: StatusCode::FORBIDDEN,
+            code: "provider_not_allowed",
+            message: "the provider this session is pinned to is no longer allowed for this key"
+                .to_string(),
+        });
+    }
+    Ok(key)
 }
 
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
@@ -4826,6 +4840,55 @@ mod tests {
         assert_eq!(meta.id, "vk-1");
         assert_eq!(meta.org_id, "org-1");
         assert_eq!(meta.project_id, "proj-1");
+    }
+
+    /// The shape of a fresh managed deployment (#2300): no provider, no route,
+    /// and the one key the control plane mints for the Playground of a
+    /// routeless project, scoped to the builtin alone. That key gets an answer
+    /// from `fake-llm` and reaches nothing else, and a keyless call is still
+    /// refused.
+    #[tokio::test]
+    async fn managed_gateway_serves_fake_llm_to_a_routeless_playground_key() {
+        let mut config = GatewayConfig::default();
+        let pepper = config.server.resolve_key_pepper();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(&pepper, "sk-playground"),
+            id: "vk-playground".to_string(),
+            org_id: "org-1".to_string(),
+            team_id: "team-1".to_string(),
+            project_id: "proj-1".to_string(),
+            user_id: "user-1".to_string(),
+            models: vec![fake_llm::MODEL_NAME.to_string()],
+            providers: vec![],
+            disabled: false,
+            expires_at: Some(Utc::now() + chrono::Duration::minutes(30)),
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+        let mut state = AppState::new(&config);
+        state.managed_auth = true;
+        let chat = || Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
+
+        let resp = chat_completions(State(state.clone()), bearer("sk-playground"), chat()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = messages(State(state.clone()), bearer("sk-playground"), chat()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = list_models(State(state.clone()), bearer("sk-playground")).await;
+        assert_eq!(
+            models_in_response(resp).await,
+            vec![fake_llm::MODEL_NAME.to_string()]
+        );
+
+        // the key reaches the builtin and nothing else
+        let other = Bytes::from(r#"{"model": "gpt-4o", "messages": []}"#);
+        let resp = chat_completions(State(state.clone()), bearer("sk-playground"), other).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // and a managed gateway still wants a key, even for the builtin
+        let resp = chat_completions(State(state), HeaderMap::new(), chat()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

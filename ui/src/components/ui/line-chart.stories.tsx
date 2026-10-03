@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect } from "storybook/test";
+import { expect, within } from "storybook/test";
 
 import { formattersFor } from "@/lib/i18n/format";
 
@@ -213,5 +213,37 @@ export const FlatAtZero: Story = {
   play: async ({ canvasElement }) => {
     await expect(canvasElement.querySelector("svg")).toBeTruthy();
     await expect(canvasElement.querySelector("path")).toBeTruthy();
+  },
+};
+
+/**
+ * #2005: the graphic alone gave assistive technology a name and no numbers. A
+ * named chart carries a visually hidden table of what it plots, one row per
+ * point, so the values are readable without a pointer.
+ */
+export const CarriesATableOfItsValues: Story = {
+  args: {
+    height: 200,
+    label: "Spend, last 24 hours",
+    labels: ["00:00", "06:00", "12:00"],
+    series: [{ name: "Spend", values: [0.5, 2, 1.25] }],
+    formatValue: (v: number) => money.currency(v),
+  },
+  play: async ({ canvas }) => {
+    const table = canvas.getByRole("table", { name: "Spend, last 24 hours" });
+    await expect(within(table).getByRole("columnheader", { name: "Spend" })).toBeInTheDocument();
+    const rows = within(table).getAllByRole("row");
+    // the header row, then one per point
+    await expect(rows).toHaveLength(4);
+    await expect(within(rows[2]).getByRole("rowheader")).toHaveTextContent("06:00");
+    await expect(within(rows[2]).getByRole("cell")).toHaveTextContent(money.currency(2));
+  },
+};
+
+/** a chart the caller does not name is decorative, and carries no table either */
+export const UnnamedChartIsDecorative: Story = {
+  args: { ...Default.args },
+  play: async ({ canvas }) => {
+    await expect(canvas.queryByRole("table")).not.toBeInTheDocument();
   },
 };

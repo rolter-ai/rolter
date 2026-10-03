@@ -73,7 +73,9 @@
   "common": {
     "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
+    "chartPoint": "Time",
     "clearSearch": "Clear search",
+    "clearFilters": "Clear filters",
     "close": "Close",
     "copied": "Copied",
     "copy": "Copy",
@@ -101,6 +103,9 @@
         "request": "First request"
       }
     },
+    "publicUrl": {
+      "unset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which only a caller on the control plane's own host can reach. Set <code>ROLTER_PUBLIC_URL</code> to an address the caller can reach and restart the control plane before you copy this one."
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -109,6 +114,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
@@ -117,6 +124,7 @@
       "placeholder": "Select…",
       "options": "Options",
       "clear": "Clear selection",
+      "use": "Use “{{value}}”",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
@@ -820,6 +828,15 @@
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
       "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "modelPlaceholder": "Choose or type a model",
+      "modelRequired": "Choose a model to price.",
+      "priceUnit": "{{currency}} per million tokens",
+      "priceRequired": "Enter a price. Type 0 if the model is free; empty stays unpriced.",
+      "priceInvalid": "Enter a price of 0 or more.",
+      "currencyRequired": "Choose a currency.",
+      "modelGroupRoutes": "Routes",
+      "modelGroupTraffic": "Seen in traffic",
+      "currencyBase": "base currency",
       "confirm": {
         "deleteTitle": "Delete the price for {{model}}?",
         "deleteBody": "Cost accounting for this model falls back to no known price.",
@@ -843,6 +860,10 @@
       "pcaChartAria": "PCA projection of the embedded texts",
       "removeColumn": "Remove column {{n}} ({{model}})",
       "columnName": "{{model}}, column {{n}}",
+      "modelAriaFor": "Model for {{model}}",
+      "rawOutputFor": "Show raw text for {{model}}",
+      "removeAttachmentFor": "Remove attachment for {{model}}",
+      "attachImageFor": "Attach image for {{model}}",
       "threadAria": "Conversation with {{model}}",
       "sendTo": "Send to {{model}}",
       "copyAsCodeFor": "Copy as code for {{model}}",
@@ -1384,8 +1405,7 @@
         "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
         "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
         "noMatchTitle": "No transitions match these filters",
-        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
-        "clearFilters": "Clear filters"
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest."
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",
@@ -1410,7 +1430,6 @@
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
-        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "allOffTitle": "Every connector is switched off",
@@ -1435,7 +1454,6 @@
       "deleteAria": "Delete connector {{name}}",
       "editAria": "Edit connector {{name}}",
       "editTitle": "Edit connector {{name}}",
-      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",
@@ -1459,7 +1477,7 @@
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
         "secretReplaceHint": "Saving replaces the stored secret with this one.",
-        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new endpoint's secret to keep it authenticated.",
         "start": "Start sending as soon as it is created",
         "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
         "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
@@ -1803,9 +1821,9 @@
         "customerBody": "The customer is removed outright and the spend already attributed to it loses its label. Retire it instead to keep the history."
       },
       "unitEmptyTitle": "No business units yet",
-      "unitEmptyBody": "Business units roll teams up so spend can be attributed to the part of the organisation that incurred it.",
+      "unitEmptyBody": "Spend reaches a business unit through a virtual key assigned to it, and through customers that roll up into it. Create the unit, then assign it on a virtual key or a customer.",
       "customerEmptyTitle": "No customers yet",
-      "customerEmptyBody": "Customers attribute usage and spend to the people you serve, so it can be billed on or reported per account.",
+      "customerEmptyBody": "Spend reaches a customer through a virtual key assigned to it, so it can be billed on or reported per account. A customer can also roll up into a business unit.",
       "spendWindows": {
         "last24h": "Spend, last 24 hours",
         "last7d": "Spend, last 7 days",
@@ -1817,7 +1835,9 @@
       "spendAttributed": "Attributed",
       "spendUnattributed": "Unattributed",
       "spendUnattributedShare": "{{share}} of the window",
+      "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
@@ -2226,7 +2246,7 @@
         },
         "ssoConfirm": {
           "title": "Turn off single sign-on?",
-          "body": "While it is off, every sign-in through this organization's identity providers is refused. The providers, their secrets and group mappings stay, so turning it back on restores sign-in.",
+          "body": "While it is off, this organization's provider buttons disappear from the sign-in screen and new sign-ins through its identity providers are refused at once, as are any already under way when they return from the provider. The providers, their secrets and group mappings stay, so turning it back on restores the buttons and sign-in.",
           "confirm": "Turn it off",
           "notice": {
             "title": "Members who only sign in through a provider would be locked out",
@@ -2381,6 +2401,19 @@
       "prevPageAria": "Previous page",
       "nextPageAria": "Next page",
       "allActions": "All actions",
+      "actionGroups": {
+        "identity": "Identity and access",
+        "tenancy": "Organisations and teams",
+        "keys": "Keys, budgets and limits",
+        "routing": "Providers and routing",
+        "guardrails": "Guardrails",
+        "mcp": "MCP and connectors",
+        "alerts": "Alerts",
+        "content": "Prompts, skills and plugins",
+        "settings": "Settings and policies",
+        "account": "Sign-in and MFA",
+        "other": "Other"
+      },
       "allTargets": "All targets",
       "page": "page {{page}}",
       "totalSuffix": " · {{total}} total",
@@ -2450,7 +2483,10 @@
       "grainProvider": "probed · {{sources}}",
       "incidents": "Incidents",
       "mttr": "MTTR",
-      "noEvents": "No events in window.",
+      "noTimeline": "No timeline.",
+      "timelineSummary": "Health timeline, {{from}} to {{to}}: {{failures}} failures in {{events}} events over {{buckets}} hourly buckets",
+      "legendOk": "No failures",
+      "legendFailed": "Failures (taller = larger share)",
       "slaAtRisk": "SLA at risk",
       "slaBreaching": "below SLA",
       "slaWithin": "within SLA",
@@ -2477,8 +2513,8 @@
       "rateLimitsEmptyBody": "A rate limit caps requests and tokens per minute for the selected scope, so one client cannot starve the rest.",
       "rateLimitsEmptyTitle": "No rate limits for this scope",
       "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
-      "scopeHint": "The {{type}} this cap applies to",
-      "scopeIdHint": "Paste the {{type}} id — a uuid, since none are available to pick",
+      "scopeHint": "This cap applies to: {{type}}",
+      "scopeIdHint": "Paste the id ({{type}}) — a uuid, since none are available to pick",
       "scopeTypes": {
         "org": "Organization",
         "team": "Team",
@@ -2586,7 +2622,6 @@
       "statusErrors": "Errors",
       "allModels": "All models",
       "allKeys": "All keys",
-      "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
       "unpricedOnly": "Unpriced only",
@@ -2738,8 +2773,7 @@
       "baseUrl": {
         "label": "SCIM base URL",
         "copy": "Copy SCIM base URL",
-        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
-        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org."
       },
       "mappings": {
         "title": "Group mappings",
@@ -2953,7 +2987,7 @@
         "title": "Related settings",
         "featureFlags": {
           "title": "Feature flags",
-          "desc": "Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+          "desc": "Switch deployment-wide gateway subsystems on or off. Persisted and hot-reloaded — no restart."
         },
         "clientSettings": {
           "title": "Client settings",
@@ -2980,7 +3014,19 @@
         "apiBase": "API base",
         "model": "Model",
         "strategy": "Strategy",
-        "targets": "Targets"
+        "targets": "Targets",
+        "virtualKeys": "Virtual keys (from the config file)",
+        "allowedModels": "Allowed models",
+        "allModels": "all models",
+        "weight": "weight {{value}}",
+        "upstreamModel": "model {{model}}",
+        "noTargets": "no targets",
+        "emptyProvidersTitle": "No providers configured",
+        "emptyProvidersBody": "Add a provider so the gateway has an upstream to call.",
+        "addProvider": "Go to Providers",
+        "emptyRoutesTitle": "No routes configured",
+        "emptyRoutesBody": "Add a routing rule to expose a model name through the gateway.",
+        "addRoute": "Go to Routing Rules"
       }
     },
     "mcpSettings": {
@@ -3273,6 +3319,21 @@
       }
     },
     "featureFlags": {
+      "lastSaved": "Last saved {{when}}",
+      "neverSaved": "Not saved yet",
+      "changed": "Changed",
+      "confirm": {
+        "title": "Apply these flag changes?",
+        "body_one": "{{count}} switch changes for the whole deployment, every org. The gateway picks it up on its next config poll, with no restart.",
+        "body_other": "{{count}} switches change for the whole deployment, every org. The gateway picks them up on its next config poll, with no restart.",
+        "confirm": "Apply changes",
+        "on": "turned on",
+        "off": "turned off",
+        "offConsequence": {
+          "guardrails": "Every pre- and post-call guardrail rule stops running for every org.",
+          "circuit_breaker": "Failing targets stay in rotation instead of being tripped out of the pool."
+        }
+      },
       "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
@@ -3353,7 +3414,7 @@
       "rejectedPasteHint": "The gateway refused this key, so requests sent with it would fail. Paste a key the gateway accepts.",
       "noProject": "Pick a project to mint a key against, or paste one below.",
       "refused": "Your role in this project cannot mint keys. Paste a virtual key someone gave you to send requests.",
-      "routeless": "This project has no routes yet, so a key minted for it would have nothing to reach. Mint one once the project routes a model.",
+      "routeless": "This project has no routes yet, so this key reaches the built-in fake-llm only. Renew it once the project routes a model.",
       "routelessLink": "Open {{screen}}",
       "keyless": "This gateway takes requests without a key, so the Playground sends none. To test one, use a specific key below.",
       "idle": "Mint a key to send requests, or paste one below.",
@@ -3633,7 +3694,7 @@
     },
     "business-units": {
       "title": "Business Units",
-      "subtitle": "Roll teams up into cost-attributed business units."
+      "subtitle": "Attribute spend to business units through the virtual keys assigned to them."
     },
     "customers": {
       "title": "Customers",
@@ -3725,7 +3786,7 @@
     },
     "feature-flags": {
       "title": "Feature Flags",
-      "subtitle": "Toggle experimental gateway features."
+      "subtitle": "Deployment-wide gateway subsystems. Saved changes apply to every org and hot-reload on the next config poll."
     },
     "preferences": {
       "title": "Preferences",
@@ -3823,8 +3884,8 @@
   },
   "providers": {
     "unserved": {
-      "title_one": "{{count}} config entry is not being served to gateways",
-      "title_other": "{{count}} config entries are not being served to gateways"
+      "title_one": "{{count}} config entry is not being served as written",
+      "title_other": "{{count}} config entries are not being served as written"
     }
   },
   "account": {
