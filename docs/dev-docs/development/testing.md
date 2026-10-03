@@ -1421,8 +1421,14 @@ them takes a slot from the 20-job runner pool while PRs wait
 
 The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
 and outranks the default a toolchain action sets, so a plain `cargo check` would
-test stable and never the declared version. It is red until #2026 settles
-`rust-version` against a lockfile that already needs 1.88.
+test stable and never the declared version; the step prints `rustc --version`
+for that toolchain first, so the log shows which compiler ran. The declared
+version is 1.91 (#2026): the lockfile alone needs 1.88 (redis, tonic, icu and
+`time` declare it), and our own code calls `str::floor_char_boundary`, stable
+since 1.91. To find the floor again after a dependency bump or a newer std API,
+install the candidate with `rustup toolchain install <ver> --profile minimal`
+and run `cargo +<ver> check --workspace --all-features`; the version below it
+must fail.
 
 None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
 failure has to reach the `report failure` job as `failure`. On `master` that
