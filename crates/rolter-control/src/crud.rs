@@ -6201,23 +6201,30 @@ mod error_body_tests {
 
     /// Driver text as `store_err` and every `e.to_string()` call site pass it
     /// on: it names the host, the credentials in the url and the schema (#2268).
-    const DRIVER_TEXT: &str = "error returned from database: relation \"tenant_a.users\" \
-         does not exist (postgres://rolter:hunter2@db.internal:5432/rolter)";
+    fn driver_text(password: &str) -> String {
+        format!(
+            "error returned from database: relation \"tenant_a.users\" \
+             does not exist (postgres://rolter:{password}@db.internal:5432/rolter)"
+        )
+    }
 
     #[tokio::test]
     async fn a_raw_server_error_never_reaches_a_500_body() {
+        let password = format!("pw-{}", uuid::Uuid::new_v4());
+        let driver_text = driver_text(&password);
         for err in [
-            Error::Store(DRIVER_TEXT.into()),
-            Error::Upstream(DRIVER_TEXT.into()),
-            Error::Io(std::io::Error::other(DRIVER_TEXT)),
+            Error::Store(driver_text.clone()),
+            Error::Upstream(driver_text.clone()),
+            Error::Io(std::io::Error::other(driver_text.clone())),
         ] {
             let (status, body) = rendered(ApiError::Core(err)).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["error"]["message"], INTERNAL_ERROR);
             let text = body.to_string();
-            for fragment in ["db.internal", "hunter2", "tenant_a"] {
+            for fragment in ["db.internal", "tenant_a"] {
                 assert!(!text.contains(fragment), "{fragment} reached the body");
             }
+            assert!(!text.contains(&password), "the password reached the body");
         }
     }
 

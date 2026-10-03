@@ -401,7 +401,7 @@ mod tests {
     fn password() -> Credential {
         Credential::Password {
             email: "ada".into(),
-            password: "correct horse".into(),
+            password: format!("pw-{}", uuid::Uuid::new_v4()),
         }
     }
 
