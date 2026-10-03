@@ -237,6 +237,10 @@ pub(crate) enum ApiError {
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
     Forbidden,
+    /// a 403 that is about policy rather than the caller's role, with a `code`
+    /// a client can branch on. Same contract as [`ApiError::CodedConflict`]:
+    /// `code` is part of the API and never renamed
+    CodedForbidden { code: &'static str, message: String },
     /// the client has spent its budget of rejected attempts on a token
     /// endpoint and is locked for a while (429, #1079). Carries the remaining
     /// lock, which is rendered as `Retry-After`
@@ -261,7 +265,7 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let code = match &self {
-            Self::CodedConflict { code, .. } => Some(*code),
+            Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
             _ => None,
         };
         let (status, message) = match self {
@@ -290,6 +294,7 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN,
                 "insufficient role for this resource".to_string(),
             ),
+            Self::CodedForbidden { message, .. } => (StatusCode::FORBIDDEN, message),
             Self::TooManyAttempts(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many rejected attempts; try again later".to_string(),

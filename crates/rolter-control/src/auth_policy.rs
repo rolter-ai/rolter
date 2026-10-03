@@ -54,8 +54,9 @@ pub fn router() -> Router<ControlState> {
 struct AuthMethods {
     /// whether to render the email + password form
     password: bool,
-    /// one entry per enabled provider; empty means "no sso configured", which
-    /// is the default deployment
+    /// one entry per enabled provider whose org allows sso; empty means "no
+    /// sso to offer", which is the default deployment. a provider of an org
+    /// that turned sso off is left out rather than shown and refused (#2339)
     sso: Vec<SsoOption>,
 }
 
@@ -68,7 +69,7 @@ struct SsoOption {
 }
 
 async fn methods(State(state): State<ControlState>) -> ApiResult<Json<AuthMethods>> {
-    let providers = SsoRepo(pool(&state)).list_enabled_providers().await?;
+    let providers = SsoRepo(pool(&state)).list_sign_in_providers().await?;
     let password = OrgAuthPolicyRepo(pool(&state))
         .any_password_login_allowed()
         .await?;
