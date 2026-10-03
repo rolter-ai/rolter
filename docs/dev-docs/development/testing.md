@@ -1566,7 +1566,7 @@ because its cold Docker release build costs about five minutes of a runner
 
 ### Nightly dashboard journeys
 
-[`.github/workflows/ui-e2e.yml`](../../.github/workflows/ui-e2e.yml) runs the
+[`.github/workflows/ui-e2e.yml`](../../../.github/workflows/ui-e2e.yml) runs the
 Playwright journeys in `ui/e2e/` against the fake-vLLM compose stack
 (`integration/e2e/docker-compose.e2e.yml`), nightly at 03:17 UTC and on
 `workflow_dispatch`. Like `extended.yml` it gates nothing, and for the same
