@@ -58,6 +58,18 @@ a guess would produce a number that looks authoritative and is not. Take care
 with a query that is `enabled: false`: it stays pending forever, so gate it the
 way `Playground` does rather than letting it suppress the event.
 
+A screen that reads more than one thing passes the read it exists for, never a
+supporting one. LLM Logs followed the model list that feeds its filter rail
+until #2017, so it reported itself ready over a skeleton and recorded nothing
+when ClickHouse failed every log read. It now calls `useScreenReady(!query.isPending)`
+on the log query, which counts an answer of any kind and not a retry parked in a
+hidden tab, and `useErrorState` on a failure of that query. The no-analytics
+deployment shape is an answer and a supported one, so it is ready and is not an
+error state. The target is `request-logs`, the region the empty state names, so
+the two rows pair up in the dead-states query. The `TheScreenIsNotReadyWhileTheLogIsOut`,
+`AFailedLogReadIsAnErrorState`, `AFailedModelListIsNotTheLogsError` and
+`NoAnalyticsStore` stories in `Logs.stories.tsx` read the queue.
+
 Everything else — forms, confirmations, empty and error placeholders — comes
 free from the shared components, provided the screen uses them.
 

@@ -12,6 +12,20 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "sso": {
+      "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
+      "errors": {
+        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
+        "state_expired": "This sign-in took too long or was already used. Start it again.",
+        "sso_disabled": "Single sign-on is turned off for this organization.",
+        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
+        "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
+      },
+      "provider": "Identity provider: {{name}}"
+    },
     "errors": {
       "invalidCredentials": "That email and password do not match an account here.",
       "passwordLoginDisabled": "Password sign-in is turned off for this organization. Use single sign-on below.",
@@ -57,6 +71,7 @@
     }
   },
   "common": {
+    "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
     "clearSearch": "Clear search",
     "close": "Close",
@@ -73,6 +88,19 @@
     "viewDocs": "View docs",
     "aboutField": "About {{label}}",
     "copyFailed": "Copy failed — the clipboard is unavailable on this page",
+    "secret": {
+      "copyByHand": "Select the value and copy it by hand.",
+      "select": "Select value",
+      "closeTitle": "Close without copying?",
+      "closeBody": "It will not be shown again.",
+      "closeConfirm": "Close anyway",
+      "nextStep": {
+        "title": "Make your first request",
+        "body": "Export the key as <code>{{env}}</code>, then send this request to the gateway.",
+        "gatewayUrl": "Gateway URL",
+        "request": "First request"
+      }
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -81,6 +109,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
@@ -136,10 +166,6 @@
         "title": "{{resource}} needs a database on the control plane",
         "body": "This control plane is running from a config file alone, so the endpoint behind this screen is not mounted at all. Retrying or signing in will not change that: start it with a database (ROLTER_DATABASE_URL) to manage {{resource}} here, or keep editing rolter.toml."
       },
-      "noAnalytics": {
-        "title": "Analytics are not configured on this control plane",
-        "body": "It answered, and the answer was that it keeps no analytics store, so it cannot serve {{resource}}: it runs without CLICKHOUSE_URL, or is older than the endpoint behind this screen. Retrying or signing in will not change that — configure ClickHouse and restart it."
-      },
       "unreachable": {
         "title": "Cannot reach the control plane",
         "body": "The request for {{resource}} got no answer at all. Check that the control plane is running and that this dashboard points at the right address."
@@ -156,7 +182,9 @@
     "resources": {
       "skillVersions": "the skill's versions",
       "users": "users",
+      "invitations": "pending invitations",
       "provisioningTokens": "provisioning tokens",
+      "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
@@ -176,6 +204,12 @@
       "gettingStarted": "the setup checklist",
       "labels": "labels",
       "analytics": "analytics",
+      "dashboardFigures": "the overview figures",
+      "dashboardSpend": "hourly spend",
+      "dashboardTrafficShare": "the traffic share",
+      "dashboardByModel": "requests by model",
+      "dashboardRecent": "recent requests",
+      "savedViews": "your saved views",
       "requestLogs": "request logs",
       "routes": "routes",
       "routeTargets": "this route's targets",
@@ -207,7 +241,7 @@
       "oauthGrants": "OAuth grants",
       "performanceSettings": "performance settings",
       "roleMembers": "role membership counts",
-      "scimGroupMappings": "group mappings",
+      "groupMappings": "group mappings",
       "securitySettings": "security settings",
       "toolGroups": "tool groups",
       "rbacMatrix": "the permission matrix",
@@ -223,12 +257,38 @@
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
-      "projectSettings": "project settings"
+      "projectSettings": "project settings",
+      "preferences": "your preferences",
+      "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "requestFailed": "gateway request failed: {{status}}"
+    },
+    "api": {
+      "unreachable": "Could not reach the server. Check your connection and try again.",
+      "unauthorized": "Your session is missing or has expired. Sign in again.",
+      "forbidden": "Your role does not permit this.",
+      "rateLimited": "Too many attempts. Wait a moment and try again.",
+      "server": "The control plane hit an error. Try again, and check its logs if it persists.",
+      "generic": "The server rejected this request.",
+      "codes": {
+        "analytics_query_failed": "The analytics query failed.",
+        "internal": "The control plane hit an internal error.",
+        "invalid_credentials": "The email or password is wrong.",
+        "invalid_cursor": "The page position is no longer valid. Reload the list.",
+        "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_query": "The filter is not valid.",
+        "invalid_time_bound": "The time range is not valid.",
+        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "no_such_endpoint": "This control plane does not offer that feature.",
+        "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
+        "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "too_many_attempts": "Too many failed attempts. Try again later.",
+        "unauthenticated": "Your session is missing or has expired. Sign in again."
+      }
     }
   },
   "locale": {
@@ -304,7 +364,9 @@
       "upstreamAria": "Target {{n}} upstream model",
       "weightAria": "Target {{n}} weight",
       "removeAria": "Remove target {{n}}",
-      "upstreamPlaceholder": "same as model name"
+      "upstreamPlaceholder": "same as model name",
+      "scopeNote_one": "{{count}} provider scoped to another project is not offered here.",
+      "scopeNote_other": "{{count}} providers scoped to other projects are not offered here."
     },
     "lock": {
       "lockAll": "Lock all",
@@ -369,7 +431,7 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below. This narrows the route only: a provider stays reachable as provider-slug/model by every key of the organization unless the provider itself is scoped to a project, which you do on its own sheet under Providers.",
       "public": "Whole organization",
       "project": "This project",
       "restricted": "Restricted",
@@ -427,7 +489,7 @@
     "plugins": "Plugins",
     "alerting": "Alerting",
     "alerting-channels": "Channels",
-    "alerting-rules": "Rules",
+    "alerting-rules": "Alert Rules",
     "alerting-history": "History",
     "governance": "Governance",
     "virtual-keys": "Virtual Keys",
@@ -441,11 +503,11 @@
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
     "guardrails": "Guardrails",
-    "guardrail-rules": "Rules",
+    "guardrail-rules": "Guardrail Rules",
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
-    "adaptive-dashboard": "Dashboard",
+    "adaptive-dashboard": "Telemetry",
     "adaptive-settings": "Settings",
     "prompt-repo": "Prompt Repository",
     "skills-repo": "Skills Repository",
@@ -456,7 +518,8 @@
     "security": "Security",
     "api-keys": "My Virtual Keys",
     "performance": "Performance Tuning",
-    "feature-flags": "Feature Flags"
+    "feature-flags": "Feature Flags",
+    "preferences": "Preferences"
   },
   "pages": {
     "gettingStarted": {
@@ -501,17 +564,25 @@
       "statSpend": "Spend (24h)",
       "statAvgLatency": "Avg latency",
       "statErrorRate": "Error rate",
+      "notMeasured": "—",
+      "noRequestsInWindow": "No requests in this window",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
-      "last24h": "Last 24h",
       "live": "Live",
+      "feed": {
+        "loading": "Loading",
+        "loadFailed": "Load failed at {{time}}",
+        "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
+      },
       "spendTitle": "Spend",
-      "spendSub": "Hourly gateway spend, USD",
+      "spendSub": "Hourly gateway spend, {{currency}}",
       "noSpendRecorded": "No spend recorded for this window. Requests were served, but none of them were priced — add pricing for the models in use to see cost here.",
       "trafficTitle": "Traffic share",
       "trafficSub": "Requests by model",
       "noTraffic": "No traffic yet.",
-      "requests": "requests",
+      "sharedRead": "This card reads the same data as {{card}}, which failed to load. Use {{retry}} there.",
+      "requests_one": "request",
+      "requests_other": "requests",
       "byModelTitle": "Requests by model",
       "recentTitle": "Recent requests",
       "nothingLogged": "Nothing logged yet.",
@@ -519,13 +590,18 @@
       "colModel": "Model",
       "colStatus": "Status",
       "colMs": "ms",
+      "openRequest": "Open the {{model}} request from {{time}} in LLM Logs",
       "unpriced": {
         "title_one": "{{count}} request in this window is unpriced.",
         "title_other": "{{count}} requests in this window are unpriced.",
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
       },
-      "spendChartAria": "Spend over the last 24 hours"
+      "spendChartAria": "Spend, {{window}}",
+      "noAnalytics": {
+        "title": "Traffic and spend need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
+      }
     },
     "models": {
       "unpriced": {
@@ -605,9 +681,23 @@
       "editOne": "Edit provider {{name}}",
       "confirm": {
         "deleteTitle": "Delete provider {{name}}?",
-        "deleteBody": "It stops being usable as a route target. This cannot be undone.",
+        "deleteBody": "Requests addressed to <code>{{slug}}/model</code> stop working. This cannot be undone.",
         "deleteConfirm": "Delete provider"
-      }
+      },
+      "usage": {
+        "resource": "the routes and groups that use it",
+        "none": "No route or group uses it.",
+        "inUse": "Still in use. The control plane refuses to delete a provider that a route or group still points at, so take it out of those first.",
+        "routes_one": "Target of {{count}} route",
+        "routes_other": "Target of {{count}} routes",
+        "groups_one": "Member of {{count}} group",
+        "groups_other": "Member of {{count}} groups",
+        "onlyTarget": "only target",
+        "onlyMember": "only member",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more"
+      },
+      "colScope": "Scope"
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -746,18 +836,30 @@
       "unservedHidden_one": "{{count}} configured route is left out because the gateway does not serve it.",
       "unservedHidden_other": "{{count}} configured routes are left out because the gateway does not serve them.",
       "modelAria": "Model",
+      "imagePromptAria": "Image prompt",
+      "speechTextAria": "Text to synthesize",
       "imageSizeAria": "Image size",
       "imageCountAria": "Number of images",
       "voiceAria": "Voice",
       "multimodal": "Multimodal",
       "pcaChartAria": "PCA projection of the embedded texts",
-      "removeColumn": "Remove column",
+      "removeColumn": "Remove column {{n}} ({{model}})",
+      "columnName": "{{model}}, column {{n}}",
+      "threadAria": "Conversation with {{model}}",
+      "sendTo": "Send to {{model}}",
+      "copyAsCodeFor": "Copy as code for {{model}}",
       "sendMessageTo": "Send a message to {{model}}.",
       "sendMessageNeedsKey": "Send a message to {{model}} once there is a key the gateway accepts.",
       "imageAttached": "image attached",
       "removeAttachment": "Remove attachment",
       "attachImage": "Attach image",
       "messagePlaceholder": "Message…",
+      "messageAria": "Message to {{model}}",
+      "replyAnnounce": "{{model}} replied: {{reply}}",
+      "roles": {
+        "user": "You",
+        "assistant": "Assistant"
+      },
       "send": "Send",
       "sendNeedsKey": "Sending needs a key the gateway accepts. See Session key above.",
       "sendWaiting": "Waiting for the gateway to accept the session key.",
@@ -766,7 +868,8 @@
       "single": "Single",
       "addModel": "Add model",
       "textPlaceholder": "Enter text…",
-      "removeText": "Remove text",
+      "textRowAria": "Text {{n}}",
+      "removeText": "Remove text {{n}}",
       "addText": "Add text",
       "embedProject": "Embed & project",
       "pcaCount_one": "PCA projection · {{count}} vector",
@@ -793,7 +896,9 @@
       "eventLog": "Event log",
       "eventLogSubtitle": "Frames sent and received",
       "noEvents": "no events yet",
+      "realtimeResets": "Leaving this tab closes the session and clears the log.",
       "framePlaceholder": "Send a text frame…",
+      "frameAria": "Text frame to send",
       "modes": {
         "chat": "Chat",
         "embeddings": "Embeddings",
@@ -1123,11 +1228,16 @@
       "title": "Join {{org}}",
       "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",
+      "existingIntro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. That address already has a rolter account, so there is no password to choose: accepting adds the role to it, and you then sign in as usual.",
       "password": "Password (at least 8 characters)",
       "confirm": "Confirm password",
       "mismatch": "The two passwords do not match.",
       "creating": "Creating account…",
-      "accept": "Accept invitation"
+      "accepting": "Accepting…",
+      "accept": "Accept invitation",
+      "doneExisting": "The {{role}} role in {{org}} is now on your account. Sign in with your usual password to continue.",
+      "doneSecondFactor": "Your account is ready. {{org}} requires a second factor, so sign in with the password you just chose and set one up.",
+      "toSignIn": "Continue to sign in"
     },
     "alerting": {
       "channels": {
@@ -1136,13 +1246,21 @@
         "add": "Add channel",
         "toggleAria": "Enable {{name}}",
         "deleteAria": "Delete channel {{name}}",
+        "editAria": "Edit channel {{name}}",
         "sheetTitle": "Add channel",
         "sheetSubtitle": "Webhook endpoint alerts are POSTed to.",
+        "editTitle": "Edit channel {{name}}",
         "fieldName": "Name",
         "fieldEndpoint": "Endpoint URL",
         "fieldSecret": "Bearer secret (optional, write-only)",
         "secretPlaceholder": "stored encrypted",
-        "secretSet": "secret set"
+        "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+        "secretNoneHint": "No secret is stored. Type one to add it.",
+        "secretDroppedHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new receiver's secret to keep the channel authenticated.",
+        "secretSet": "secret set",
+        "kinds": {
+          "webhook": "Webhook"
+        }
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -1156,6 +1274,7 @@
         "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
         "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
         "deleteAria": "Delete rule {{name}}",
+        "editAria": "Edit rule {{name}}",
         "evaluateAria": "Evaluate rule {{name}} now",
         "statSignal": "Signal",
         "statThreshold": "Threshold",
@@ -1167,6 +1286,8 @@
         "evaluateNow": "Evaluate now",
         "sheetTitle": "Add rule",
         "sheetSubtitle": "Fires when the signal reaches the threshold over the window.",
+        "editTitle": "Edit rule {{name}}",
+        "editSubtitle": "The rule keeps its state and history.",
         "fieldName": "Name",
         "fieldSignal": "Signal",
         "fieldThreshold": "Threshold",
@@ -1178,7 +1299,26 @@
         },
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
-        "namePlaceholder": "high error rate"
+        "namePlaceholder": "high error rate",
+        "fieldComparison": "Comparison",
+        "comparison": {
+          "above": "Above or equal",
+          "below": "Below or equal"
+        },
+        "thresholdInclusive": "The threshold is inclusive: the rule fires when the value equals it.",
+        "trafficStoppedHelp": "This rule fires when no requests arrive in the window, so it alerts when traffic stops.",
+        "fieldNoData": "When there is no data",
+        "noData": {
+          "ignore": "Keep current state",
+          "fire": "Fire",
+          "ok": "Resolve"
+        },
+        "noDataHint": "What the rule does when the window holds no requests to measure.",
+        "reading": {
+          "above": "above {{value}}",
+          "below": "below {{value}}"
+        },
+        "noDataReading": "No data"
       },
       "signals": {
         "error_rate": {
@@ -1216,6 +1356,18 @@
         "healthFailuresIn_one": "{{value}} failed health event in {{window}}",
         "healthFailuresIn_other": "{{value}} failed health events in {{window}}"
       },
+      "states": {
+        "unknown": "Unknown",
+        "ok": "OK",
+        "firing": "Firing",
+        "error": "Error",
+        "resolved": "Resolved"
+      },
+      "deliveries": {
+        "delivered": "Delivered",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
       "history": {
         "emptyTitle": "No alert transitions yet",
         "emptyBody": "Each time a rule fires or resolves it is recorded here with the outcome of its delivery, including rules with no channel to deliver to. A failed delivery is retried, and each attempt gets a row. Newest first.",
@@ -1224,7 +1376,18 @@
         "colRule": "Rule",
         "colState": "State",
         "colDelivery": "Delivery",
-        "colDetail": "Detail"
+        "colDetail": "Detail",
+        "ruleFilterAria": "Filter by rule",
+        "allRules": "All rules",
+        "stateFilterAria": "Filter by state",
+        "allStates": "All states",
+        "deliveryFilterAria": "Filter by delivery",
+        "allDeliveries": "All deliveries",
+        "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
+        "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
+        "noMatchTitle": "No transitions match these filters",
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
+        "clearFilters": "Clear filters"
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",
@@ -1246,10 +1409,15 @@
         "open": "Collector config",
         "title": "OpenTelemetry Collector config",
         "where": "This is the document your collector runs. Rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
-        "endpoint": "GET /api/v1/connectors/collector-config",
+        "endpoint": "Endpoint",
+        "copyEndpoint": "Copy collector config URL",
+        "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
+        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
-        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — or point the collector straight at the URL above with --config and reload it on a schedule."
+        "allOffTitle": "Every connector is switched off",
+        "allOffBody": "The config only carries connectors that are switched on, so a collector running it now would deliver nothing. Close this, turn one on from its card, then open it again.",
+        "deploy": "Save it as the collector's config file — infra/otel/collector.compose.yaml in the docker/docker-compose.observability.yml overlay — and save it again after a connector is added, switched on or deleted."
       },
       "confirm": {
         "title": "Delete connector {{name}}?",
@@ -1261,22 +1429,42 @@
       "emptyBody": "Add an OTLP/HTTP collector and request logs are mirrored to it — Datadog, Langfuse, or your own stack.",
       "emptyAction": "Add connector",
       "testFailed": "Delivery failed: {{message}}",
+      "testError": "Test did not run: {{message}}",
+      "testDelivered": "Test delivery to {{name}} succeeded",
+      "deleteError": "Could not delete this connector: {{message}}",
       "toggleAria": "Enable {{name}}",
       "testAria": "Test delivery to {{name}}",
       "deleteAria": "Delete connector {{name}}",
+      "editAria": "Edit connector {{name}}",
+      "editTitle": "Edit connector {{name}}",
+      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",
-      "addSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
+      "sheetSubtitle": "OTLP/HTTP collector endpoint request logs are exported to.",
       "sampled": "{{percent}}% sampled",
       "secretSet": "secret set",
+      "off": "off",
+      "createdOff": "{{name}} created, but switched off",
+      "createdOffNext": "Nothing is sent yet. Run Test delivery on its card, then turn its switch on.",
       "testDelivery": "Test delivery",
       "form": {
         "name": "Name",
         "endpoint": "Endpoint URL",
         "sampling": "Sampling (%)",
+        "samplingHint": "Share of requests sent to this endpoint: 100 sends all of them, 0 sends none.",
+        "samplingInvalid": "Enter a number from 0 to 100.",
+        "samplingRange": "Sampling is a percentage: use a value from 0 to 100.",
         "secret": "Bearer secret (optional)",
-        "secretPlaceholder": "stored encrypted"
+        "secretPlaceholder": "stored encrypted",
+        "secretEdit": "Bearer secret (write-only)",
+        "secretNoneHint": "No secret is stored. Type one to add it.",
+        "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+        "secretReplaceHint": "Saving replaces the stored secret with this one.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "start": "Start sending as soon as it is created",
+        "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
+        "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
       }
     },
     "accessProfiles": {
@@ -1607,6 +1795,10 @@
       "lagging_other": "{{count}} still applying the newest config"
     },
     "costAttribution": {
+      "noAnalytics": {
+        "title": "Spend figures need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no spend to total. The list below does not need it and works as usual. Set <0>CLICKHOUSE_URL</0> and restart the control plane: every request logged from then on is counted here."
+      },
       "confirm": {
         "title": "Delete {{name}}?",
         "unitBody": "The business unit is removed outright and the spend already attributed to it loses its label. Retire it instead to keep the history.",
@@ -2023,6 +2215,27 @@
           "days_other": "In {{count}} days",
           "keep": "On {{date}}, as announced"
         },
+        "passwordConfirm": {
+          "title": "Turn off password sign-in?",
+          "body": "Members will have to sign in through an identity provider from now on. Superadmins are exempt from this setting and can still sign in with a password.",
+          "confirm": "Turn it off",
+          "noSecret": {
+            "title_one": "{{count}} enabled provider has no client secret",
+            "title_other": "{{count}} enabled providers have no client secret",
+            "body": "If an identity provider expects a secret, sign-ins through it fail at the token exchange.",
+            "all": "Every enabled provider is on this list, so no member could complete a sign-in until a secret is stored. Superadmins could still sign in with a password."
+          }
+        },
+        "ssoConfirm": {
+          "title": "Turn off single sign-on?",
+          "body": "While it is off, every sign-in through this organization's identity providers is refused. The providers, their secrets and group mappings stay, so turning it back on restores sign-in.",
+          "confirm": "Turn it off",
+          "notice": {
+            "title": "Members who only sign in through a provider would be locked out",
+            "noPassword": "Accounts created through a provider have no password, so they cannot sign in until single sign-on is back on or a superadmin sets one.",
+            "stillIn": "Accounts that have a password, such as those created from an invitation, keep signing in with it."
+          }
+        },
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
           "body": "Members who have not set up an authenticator app are asked to set one up at their next password sign-in, before they get a session.",
@@ -2082,6 +2295,15 @@
         "body": "Anyone signing in through it loses that route immediately, and its group mappings go with it. Accounts it already created stay, with the roles they already hold.",
         "confirm": "Delete provider"
       },
+      "disable": {
+        "title": "Take {{name}} out of service?",
+        "body": "People signing in through it lose that route immediately. Its registration, client secret and group mappings stay, so turning it back on restores sign-in.",
+        "confirm": "Take out of service"
+      },
+      "lastMethod": {
+        "reason": "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off, so no member could sign in. Enable password sign-in or another provider first.",
+        "refused": "Another change left no other way to sign in, so the control plane refused this one. Enable password sign-in or another provider first."
+      },
       "clearSecret": {
         "title": "Remove the stored client secret for {{name}}?",
         "body": "The provider becomes a public client relying on PKCE alone from the next sign-in. If your identity provider still expects a secret, every login through it fails until you enter a new one — and the removed secret cannot be read back, here or anywhere else.",
@@ -2095,11 +2317,15 @@
         "nameHint": "What the button on the sign-in screen says.",
         "namePlaceholder": "Acme Okta",
         "slug": "Slug",
-        "slugHint": "Appears in the login URL, so keep it short — it cannot be changed later.",
+        "slugHint": "Lowercase letters, digits and hyphens, starting with a letter or digit, up to 63 characters. It appears in the login URL, so keep it short. It cannot be changed later.",
         "slugPlaceholder": "okta",
+        "slugInvalid": "Use only lowercase letters, digits and hyphens, and start with a letter or digit.",
+        "slugSuggest": "Use only lowercase letters, digits and hyphens, and start with a letter or digit. Try {{suggestion}}.",
+        "slugTooLong": "A slug has at most {{max}} characters. This one has {{length}}.",
         "redirectUri": "Redirect URI",
         "redirectUriHint": "Register this in your identity provider when you create the application there. The provider then issues the client ID and secret below.",
         "redirectUriEmpty": "Type a slug to see the redirect URI.",
+        "redirectUriInvalid": "The slug above is not valid, so there is no redirect URI to register yet.",
         "redirectUriDefault": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which reaches rolter only from a browser on the control plane's own host.",
         "redirectUriUnknown": "The control plane's public address could not be read, so only the path is shown. The full redirect URI is the value of <code>ROLTER_PUBLIC_URL</code> followed by this path.",
         "issuer": "Issuer URL",
@@ -2133,19 +2359,9 @@
         "title": "Group mappings",
         "empty": "No group is mapped and there is no default role, so every sign-in through this provider is refused until you map one.",
         "emptyWithDefault": "No group is mapped yet, so everyone signing in through this provider gets {{role}}.",
-        "groupLabel": "IdP group",
-        "groupPlaceholder": "platform-engineering",
-        "roleLabel": "Role in this org",
-        "scopeLabel": "Where the role applies",
-        "add": "Map group",
         "addNamed": "Map a group in {{provider}}",
-        "remove": "Remove mapping",
-        "removeNamed": "Remove the mapping for {{group}}",
-        "confirm": {
-          "title": "Remove the mapping for {{group}}?",
-          "body": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn.",
-          "confirm": "Remove mapping"
-        }
+        "grantTiming": "Each member gets it at their next sign-in.",
+        "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
     },
     "auditLog": {
@@ -2183,11 +2399,19 @@
         "actor": "Actor",
         "action": "Action",
         "target": "Target",
-        "detail": "Detail"
+        "detail": "Detail",
+        "org": "Org"
       },
       "unknownTarget": "unknown",
       "hideDetails": "hide",
-      "showDetails": "show"
+      "showDetails": "show",
+      "scopeAria": "Audit log scope",
+      "scopes": {
+        "org": "This organization",
+        "deployment": "Whole deployment"
+      },
+      "noOrg": "No org",
+      "unknownAddress": "Unknown address"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -2228,7 +2452,10 @@
       "grainProvider": "probed · {{sources}}",
       "incidents": "Incidents",
       "mttr": "MTTR",
-      "noEvents": "No events in window.",
+      "noTimeline": "No timeline.",
+      "timelineSummary": "Health timeline, {{from}} to {{to}}: {{failures}} failures in {{events}} events over {{buckets}} hourly buckets",
+      "legendOk": "No failures",
+      "legendFailed": "Failures (taller = larger share)",
       "slaAtRisk": "SLA at risk",
       "slaBreaching": "below SLA",
       "slaWithin": "within SLA",
@@ -2281,6 +2508,24 @@
       "editBudgetAria": "Edit the {{period}} budget of {{amount}} for {{scope}}",
       "deleteRateLimitAria": "Delete the {{limit}} rate limit for {{scope}}",
       "editRateLimitAria": "Edit the {{limit}} rate limit for {{scope}}",
+      "confirm": {
+        "budgetTitle": "Delete the {{period}} budget of {{amount}}?",
+        "budgetBody": "{{scope}} is left without this budget once the gateway picks up the change: spend there is no longer stopped at the cap, unless another budget covers it.",
+        "budgetConfirm": "Delete budget",
+        "rateLimitTitle": "Delete the {{limit}} rate limit?",
+        "rateLimitBody": "{{scope}} is left without this rate limit once the gateway picks up the change: requests there are no longer throttled, unless another rate limit covers them.",
+        "rateLimitConfirm": "Delete rate limit"
+      },
+      "periods": {
+        "daily": "daily",
+        "monthly": "monthly",
+        "total": "lifetime"
+      },
+      "units": {
+        "rpm": "rpm",
+        "tpm": "tpm"
+      },
+      "scopeNamed": "{{type}} {{name}}",
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
@@ -2297,9 +2542,22 @@
       "budgetSheetTitle": "Add budget",
       "budgetEditTitle": "Edit budget",
       "budgetSheetSubtitle": "Spend cap for {{scope}}",
-      "budgetLimitLabel": "Limit (USD)",
+      "budgetLimitLabel": "Limit ({{currency}})",
       "budgetPeriodLabel": "Period",
-      "budgetPeriodHint": "e.g. 30d, 7d, 1d",
+      "budgetPeriodHint": "Counted over calendar windows in UTC. There are no rolling windows, such as the last 7 days.",
+      "periodPlaceholder": "Pick a period",
+      "periodOptions": {
+        "daily": "Daily",
+        "monthly": "Monthly",
+        "total": "Lifetime"
+      },
+      "periodDescriptions": {
+        "daily": "Resets every day at 00:00 UTC",
+        "monthly": "Resets on the 1st of each month at 00:00 UTC",
+        "total": "Never resets"
+      },
+      "periodUnrecognised": "The gateway does not recognise the period “{{period}}” and enforces this budget as monthly. Edit the budget to pick a period.",
+      "periodUnrecognisedHint": "The gateway does not recognise “{{period}}” and enforces this budget as monthly. There are no rolling windows: pick the window to count over.",
       "rateLimitSheetTitle": "Add rate limit",
       "rateLimitEditTitle": "Edit rate limit",
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
@@ -2311,7 +2569,8 @@
       "emptyTitle": "Nothing logged yet",
       "emptyBody": "Every request the gateway serves is recorded here with its model, latency, tokens and cost.",
       "noMatchTitle": "No requests match these filters",
-      "noMatchBody": "Nothing in the last 24 hours matched the filters you selected.",
+      "noMatchBody": "Nothing in the selected time window matched the filters you selected.",
+      "window": "Time window",
       "businessUnit": "Business unit",
       "customer": "Customer",
       "filterBusinessUnits": "Filter business units",
@@ -2321,6 +2580,8 @@
       "payloadCaptureOnButAbsent": "Payload capture is on, but nothing was stored for this request: its model or key may fall outside the capture allow-list, or the payload's {{hours}}h retention window has already passed.",
       "payloadSettingsLink": "Open log settings",
       "payloadSettingsOwner": "Payload capture is set by a superadmin, in the deployment's log settings.",
+      "payloadRequestEmpty": "No request body was stored: it was empty when the request was logged.",
+      "payloadResponseEmpty": "No response body was stored: it was empty when the response was logged. For example, the upstream sent no body, or the connection ended before one arrived.",
       "time": "Time",
       "model": "Model",
       "status": "Status",
@@ -2329,15 +2590,18 @@
       "statusOkHint": "OK is any request answered with a status below 400.",
       "statusErrors": "Errors",
       "allModels": "All models",
+      "allKeys": "All keys",
       "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
+      "unpricedOnly": "Unpriced only",
       "tokens": "Tokens",
       "tokensInOut": "{{in}} in · {{out}} out",
       "virtualKey": "Virtual key",
       "error": "Error",
       "request": "Request",
       "response": "Response",
+      "requestAndResponse": "Request and response",
       "closeDetails": "Close details",
       "prevPage": "Previous page",
       "nextPage": "Next page",
@@ -2381,14 +2645,31 @@
         "refreshFailed": "Refresh failed at {{time}}",
         "refreshFailedRetrying": "Refresh failed at {{time}}, retrying"
       },
+      "lookup": {
+        "label": "Request ID or trace ID",
+        "placeholder": "Request ID or trace ID",
+        "find": "Find",
+        "clear": "Clear lookup",
+        "clearField": "Clear the ID field",
+        "feedRequest": "Request ID lookup",
+        "feedTrace": "Trace ID lookup",
+        "missTitle": "No request found",
+        "missBody": "No retained request has this ID, or it belongs to a project your role cannot read.",
+        "missFilteredBody": "No retained request with this ID passes the active filters, or it belongs to a project your role cannot read."
+      },
       "noAnalytics": {
         "title": "Request logs need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no request log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is logged here."
       }
     },
     "mcpLogs": {
+      "noAnalytics": {
+        "title": "MCP tool-call logs need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
+      },
+      "myCalls": "My calls",
       "emptyTitle": "No MCP tool calls yet",
-      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy.",
+      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
       "noMatchBody": "Nothing in this window matched the status and transport you selected.",
       "statusFilterAria": "Filter by status",
@@ -2412,6 +2693,10 @@
       "arguments": "Arguments",
       "result": "Result",
       "closeDetails": "Close MCP log details",
+      "argumentsAndResult": "Arguments and result",
+      "payloadWithheld": "The arguments and result were captured for this call, but they are hidden for your role: on this project, tool arguments and results are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
+      "notFoundTitle": "This call is not available",
+      "notFoundBody": "It no longer exists, or it belongs to an organization, team or project you do not hold a role in.",
       "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
     },
     "providerGroups": {
@@ -2429,7 +2714,8 @@
         "name": "Name",
         "strategy": "Strategy",
         "address": "Address",
-        "members": "Members"
+        "members": "Members",
+        "scope": "Scope"
       },
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
@@ -2454,22 +2740,18 @@
       "teamNamePlaceholder": "platform"
     },
     "userProvisioning": {
+      "baseUrl": {
+        "label": "SCIM base URL",
+        "copy": "Copy SCIM base URL",
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
+        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+      },
       "mappings": {
         "title": "Group mappings",
         "subtitle": "A group your identity provider pushes decides nothing on its own. Map it to a role here, and everyone in it is reconciled immediately rather than at the next sync.",
         "empty": "Nothing is mapped, so the groups your identity provider pushes grant nothing: every provisioned account joins as a viewer and stops there until you map a group.",
-        "groupLabel": "IdP group",
-        "groupPlaceholder": "platform-engineering",
-        "scopeLabel": "Where the role applies",
-        "roleLabel": "Role to grant",
-        "add": "Map group",
-        "remove": "Remove mapping",
-        "removeNamed": "Remove the mapping for {{group}}",
-        "confirm": {
-          "title": "Remove the mapping for {{group}}?",
-          "body": "Everyone in that group loses {{role}} straight away, not at the next sync. Roles an admin granted by hand are left alone.",
-          "confirm": "Remove mapping"
-        }
+        "grantTiming": "It applies straight away to whoever is already in the group, not at the next sync.",
+        "removeBody": "Everyone in that group loses {{role}} straight away, not at the next sync. Roles an admin granted by hand are left alone."
       },
       "emptyTitle": "No provisioning tokens yet",
       "emptyBody": "Issue a token, paste it into your identity provider's SCIM connector, and it syncs users into this organization. The token is shown once, at creation.",
@@ -2486,6 +2768,8 @@
         "lastSync": "Last sync",
         "created": "Created"
       },
+      "statusActive": "Active",
+      "statusRevoked": "Revoked",
       "revokedAt": "revoked {{when}}",
       "neverUsed": "never used",
       "revoke": "Revoke",
@@ -2495,11 +2779,12 @@
       "sheet": {
         "issueTitle": "Issue provisioning token",
         "copyTitle": "Copy the token now",
-        "subtitle": "scim 2.0 · bearer credential"
+        "subtitle": "scim 2.0 · bearer credential",
+        "tokenLabel": "Bearer token"
       },
       "copyToken": "Copy provisioning token",
       "onceWarning": "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
-      "pasteHint": "Paste it into your identity provider's SCIM connector as the bearer token, alongside the base URL <0>https://your-rolter-host/scim/v2</0>. The token carries the org, so no tenant id goes in the URL.",
+      "pasteHint": "Paste the token into your identity provider's SCIM connector as the bearer token, and point the connector at the base URL. The token carries the org, so no tenant id goes in the URL.",
       "nameLabel": "Name",
       "nameHint": "how you will recognise it later — usually the identity provider it belongs to",
       "namePlaceholder": "Okta production",
@@ -2526,13 +2811,15 @@
       "colCreated": "Created",
       "noRoles": "no roles",
       "statusFilterAria": "Filter users by status",
-      "statusAll": "all",
-      "statusActive": "active",
-      "statusDeactivated": "deactivated",
-      "statusBlocked": "blocked",
+      "statusAll": "All",
+      "statusActive": "Active",
+      "statusDeactivated": "Deactivated",
+      "rowStatusActive": "Active",
+      "rowStatusDeactivated": "Deactivated",
       "linkTitle": "Invitation link",
       "linkBody": "Shown once and not recoverable after you close this dialog.",
       "linkSendTo": "Send this link to <0>{{email}}</0>. It works once and expires in seven days.",
+      "linkGrants": "Accepting it grants {{role}} on {{scope}}.",
       "copyLink": "Copy link",
       "done": "Done",
       "inviteTitle": "Invite user",
@@ -2547,24 +2834,100 @@
       "passwordOptionalHint": "at least 8 characters if set; blank leaves an SSO-only account",
       "passwordOptionalPlaceholder": "leave blank for SSO-only",
       "orgRole": "Org role",
+      "teamRole": "Team role",
+      "projectRole": "Project role",
+      "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
+      "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
       "newPasswordHint": "leave blank to keep the current one",
       "newPasswordPlaceholder": "unchanged",
-      "deleteHint": "Permanently delete this account and its memberships.",
-      "deleteConfirmBody": "Delete <0>{{email}}</0>? This can't be undone.",
-      "deleteConfirm": "Confirm delete",
+      "deleteHint": "Permanently delete this account from every organization.",
       "grantTitle": "Grant role",
       "grantSubtitle": "Grant {{email}} a role at a scope within this org",
       "grantSave": "Grant",
       "scope": "Scope",
-      "team": "Team",
-      "noTeams": "no teams in org",
-      "projectId": "Project id",
-      "projectIdHint": "uuid of a project in this org (from the Providers/Keys scope)",
       "role": "Role",
-      "superBadge": "super"
+      "superBadge": "Superadmin",
+      "rolesUnread": "roles not loaded",
+      "scopePhrase": {
+        "org": "the whole organization",
+        "team": "the {{name}} team",
+        "project": "the {{name}} project"
+      },
+      "viaSso": "from SSO",
+      "viaScim": "from SCIM",
+      "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
+      "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
+      "toastRevoked": "Revoked {{role}} on {{scope}} from {{email}}",
+      "toastAlreadyRevoked": "{{email}} no longer held {{role}} on {{scope}}",
+      "toastChanged": "{{email}} is now {{role}} on {{scope}}.",
+      "toastDeactivated": "Deactivated {{email}}. They are signed out and cannot sign in.",
+      "toastReactivated": "Reactivated {{email}}. They can sign in again.",
+      "newRole": "New role",
+      "newRolePlaceholder": "Pick a role",
+      "alreadyHeld": "{{email}} already holds {{role}} on {{scope}}.",
+      "invitations": {
+        "title": "Pending invitations",
+        "summary_one": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "summary_other": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "colInvitee": "Invitee",
+        "colRole": "Role",
+        "colScope": "Scope",
+        "colSentBy": "Sent by",
+        "colExpires": "Expires",
+        "senderNotRecorded": "not recorded",
+        "senderUnknown": "unknown",
+        "expired": "Expired",
+        "emptyTitle": "No pending invitations",
+        "emptyBody": "An invitation waits here until it is accepted, expires or is revoked.",
+        "revoke": "Revoke the invitation for {{email}}",
+        "toastRevoked": "Revoked the invitation for {{email}}"
+      },
+      "confirm": {
+        "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
+        "revokeNone": "{{email}} loses {{role}} on {{scope}} straight away, and no other grant of theirs reaches it.",
+        "revokeFallback": "{{email}} loses {{role}} on {{scope}} straight away, and their {{fallback}} grant on {{fallbackScope}} applies there instead.",
+        "revokeDuplicate": "{{email}} also holds {{role}} on {{scope}} through a second grant, so what they can do there does not change.",
+        "revokeUnknown": "{{email}} loses {{role}} on {{scope}} straight away. Roles from their other grants stay as they are.",
+        "revokeLast": "It is their last role in this organization, so they leave this list. The account itself is kept.",
+        "revokeFromSso": "The role came from an SSO group mapping, which grants it again the next time they sign in unless the mapping changes.",
+        "revokeFromScim": "The role came from a SCIM group, which grants it again at the next sync unless the group mapping changes.",
+        "revokeSelf": "It is your own role, so you may lose access you are using right now.",
+        "revokeConfirm": "Revoke role",
+        "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
+        "changeTitle": "Change {{email}}'s role on {{scope}}?",
+        "changeBody": "They hold {{role}} there now. The role you pick is granted first and {{role}} is revoked right after, so they are never left without a role there.",
+        "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
+        "changeFromScim": "{{role}} came from a SCIM group, which grants it again at the next sync; change the group mapping for the new role to stick.",
+        "changeSelf": "It is your own role, so a lower one may take away access you are using right now.",
+        "changeConfirm": "Change role",
+        "changePartial": "{{next}} was granted, but {{role}} could not be revoked. {{email}} holds both roles on {{scope}}, and {{applies}} applies there until {{role}} is revoked.",
+        "changeRetry": "Retry revoking {{role}}",
+        "invitationTitle": "Revoke the invitation for {{email}}?",
+        "invitationBody": "The link stops working straight away, so {{email}} cannot join {{scope}} as {{role}} with it. You can invite them again afterwards.",
+        "invitationExpired": "This invitation has already expired and its link no longer works. Revoking it removes it from the list and lets you invite {{email}} again.",
+        "invitationConfirm": "Revoke invitation",
+        "invitationRefused": "Revoking an invitation into {{scope}} takes Admin there or on a scope above it.",
+        "invitationGone": "This invitation is no longer pending, most likely because it was just accepted. The list has been refreshed.",
+        "deactivateTitle": "Deactivate {{email}}?",
+        "deactivateBody": "They can no longer sign in, every session they have open ends at once, and the virtual keys they minted for themselves stop working at the gateway. Reactivating the account lets them sign in again and brings those keys back.",
+        "deactivateSelf": "This is the account you are signed in with: you are signed out now, and only another superadmin can reactivate it.",
+        "deactivateConfirm": "Deactivate",
+        "deleteTitle": "Delete {{email}}?",
+        "deleteBody": "The account leaves every organization, not only this one, with all its roles and sessions, and the virtual keys it minted for itself are disabled. This cannot be undone. To block sign-in and keep the account, deactivate it instead.",
+        "deleteSelf": "This is the account you are signed in with: you are signed out now and cannot sign in again.",
+        "deleteConfirm": "Delete account",
+        "superadminTitle": "Make {{email}} a superadmin?",
+        "superadminBody": "A superadmin reaches every organization, team and project and can change every deployment-wide setting and every account, whatever roles they hold.",
+        "superadminConfirm": "Make superadmin",
+        "superadminRemoveTitle": "Remove superadmin from {{email}}?",
+        "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
+        "superadminRemoveConfirm": "Remove superadmin",
+        "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
+      }
     },
     "config": {
       "allSections": {
@@ -2693,7 +3056,7 @@
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
-      "baseUrlHint": "The address clients point their SDK at. Left empty, the dashboard’s snippets go through its own /gw proxy, which is fine for trying rolter out but sends every call through the control plane; for production, set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so snippets shown to other roles keep the /gw proxy.",
+      "baseUrlHint": "The address clients point their SDK at. Until you save one, the dashboard shows no snippet for external clients: its own /gw proxy needs a dashboard session, so it is not an address they can use. Set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so other roles are asked to have a superadmin save it.",
       "publicBaseUrl": "Public base URL",
       "forwarded": "Forwarded request headers",
       "forwardedHint": "Inbound client headers passed through to the upstream provider, comma or newline separated. Everything not listed is dropped at the gateway.",
@@ -2723,27 +3086,65 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "dashboardAuth": "Password protect the dashboard",
-      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
-      "credentialRef": "Credential reference",
-      "managedSecret": "Managed secret",
-      "secretConfigured": "configured — enter to replace",
-      "secretPlaceholder": "Enter a secret to store",
-      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
-      "enforceVk": "Enforce Virtual Keys on Inference",
-      "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
-      "allowedOriginsHint": "Comma-separated list of exact http(s) origins allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
-      "allowedOriginsPlaceholder": "https://app.example.com, https://console.example.com",
+      "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
+      "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
       "allowedHeaders": "Allowed Headers",
-      "allowedHeadersHint": "Comma-separated list of allowed headers for CORS.",
+      "allowedHeadersHint": "One header name per line, allowed for CORS.",
       "allowedHeadersPlaceholder": "X-Stainless-Timeout",
       "requiredHeaders": "Required Headers",
-      "requiredHeadersHint": "Comma-separated name: value pairs that must be present on every request. Requests missing any of them are rejected.",
-      "requiredHeadersPlaceholder": "X-Tenant-ID: acme, X-Custom-Header: value",
+      "requiredHeadersHint": "One name: value pair per line that must be present on every request. Requests missing any of them are rejected. A value may contain commas.",
+      "requiredHeadersPlaceholder": "X-Tenant-ID: acme\nX-Custom-Header: value",
       "bypassRoutes": "Auth Bypass Routes",
-      "bypassRoutesHint": "Comma-separated exact /v1 paths that skip the auth middleware. System routes like /health and the login endpoints are always open.",
-      "bypassRoutesPlaceholder": "/v1/models, /v1/ping"
+      "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
+      "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
+      "edited": "Edited",
+      "discard": "Discard changes",
+      "status": {
+        "invalid_one": "Fix {{count}} entry to save.",
+        "invalid_other": "Fix {{count}} entries to save.",
+        "changed_one": "{{count}} setting changed, not saved yet.",
+        "changed_other": "{{count}} settings changed, not saved yet.",
+        "saved": "Saved at {{time}}."
+      },
+      "pickup": {
+        "checking": "Checking which gateways run it…",
+        "converged_one": "{{count}} live gateway is running it.",
+        "converged_other": "All {{count}} live gateways are running it.",
+        "lagging_one": "{{converged}} of {{count}} live gateway is running it; the rest pick it up on their next config poll.",
+        "lagging_other": "{{converged}} of {{count}} live gateways are running it; the rest pick it up on their next config poll.",
+        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
+        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
+      },
+      "confirm": {
+        "title_one": "Save a change that loosens security?",
+        "title_other": "Save changes that loosen security?",
+        "body_one": "This save loosens security in the way listed below.",
+        "body_other": "This save loosens security in {{count}} ways, listed below.",
+        "confirm": "Save changes",
+        "bypassRoute": {
+          "label": "Auth bypass route added:",
+          "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
+        }
+      },
+      "errors": {
+        "originWildcard": "Line {{line}}: {{entry}} has a wildcard. List each origin exactly.",
+        "originScheme": "Line {{line}}: {{entry}} must start with http:// or https://.",
+        "originPart": "Line {{line}}: {{entry}} must not include a query, a fragment or user info (? # @).",
+        "originHost": "Line {{line}}: {{entry}} has no host after the scheme.",
+        "originPath": "Line {{line}}: {{entry}} must be an origin only, with no path.",
+        "originSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "headerName": "Line {{line}}: {{entry}} is not a valid header name. Use letters, digits and ! # $ % & ' * + - . ^ _ ` | ~",
+        "requiredFormat": "Line {{line}}: {{entry}} needs a name and a value, written as name: value.",
+        "requiredValue": "Line {{line}}: {{entry}} has no value after the colon.",
+        "requiredDuplicate": "Line {{line}}: {{entry}} is already set on an earlier line. A header holds one value.",
+        "routePrefix": "Line {{line}}: {{entry}} must be an exact path under /v1/.",
+        "routePattern": "Line {{line}}: {{entry}} has a wildcard, placeholder, query or fragment (* { } ? #). List each path exactly.",
+        "routeSpace": "Line {{line}}: {{entry}} must not contain spaces.",
+        "commaList": "Line {{line}}: {{entry}} looks like several entries. Put each on its own line.",
+        "more_one": "…and {{count}} more problem.",
+        "more_other": "…and {{count}} more problems."
+      }
     },
     "mcpLibrary": {
       "eyebrow": "curated endpoints",
@@ -2904,6 +3305,36 @@
           "desc": "Run the configured pre- and post-call guardrail rules on every request."
         }
       }
+    },
+    "preferences": {
+      "language": {
+        "title": "Language",
+        "hint": "The language of the dashboard. “Browser default” follows your browser’s language.",
+        "label": "Dashboard language",
+        "browser": "Browser default"
+      },
+      "scope": {
+        "title": "Default scope",
+        "hint": "The org, team and project the dashboard opens on. A scope you pick in the switcher during a session wins until you sign out.",
+        "none": "None",
+        "lost": "Your saved default is no longer available to you, so the dashboard opens on the first scope you can reach.",
+        "moved": "Part of your saved default is no longer available to you, so the dashboard opens on the closest scope you can reach."
+      },
+      "playground": {
+        "title": "Playground model",
+        "hint": "The model the Playground’s chat opens on, when the gateway serves it.",
+        "label": "Default model",
+        "placeholder": "for example gpt-4o"
+      },
+      "zone": {
+        "title": "Time zone",
+        "description": "The zone charts, time axes and timestamps are drawn in.",
+        "label": "Time zone",
+        "hint": "Left empty, times follow your browser’s zone ({{zone}}).",
+        "browser": "Browser default ({{zone}})",
+        "unknown": "This browser does not know the zone “{{zone}}”, so times follow its own zone instead."
+      },
+      "discard": "Discard changes"
     }
   },
   "playground": {
@@ -2935,7 +3366,7 @@
       "label": "Virtual key",
       "placeholder": "sk-rolter-… (the key the gateway authenticates)",
       "save": "Save",
-      "saved": "Saved ✓",
+      "saved": "Saved",
       "hint": "A rolter virtual key, minted on the Virtual Keys screen. Not a provider key — those are configured on the provider and are never sent by clients."
     },
     "snippet": "Code snippet",
@@ -2948,7 +3379,10 @@
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
       "resolvesTo": "Requests resolve to"
     },
+    "created": "{{name}} is created but not tested yet",
+    "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",
     "testConnection": "Test connection",
+    "testSavedOnly": "Test connection checks the saved provider, not the edits in this form. Save first, then test.",
     "testAnswered": "Answered, but not with a model list",
     "testFailed": "Could not reach this provider",
     "testOk_one": "Reachable · {{count}} model · {{ms}} ms",
@@ -2958,6 +3392,7 @@
       "add": "Providers are scoped to the current org and used as route targets and provider-group members.",
       "edit": "Leave the provider key blank to keep the stored credential unchanged. Clear the env var or egress proxy field to unset it.",
       "name": "Name",
+      "nameHint": "Fixed once the provider is created.",
       "slugOptional": "Slug (optional)",
       "slugOptionalHint": "URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create",
       "slug": "Slug",
@@ -2971,7 +3406,9 @@
       "providerKeyEnv": "Provider key env var (optional)",
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
-      "apiKeyUnchanged": "unchanged"
+      "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
+      "apiKeyUnchanged": "unchanged",
+      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead."
     },
     "title": {
       "add": "Add provider",
@@ -3081,7 +3518,7 @@
     },
     "dashboard": {
       "title": "Dashboard",
-      "subtitle": "Traffic, spend, latency, and error rate over the last 24 hours, plus the latest requests."
+      "subtitle": "Traffic, spend, latency, and error rate over the window you pick (the last 24 hours by default), plus the latest requests."
     },
     "logs": {
       "title": "LLM Logs",
@@ -3176,7 +3613,7 @@
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
-      "title": "Rules",
+      "title": "Alert Rules",
       "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {
@@ -3294,6 +3731,10 @@
     "feature-flags": {
       "title": "Feature Flags",
       "subtitle": "Toggle experimental gateway features."
+    },
+    "preferences": {
+      "title": "Preferences",
+      "subtitle": "Your language, default scope, Playground model and time zone, kept with your account."
     }
   },
   "shell": {
@@ -3350,9 +3791,9 @@
     "noNavMatches": "No screens match",
     "palette": {
       "title": "Command palette",
-      "description": "Jump to a screen, or to a key, provider or route by name.",
+      "description": "Jump to a screen, or to a key, provider or route by name. Paste a request ID or trace ID to open it in LLM Logs.",
       "label": "Search screens and records",
-      "placeholder": "Type a screen or record name…",
+      "placeholder": "Type a name, or paste a request ID…",
       "open": "Search screens and records ({{chord}})",
       "noMatches": "No screens match",
       "noMatchesBody": "Nothing here is called “{{query}}”. Try fewer letters, or a word from the screen's name.",
@@ -3361,12 +3802,17 @@
       "sections": {
         "recent": "Recent",
         "screens": "Screens",
+        "lookup": "Find a request",
         "records": "Records"
       },
+      "openRequest": "Open request {{id}} in LLM Logs",
+      "openTrace": "Open trace {{id}} in LLM Logs",
       "kinds": {
         "virtualKey": "Virtual key",
         "provider": "Provider",
-        "route": "Route"
+        "route": "Route",
+        "requestId": "Request ID",
+        "traceId": "Trace ID"
       }
     },
     "shortcuts": {
@@ -3392,6 +3838,10 @@
       "body": "This control plane is running in open mode with no admin token, so it has no user accounts — there is no \"you\" to mint a key for. Set ROLTER_ADMIN_TOKEN and create a local account to use this screen, or manage keys from the admin Virtual Keys screen instead."
     },
     "keys": {
+      "noAnalytics": {
+        "title": "Usage figures need ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it cannot total what your keys have used. Your keys are listed below and can still be created, rotated and deleted. Ask whoever runs the control plane to set <0>CLICKHOUSE_URL</0>: requests and cost per key appear here from then on."
+      },
       "explainer": "These are rolter virtual keys (sk-rolter-…) — the credential your code sends to the gateway. Provider keys are configured on the provider and are never sent by clients.",
       "summary_one": "{{count}} virtual key · yours to rotate or revoke",
       "summary_other": "{{count}} virtual keys · yours to rotate or revoke",
@@ -3406,11 +3856,13 @@
         "active": "active",
         "allModels": "all models",
         "usageUnavailable": "usage: unavailable",
-        "usage": "{{requests}} req · {{cost}} (7d)",
+        "usage_one": "{{requests}} request · {{cost}} in the last 7 days",
+        "usage_other": "{{requests}} requests · {{cost}} in the last 7 days",
         "noUsage": "no usage in the last 7 days",
         "rotate": "Rotate",
         "rotateHint": "Rotate: issue a new secret and disable this one",
-        "deleteHint": "Delete this virtual key",
+        "rotateAria": "Rotate key {{name}}",
+        "deleteAria": "Delete key {{name}}",
         "playground": "Playground",
         "playgroundHint": "The Playground minted this key for one sitting. It expires on its own — nothing needs to delete it."
       },
@@ -3418,7 +3870,8 @@
         "title": "New virtual key",
         "subtitle": "Personal virtual key in {{project}} — shown once, right after creation",
         "currentProject": "the current project",
-        "save": "Mint"
+        "save": "Mint",
+        "failed": "Could not create the key"
       },
       "revealed": {
         "title": "Virtual key ready",
@@ -3489,6 +3942,30 @@
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
       }
+    },
+    "profile": {
+      "title": "Profile",
+      "subtitle": "The name other people see beside your account, and a line on what to ask you about.",
+      "name": "Display name",
+      "nameHint": "Shown in place of your email. Leave it empty to go by your email.",
+      "namePlaceholder": "Ada Lovelace",
+      "managed": "Your name is managed by your identity provider",
+      "bio": "Bio",
+      "bioPlaceholder": "Who to ask about what",
+      "bioHint": "{{count}} of {{max}} characters",
+      "save": "Save profile",
+      "saved": "Profile saved",
+      "saveFailed": "Could not save your profile.",
+      "problem": {
+        "name": {
+          "blank": "The name cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A display name is at most {{max}} characters."
+        },
+        "bio": {
+          "blank": "The bio cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A bio is at most {{max}} characters."
+        }
+      }
     }
   },
   "keyMint": {
@@ -3547,8 +4024,53 @@
     "mcpDetails": "MCP call details",
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
-    "unpriced": "—",
+    "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+  },
+  "savedViews": {
+    "open": "Saved views",
+    "title": "Saved views",
+    "surface": {
+      "llm_logs": "LLM Logs",
+      "dashboard": "Dashboard"
+    },
+    "save": {
+      "label": "Save the current filters as",
+      "hint": "Only you can see your saved views, on any browser you sign in from.",
+      "placeholder": "Errors on gpt-4o this week",
+      "action": "Save view"
+    },
+    "saved": "{{name}} saved",
+    "list": "Your saved views",
+    "apply": "Apply",
+    "applyAria": "Apply {{name}}",
+    "renameAria": "Rename {{name}}",
+    "renameField": "New name for {{name}}",
+    "deleteAria": "Delete view {{name}}",
+    "empty": {
+      "title": "No saved views yet",
+      "description": "Pick the filters you keep coming back to, then save them under a name to apply them again in one click.",
+      "action": "Name a view"
+    },
+    "notice": "Applied without: {{dropped}}.",
+    "dismissNotice": "Dismiss",
+    "dropped": {
+      "key_one": "{{count}} key",
+      "key_other": "{{count}} keys",
+      "business_unit_one": "{{count}} business unit",
+      "business_unit_other": "{{count}} business units",
+      "customer_one": "{{count}} customer",
+      "customer_other": "{{count}} customers"
+    },
+    "errors": {
+      "conflict": "A view with this name already exists, or you have reached the limit of 50 views for this screen.",
+      "failed": "The view could not be saved."
+    },
+    "confirm": {
+      "deleteTitle": "Delete the view {{name}}?",
+      "deleteBody": "The saved filters are removed from your account. The filters on screen stay as they are.",
+      "deleteConfirm": "Delete view"
+    }
   },
   "toast": {
     "region": "Notifications",
@@ -3557,6 +4079,7 @@
     "savedDetail": "{{what}} updated.",
     "saveFailed": "Could not save {{what}}",
     "deleted": "{{what}} deleted",
+    "revoked": "{{what}} revoked",
     "deleteFailed": "Could not delete {{what}}",
     "created": "{{what}} created",
     "exportFailed": "Could not export {{what}}"
@@ -3609,7 +4132,9 @@
       "weight": "Weight",
       "relativeWeight": "Relative weight",
       "remove": "Remove member",
-      "upstreamModelPlaceholder": "passthrough"
+      "upstreamModelPlaceholder": "passthrough",
+      "outOfScopeProject": "{{name}} is scoped to a different project, so this group cannot use it. Pick another provider or remove the row.",
+      "outOfScopeOrg": "{{name}} is scoped to a project, and an organization-wide group would expose it to every project. Pick another provider, or scope the group to that project."
     }
   },
   "paramsEditor": {
@@ -3654,7 +4179,7 @@
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
-      "realtime": "Guardrails, the PII sanitizer and plugins do not run on /v1/realtime session events: a session meets budgets and rate limits and its usage is recorded, but what it carries reaches the provider without a content check",
+      "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },
@@ -3667,5 +4192,30 @@
   "guardrailPanel": {
     "enforced": "enforced",
     "paused": "paused"
+  },
+  "groupMappings": {
+    "groupLabel": "IdP group",
+    "groupPlaceholder": "e.g. platform-engineering",
+    "scopeLabel": "Where the role applies",
+    "roleLabel": "Role to grant",
+    "add": "Map group",
+    "remove": "Remove mapping",
+    "removeNamed": "Remove the mapping for {{group}}",
+    "removeTitle": "Remove the mapping for {{group}}?",
+    "grant": {
+      "title": "Map {{group}} to {{role}}?",
+      "bodyOrg": "Everyone in the {{group}} group at your identity provider gets {{role}} on the whole organization.",
+      "bodyScoped": "Everyone in the {{group}} group at your identity provider gets {{role}} on {{scope}}.",
+      "reasonAdmin": "Admin has full control within that scope: providers, routes, virtual keys, members and budgets.",
+      "reasonOrg": "The whole organization is every team and project in it, not one of them."
+    }
+  },
+  "projectScope": {
+    "label": "Scope",
+    "hint": "Whole organization lets every project use it. Pick a project to keep it to that project's keys.",
+    "hintOwnProject": "You can scope it to a project of your own. Making it organization-wide takes an organization admin.",
+    "hintLocked": "Moving it to another project, or making it organization-wide, takes an organization admin.",
+    "orgWide": "Organization-wide",
+    "badge": "Project: {{project}}"
   }
 }

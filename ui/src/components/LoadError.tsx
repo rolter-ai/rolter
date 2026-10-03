@@ -1,5 +1,4 @@
 import {
-  ChartNoAxesColumn,
   DatabaseZap,
   KeyRound,
   PlugZap,
@@ -19,7 +18,6 @@ const ICONS: Record<LoadErrorKind, typeof KeyRound> = {
   forbidden: ShieldX,
   openMode: ShieldAlert,
   noStore: DatabaseZap,
-  noAnalytics: ChartNoAxesColumn,
   unreachable: PlugZap,
   server: ServerCrash,
   unknown: ServerCrash,

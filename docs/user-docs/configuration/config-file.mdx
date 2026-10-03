@@ -172,6 +172,15 @@ allow_custom_api_base = true
 
 </ParamField>
 
+<ParamField path="project_scoped" type="bool" default="false">
+  Keep this provider to one project. By default a provider is org-wide: every project of the organization can use it, which is how projects share fallbacks. With `project_scoped = true`, only virtual keys minted in the project can reach it, whether by a route or as `provider-slug/model`, and a key from another project gets `404 model_not_found`.
+
+A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
+
+In the dashboard and API, the provider's `project_id` is the same scope. See [Project-scoped providers](/concepts/providers-and-routes#project-scoped-providers).
+
+</ParamField>
+
 <ParamField path="also_track_via_llm_call" type="bool" default="false">
   Make active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **Costs a few tokens on every sweep** — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events` and fed through the same failure/recovery thresholds as free probes. See [Health checks](/reliability/health-checks).
 </ParamField>
@@ -625,12 +634,32 @@ When enabled, a background task periodically probes each provider with a lightwe
   The request path appended to each provider's `api_base` when probing. Left at the default `/`, Rolter probes each provider kind's free non-inference liveness endpoint instead (`/v1/models` for `openai`/`openai_compatible`, and `/v1/models` with an `anthropic-version` header for `anthropic`) — no token cost. Set an explicit path (e.g. `/health`) to override this for all providers.
 </ParamField>
 
+<ParamField path="probe_concurrency" default="2" type="usize">
+  Maximum probes in flight at once during a sweep. Each provider also starts at a stable offset of up to a quarter of the interval (at most two seconds), so a sweep never hits every upstream at the same moment. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="consecutive_failure_threshold" default="3" type="u32">
+  Consecutive probe failures before a provider is marked unhealthy and its targets are skipped. One failed probe never removes a provider on its own. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="recovery_success_threshold" default="2" type="u32">
+  Consecutive probe successes before an unhealthy provider returns to rotation, so a flapping upstream does not bounce in and out. A value of `0` is treated as `1`.
+</ParamField>
+
+<ParamField path="status_page_interval_secs" default="60" type="u64">
+  Seconds between polls of provider status pages. Only providers with a `status_page_url` are polled, and the poller runs even with `enabled = false`. A status page is a secondary signal: it records a `status_page` event and never changes routing on its own. See [Health checks](/reliability/health-checks).
+</ParamField>
+
 ```toml
 [health]
 enabled = true
 interval_secs = 10
 timeout_secs = 2
 path = "/"
+probe_concurrency = 2
+consecutive_failure_threshold = 3
+recovery_success_threshold = 2
+status_page_interval_secs = 60
 ```
 
 ---

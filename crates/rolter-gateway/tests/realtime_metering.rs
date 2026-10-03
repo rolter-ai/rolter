@@ -772,6 +772,64 @@ async fn a_budget_spent_elsewhere_closes_an_idle_session_on_the_timer() {
     }
 }
 
+/// Read the `error` event and policy close a revoked session ends with.
+async fn expect_revoked(client: &mut Client, code: &str) {
+    let error = next_event(client).await;
+    assert_eq!(error["type"], "error", "{error}");
+    assert_eq!(error["error"]["code"], code, "{error}");
+    match next(client).await {
+        Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Policy),
+        other => panic!("expected a policy close, got {other:?}"),
+    }
+}
+
+/// Authentication happens once, at the upgrade. Disabling the key must still
+/// reach a session that is already open, on the next tick (#1881).
+#[tokio::test]
+async fn a_session_is_closed_when_its_key_is_disabled() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-revoke");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    run_turn(&mut client).await;
+    // the other key stays valid, so the snapshot still has keys in it
+    config.db_virtual_keys[0].disabled = true;
+    state.reload(&config, 2);
+    expect_revoked(&mut client, "invalid_api_key").await;
+    refused(gw, KEY).await;
+}
+
+/// Narrowing `models` is the same class of change as disabling the key.
+#[tokio::test]
+async fn a_session_is_closed_when_its_models_are_narrowed() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-narrow");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    config.db_virtual_keys[0].models = vec!["some-other-model".to_string()];
+    state.reload(&config, 2);
+    expect_revoked(&mut client, "model_not_allowed").await;
+}
+
+/// A key that is left alone keeps its session across ticks.
+#[tokio::test]
+async fn an_unchanged_key_keeps_its_session_across_ticks() {
+    let (upstream, _) = realtime_upstream(true).await;
+    let mut config = config(upstream, None, "org-keep");
+    config.realtime.usage_flush_secs = 1;
+    let (gw, state) = gateway_with_state(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    state.reload(&config, 2);
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    run_turn(&mut client).await;
+}
+
 /// With `usage_flush_secs = 0` there is no flush timer, since every turn is
 /// flushed as it finishes. A quiet session still re-reads its budgets, so
 /// spend elsewhere closes it without waiting for a turn of its own.
@@ -916,20 +974,30 @@ async fn sigterm_closes_live_sessions_after_their_meters_flush() {
     let redis = redis_url();
     let org = unique("org-sigterm");
     let (upstream, _) = realtime_upstream(true).await;
-    let port = {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        listener.local_addr().unwrap().port()
+    let relay = match &redis {
+        Some(url) => Some(SlowRedis::start(url).await),
+        None => None,
     };
-    let gw: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let pepper = "realtime-sigterm-pepper";
+    // the port is read off a listener that is dropped before the gateway
+    // binds it, so a parallel test can take it first; the gateway then exits
+    // at once, and that attempt is retried on a fresh port (#2509)
+    let mut attempt = 0;
+    let (mut child, gw, dir) = loop {
+        attempt += 1;
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let gw: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let pepper = "realtime-sigterm-pepper";
 
-    let dir = std::env::temp_dir().join(format!("rolter-realtime-drain-{port}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config_path = dir.join("rolter.toml");
-    let mut file = std::fs::File::create(&config_path).unwrap();
-    write!(
-        file,
-        r#"
+        let dir = std::env::temp_dir().join(format!("rolter-realtime-drain-{port}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("rolter.toml");
+        let mut file = std::fs::File::create(&config_path).unwrap();
+        write!(
+            file,
+            r#"
 [server]
 host = "127.0.0.1"
 port = {port}
@@ -965,43 +1033,56 @@ period = "monthly"
 key_hash = "{hash}"
 id = "key-{org}"
 org_id = "{org}"
-"#,
-        hash = rolter_auth::hash_key(pepper, KEY),
-    )
-    .unwrap();
-    drop(file);
+    "#,
+            hash = rolter_auth::hash_key(pepper, KEY),
+        )
+        .unwrap();
+        drop(file);
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rolter-gateway"));
-    command
-        .arg("--config")
-        .arg(&config_path)
-        // nothing inherited from the caller's shell may point this gateway at
-        // a control plane or another store
-        .env_remove("ROLTER_SNAPSHOT_URL")
-        .env_remove("ROLTER_REDIS_URL")
-        .env_remove("CLICKHOUSE_URL")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let relay = match &redis {
-        Some(url) => Some(SlowRedis::start(url).await),
-        None => None,
+        let mut command = Command::new(env!("CARGO_BIN_EXE_rolter-gateway"));
+        command
+            .arg("--config")
+            .arg(&config_path)
+            // nothing inherited from the caller's shell may point this gateway at
+            // a control plane or another store
+            .env_remove("ROLTER_SNAPSHOT_URL")
+            .env_remove("ROLTER_REDIS_URL")
+            .env_remove("CLICKHOUSE_URL")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                std::fs::File::create(dir.join("stderr.log")).unwrap(),
+            ));
+        if let Some(relay) = &relay {
+            command.arg("--redis-url").arg(&relay.url);
+        }
+        let mut child = command.spawn().unwrap();
+        let mut serving = false;
+        let mut exited = None;
+        for _ in 0..600 {
+            if let Ok(Some(status)) = child.try_wait() {
+                exited = Some(status);
+                break;
+            }
+            if reqwest::get(format!("http://{gw}/healthz")).await.is_ok() {
+                serving = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        // a healthz answer only counts if it was ours: a process that lost the
+        // port exits, and whoever took it may answer in the meantime
+        if serving && matches!(child.try_wait(), Ok(None)) {
+            break (child, gw, dir);
+        }
+        let log = std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default();
+        assert!(
+            attempt < 5 && (serving || exited.is_some()),
+            "gateway did not serve on {gw} after {attempt} attempts (exit {exited:?}): {log}"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     };
-    if let Some(relay) = &relay {
-        command.arg("--redis-url").arg(&relay.url);
-    }
-    let mut child = command.spawn().unwrap();
-    let mut serving = false;
-    for _ in 0..600 {
-        if let Ok(Some(status)) = child.try_wait() {
-            panic!("gateway exited before serving: {status}");
-        }
-        if reqwest::get(format!("http://{gw}/healthz")).await.is_ok() {
-            serving = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(serving, "gateway never became reachable on {gw}");
 
     let mut client = open(gw, KEY).await;
     run_turn(&mut client).await;

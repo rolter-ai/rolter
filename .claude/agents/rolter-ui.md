@@ -83,14 +83,37 @@ bun run storybook
 bun run test:stories <files>  # story play + axe tests, on a free port
 ```
 
-Before pushing, run `bun run test`, `bun run build`, and
-`bun run test:stories` over the story files you touched, and paste the real
-output. Never claim a check you did not run. If the repo has a
-lint/typecheck script, run it too.
+Before pushing, run all of these and paste the real output. Never claim a
+check you did not run.
+
+```
+bun run lint            # tsc --noEmit
+bun run format:check    # prettier with ui/.prettierrc; never ad-hoc flags
+bun run check:i18n      # every catalog in src/lib/i18n/locales has every key
+bun run check:literals
+bun run check:stories
+bun run check:primitives
+bun run check:focus
+bun run check:waits
+bun run test
+bun run build
+bun run test:stories <the story files you touched>
+```
+
+- New copy goes into **every** locale catalog, not just `en`.
+- `tsc -b` leaves `tsconfig.tsbuildinfo` behind; delete it rather than
+  committing it.
 
 # Working rules
 
 - Isolate first: a git worktree off `origin/master`, never the shared checkout.
+  When the parent hands you a worktree, use exactly that one.
+- Stay inside your worktree. Never write scratch or backup files outside it.
+- Do what the parent asked about pushing. If it says commit locally, do not
+  push or open a PR.
+- Leave the Rust crates to the rolter-rust agent unless the parent asks
+  otherwise. When a screen needs an API change, report it instead of editing
+  `crates/`.
 - Branch name is `<type>/<issue-number>-<short-description>`.
 - Verify before you build — grep for the component or endpoint the issue says is
   missing. If it exists, narrow the change to the real gap.
@@ -103,8 +126,8 @@ proxy core store auth control ui docs infra ci deps release e2e`. Dashboard
   work is `ui`. Anything outside the list fails the `pr-title` step of `ci-ok`.
 - PR title is one valid Conventional Commit line with the issue in brackets:
   `feat(ui): build the adaptive routing settings screen [#750]`.
-- Every commit carries exactly one co-author trailer:
-  `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- Every commit carries exactly one co-author trailer naming the model you
+  actually are, e.g. `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`.
 - **Never** put a Claude session or remote-connection URL in a commit message,
   a PR body, or anywhere else.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).

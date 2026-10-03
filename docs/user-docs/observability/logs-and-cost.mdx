@@ -21,7 +21,7 @@ clickhouse_url = "http://localhost:8123"
 
 Logging is disabled when `clickhouse_url` is unset — there's no placeholder or no-op mode.
 
-The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a notice that request logs need ClickHouse, naming `CLICKHOUSE_URL`. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
+The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a note that request logs need ClickHouse, **MCP Logs** as a note that tool-call logs need it, and the **Dashboard** as a note that traffic and spend need it, each naming `CLICKHOUSE_URL`. **Cost Attribution** shows the same kind of note in place of its spend figures, and **My Virtual Keys** shows one above your keys (each key reads _usage: unavailable_), while the rest of both screens keeps working. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
 
 ## What gets logged
 
@@ -31,6 +31,7 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `ts`                 | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                              |
 | `request_id`         | String        | Unique request identifier, echoed in the `x-request-id` response header                                                               |
+| `log_id`             | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                 |
 | `trace_id`           | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                          |
 | `model`              | String        | The public model name the client requested                                                                                            |
 | `provider`           | String        | The upstream provider that served the request                                                                                         |
@@ -162,7 +163,7 @@ The dashboard reports the same two figures on `GET /api/v1/analytics/summary` (`
 
 The flag is exposed **per invocation** too, not only in those summaries: every row from `GET /api/v1/analytics/invocations` carries `unpriced` beside its `cost_usd`, so a single request can be read the same way the totals are.
 
-The **LLM Logs** screen does the same per request: a row whose model has no price shows a muted **—** with an explanation on hover instead of `$0.0000`, because a zero there claims the request was free. It reads the row's own `unpriced` flag to decide, which is the judgement the gateway made against the price catalogue **as it was when the request was served**. That matters once prices change: a request served before you priced a model stays unpriced in the log even after you add the price, and one served under a price you later delete keeps the cost it was actually charged.
+The **LLM Logs** screen does the same per request: a row whose model has no price shows an **unpriced** label in the cost column instead of `$0.0000`, because a zero there claims the request was free and a dash reads as a missing value. The table explains the label on hover, and the detail drawer prints the explanation as a sentence under it. It reads the row's own `unpriced` flag to decide, which is the judgement the gateway made against the price catalogue **as it was when the request was served**. That matters once prices change: a request served before you priced a model stays unpriced in the log even after you add the price, and one served under a price you later delete keeps the cost it was actually charged.
 
 The **Models** screen names the cause. A model with no price row shows **no price set** in the in/out price column instead of a dash, and an **Unpriced** filter chip above the table counts them and narrows the list to exactly those models — so the fix for an incomplete spend total is one click from the number that reported it. If the price catalogue itself cannot be read, the column falls back to plain figures rather than reporting every model as unpriced on no evidence.
 
@@ -213,6 +214,14 @@ where withheld = 1 and ts > now() - interval 30 day;
 
 `usage_unknown = 1` marks a different gap: the upstream answered but reported no usage at all, so the row's zero tokens and cost are unknown rather than free. Most often it is an OpenAI-style stream sent without `stream_options: {"include_usage": true}`. It is also set on a `502` whose upstream answered and then failed to deliver the body the gateway was reading (a reset, a truncated response): the provider may have billed an answer nobody received. Rows written before these columns existed default to `0`.
 
+## MCP tool calls
+
+When ClickHouse is configured, the gateway records each `tools/call` it proxies on `/mcp/{server}` as one row in **Observability → MCP Logs**. Nothing else is recorded: `initialize`, `tools/list` and notifications leave no row, and with no `clickhouse_url` the gateway records nothing.
+
+Each row carries the server, the tool, the latency and a status: `success`, `error` (the tool reported `isError: true` or the server answered with a JSON-RPC error), `auth_denied` (the gateway refused the caller's OAuth session, or the server answered `401`/`403`), `timeout`, or `transport_error`. It is attributed to the calling virtual key's organization, team and project, and to the user who owns the key, which is the user whose OAuth session the call used.
+
+The call's arguments and result are stored only when `[logging.payload_capture]` is `enabled`, redacted with `redact_fields` and cut to `max_bytes`, the same policy as LLM payloads. Recording never slows or fails the call: if the write queue is full the row is dropped and `rolter_mcp_events_dropped_total` goes up. For a streamed (SSE) reply the row is written when the stream ends, so its latency includes the whole stream.
+
 ## Time windows
 
 Every usage, spend, provider-health and MCP-log read takes an optional `since` (inclusive) and `until` (exclusive). Left out, or sent empty, they cover the last 7 days up to now. Each accepts:
@@ -242,10 +251,13 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 
 ## Filtering LLM Logs
 
-**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
+**Filters** opens a rail beside the **LLM Logs** table that narrows the requests of one time window, the last 24 hours unless you pick another. The window is counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
 
+- **Time window** is one of the [reporting windows](#time-windows). The address carries it as `window=7d`.
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
+- **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
+- **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
 
 **Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
@@ -253,10 +265,18 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 The filters are part of the page's address, so a reload keeps them and a copied link opens the same view. Whoever opens it still sees only the rows their own role allows. The parameters use the API's names:
 
 ```text
-/logs?status=error&model=gpt-4o&business_unit=<unit-id>
+/logs?status=error&model=gpt-4o&business_unit=<unit-id>&unpriced=true
 ```
 
-A link can outlive what it names. A status value the API does not know is ignored, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address.
+A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
+
+### Saved views
+
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. A view holds the time window, status, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+
+Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
+
+The [Dashboard](/concepts/dashboard) has the same control and keeps the time window it is reading. Saved views need a signed-in account, so they are unavailable while the control plane runs in open mode.
 
 ## Paging the invocation log
 
@@ -278,7 +298,7 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
@@ -297,6 +317,29 @@ curl -H "Authorization: Bearer $ROLTER_TOKEN" \
 
 The answer is that one row, with its status, error, tokens, cost, latency and — if your role may read them — the captured bodies. `trace_id` looks a request up by its W3C trace id the same way, for when you start from a span in your tracing backend instead. Without a `since`, a lookup by either id searches every row still retained rather than the default last 7 days, so an older request is found rather than answered with an empty page. The lookup obeys the same visibility as the rest of the log: an id from a project you cannot read returns nothing.
 
+### Looking a request up in the dashboard
+
+**LLM Logs** has a field under its toolbar for the same lookup. Paste the id and press **Find**. A 32-character lowercase hex string is a trace id, and so is a whole `traceparent` header value (Rolter reads the trace id out of it); anything else is taken as a request id. A request id is matched exactly.
+
+- **One row** comes back: its detail drawer opens on it. This is the usual result for a request id.
+- **Several rows** share the trace id: they are the list, and the toolbar says it is showing a request ID or trace ID lookup. Click a row to open it.
+- **Nothing** comes back: the table says **No request found**. The dashboard cannot tell an id that does not exist from one in a project your role cannot read, and neither can the API, so the message names both.
+
+A lookup searches every retained row, not the last 24 hours, and leaves out whatever the filter rail held: starting one clears those filters, so they cannot hide the request. It does not stream. **Clear lookup** (or the cross in the field) goes back to the live feed.
+
+The lookup is part of the page's address, so a link opens on the request:
+
+```text
+/logs?request_id=3f2c9a1e-...
+/logs?trace_id=0af7651916cd43dd8448eb211c80319c
+```
+
+The command palette does the same from anywhere in the dashboard. Open it with `⌘K` (`Ctrl-K` on Windows and Linux), paste the id, and pick **Open request … in LLM Logs** (or **Open trace …**). The offer appears only when no screen or record matches what you typed, and only for an account that can open LLM Logs. A word has to look like an id to be offered: at least 8 characters, no spaces, with a digit in it.
+
+<Note>
+  A request id that is exactly 32 lowercase hex characters, such as a UUID with its dashes removed, reads as a trace id. Use `/logs?request_id=…` to look it up as a request id.
+</Note>
+
 ### Reading a request in LLM Logs
 
 Clicking a row in **LLM Logs** opens it in a detail drawer, and the row stays highlighted in the table while the drawer is open. The drawer starts with the verdict: the status, when the request started, and its request id and trace id, each with a copy button. A status of **No response** means the gateway never got an answer from the upstream, because the connection was refused or timed out. A trace id reads **Not sent by the caller** when the request carried no trace header, since there is nothing to follow into a tracing backend.
@@ -307,7 +350,19 @@ When the request failed, its error comes next, before anything else. The rest of
 - **Usage and cost**: input and output tokens, the upstream's prompt-cache reads and writes, and the cost.
 - **Attribution**: the virtual key by its name and prefix, the business unit and the customer. A key that cannot be looked up, for example one that has since been deleted, shows its id instead.
 
-The captured request and response bodies follow, or the reason they are absent (see [log settings](/observability/log-settings)).
+The captured request and response bodies follow, or the reason they are absent (see [log settings](/observability/log-settings)). A request with neither body gets one note under a single **Request and response** heading, with one link to the log settings. A request with one body shows it, and the missing one gets its own short note.
+
+### Reading the table
+
+The **Time** column shows the clock with milliseconds, such as `15:34:56.789`, because the milliseconds are what tell requests apart. The date is in the tooltip on the time and at the top of the detail drawer. **Status** and **Cost** stay on screen at every width, with **Time** and **Model**. **Latency**, **Tokens** and **Provider** drop out as the table gets narrower, widest first, and all three are in the detail drawer. The table's own width decides, not the window's, so opening the filter rail or the drawer hides columns instead of scrolling **Cost** out of view. Below 1280 px the drawer opens as a sheet over the table instead of beside it.
+
+## Who reads the MCP call log
+
+`GET /api/v1/mcp/logs`, `/api/v1/mcp/logs/summary` and `/api/v1/mcp/logs/{event_id}` follow the same rule as the request log. A signed-in user reads the tool calls of the orgs, teams and projects where they hold a role, and every call made under their own MCP OAuth sessions, whatever project the gateway attributed it to. A superadmin, the admin token and open mode read everything. Someone with no role anywhere gets an empty list and a summary of zero, and a call outside their reach answers `404` exactly like one that does not exist.
+
+The list carries no tool arguments or results. The single-event read carries them only for a caller who is a member or above at the call's project, or a viewer on a project whose admin set `payload_min_role` to `viewer` (the same setting that shows LLM request bodies). Anyone else gets both fields empty and `payload_withheld: 1`. Recording an event (`POST /api/v1/mcp/events`) stays with the gateway and superadmins.
+
+Calls recorded before an MCP proxy attributed them to an org, project and user carry none of the three, so they stay visible to superadmins only. Nothing needs migrating: new calls are attributed when they are written.
 
 ## Built-in dashboard
 

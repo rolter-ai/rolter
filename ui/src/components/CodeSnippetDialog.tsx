@@ -2,6 +2,7 @@ import { Code2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import {
@@ -62,10 +63,14 @@ export function CodeSnippetDialog({
   const { t } = useTranslation();
   const [lang, setLang] = React.useState<SnippetLang>("curl");
 
-  // the saved public base URL when this caller can read it, the dashboard's
-  // /gw proxy otherwise — the same address every other snippet hands out
+  // the saved public base URL when this caller can read it. there is no /gw
+  // fallback: the proxy needs a dashboard session an external client lacks, so
+  // without an address the dialog asks for one instead (#2486)
   const base = useGatewayBase();
-  const snippet = React.useMemo(() => renderSnippet(lang, request, base), [lang, request, base]);
+  const snippet = React.useMemo(
+    () => (base ? renderSnippet(lang, request, base) : null),
+    [lang, request, base],
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} size="lg">
@@ -74,25 +79,29 @@ export function CodeSnippetDialog({
         <DialogDescription>{t("playground.copyAsCodeHint")}</DialogDescription>
       </DialogHeader>
 
-      <div className="flex flex-col gap-3">
-        <Tabs
-          aria-label={t("playground.language")}
-          tabs={SNIPPET_LANGS.map((l) => ({ value: l, label: LABELS[l] }))}
-          value={lang}
-          onChange={(v) => setLang(v as SnippetLang)}
-        />
+      {snippet === null ? (
+        <GatewayBasePrompt />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <Tabs
+            aria-label={t("playground.language")}
+            tabs={SNIPPET_LANGS.map((l) => ({ value: l, label: LABELS[l] }))}
+            value={lang}
+            onChange={(v) => setLang(v as SnippetLang)}
+          />
 
-        {/* the block scrolls sideways rather than wrapping: a snippet broken
+          {/* the block scrolls sideways rather than wrapping: a snippet broken
             mid-URL reads as two broken lines, not as one long one (#948).
             CodeBlock owns the copy button, the focusable scroll region and
             the name, so each language is copyable on its own terms */}
-        <CodeBlock
-          value={snippet}
-          language={HIGHLIGHT[lang]}
-          label={t("playground.snippet")}
-          maxHeight={420}
-        />
-      </div>
+          <CodeBlock
+            value={snippet}
+            language={HIGHLIGHT[lang]}
+            label={t("playground.snippet")}
+            maxHeight={420}
+          />
+        </div>
+      )}
 
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -103,10 +112,18 @@ export function CodeSnippetDialog({
   );
 }
 
-/** The trigger, so a caller only has to own the request it describes. */
-export function CopyAsCodeButton({ request }: { request: SnippetRequest }) {
+/**
+ * The trigger, so a caller only has to own the request it describes.
+ *
+ * `label` names what the button acts on, for a screen that repeats it: two
+ * columns each have one, and "Copy as code" twice tells a screen reader user
+ * nothing about which request they would get. It has to start with the visible
+ * words, so the name still contains the text on the button.
+ */
+export function CopyAsCodeButton({ request, label }: { request: SnippetRequest; label?: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
+  const name = label ?? t("playground.copyAsCode");
   return (
     <>
       {/* a labelled control, not a bare glyph: the dialog behind this is the
@@ -119,8 +136,8 @@ export function CopyAsCodeButton({ request }: { request: SnippetRequest }) {
         variant="ghost"
         className="h-8 gap-1.5"
         onClick={() => setOpen(true)}
-        aria-label={t("playground.copyAsCode")}
-        title={t("playground.copyAsCode")}
+        aria-label={name}
+        title={name}
       >
         <Code2 className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">{t("playground.copyAsCode")}</span>

@@ -6,7 +6,9 @@ description: "How Rolter reaches an upstream, where the credential lives, and ho
 
 A provider is one upstream endpoint plus the credential Rolter uses to reach it. That credential is the _provider key_ — the one the provider issued to Rolter, never the virtual key a client sends ([which key do I need?](/security/which-key)). Routes and provider groups select _targets_, and every target names a provider.
 
-Add them from **Providers** in the dashboard, or through the management API.
+Add them from **Providers** in the dashboard, or through the management API. Every column of the list sorts: click a heading for ascending, again for descending, and a third time to go back to the order the control plane sent.
+
+The name is fixed once the provider is created, and the form says so. The slug, which is the `provider-slug/model` address, is fixed too.
 
 ---
 
@@ -20,7 +22,7 @@ There are two places, and they resolve in this order:
 A stored key wins when both are set.
 
 <Warning>
-Storing a key requires `ROLTER_KEK` on the control plane, and the gateway needs the **same** value to decrypt what arrives in a snapshot. With it unset, the control plane still starts and the provider row still saves — the key simply cannot be sealed or read back. Run `rolter check` before boot; it fails on exactly this.
+Storing a key requires `ROLTER_KEK` on the control plane. Gateways do not need it: the control plane unseals keys when it builds the snapshot, and gateways receive them over the token-guarded `/internal/snapshot`, so keep the KEK off them. With it unset, the control plane still starts and the provider row still saves — the key simply cannot be sealed or read back. Run `rolter check` before boot; it fails on exactly this.
 </Warning>
 
 ---
@@ -29,7 +31,9 @@ Storing a key requires `ROLTER_KEK` on the control plane, and the gateway needs 
 
 Configuring a provider is otherwise a write with no feedback. The row saves whether or not the base URL is right, and the first sign of a problem is a failed request through the gateway, attributed to whichever route happened to select it.
 
-**Test connection** on a saved provider closes that loop:
+**Test connection** on a saved provider closes that loop. In the dashboard it is one click from the create: **Create provider** leaves the sheet open on the new provider, says it is not tested yet, and puts focus on **Test connection** beside the save buttons. The test does not run by itself, since it is a call to the upstream. **Done** closes the sheet.
+
+The same call is available to a script:
 
 ```bash
 curl -X POST https://control.example.com/api/v1/providers/$ID/test
@@ -85,7 +89,7 @@ The dashboard renders this as its own amber state — _Answered, but not with a 
 Kinds whose probe is a liveness endpoint rather than a catalogue keep 2xx as the criterion. Hugging Face TEI is probed at `/health`, which has no catalogue to return, so a bare `200` there is the whole verdict and `models_found` stays `null`.
 
 <Note>
-The probe reads the **stored** row, not what is currently typed in the form. Save first, then test. The credential is sealed server-side and never leaves the control plane, so a draft key could not be tested without transmitting it somewhere first.
+The probe reads the **stored** row, not what is currently typed in the form. With unsaved edits in the sheet, **Test connection** is off and says it tests the saved provider; save first, then test. The credential is sealed server-side and never leaves the control plane, so a draft key could not be tested without transmitting it somewhere first.
 </Note>
 
 ### When the credential cannot be read
@@ -111,3 +115,19 @@ The probe is a model-list call. A few self-hosted runtimes serve their catalogue
 ## Egress policy
 
 The base URL is checked against the egress policy when the provider is created, and **again** on every test. A stored row is not a standing permission to egress: if the policy has been tightened since, the test fails on the policy rather than reaching the host.
+
+---
+
+## Egress proxy
+
+A provider's egress proxy is optional. It sends that provider's upstream calls, and no other provider's, through a proxy. It takes an `http://`, `https://`, `socks5://` or `socks5h://` URL.
+
+A URL that carries credentials (`user:pass@host`) is not accepted. To use an authenticated proxy, put the whole URL in an environment variable and enter a whole-value reference such as `${PROXY_URL}`, so the credentials never reach a configuration file or a database row. The proxy address is checked against the [egress policy](#egress-policy) like the base URL.
+
+---
+
+## Deleting a provider
+
+**Delete provider** asks first and names the provider. The dialog also lists what still points at it: the routes that target it and the provider groups it belongs to. A route or group that would be left with nothing is marked **only target** or **only member**. While that list is loading, or if it could not be read, the dialog says so instead of claiming nothing uses the provider.
+
+The control plane refuses to delete a provider that a route target or a group member still references, so take it out of those first. A provider nothing references can still be addressed directly as `provider-slug/model`, and stops answering there once it is deleted.

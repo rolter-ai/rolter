@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Wrench, X } from "lucide-react";
+import { ChevronRight, SearchX, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { superadminOnly } from "@/components/ForbiddenScreen";
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton, TableSkeleton } from "@/components/LoadingState";
 import {
@@ -23,6 +23,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
+  ApiError,
   fetchMcpLogDetail,
   fetchMcpLogs,
   fetchMcpSummary,
@@ -31,6 +32,7 @@ import {
   type McpLogRow,
 } from "@/lib/api";
 import type { CodeLanguage } from "@/lib/code";
+import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
@@ -69,6 +71,10 @@ function McpLogsScreen() {
   const ms = (v: number) => t("analytics.ms", { value: fmt.number(Math.round(v)) });
   const [status, setStatus] = React.useState("");
   const [transport, setTransport] = React.useState("");
+  // the signed-in account's id, off the session. an open-mode session has no
+  // account, so it has no calls of its own to narrow to and no shortcut
+  const myId = useOptionalAuth()?.user?.id ?? "";
+  const [mine, setMine] = React.useState(false);
   const [cursors, setCursors] = React.useState<string[]>([]);
   const cursor = cursors[cursors.length - 1];
   const [selected, setSelected] = React.useState<string | null>(null);
@@ -87,12 +93,13 @@ function McpLogsScreen() {
 
   useErrorState(!!summary.error, "mcp-logs");
   const logs = useQuery({
-    queryKey: ["mcp-logs", status, transport, cursor],
+    queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
     queryFn: () =>
       fetchMcpLogs({
         since: new Date(Date.now() - 86_400_000).toISOString(),
         status: status || undefined,
         transport: transport || undefined,
+        user: mine && myId ? myId : undefined,
         limit: 50,
         cursor,
       }),
@@ -101,7 +108,8 @@ function McpLogsScreen() {
 
   // a deployment with no analytics store, or a control plane too old to serve
   // /api/v1/mcp/logs at all: both arrive as AnalyticsUnavailableError, and both
-  // are a load state LoadError already knows how to explain (#1236)
+  // are a supported shape the screen states calmly rather than a failure (#1236,
+  // #2016)
   const unavailable =
     logs.error instanceof AnalyticsUnavailableError
       ? logs.error
@@ -112,7 +120,7 @@ function McpLogsScreen() {
   if (unavailable) {
     return (
       <PageBody>
-        <LoadError error={unavailable} resource={t("errors.resources.mcpLogs")} />
+        <AnalyticsUnavailable error={unavailable} i18nKey="pages.mcpLogs.noAnalytics" />
       </PageBody>
     );
   }
@@ -122,10 +130,11 @@ function McpLogsScreen() {
   // a filtered page that came back empty is a different answer from a
   // deployment that has never seen an MCP call, and only one of them is fixed
   // by clearing something
-  const filtersActive = !!status || !!transport || cursors.length > 0;
+  const filtersActive = !!status || !!transport || mine || cursors.length > 0;
   const clearFilters = () => {
     setStatus("");
     setTransport("");
+    setMine(false);
     resetPaging();
   };
 
@@ -180,6 +189,21 @@ function McpLogsScreen() {
             ...MCP_TRANSPORTS.map((kind) => ({ value: kind, label: kind })),
           ]}
         />
+        {/* one click to the caller's own calls, through the `user` filter the
+            API already takes. every role that reaches the screen sees it */}
+        {myId && (
+          <Button
+            size="sm"
+            variant={mine ? "default" : "outline"}
+            aria-pressed={mine}
+            onClick={() => {
+              setMine((v) => !v);
+              resetPaging();
+            }}
+          >
+            {t("pages.mcpLogs.myCalls")}
+          </Button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <Button
             size="sm"
@@ -351,13 +375,30 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
   const body = (
     <>
       {detail.isLoading && <FormSkeleton fields={3} />}
-      {detail.isError && (
-        <LoadError
-          error={detail.error}
-          resource={t("errors.resources.mcpLogDetail")}
-          onRetry={() => void detail.refetch()}
-        />
-      )}
+      {detail.isError &&
+        // the store going away between the list and one of its rows is the same
+        // answer the list would have given, so it gets the same panel (#2016)
+        (detail.error instanceof AnalyticsUnavailableError ? (
+          <AnalyticsUnavailable error={detail.error} i18nKey="pages.mcpLogs.noAnalytics" />
+        ) : detail.error instanceof ApiError && detail.error.status === 404 ? (
+          // the read is scoped: an event that is gone and one outside the
+          // caller's orgs, teams and projects both answer 404, and retrying
+          // cannot change either, so it is stated rather than offered again
+          <EmptyState
+            uxTarget="mcp-log-detail"
+            icon={<SearchX />}
+            title={t("pages.mcpLogs.notFoundTitle")}
+            description={t("pages.mcpLogs.notFoundBody")}
+            thread={false}
+            className="px-0 py-6"
+          />
+        ) : (
+          <LoadError
+            error={detail.error}
+            resource={t("errors.resources.mcpLogDetail")}
+            onRetry={() => void detail.refetch()}
+          />
+        ))}
       {d && (
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -372,6 +413,21 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             <DrawerStat label={t("pages.mcpLogs.trace")} value={d.trace_id || "—"} />
           </div>
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
+          {Number(d.payload_withheld ?? 0) === 1 && !d.arguments && !d.result && (
+            // the server blanked the bodies for this caller's role and says so;
+            // that is certain, unlike an empty body, so it is stated plainly
+            // rather than left looking like a call with no arguments
+            <div>
+              <h3 className="mb-1 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
+                {t("pages.mcpLogs.argumentsAndResult")}
+              </h3>
+              <div className="rounded-[8px] border border-dashed border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] p-3">
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("pages.mcpLogs.payloadWithheld")}
+                </p>
+              </div>
+            </div>
+          )}
           {pretty(d.arguments) && (
             <DrawerBlock
               label={t("pages.mcpLogs.arguments")}
@@ -461,7 +517,7 @@ function DrawerBlock({
   );
 }
 
-// deployment-scoped settings: superadmin-only in the capability table, so a
-// lesser caller sees the refusal instead of a screen that loads and then 403s
-// (#1183)
-export default superadminOnly(McpLogsScreen, "errors.resources.mcpLogs");
+// a scoped read (`mcp_log` is project-scoped, viewer floor): the rail and `Screen`
+// refuse a caller the capability table refuses, and the server narrows the rows
+// to the orgs, teams and projects the caller holds a role in
+export default McpLogsScreen;

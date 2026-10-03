@@ -35,7 +35,7 @@
     },
     {
       "resource": "provider",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -51,7 +51,7 @@
     },
     {
       "resource": "provider_group",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -123,7 +123,7 @@
     },
     {
       "resource": "budget",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -131,7 +131,7 @@
     },
     {
       "resource": "rate_limit",
-      "scope": "org",
+      "scope": "project",
       "read": "viewer",
       "create": "admin",
       "update": "admin",
@@ -322,6 +322,14 @@
       "delete": null
     },
     {
+      "resource": "deployment_audit_log",
+      "scope": "deployment",
+      "read": "superadmin",
+      "create": null,
+      "update": null,
+      "delete": null
+    },
+    {
       "resource": "invitation",
       "scope": "org",
       "read": "admin",
@@ -491,8 +499,8 @@
     },
     {
       "resource": "mcp_log",
-      "scope": "deployment",
-      "read": "superadmin",
+      "scope": "project",
+      "read": "viewer",
       "create": "superadmin",
       "update": null,
       "delete": null

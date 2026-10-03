@@ -28,12 +28,12 @@ rejections while P5 runs.
 
 ## P2 — call models
 
-| #    | step                                                    | where                                         | expect                                                                                                       | status      |
-| ---- | ------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------- |
-| P2.1 | the unchanged OpenAI or Anthropic SDK, base URL swapped | `<gateway>/v1`                                | drop-in: no code change beyond the URL and the key                                                           | verified    |
-| P2.2 | correlate its own logs with rolter's                    | send `x-request-id`, or read the one returned | the same id on the `request_logs` row                                                                        | verified    |
-| P2.3 | join its distributed trace                              | send `traceparent`                            | rolter's spans land in the service's trace; the upstream receives the context                                | verified    |
-| P2.4 | keep a conversation on one replica                      | send `x-session-id`                           | session affinity on `consistent_hash` and `pipeline` routes; `cache_aware` follows the prompt prefix instead | bug — #1851 |
+| #    | step                                                    | where                                                                                  | expect                                                                                                                                                                           | status           |
+| ---- | ------------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| P2.1 | the unchanged OpenAI or Anthropic SDK, base URL swapped | `<gateway>/v1`                                                                         | drop-in: no code change beyond the URL and the key                                                                                                                               | verified         |
+| P2.2 | correlate its own logs with rolter's                    | send `x-request-id`, or read the one returned                                          | the same id on the `request_logs` row                                                                                                                                            | verified         |
+| P2.3 | join its distributed trace                              | send `traceparent`                                                                     | rolter's spans land in the service's trace; the upstream receives the context                                                                                                    | verified         |
+| P2.4 | keep a conversation on one replica                      | resend the conversation each turn; `x-session-id` for `consistent_hash` and `pipeline` | session affinity on `consistent_hash` and `pipeline` routes; `cache_aware` follows the prompt prefix, so a conversation stays on one replica while distinct conversations spread | verified (#1851) |
 
 ## P3 — rotate its key without an outage
 
@@ -53,11 +53,11 @@ rejections while P5 runs.
 Run P5 against the dogfood fleet: its bad targets are what make the answers
 interesting.
 
-| #    | step                                    | where                                                     | expect                                                                                               | status                                   |
-| ---- | --------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| P5.1 | an upstream fails transiently           | `deepseek-r1` (`vllm-spot-01` 503s a quarter of the time) | retried on the other target before the service sees it; no 5xx reached the client in the dogfood run | verified                                 |
-| P5.2 | the service sends many requests at once | 16 concurrent calls to one route                          | latency stays near the upstream's; the queue admits up to its worker count per provider              | bug — #1815 (one in flight per provider) |
-| P5.3 | it outruns its rate limit               | a rate limit on the key                                   | HTTP 429 with `Retry-After`; the service backs off                                                   | verified                                 |
-| P5.4 | it exhausts its budget                  | a budget on the key or its project                        | HTTP 402; nothing reaches the upstream                                                               | verified                                 |
-| P5.5 | the queue is full                       | provider queue at capacity                                | HTTP 429 `queue_full` / `queue_timeout`, depending on the backpressure policy                        | works                                    |
-| P5.6 | the service disconnects mid-request     | client timeout                                            | a 499 row, billed tokens kept, naming the target it waited on                                        | bug — #1816 (no provider on the row)     |
+| #    | step                                    | where                                                     | expect                                                                                               | status           |
+| ---- | --------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------- |
+| P5.1 | an upstream fails transiently           | `deepseek-r1` (`vllm-spot-01` 503s a quarter of the time) | retried on the other target before the service sees it; no 5xx reached the client in the dogfood run | verified         |
+| P5.2 | the service sends many requests at once | 16 concurrent calls to one route                          | latency stays near the upstream's; the queue admits up to its worker count per provider              | verified (#1815) |
+| P5.3 | it outruns its rate limit               | a rate limit on the key                                   | HTTP 429 with `Retry-After`; the service backs off                                                   | verified         |
+| P5.4 | it exhausts its budget                  | a budget on the key or its project                        | HTTP 402; nothing reaches the upstream                                                               | verified         |
+| P5.5 | the queue is full                       | provider queue at capacity                                | HTTP 429 `queue_full` / `queue_timeout`, depending on the backpressure policy                        | works            |
+| P5.6 | the service disconnects mid-request     | client timeout                                            | a 499 row, billed tokens kept, naming the target it waited on                                        | verified (#1816) |

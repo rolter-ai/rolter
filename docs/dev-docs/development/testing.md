@@ -377,8 +377,11 @@ black-box harness can only approximate with sleeps:
 - **graceful SIGTERM drain** — a real `rolter-gateway` child process is sent
   `SIGTERM` while a request is pinned upstream. The in-flight request must still
   return `200`, new connections must be refused, and the process must exit `0`.
+- **sink flush on SIGTERM** — with `flush_ms` set to an hour, a finished request's
+  request-log and health-event rows must still reach a ClickHouse stand-in
+  before the child exits, proving the shutdown sink drain (#1924).
 
-Both use a mock upstream that blocks on a semaphore the test owns, so every step
+All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:
 
@@ -602,8 +605,12 @@ locally-clean branch red, because `cargo fmt`, `cargo clippy` and
 `cargo nextest` are all silent about it. Run it before pushing:
 
 ```bash
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
+
+Keep `--all-features`: it is what CI runs, and the `postgres` modules are
+feature-gated, so without it a broken link inside them (a doc comment still
+naming a renamed function, say) passes locally and fails in CI.
 
 The usual failure is `rustdoc::private_intra_doc_links`: a public item whose
 doc comment links `[`Something`]` that is private. It is easy to write, because
@@ -683,8 +690,7 @@ listed, with its reason, in the run summary and the pull request body:
 - the range already starts at the patched release, so the alert is stale and
   closes on its own once GitHub re-reads the manifest.
 
-The pull request carries `station:mac`, since the mac station owns `ui/`, and
-that station reviews and merges it like any other of its PRs. A pull request
+A pull request
 the repository token opens raises no event that `project-automation.yml` fires
 on, so the workflow dispatches it with the new pull request's number and
 `area=ui` right after `gh pr create`, which puts it on the board as
@@ -731,7 +737,7 @@ merges, run it once from `master`:
 gh workflow run ui-security-updates.yml -f synthetic-alert=@opentelemetry/api@1.9.1
 ```
 
-Then check that the pull request opened with `station:mac`, that the dispatched
+Then check that the pull request opened, that the dispatched
 `ci.yml` run reported `ci-ok` on its head, and that the next run without the
 input withdrew it and deleted the branch. Merge nothing from a synthetic run.
 
@@ -1013,15 +1019,22 @@ The helper first waits for every animation that ends, because a sheet slides in
 from the right edge for 240 ms and a box read the moment the panel appears is
 wherever the slide has got to. Looping animations such as spinners are skipped.
 
+A box inside a scroll container is measured against that container, not the
+window: a table in a card scrolls sideways inside a frame narrower than the
+window by the page gutters, so a title the card's edge clips is still inside the
+window (#2420). `expectInFrame(el, frame)` compares the box, or a `Range` for the
+width of a line of text, with the frame's padding box less its scrollbar.
+
 On the screen is not always the same as on the sheet. A footer that overflows
 toward the right can still end a few pixels inside a 375 px window while it
 sits in the sheet's gutter. `ModelSheet`'s phone stories therefore also compare
 the primary action's right edge with the header's close button.
 
 The widths and heights these stories run at come from the same module, spread
-at story level: `atMobile` (375×812), `atTablet` (768×1024) and `atShort`
-(640×360, a 1280×720 screen at 200 % zoom, the size WCAG 1.4.10 asks content to
-reflow at). A story that also needs the Russian catalog merges the two globals:
+at story level: `atMobile` (375×812), `atTablet` (768×1024), `atWide`
+(1440×900, for a story that needs more room than the runner's 1280×800 default)
+and `atShort` (640×360, a 1280×720 screen at 200 % zoom, the size WCAG 1.4.10
+asks content to reflow at). A story that also needs the Russian catalog merges the two globals:
 `globals: { ...atMobile.globals, locale: "ru" }`.
 
 #### Stories are drawn in the fonts the app ships (#2051)
@@ -1295,7 +1308,7 @@ disable their primary action until the three-request scope chain resolves, so
 Each screen should carry `Loaded`, `Loading`, `Empty` and an error/forbidden
 story, one interaction story that opens the primary editor and saves, and at
 least one story exercising the discard guard. Where a sheet opens pre-filled
-(budgets seed `100` / `30d`), assert the seed too: its dirty flag means "differs
+(budgets seed `100` / monthly), assert the seed too: its dirty flag means "differs
 from the seed", not "is non-empty", and getting that backwards makes an
 untouched form prompt on every close.
 
@@ -1421,7 +1434,7 @@ and `actions: write` at job level with no checkout.
 
 An issue opened with the workflow's own token raises no `issues` event, so
 `project-automation` never sees it. The job triages a new issue itself instead:
-it adds `station:rtx` and the `Maintenance, CI & DX` milestone, then dispatches
+it sets the `Maintenance, CI & DX` milestone, then dispatches
 `project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
 puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
 half only warns when it fails, since a renamed milestone must not cost the issue
@@ -1447,10 +1460,16 @@ bash docker/smoke/smoke.sh
 It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
 [`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
-keyless open gateway config) so the built-in `fake-llm` model answers without any
-provider secret. The script waits for both `/healthz` endpoints, checks
-`/v1/models` and `fake-llm` chat (non-streaming + SSE) on the gateway and the
-postgres-backed `/internal/snapshot` on the control plane, then always dumps
+keyless open config, `require_auth = false`) into the gateway and the control
+plane, so the built-in `fake-llm` model answers without any provider secret. The
+control plane gets it too because the gateway follows the control plane's
+snapshot, which carries the control plane's own bootstrap config: the example
+baked into the image would bring its virtual key back. The script waits for both
+`/healthz` endpoints, checks `/v1/models` and `fake-llm` chat (non-streaming +
+SSE) on the gateway and the postgres-backed `/internal/snapshot` on the control
+plane, then creates an org, team, project, provider and route through the
+control plane's open API and waits for the gateway to list the new model, which
+is the check that the two planes are wired together. It then always dumps
 compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).

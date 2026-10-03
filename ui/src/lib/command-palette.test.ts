@@ -7,6 +7,7 @@ import {
   isNavSearchShortcut,
   isPaletteShortcut,
   isTextEntry,
+  pastedIdLookup,
   rankEntries,
   readRecentScreens,
   rememberScreen,
@@ -90,6 +91,36 @@ describe("rankEntries", () => {
   it("breaks a tie on the caller's order", () => {
     const all = [entry("first", "Same"), entry("second", "Same")];
     expect(rankEntries(all, "same").map((e) => e.id)).toEqual(["first", "second"]);
+  });
+});
+
+describe("pastedIdLookup", () => {
+  const trace = "0af7651916cd43dd8448eb211c80319c";
+
+  it("offers a trace id, or a traceparent with one in it", () => {
+    expect(pastedIdLookup(trace)).toEqual({ kind: "trace_id", value: trace });
+    expect(pastedIdLookup(`00-${trace}-b7ad6b7169203331-01`)).toEqual({
+      kind: "trace_id",
+      value: trace,
+    });
+  });
+
+  it("offers a request id shaped like a real one", () => {
+    for (const id of ["3f2c9a1e-7b4d-4f10-9c2e-0a1b2c3d4e5f", "req-2026-10-05-0042", "abcd1234"]) {
+      expect(pastedIdLookup(id)).toEqual({ kind: "request_id", value: id });
+    }
+  });
+
+  it("leaves a typed word to the name search", () => {
+    // too short, no digit, or more than one word: a name, not an id
+    for (const typed of ["rr", "log1", "observability", "routing rules 2026", "gpt 4o mini x"]) {
+      expect(pastedIdLookup(typed)).toBeNull();
+    }
+  });
+
+  it("offers nothing for an empty query", () => {
+    expect(pastedIdLookup("")).toBeNull();
+    expect(pastedIdLookup("   ")).toBeNull();
   });
 });
 

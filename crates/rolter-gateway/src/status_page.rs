@@ -57,13 +57,6 @@ pub fn spawn_poller(config: &GatewayConfig, state: crate::state::AppState) {
 }
 
 async fn run_poller(interval_secs: u64, state: crate::state::AppState) {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
     let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -78,21 +71,22 @@ async fn run_poller(interval_secs: u64, state: crate::state::AppState) {
                 .collect()
         };
         for (provider, url) in targets {
-            poll_one(&client, &state, &provider, &url).await;
+            poll_one(&state, &provider, &url).await;
         }
     }
 }
 
 /// Poll a single provider's status page and, on a clean parse, emit one
 /// `status_page` event. Any transport/parse failure is logged and skipped.
-async fn poll_one(
-    client: &reqwest::Client,
-    state: &crate::state::AppState,
-    provider: &str,
-    url: &str,
-) {
+async fn poll_one(state: &crate::state::AppState, provider: &str, url: &str) {
     let started = std::time::Instant::now();
-    let text = match client.get(url).send().await {
+    // the url is operator-written, so it goes through the egress policy at
+    // request time as well as at save, and never follows a redirect
+    let Some(request) = state.side_client.get(url) else {
+        tracing::warn!(%provider, "status-page url denied by the egress policy; skipping");
+        return;
+    };
+    let text = match request.timeout(Duration::from_secs(10)).send().await {
         Ok(resp) if resp.status().is_success() => match resp.text().await {
             Ok(t) => t,
             Err(err) => {
@@ -129,6 +123,7 @@ async fn poll_one(
         ts: chrono::Utc::now(),
         target_id: provider.to_string(),
         provider: provider.to_string(),
+        org_id: String::new(),
         source: HealthSource::StatusPage,
         outcome: if degraded.is_some() {
             HealthOutcome::Error

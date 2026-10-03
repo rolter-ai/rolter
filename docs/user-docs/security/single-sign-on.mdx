@@ -32,6 +32,8 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
   <Step title="Pick a slug and copy the redirect URI">
     Open **Governance → Single Sign-On** and choose **Add provider**. Type the **Slug** first: the short name the provider will have in Rolter's URLs. The **Redirect URI** row under it fills in as you type, `https://your-rolter-host/auth/sso/<slug>/callback`, with a copy button beside it.
 
+    A slug is lowercase letters, digits and hyphens, starts with a letter or digit, and is at most 63 characters: `okta`, `acme-entra`, `keycloak-2`. The hint under the field says so. Anything else is marked as you type, with a corrected value suggested when one can be worked out (`Acme Okta` becomes `acme-okta`), the redirect URI row says the slug is not valid instead of showing an address, and **Add provider** stays disabled. Nothing is rewritten for you: the slug is part of the redirect URI you register in your identity provider, so what you see is exactly what is saved.
+
     The host part is the control plane's public URL, `ROLTER_PUBLIC_URL`, as the server reports it through [`GET /api/v1/public-url`](/api/public-url), not the address your browser happens to be using. Rolter builds the redirect URI from that configured base and never from the incoming request, so a crafted link cannot send an authorization code somewhere else, and the value in the sheet is exactly the one the login flow will send.
 
     <Warning>
@@ -52,7 +54,7 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
     </ParamField>
 
     <ParamField path="Slug" type="string" required>
-      The short name in the login URL. It cannot be changed later; registering the provider again is the only way to change it.
+      The short name in the login URL: lowercase letters, digits and hyphens, starting with a letter or digit, at most 63 characters. It cannot be changed later; registering the provider again is the only way to change it.
     </ParamField>
 
     <ParamField path="Issuer URL" type="string" required>
@@ -88,6 +90,20 @@ Every part of it requires the **admin** role on the org (see [RBAC](/security/rb
 
   </Step>
 </Steps>
+
+## Registering through the API
+
+`POST /api/v1/orgs/{org_id}/sso-providers` takes the same fields as the sheet and applies the same slug rule. A slug outside it is refused with `400` before anything is stored, and the message states the rule:
+
+```json
+{
+  "error": {
+    "message": "config error: slug must be lowercase letters, digits and hyphens, start with a letter or digit, and be at most 63 characters"
+  }
+}
+```
+
+The slug is checked exactly as sent. It is not trimmed or lowercased, so `Okta` and `okta ` are both refused rather than quietly turned into something else. An empty slug is a `400` too, with its own message, `slug must not be empty`.
 
 ## Editing a provider
 
@@ -145,9 +161,18 @@ from the login screen and from `GET /api/v1/auth/methods`, and its `/start` URL
 stops resolving — but the registration, its secret and its group mappings all
 stay. Flip it back and sign-in resumes.
 
+Switching a provider off asks first, because the people signing in through it
+lose that route immediately. Switching it back on sends at once. The switch and
+the pencil beside it take the same admin role as the rest of the card, and are
+disabled, naming the role they need, for anyone without it.
+
 This is what you want during an IdP migration or while a broken secret is being
 chased down. Deleting the provider would also stop the logins, and would take
 the group mappings with it.
+
+<Warning>
+If password sign-in is off for the org and this is its only enabled provider, the control plane refuses to disable it and answers `409 Conflict`: no member could sign in afterwards. Only superadmins could, because the password setting does not apply to them. Enable another provider or turn password sign-in back on first. With another provider enabled, or with password sign-in on, the change goes through.
+</Warning>
 
 ## Map groups to roles
 
@@ -155,6 +180,8 @@ A group arriving from your identity provider grants nothing on its own. **You** 
 
 - Mappings are matched against the claim named in **Group claim** — `groups` unless you changed it.
 - **Where the role applies** defaults to the whole organization, which is the common case. Narrow it to grant `admin` on one team, or `member` on a single project, without giving the group anything org-wide. The scope list covers the whole organization: every team, and every project in any of those teams grouped under the team that owns it, so a mapping onto a project outside the team the scope switcher currently shows needs no detour through the switcher. An organization with no teams yet says so, and offers only itself.
+- **Role to grant** starts on `viewer`, the least powerful role, so pressing **Map group** without choosing one never gives a group more than viewer access. The fields are labelled, and the group's placeholder is marked as an example (`e.g. platform-engineering`) so an empty field is not mistaken for a filled one.
+- A mapping that grants `admin`, or grants at the whole organization, is confirmed before it is written. The dialog names the group, the role and the scope, says that everyone in that group at your identity provider gets the role at their next sign-in, and lists what raised it: the role, the scope, or both. A `member` or `viewer` mapping on one team or one project saves without asking. The scope starts on the whole organization, so a mapping left at its defaults is confirmed too. Once a mapping is written, the form goes back to `viewer` on the whole organization, so the next mapping does not inherit the last grant.
 - Every mapping grants inside the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends or what you pick here.
 - Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one. A scope the dashboard cannot name is marked **Unresolved scope** instead of being drawn as a bare id; the id stays in the chip's tooltip, and the removal prompt names it inline.
 - Removing a mapping stops that group being granted the role — at that scope — on the next sign-in. The prompt names both before anything is withdrawn, and roles someone already holds are not taken back.
@@ -180,15 +207,29 @@ Two combinations are refused, with the reason shown inline:
 - **Both off** is an outage rather than a policy, so the dashboard will not send it.
 - **Password sign-in off with no enabled provider** would lock every non-superadmin out. Register the provider first, then turn passwords off.
 
+Turning password sign-in **off** confirms before it saves. From then on every member except a superadmin signs in through an identity provider, and the confirmation says so. It also lists every enabled provider that has no client secret stored. That is a warning rather than a refusal, because a provider that relies on PKCE alone has no secret on purpose. If your identity provider does expect one, sign-ins through that provider fail at the token exchange, and when every enabled provider is on the list no member could complete a sign-in until a secret is stored. Turning password sign-in on, or saving another field while it is already off, asks nothing.
+
+Turning single sign-on **off** confirms too, when the org has at least one enabled provider. While the switch is off, the control plane refuses every sign-in that comes back from one of the org's providers. An account created by signing in through a provider has no password, so those members cannot sign in until single sign-on is back on or a superadmin sets a password for them with `PUT /api/v1/users/{id}`. Accounts that do have a password, such as those created from an invitation, keep signing in with it. The providers, their secrets and their group mappings stay, so turning single sign-on back on restores sign-in. The confirmation says all of this and does not block the change. With no enabled provider nobody is signing in through one, so the save goes straight out, and turning single sign-on on asks nothing.
+
 <Info>
 The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped issuer or an outage at the identity provider would otherwise leave nobody able to sign in and fix it. That exemption is what makes the switch safe to use.
 </Info>
+
+## What a user sees when signing in
+
+Choosing **Continue with …** on the sign-in screen takes the user to the identity provider and back, and they land signed in on the dashboard. The session token never appears in the address bar: the provider's redirect carries a one-time code that is good for a minute and works once, and the dashboard swaps it for the session straight away.
+
+If the sign-in is refused, the user comes back to the sign-in screen with the reason. The reasons are: the provider declined the sign-in, the sign-in took too long or was already used, SSO is turned off for the organization, the user is in no mapped group, the account is deactivated, or the provider's answer could not be verified. The provider's own error text is never shown.
+
+Scripts and other non-browser clients that call the callback directly (without asking for `text/html`) still receive the session as JSON.
 
 ## What the login flow refuses to do
 
 - **No unsigned trust.** The id token is verified against the JWKS fetched from the issuer's discovery document, with the issuer, audience and nonce all checked. An `alg: none` or HMAC-signed token is rejected — only the asymmetric algorithms the provider publishes are accepted.
 - **No open redirect.** The redirect URI comes from the deployment's own base URL, never from the request.
 - **One-shot state.** The login state row is consumed by the callback and expires, so a replayed `code`+`state` pair finds nothing to redeem.
+- **One-shot sign-in code.** A browser is handed a code, not the session. The code expires after a minute, works once, and only its digest is stored.
+- **No metadata addresses.** The issuer is checked against the [egress policy](/configuration/egress) when the provider is saved, and the discovery document, token endpoint and JWKS are checked again each time they are fetched. These calls do not follow redirects.
 - **No implicit access.** A user in no mapped group gets the provider's default role, or is refused when there is none.
 
 ## Removing a provider
@@ -196,5 +237,5 @@ The superadmin is exempt from `Password sign-in: off` on purpose. A mistyped iss
 Deleting a provider is confirmed by name first, because it takes a whole route in away at once: anyone signing in through it loses it immediately, and its group mappings go with it. If you only need it to stop accepting logins for a while, [disable it](#taking-a-provider-out-of-service) instead — that keeps the mappings and the sealed secret. Accounts it already created stay, with the roles they already hold — deletion is not a way to lock people out. Deactivate those accounts from **Governance → Users** if that is what you meant.
 
 <Warning>
-If the org's policy has password sign-in turned off, deleting its only enabled provider leaves nobody but the superadmin able to sign in. Turn password sign-in back on first.
+If the org's policy has password sign-in turned off, deleting its only enabled provider is refused with `409 Conflict`, for the same reason as [disabling it](#taking-a-provider-out-of-service). Turn password sign-in back on first, or register the replacement provider before you delete this one. A provider that is already disabled can be deleted freely.
 </Warning>

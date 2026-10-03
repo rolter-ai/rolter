@@ -1,20 +1,26 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
 import {
+  expectAnalyticsUnavailable,
   expectEmptyState,
-  expectForbidden,
   expectLoadError,
   expectListTable,
   expectSkeleton,
   Harness,
   json,
   pending,
+  recording,
   routes,
   scoped,
 } from "./story-harness";
 import type { McpLogRow } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const call = (over: Partial<McpLogRow> = {}): McpLogRow => ({
   ts: "2026-08-06T10:00:00Z",
@@ -229,8 +235,10 @@ export const Forbidden: Story = {
   },
 };
 
-// the same deployment shape as Logs, plus a control plane too old to serve
-// /api/v1/mcp/logs at all — a 404 the fetcher reads the same way (#1236)
+// the same deployment shape as Logs: a control plane with no clickhouse_url
+// answers 503. It is a status, not the alert a 500 gets, and the stats and
+// filters around it are not drawn, since every figure in them would be a zero
+// the store never counted (#1236, #2016)
 export const NoAnalyticsStore: Story = {
   render: () => (
     <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
@@ -239,38 +247,289 @@ export const NoAnalyticsStore: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /Analytics are not configured/i);
-    await expect(canvas.getByText(/CLICKHOUSE_URL/)).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: /try again/i })).toBeNull();
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    // what the screen will show once the store is there is named
+    await expect(panel).toHaveTextContent(/every tool call they proxy/);
+    await expect(canvas.queryByText(en.pages.mcpLogs.calls24h)).toBeNull();
+    await expect(canvas.queryByRole("combobox")).toBeNull();
   },
 };
 
-// What a non-superadmin gets, which is the screen refused before it asks
-// (#1606).
-//
-// The MCP call log is is a deployment-scoped resource, so `superadminOnly` never mounts the
-// screen for an org role however high. The stub answers the screen's own
-// request with a perfectly good payload on purpose: if the wrapper is dropped
-// the screen renders that payload and this story fails, which the `Forbidden`
-// story cannot do — it stubs the 403 itself, so it passes either way.
-export const RefusedToAnAdmin: Story = {
+// a control plane too old to serve /api/v1/mcp/logs at all answers 404, which
+// the fetcher reads as the same answer (#1236)
+export const NoAnalyticsRoute: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="admin">
+    <Harness fetchStub={scoped(async () => json({ error: { message: "not found" } }, 404))}>
       <McpLogs />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectForbidden(canvasElement);
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.mcpLogs.noAnalytics.title,
+      "not found",
+    );
   },
 };
 
-export const RefusedToAViewer: Story = {
+/**
+ * The same panel at 375px and in Russian, where the title is the longest line
+ * the screen says: it wraps inside the screen rather than pushing the page
+ * sideways.
+ */
+export const NoAnalyticsStoreAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={scoped(async () => json({ error: { message: "no clickhouse_url" } }, 503))}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      ru.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the list loaded, so the store was there a moment ago: one row's detail read
+// answering 503 is the same answer the list would have given, and it is said
+// inside the drawer in the same calm voice rather than as a red alert (#2016)
+export const TheStoreGoingAwayUnderADetail: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+        if (url.includes("/mcp/logs/evt-1")) {
+          return json({ error: { message: "no clickhouse_url" } }, 503);
+        }
+        return json({ data: [call()], next_cursor: null });
+      })}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
+    );
+    const drawer = await canvas.findByRole("complementary", { name: "MCP call details" });
+    const panel = await expectAnalyticsUnavailable(
+      drawer,
+      en.pages.mcpLogs.noAnalytics.title,
+      "no clickhouse_url",
+    );
+    await expect(drawer).toContainElement(panel);
+    // the list is still there: only the one read was refused
+    await expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0);
+  },
+};
+
+// What a member gets: the screen, narrowed to their scope by the server (#2396).
+//
+// `mcp_log` is a project-scoped read with a viewer floor, so the screen mounts
+// for any role. The stub answers with a good payload on purpose: re-adding a
+// superadmin-only wrapper would swap this for the refusal and fail the story.
+export const SeenByAMember: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} role="member">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expectListTable(canvasElement, "MCP Logs");
+  },
+};
+
+export const SeenByAViewer: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="viewer">
       <McpLogs />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectForbidden(canvasElement);
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
+};
+
+// a member whose scope holds no calls: the empty copy says whose calls the
+// screen lists, so an empty page is not read as a broken one
+export const EmptyForAMember: Story = {
+  render: () => (
+    <Harness
+      role="member"
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [] })],
+        ["/mcp/logs", () => ({ data: [], next_cursor: null })],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No MCP tool calls yet/);
+    await expect(canvasElement).toHaveTextContent(/hold a role in/);
+  },
+};
+
+// the server blanks arguments and result below the payload floor and says so;
+// the drawer names the role rather than showing a call with nothing in it
+export const PayloadWithheldForAViewer: Story = {
+  render: () => (
+    <Harness
+      role="viewer"
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [SUMMARY] })],
+        [
+          "/mcp/logs/evt-1",
+          () => ({ ...call(), arguments: null, result: null, payload_withheld: 1 }),
+        ],
+        ["/mcp/logs", () => ({ data: [call()], next_cursor: null })],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    // the drawer fades in; poll visibility rather than read the first frame (#2287)
+    await waitFor(async () =>
+      expect(await drawer.findByText(/hidden for your role/i)).toBeVisible(),
+    );
+    await expect(drawer.getByRole("heading", { name: "Arguments and result" })).toBeVisible();
+    await expect(drawer.queryByText("Arguments")).toBeNull();
+  },
+};
+
+// the by-id read is scoped too: an event outside the caller's reach answers
+// 404, which is a statement about the call and not a failure to retry
+export const DetailNotFound: Story = {
+  render: () => (
+    <Harness
+      role="member"
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+        if (url.includes("/mcp/logs/evt-1")) return json({ error: { message: "not found" } }, 404);
+        return json({ data: [call()], next_cursor: null });
+      })}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await waitFor(async () =>
+      expect(await drawer.findByText(en.pages.mcpLogs.notFoundTitle)).toBeVisible(),
+    );
+    await expect(drawer.queryByRole("alert")).toBeNull();
+    await expect(drawer.queryByRole("button", { name: /try again/i })).toBeNull();
+  },
+};
+
+const ME = { id: "u-me", email: "ada@acme.dev", is_superadmin: false };
+
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedIn({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", ME.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(ME));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+// the control plane narrows on the `user` filter before the page is cut
+const mineOnly = () =>
+  recording(
+    scoped(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+      const user = url.searchParams.get("user");
+      const all = [call({ user_id: ME.id }), call({ ...TIMED_OUT, user_id: "u-other" })];
+      return json({ data: all.filter((r) => !user || r.user_id === user), next_cursor: null });
+    }),
+  );
+
+const lastLogsQuery = (recorder: ReturnType<typeof recording>) => {
+  const reads = recorder.calls.filter(
+    (c) => c.url.includes("/mcp/logs") && !c.url.includes("/summary"),
+  );
+  return new URL(reads[reads.length - 1]?.url ?? "", "http://localhost").searchParams;
+};
+
+/**
+ * #2515: "My calls" sets the `user` filter to the signed-in account's id, for
+ * every role that reaches the screen (#2396), and a second click lifts it.
+ */
+const asMember = mineOnly();
+const asViewer = mineOnly();
+
+async function expectMyCalls(canvasElement: HTMLElement, recorder: ReturnType<typeof mineOnly>) {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.getAllByText("create_issue").length).toBeGreaterThan(0));
+  const mine = await canvas.findByRole("button", { name: "My calls" });
+  await expect(mine).toHaveAttribute("aria-pressed", "false");
+
+  await userEvent.click(mine);
+  await waitFor(() => expect(canvas.queryByText("create_issue")).toBeNull());
+  await expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0);
+  await expect(lastLogsQuery(recorder).get("user")).toBe(ME.id);
+  await expect(mine).toHaveAttribute("aria-pressed", "true");
+
+  await userEvent.click(mine);
+  await waitFor(() => expect(canvas.getAllByText("create_issue").length).toBeGreaterThan(0));
+  await expect(lastLogsQuery(recorder).has("user")).toBe(false);
+}
+
+export const MyCallsForAMember: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness fetchStub={asMember.stub} role="member">
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: ({ canvasElement }) => expectMyCalls(canvasElement, asMember),
+};
+
+export const MyCallsForAViewer: Story = {
+  render: () => (
+    <SignedIn>
+      <Harness fetchStub={asViewer.stub} role="viewer">
+        <McpLogs />
+      </Harness>
+    </SignedIn>
+  ),
+  play: ({ canvasElement }) => expectMyCalls(canvasElement, asViewer),
 };

@@ -3,6 +3,7 @@ import { Building2, WalletCards } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -17,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
+  AnalyticsUnavailableError,
   createBusinessUnit,
   createCustomer,
   deleteBusinessUnit,
@@ -300,9 +302,13 @@ function SpendStrip({
     "last-month": t("pages.costAttribution.spendWindows.lastMonth"),
   };
 
-  // no ClickHouse reaches here too and classifies as `noAnalytics`, which names
-  // the missing setting and withholds the retry — the governance list itself is
-  // postgres-backed and keeps working beside it (#1270)
+  // no ClickHouse is not a failed read: the deployment answered, and no retry
+  // changes it. it is stated as a status naming the missing setting, and the
+  // governance list itself is postgres-backed and keeps working beside it
+  // (#1270, #2016)
+  if (error instanceof AnalyticsUnavailableError) {
+    return <AnalyticsUnavailable error={error} i18nKey="pages.costAttribution.noAnalytics" />;
+  }
   if (error) {
     return (
       <LoadError

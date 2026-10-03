@@ -1,43 +1,56 @@
 ---
 title: "Run Rolter on Docker: Gateway, Control Plane, and Stores"
 sidebarTitle: "Docker"
-description: "Run the full Rolter stack — gateway, control plane, PostgreSQL, Redis, and ClickHouse — with a single docker compose command on any host."
+description: "Run the full Rolter stack with Docker Compose: gateway, control plane, PostgreSQL, Redis and ClickHouse, either open on one machine or closed for a team on one host."
 ---
 
-The fastest way to get a production-ready Rolter stack running locally or on a server is with the bundled Docker Compose file. It wires up every service automatically — gateway, control plane, and all three backing stores — so you can move from zero to a working AI gateway in a few minutes.
+The bundled Compose file runs the gateway, the control plane and all three backing stores. It comes in two shapes, and the one you start decides who can reach your data.
+
+|                  | Local stack                                                                                                                               | Team stack                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| For              | One person, on a machine nobody else can reach                                                                                            | A team sharing one host                                                            |
+| Start it with    | `docker/docker-compose.yml`                                                                                                               | The same file plus `docker/docker-compose.team.yml` and an env file                |
+| Management plane | Open. There is no admin token, so everyone who reaches port 4001 is a superadmin                                                          | Closed behind `ROLTER_ADMIN_TOKEN`, published on `127.0.0.1`                       |
+| Datastores       | Published on every interface. Postgres has the example `rolter`/`rolter` login, Redis has no password, ClickHouse has a passwordless user | Each has a password from the env file. Only Postgres is published, on `127.0.0.1`  |
+| Secrets          | None                                                                                                                                      | KEK, admin and internal tokens, key and session peppers, three datastore passwords |
+| Gateway          | Follows the control plane                                                                                                                 | Follows the control plane, with the internal token and the key pepper              |
+
+<Warning>
+  The local stack is open on purpose. Do not start it on a shared host, a server or a cloud VM. Adding `ROLTER_ADMIN_TOKEN` to it by hand closes the management API only: Postgres, Redis and ClickHouse stay reachable from the network, so anyone there can write an account into Postgres, reset budget counters in Redis or read every request log from ClickHouse around the control plane. Use the team stack.
+</Warning>
+
+Both shapes build the image from your checkout on the first start, which takes several minutes. The build turns on the `postgres` feature. Without it the control plane ignores the database URL, keeps everything in memory and has no sign-in and none of the dashboard's create, edit and delete screens. The published `ghcr.io/rolter-ai/rolter` image is built without that feature ([#2405](https://github.com/rolter-ai/rolter/issues/2405)), so it cannot replace the build here yet.
+
+Both shapes need Docker Compose 2.24 or later.
+
+## Local stack
 
 <Steps>
-  <Step title="Copy the env file and set your secrets">
-    The Compose file reads provider credentials and the master encryption key from a `.env` file. Copy the example and fill in the values before starting anything.
-
-    ```bash
-    cp .env.example .env
-    ```
-
-    Open `.env` and set at minimum:
-
-    ```bash
-    OPENAI_API_KEY=sk-...
-    ANTHROPIC_API_KEY=sk-ant-...
-    ROLTER_KEK=<32-byte hex string>
-    ```
-
-    <Note>
-      Generate a strong master key with `openssl rand -hex 32`. This key is used for AES-256-GCM encryption of stored provider secrets — keep it safe and back it up separately.
-    </Note>
-
-  </Step>
-  <Step title="Start the full stack">
-    Bring up all five services in the background with a single command:
+  <Step title="Start the stack">
+    Bring up all five services in the background:
 
     ```bash
     docker compose -f docker/docker-compose.yml up -d
     ```
 
-    Docker Compose starts the services in dependency order: PostgreSQL, Redis, and ClickHouse come up first, then the control plane, then the gateway. On first boot, database schemas are applied automatically from the migration files — no manual SQL is required.
+    Docker Compose starts PostgreSQL, Redis and ClickHouse first, then the control plane, then the gateway. On first boot the control plane applies the database schema itself, so no manual SQL is required. The gateway polls the control plane for its configuration: a provider, route or virtual key you create in the dashboard reaches it within a few seconds, without a restart.
 
     <Note>
       ClickHouse asks for 262144 open files. If the ClickHouse container fails to start with `error setting rlimit type 7: operation not permitted`, the container runtime (often rootless Docker or Podman) cannot grant that many. Set a lower limit in `docker/.env` and start again: run `echo CLICKHOUSE_NOFILE=20000 >> docker/.env`, then `docker compose -f docker/docker-compose.yml up -d`. Compose reads `docker/.env` because it sits beside the first `-f` file; a `.env` at the repository root does not set this value.
+    </Note>
+
+  </Step>
+  <Step title="Give it provider keys (optional)">
+    The bundled `rolter.toml` reads `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the gateway's environment. Export them before `up`, or put them in `docker/.env`. A `.env` at the repository root is read only if you pass `--env-file .env`.
+
+    To add providers in the dashboard instead, export a key-encryption key before `up`. Without one the dashboard refuses to store a provider key.
+
+    ```bash
+    export ROLTER_KEK=$(openssl rand -hex 32)
+    ```
+
+    <Note>
+      This key seals provider keys in the database. Keep it: a new one strands every key stored under the old one.
     </Note>
 
   </Step>
@@ -48,7 +61,7 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
     docker compose -f docker/docker-compose.yml logs -f gateway
     ```
 
-    You should see the gateway announce which port it is listening on and confirm it has connected to Redis. Press `Ctrl+C` to stop following.
+    You should see the gateway announce the port it is listening on and that it applied a config snapshot from the control plane. Press `Ctrl+C` to stop following.
 
   </Step>
   <Step title="Verify the services are running">
@@ -83,6 +96,89 @@ The fastest way to get a production-ready Rolter stack running locally or on a s
   </Step>
 </Steps>
 
+## Team stack
+
+The team stack layers `docker/docker-compose.team.yml` over the same file. It closes the management plane, gives every datastore a password and reads every secret from an env file, so a value you forgot stops `docker compose up` with a message instead of starting something half-configured.
+
+<Steps>
+  <Step title="Generate the secrets">
+    `rolter init` writes the five values the control plane and gateway share (install it with `uv tool install rolter`, see [Installation](/installation)). The three datastore passwords are not part of it yet ([#2413](https://github.com/rolter-ai/rolter/issues/2413)), so append them:
+
+    ```bash
+    rolter init --env-only
+    cat >> .env <<EOF
+    ROLTER_PG_PASSWORD=$(openssl rand -hex 24)
+    ROLTER_REDIS_PASSWORD=$(openssl rand -hex 24)
+    ROLTER_CLICKHOUSE_PASSWORD=$(openssl rand -hex 24)
+    EOF
+    ```
+
+    | Variable | What it does |
+    | --- | --- |
+    | `ROLTER_KEK` | Seals provider keys in the database |
+    | `ROLTER_ADMIN_TOKEN` | Closes the management API and turns on role-based access control |
+    | `ROLTER_INTERNAL_TOKEN` | What the gateway presents to fetch its configuration |
+    | `ROLTER_KEY_PEPPER` | Peppers virtual-key digests. The control plane and the gateway must hold the same value |
+    | `ROLTER_SESSION_PEPPER` | Peppers the digests of sign-in sessions, invitations, SCIM tokens and recovery codes |
+    | `ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD`, `ROLTER_CLICKHOUSE_PASSWORD` | Datastore credentials. They end up inside connection URLs, so use hex |
+
+    `ROLTER_PG_USER` and `ROLTER_CLICKHOUSE_USER` default to `rolter`. `ROLTER_CONTROL_HOST` is the address the control plane is published on, `127.0.0.1` in the file `rolter init` writes.
+
+    Keep `.env` out of version control and somewhere it outlives a restart. A new KEK strands every stored provider key, and a new pepper invalidates the keys or sessions issued under the old one. The datastore passwords are set when a volume is first created, so changing one in `.env` later does not change it inside an existing database.
+
+  </Step>
+  <Step title="Check the environment">
+    The preflight service runs `rolter check --strict` against the same values the control plane will get, with the binary that will run it:
+
+    ```bash
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+      --env-file .env --profile preflight run --rm preflight
+    ```
+
+    It prints `all pre-boot checks passed`. `--env-file` goes before `run`: the subcommand has no such flag. A warning fails the check, for example when `ROLTER_CONTROL_HOST` is `0.0.0.0`, which publishes the management plane on every interface.
+
+  </Step>
+  <Step title="Start the stack">
+    ```bash
+    docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+      --env-file .env up -d --wait
+    ```
+
+    The team stack has its own project name, `rolter-team`, so it never reuses the volumes of a local stack you ran before, which hold the example credentials. Every later command (`logs`, `ps`, `down`) needs the same two `-f` flags and `--env-file`.
+
+  </Step>
+  <Step title="Create the first administrator and sign in">
+    Postgres is published on `127.0.0.1` for this. `rolter-seed` does not ship in the image yet ([#1897](https://github.com/rolter-ai/rolter/issues/1897)), so run it from a checkout of the repository on the same host:
+
+    ```bash
+    ROLTER_DATABASE_URL="postgres://rolter:<ROLTER_PG_PASSWORD>@127.0.0.1:5432/rolter" \
+      cargo run -p rolter-control --features postgres --bin rolter-seed -- \
+      --admin-email you@example.com --admin-password '<a long password>'
+    ```
+
+    Open `http://127.0.0.1:4001` and sign in. The provider keys you add in the dashboard are sealed under `ROLTER_KEK`, and the gateway picks up providers, routes and virtual keys within seconds.
+
+  </Step>
+  <Step title="Put TLS in front of it">
+    The gateway is published on every interface at port 4000, and it authenticates every request with a virtual key. The control plane is published on `127.0.0.1` only. For people who are not on this host, run a reverse proxy that terminates TLS and forward it to port 4001 for the dashboard and to port 4000 for the API. `/internal/*`, which carries decrypted provider keys, is on a separate port, 4002, that is not published, so a proxy cannot forward it.
+  </Step>
+</Steps>
+
+What the team stack publishes:
+
+| Service                      | Address          | Notes                                                                                                  |
+| ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------ |
+| **Gateway**                  | `0.0.0.0:4000`   | OpenAI/Anthropic-compatible API, virtual keys required                                                 |
+| **Control plane \+ UI**      | `127.0.0.1:4001` | Dashboard and management API, admin token or sign-in required                                          |
+| **PostgreSQL**               | `127.0.0.1:5432` | Set `ROLTER_PG_HOST_PORT` to move it                                                                   |
+| **Redis** and **ClickHouse** | not published    | Reach them with `docker compose ... exec redis redis-cli ping` and `exec clickhouse clickhouse-client` |
+
+The team stack does not read the `rolter.toml` that `rolter init` writes. It mounts `docker/rolter.team.toml`, which defines no providers, routes or virtual keys, in its place: the image's bundled example would otherwise reach the gateway through the control plane with the public `sk-rolter-dev` key in it. Everything is created in the dashboard. To keep some providers in a file, mount your own over `docker/rolter.team.toml` and leave `[[virtual_keys]]` out of it.
+
+<Warning>
+  The control plane and the gateway print their Redis and ClickHouse URLs at startup, passwords included ([#2406](https://github.com/rolter-ai/rolter/issues/2406)). Until that is fixed, treat the container logs like the env file.
+</Warning>
+
 ## Run the single image
 
 The published image runs `rolter easy-up` by default: the gateway, the control plane and the dashboard in one container, answering on the built-in `fake-llm` model with no config file and no database.
@@ -116,7 +212,22 @@ docker run --rm -p 4000:4000 -p 4001:4001 \
 
 <Warning>
   The admin token closes the management API only. The gateway on port 4000 accepts the virtual keys in `rolter.toml`, and the one the image ships, `sk-rolter-dev`, is printed in these docs and allows every model. Before other hosts can reach port 4000, replace it in the `[[virtual_keys]]` section of your own `rolter.toml` with a key nobody else knows, and mount that file as above. Deleting the section instead leaves the gateway open to anyone.
+
+Once an admin token is set, the control plane also stops handing `sk-rolter-dev` to gateways that poll its snapshot, and reports the omission under `GET /api/v1/config/problems`. A gateway that loads its own `rolter.toml` directly is not covered by that, so the file is still the place to remove it.
+
 </Warning>
+
+Where `sk-rolter-dev` can come from, and how each production path avoids it:
+
+| Path                               | Where the key comes from                                       | What avoids it                                                                        |
+| ---------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Single image, no mounted config    | the example baked in as `/app/rolter.toml`                     | mount your own `rolter.toml` without `[[virtual_keys]]`, or run open on loopback only |
+| Team compose stack                 | none: it mounts `docker/rolter.team.toml`                      | nothing to do                                                                         |
+| Helm chart                         | none: control plane, gateways and preflight read `config.file` | keep `[[virtual_keys]]` out of `config.file` or your `existingConfigMap`              |
+| `rolter init --profile production` | none: the generated `rolter.toml` has no `[[virtual_keys]]`    | create keys in the dashboard or API                                                   |
+| `rolter init --profile local`      | the example, on purpose                                        | do not ship it                                                                        |
+
+`rolter check` fails with an error on any config file that still declares `sk-rolter-dev`.
 
 ## Run just the gateway
 
@@ -143,6 +254,8 @@ docker run --rm -p 4001:4001 \
 ## Build the image locally
 
 Both binaries and the compiled dashboard UI are packaged into a single slim Debian image. To build it from source:
+
+The build includes the control plane's database support, sign-in and CRUD API (`CARGO_FEATURES=postgres`, the Dockerfile default), the same as the published image. Pass `--build-arg CARGO_FEATURES=` to build an in-memory-only control plane without them.
 
 <CodeGroup>
 
