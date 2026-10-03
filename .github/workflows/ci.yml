@@ -5,7 +5,8 @@ on:
     branches: [master, main]
   # `edited` lets a title-only fix retrigger `ci-ok`'s cheap pr-title step
   # without a new commit; the full `quality` gate skips that event (see its
-  # `if:` below)
+  # `if:` below) unless the edit changed the base branch, which changes the
+  # tree being gated (#2031)
   pull_request:
     types: [opened, synchronize, reopened, edited]
   # the release PR is opened by release-plz with the repo `GITHUB_TOKEN`, and
@@ -32,7 +33,9 @@ on:
 # skips `quality` (see below) on the assumption the gate already ran for this
 # commit, and cancelling an in-flight gate makes that assumption false — the
 # result is `ci-ok` green with no quality signal at all (#767). Giving `edited`
-# its own per-run group means it cancels nothing.
+# its own per-run group means it cancels nothing. a retarget is `edited` too,
+# but it runs the gate (see `quality` below), so it joins the shared group like
+# any other gate run and supersedes the one made against the old base (#2031).
 #
 # a push to master gets a per-run group for the same reason. every merge commit
 # is a distinct tree that someone will branch from, so superseding its run saves
@@ -52,7 +55,7 @@ on:
 # run must not shoot down the old one while it is still reporting. a per-run
 # group makes that impossible rather than unlikely.
 concurrency:
-  group: ci-${{ github.ref }}-${{ (github.event.action == 'edited' || github.event_name == 'push' || github.event_name == 'merge_group') && github.run_id || 'gate' }}
+  group: ci-${{ github.ref }}-${{ ((github.event.action == 'edited' && !github.event.changes.base) || github.event_name == 'push' || github.event_name == 'merge_group') && github.run_id || 'gate' }}
   cancel-in-progress: true
 
 # least-privilege GITHUB_TOKEN by default; jobs widen their own scope as needed.
@@ -83,7 +86,14 @@ jobs:
     # value is running the gate on a tree no pr head ever had: a merge-group
     # run that skipped the gate on the strength of some earlier run would
     # reintroduce #1318 inside the mechanism meant to fix it
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
+    #
+    # an `edited` event that carries `changes.base` is a retarget, not a
+    # metadata edit. the gated tree is the merge of head into base and
+    # quality.yml scans `base.sha..head.sha`, so a new base is a new tree, and a
+    # gate run made against the old base says nothing about it. stacked prs are
+    # retargeted onto master this way when their parent merges, and the fast
+    # path used to reuse the gate run made against the parent branch (#2031)
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
     uses: ./.github/workflows/quality.yml
 
   # CodeQL security analysis, folded into ci-ok so it gates merges without being
@@ -103,8 +113,9 @@ jobs:
   codeql:
     name: codeql (${{ matrix.leg }})
     # scoped to `pull_request` for the same reason `quality` is: no other event
-    # may inherit the title-edit fast path
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
+    # may inherit the title-edit fast path, and a retarget (`changes.base`)
+    # never takes it
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -243,8 +254,9 @@ jobs:
   gate-ok:
     name: gate-ok
     # a metadata-only run does not exercise the gate, so it has no verdict to
-    # record and must not leave one behind
-    if: github.event_name != 'pull_request' || github.event.action != 'edited'
+    # record and must not leave one behind. a retarget runs the gate, so it
+    # records the verdict for the new base like any other gate run
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
     needs: [quality, codeql]
     runs-on: ubuntu-latest
     steps:
@@ -323,8 +335,9 @@ jobs:
         # the fast path is a pull-request affordance and nothing else. a
         # merge-group ref must never reach it: its entire purpose is to gate a
         # tree that has no prior run, so "some earlier run passed" is not a
-        # question that has a meaningful answer there
-        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited' }}
+        # question that has a meaningful answer there. a retarget is excluded
+        # for the same reason: the gate runs on it, against the new base (#2031)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -495,6 +508,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
+          # the one definition of a metadata-only run, the same expression as
+          # the guards on `quality`, `codeql`, `gate-ok` and the fast-path step.
+          # it renders as `true` or `false`
+          METADATA_ONLY: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base }}
           QUALITY: ${{ needs.quality.result }}
           CODEQL: ${{ needs.codeql.result }}
           FAST_PATH: ${{ steps.fast-path.outcome }}
@@ -513,7 +530,7 @@ jobs:
             echo "| no agent session urls (pr body) | ${PR_BODY:-none} |"
             echo "| no agent session urls (commits, dispatch/queue) | ${COMMIT_RANGE:-none} |"
           } >> "${GITHUB_STEP_SUMMARY}"
-          echo "event:        ${EVENT_NAME} ${EVENT_ACTION}"
+          echo "event:        ${EVENT_NAME} ${EVENT_ACTION} (metadata only: ${METADATA_ONLY})"
           echo "quality:      ${QUALITY}"
           echo "codeql:       ${CODEQL}"
           echo "fast path:    ${FAST_PATH}"
@@ -527,10 +544,12 @@ jobs:
             failed=1
           }
 
-          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${EVENT_ACTION}" = "edited" ]; then
-            # a title-only `edited` run skips the heavy gate and codeql on
-            # purpose. the fast-path step has to have proven they already ran
-            # and passed on this exact head sha, and a skip is the only
+          if [ "${METADATA_ONLY}" = "true" ]; then
+            # a title or body `edited` run skips the heavy gate and codeql on
+            # purpose. a retarget is `edited` too but is not metadata only: it
+            # runs the gate and takes the branch below (#2031). the fast-path
+            # step has to have proven they already ran and passed on this
+            # exact head sha, and a skip is the only
             # non-success result tolerated for either
             if [ "${FAST_PATH}" != "success" ]; then
               fail "the gate is not proven green on this head sha (assert the gate already ran for this commit: ${FAST_PATH:-none}); see that step's log"

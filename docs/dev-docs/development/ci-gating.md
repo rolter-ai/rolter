@@ -14,14 +14,14 @@ edit**, and the rule that keeps it honest.
 `ci-ok` needs `[quality, codeql]` and runs on every event (`if: always()`). Its
 steps, in order:
 
-| Step                                              | Runs on                                             |
-| ------------------------------------------------- | --------------------------------------------------- |
-| checkout                                          | `pull_request`, `workflow_dispatch`, `merge_group`  |
-| _assert the gate already ran for this commit_     | `pull_request` with action `edited` (the fast path) |
-| `pr-title`                                        | `pull_request`                                      |
-| _no agent session urls (pr body)_                 | `pull_request`, `workflow_dispatch`, `merge_group`  |
-| _no agent session urls (commits, dispatch/queue)_ | `workflow_dispatch`, `merge_group`                  |
-| _assert every required check succeeded_ (verdict) | every event, under `always()`                       |
+| Step                                              | Runs on                                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------------------- |
+| checkout                                          | `pull_request`, `workflow_dispatch`, `merge_group`                        |
+| _assert the gate already ran for this commit_     | `pull_request` with action `edited` and no `changes.base` (the fast path) |
+| `pr-title`                                        | `pull_request`                                                            |
+| _no agent session urls (pr body)_                 | `pull_request`, `workflow_dispatch`, `merge_group`                        |
+| _no agent session urls (commits, dispatch/queue)_ | `workflow_dispatch`, `merge_group`                                        |
+| _assert every required check succeeded_ (verdict) | every event, under `always()`                                             |
 
 The checkout takes `fetch-depth: 1` on a pull request, where only the script
 is read, and full history on a dispatch or queue run, where the commit-range
@@ -42,8 +42,8 @@ every broken rule before it exits, not just the first one:
 
 | Result                                            | Must be                                                                                                                      |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `quality`, `codeql`                               | `success`; on an `edited` run, `success` or `skipped`                                                                        |
-| _assert the gate already ran_                     | `success` on an `edited` run                                                                                                 |
+| `quality`, `codeql`                               | `success`; on a metadata-only `edited` run, `success` or `skipped`                                                           |
+| _assert the gate already ran_                     | `success` on a metadata-only `edited` run                                                                                    |
 | `pr-title`                                        | never `failure`; `success` on any `pull_request` run                                                                         |
 | _no agent session urls (pr body)_                 | `success` on every event except `push`, where it is `skipped`                                                                |
 | _no agent session urls (commits, dispatch/queue)_ | never `failure`; `success` on `workflow_dispatch` and `merge_group`                                                          |
@@ -72,10 +72,56 @@ trigger, the only way to re-run the title check would be to push an empty
 commit, which invalidates every review and re-runs a twenty-minute gate for a
 typo.
 
-The heavy jobs are skipped on that event (`if: github.event.action != 'edited'`
-on `quality` and `codeql`): a title lives in GitHub's database, not in the tree,
-so no test result can change because of it. The tree that was gated is the same
-tree.
+The heavy jobs are skipped on a title or body edit: a title lives in GitHub's
+database, not in the tree, so no test result can change because of it. The tree
+that was gated is the same tree. That is only true of a _metadata-only_ edit,
+which is why the guard on `quality`, `codeql` and `gate-ok` reads
+`changes.base` as well as the action (see the next section).
+
+## A retarget is not a metadata edit (#2031)
+
+GitHub sends `pull_request` `edited` for three different things: a title edit, a
+body edit and a **base-branch change**. Only the first two leave the gated tree
+alone. A retarget changes it twice over: the checkout `quality` builds is the
+merge of the head into the base, and `quality.yml`'s commit-range checks scan
+`base.sha..head.sha`. A gate run made against the old base says nothing about
+the new one, yet it sits on the same head sha, which is all the fast path used
+to look at.
+
+Every stacked merge hits this. When a parent merges, GitHub retargets its child
+from the parent's branch onto `master` with an `edited` event, and the fast path
+reported `ci-ok` green off the gate run made against the parent branch. #1610
+(head `eacb837c`) was retargeted at 2026-09-17T21:13:22Z; run 35275442183
+skipped the gate, went green off run 35273857488, and #1610 merged three
+minutes later without ever having been gated against `master`. #1609 (runs
+35275326391, 35273843569) and #1863 (run 36280523944) went the same way.
+
+GitHub marks a retarget in the payload: an `edited` event that changed the base
+carries `github.event.changes.base` (the old `ref` and `sha`), and one that only
+changed the title or body does not. So a metadata-only run is defined once, as
+
+```
+github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base
+```
+
+and every guard around the fast path uses exactly that expression:
+
+- `quality`, `codeql` and `gate-ok` skip on it, and on nothing else, so a
+  retarget runs the full gate against the new base and records its own
+  `gate-ok` verdict.
+- `ci-ok`'s _assert the gate already ran_ step runs on it, and on nothing else.
+- `ci-ok`'s verdict reads it through `env:` as `METADATA_ONLY` and accepts a
+  skipped `quality` or `codeql` only when it is `true`. A retarget therefore
+  needs both to succeed outright, like a run a push started.
+- The concurrency group gives only a metadata-only run a per-run group. A
+  retarget joins the shared `gate` group like any other gate run, so it
+  supersedes a gate still running against the old base rather than racing it
+  (see [Concurrency](#concurrency)).
+
+`scripts/test-assert-gate-ran.sh` checks this wiring: every `${{ }}` expression
+in `ci.yml` that mentions `edited` must also exclude `changes.base`, the three
+gate jobs must skip on exactly the metadata-only expression, and the verdict
+must branch on `METADATA_ONLY`.
 
 ## Why that was a hole
 
@@ -145,7 +191,7 @@ So `ci.yml` has a `gate-ok` job that records the gate's verdict by itself:
 
 ```yaml
 gate-ok:
-  if: github.event.action != 'edited'
+  if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
   needs: [quality, codeql]
   steps:
     - run: echo "quality and codeql both succeeded on this run"
@@ -301,15 +347,16 @@ Today `merge_group` carries `action: checks_requested`, so a guard written as
 of GitHub's event vocabulary, not a rule. So every guard around the fast path is
 scoped to the event as well as the action:
 
-|                                               | guard                                                                                    |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `quality`, `codeql`, `gate-ok`                | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'`               |
-| `ci-ok`'s _assert the gate already ran_ step  | `!cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited'` |
-| `ci-ok`'s verdict branch for the skipped gate | `"${EVENT_NAME}" = "pull_request"` **and** `"${EVENT_ACTION}" = "edited"`                |
+|                                               | guard                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `quality`, `codeql`, `gate-ok`                | `!(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base)`              |
+| `ci-ok`'s _assert the gate already ran_ step  | `!cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base` |
+| `ci-ok`'s verdict branch for the skipped gate | `"${METADATA_ONLY}" = "true"`, where `METADATA_ONLY` is that same expression rendered through `env:`                   |
 
-These are equivalent to the old conditions on every event that exists now. The
-change is that they cannot stop being equivalent when GitHub adds an event or
-reuses an action name.
+Scoping by event cannot stop being right when GitHub adds an event or reuses an
+action name. The `changes.base` term keeps a retarget, which is an `edited`
+event on a new tree, off the fast path (see
+[A retarget is not a metadata edit](#a-retarget-is-not-a-metadata-edit-2031)).
 
 ### What runs, and what is allowed to skip
 
@@ -371,8 +418,10 @@ out with `fetch-depth: 0`, so the commit is in the clone.
 
 ### Concurrency
 
-`merge_group` runs get a per-run concurrency group, alongside `push` and
-`edited`. A cancelled run is not a passing required check, so cancelling a
+`merge_group` runs get a per-run concurrency group, alongside `push` and a
+metadata-only `edited` run. A retarget is not one of them: it runs the gate, so
+it shares the pull request's `gate` group and cancels a gate still running
+against the old base (#2031). A cancelled run is not a passing required check, so cancelling a
 merge-group run dequeues the PR it was testing _and_ everything batched behind
 it. GitHub does give each queue entry its own ref, so `github.ref` alone would
 usually be unique — but the queue re-forms that ref when an entry ahead of it
