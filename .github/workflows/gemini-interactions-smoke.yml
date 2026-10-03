@@ -8,6 +8,10 @@ name: gemini interactions smoke
 # deliberately takes no secrets (#734) so dependabot and fork PRs pass exactly
 # the same checks. Run it on demand after touching the adapter, and weekly so a
 # silent upstream field rename surfaces before a user hits it.
+#
+# Without GEMINI_API_KEY the run skips every live step and says so in the job
+# summary and a notice annotation (#2033); it never reports a request it did
+# not make.
 on:
   workflow_dispatch:
     inputs:
@@ -15,11 +19,6 @@ on:
         description: "model to exercise (default gemini-3.6-flash)"
         required: false
         type: string
-      allow_unconfigured:
-        description: "report success instead of failing when GEMINI_API_KEY is unset"
-        required: false
-        default: false
-        type: boolean
   schedule:
     # weekly, monday 05:23 UTC — billable, so not nightly
     - cron: "23 5 * * 1"
@@ -41,47 +40,49 @@ jobs:
     # reviewable rather than something any workflow can reach for
     environment: live-providers
     steps:
+      # a missing credential skips the sweep and says so, rather than failing.
+      # the run is not reported as verified: every step below is skipped, the
+      # summary and a notice annotation name the reason, and the job conclusion
+      # is "success" only in the sense that nothing was attempted. a weekly red
+      # run for a secret nobody has added teaches people to ignore scheduled
+      # failures (#2033)
+      - name: detect credential
+        id: cred
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "${GEMINI_API_KEY}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### skipped: GEMINI_API_KEY not configured"
+            echo
+            echo "\`GEMINI_API_KEY\` is not set in the \`live-providers\` environment,"
+            echo "so **nothing was verified** against the real interactions endpoint."
+            echo
+            echo "See \`docs/dev-docs/development/testing.md\` (Configuring the Gemini smoke)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=gemini interactions smoke::skipped: GEMINI_API_KEY not configured"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.cred.outputs.configured == 'true' }}
         with:
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        if: ${{ steps.cred.outputs.configured == 'true' }}
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ steps.cred.outputs.configured == 'true' }}
         with:
           key: gemini-smoke
 
-      # an unconfigured run used to succeed silently. a weekly green tick that
-      # exercised nothing is worse than no sweep at all: it reads as "the wire
-      # format is still confirmed" when in fact no request was ever made. so a
-      # missing credential fails, unless the caller explicitly asked for a
-      # dry run
-      - name: require a credential
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALLOW_UNCONFIGURED: ${{ inputs.allow_unconfigured }}
-        run: |
-          if [ -n "${GEMINI_API_KEY}" ]; then
-            exit 0
-          fi
-          {
-            echo "### No credential configured"
-            echo
-            echo "\`GEMINI_API_KEY\` is not set in the \`live-providers\` environment,"
-            echo "so nothing was verified against the real interactions endpoint."
-            echo
-            echo "See \`docs/dev-docs/development/testing.md\` for what to configure."
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ "${ALLOW_UNCONFIGURED}" = "true" ]; then
-            echo "::warning::GEMINI_API_KEY is unset; dry run requested, reporting success"
-            exit 0
-          fi
-          echo "::error::GEMINI_API_KEY is unset; the live sweep cannot verify anything"
-          exit 1
-
       - name: run the live smoke test
+        if: ${{ steps.cred.outputs.configured == 'true' }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ROLTER_GEMINI_LIVE_MODEL: ${{ inputs.model || 'gemini-3.6-flash' }}
@@ -97,7 +98,7 @@ jobs:
       # the observed shapes are the durable output of a billable run: they let
       # the next field-name question be answered by reading, not by spending
       - name: record the observed wire shapes
-        if: ${{ always() }}
+        if: ${{ always() && steps.cred.outputs.configured == 'true' }}
         run: |
           {
             echo "### Observed interactions wire shapes"
@@ -108,7 +109,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ always() }}
+        if: ${{ always() && steps.cred.outputs.configured == 'true' }}
         with:
           name: gemini-interactions-smoke-log
           path: smoke.log

@@ -16,6 +16,9 @@
 //! `ROLTER_TEST_CLICKHOUSE_URL`; unset either and the tests self-skip.
 #![cfg(feature = "postgres")]
 
+#[path = "common/clickhouse_ddl.rs"]
+mod clickhouse_ddl;
+
 use std::net::SocketAddr;
 
 use rolter_store::postgres::test_database;
@@ -49,49 +52,8 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply every shipped ClickHouse migration. All of them are idempotent — the
-/// same property `ux-capture.sh apply-schema` relies on — so a shared server
-/// that already has the tables is left as it was.
 async fn ensure_schema(client: &reqwest::Client, base: &str) {
-    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .expect("read the clickhouse migration directory")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            (path.extension()? == "sql").then_some(path)
-        })
-        .collect();
-    files.sort();
-    for path in files {
-        let ddl = std::fs::read_to_string(&path).expect("read shipped DDL");
-        // comments go first, exactly as `ux-capture.sh apply-schema` strips them:
-        // several hold a `;` of their own. then one statement per request, since
-        // the HTTP interface refuses more than one
-        let stripped: String = ddl
-            .lines()
-            .map(|line| line.split("--").next().unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for statement in stripped
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-            .map(str::to_string)
-        {
-            let response = client
-                .post(format!("{base}/"))
-                .body(statement)
-                .send()
-                .await
-                .expect("reach clickhouse");
-            assert!(
-                response.status().is_success(),
-                "{}: {}",
-                path.display(),
-                response.text().await.unwrap_or_default()
-            );
-        }
-    }
+    clickhouse_ddl::apply_schema(client, base).await;
 }
 
 async fn insert_rows(client: &reqwest::Client, base: &str, table: &str, rows: &[Value]) {
