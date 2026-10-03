@@ -19670,3 +19670,133 @@ async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it()
     let token = sign_in("linus@example.com", " Linus\u{7} T ").await;
     assert_eq!(me(token).await["user"]["display_name"], "Linus T");
 }
+
+/// Provision `ada` through SCIM into an `owners` group whose mapping is her
+/// only admin grant in a fresh org, and return the org, ada and the mapping id
+/// (#2673).
+async fn scim_mapping_sole_admin(
+    client: &reqwest::Client,
+    base: &str,
+    slug: &str,
+    pool: &sqlx::PgPool,
+) -> (uuid::Uuid, uuid::Uuid, String) {
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": slug, "slug": slug}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": format!("ada@{slug}.test"),
+            "emails": [{"value": format!("ada@{slug}.test"), "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let mapping: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-group-mappings"))
+        .bearer_auth(admin_token())
+        .json(&json!({"group_name": "owners", "role": "admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let res = client
+        .post(format!("{base}/scim/v2/Groups"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+            "displayName": "owners",
+            "members": [{"value": scim_id}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let ada: uuid::Uuid = scim_id.parse().unwrap();
+    assert_eq!(org_admin_rows(pool, ada, org_uuid).await, vec!["scim"]);
+    (org_uuid, ada, mapping["id"].as_str().unwrap().to_string())
+}
+
+/// #2673: a superadmin deleting a SCIM group mapping may revoke the org's last
+/// admin grant, as `DELETE /memberships/{id}` allows; nothing is kept or
+/// audited as kept.
+#[tokio::test]
+async fn superadmin_scim_mapping_delete_revokes_the_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (org, ada, mapping_id) = scim_mapping_sole_admin(&client, &base, "su-org", &pool).await;
+
+    let res = client
+        .delete(format!("{base}/api/v1/scim-group-mappings/{mapping_id}"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(org_admin_rows(&pool, ada, org).await.is_empty());
+    assert_eq!(last_admin_kept_audits(&pool, org).await, 0);
+}
+
+/// #2673: an org admin deleting the SCIM group mapping that holds the org's
+/// last admin grant keeps that grant and audits it, the same as an IdP sync.
+#[tokio::test]
+async fn org_admin_scim_mapping_delete_keeps_the_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (org, ada, mapping_id) = scim_mapping_sole_admin(&client, &base, "admin-org", &pool).await;
+    // ada is the org's only admin, through the very mapping she deletes
+    let session = seed_session(&pool, ada, "mapping_delete_2673").await;
+
+    let res = client
+        .delete(format!("{base}/api/v1/scim-group-mappings/{mapping_id}"))
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(org_admin_rows(&pool, ada, org).await, vec!["scim"]);
+    assert_eq!(last_admin_kept_audits(&pool, org).await, 1);
+}
