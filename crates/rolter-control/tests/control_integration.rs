@@ -16831,7 +16831,7 @@ async fn a_viewer_manages_their_own_saved_views() {
         json!({"surface": "llm_logs", "name": "x".repeat(81)}),
         json!({"surface": "llm_logs", "name": "ok", "filters": {"limit": 500}}),
         json!({"surface": "llm_logs", "name": "ok", "filters": {"cursor": "a|b"}}),
-        json!({"surface": "dashboard", "name": "ok", "filters": {"model": "gpt-4o"}}),
+        json!({"surface": "dashboard", "name": "ok", "filters": {"status": "error"}}),
         json!({"surface": "llm_logs", "name": "ok", "filters": {"window": "forever"}}),
         json!({"surface": "llm_logs", "name": "ok", "filters": {"window": 7}}),
         json!({"surface": "llm_logs", "name": "ok", "filters": {"status": ["error"]}}),
@@ -17309,6 +17309,158 @@ async fn a_saved_view_reports_the_filters_the_user_can_no_longer_read() {
         .unwrap();
     assert_eq!(kept["unavailable"], json!([]));
     assert_eq!(kept["effective_filters"], json!({"key": kept_key}));
+}
+
+/// The `dashboard` surface takes the same row filters as `llm_logs` (#2453),
+/// and a dashboard preset that names a key, business unit or customer the
+/// caller can no longer read reports it exactly as an `llm_logs` one does:
+/// `effective_filters` drops the id and `unavailable` names it.
+#[tokio::test]
+async fn a_dashboard_saved_view_holds_the_row_filters_and_reports_lost_ones() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn make(client: &reqwest::Client, url: String, body: Value) -> uuid::Uuid {
+        let v: Value = client
+            .post(url)
+            .bearer_auth("admintok")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        v["id"].as_str().unwrap().parse().unwrap()
+    }
+    let org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "DashViewsOrg", "slug": "dash-views-org"}),
+    )
+    .await;
+    let other_org = make(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "DashViewsOther", "slug": "dash-views-other"}),
+    )
+    .await;
+    let team = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/teams"),
+        json!({"name": "T"}),
+    )
+    .await;
+    let project = make(
+        &client,
+        format!("{base}/api/v1/teams/{team}/projects"),
+        json!({"name": "P"}),
+    )
+    .await;
+    let key = make(
+        &client,
+        format!("{base}/api/v1/projects/{project}/virtual-keys"),
+        json!({"name": "dash"}),
+    )
+    .await;
+    let unit = make(
+        &client,
+        format!("{base}/api/v1/orgs/{org}/business-units"),
+        json!({"name": "Finance"}),
+    )
+    .await;
+    let foreign_unit = make(
+        &client,
+        format!("{base}/api/v1/orgs/{other_org}/business-units"),
+        json!({"name": "Elsewhere"}),
+    )
+    .await;
+    let foreign_customer = make(
+        &client,
+        format!("{base}/api/v1/orgs/{other_org}/customers"),
+        json!({"name": "Globex"}),
+    )
+    .await;
+
+    let member = seed_user(&pool, "dash-views-member@example.com", false).await;
+    let token = seed_session(&pool, member, "dashviewsmember").await;
+    seed_membership(&pool, member, Some(org), None, None, "viewer").await;
+
+    let views = format!("{base}/api/v1/me/saved-views");
+    let res = client
+        .post(&views)
+        .bearer_auth(&token)
+        .json(&json!({
+            "surface": "dashboard",
+            "name": "One team's spend",
+            "filters": {
+                "window": "7d",
+                "bucket": "day",
+                "model": "gpt-4o",
+                "key": key,
+                "business_unit": [unit, foreign_unit],
+                "customer": [foreign_customer],
+            },
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let created: Value = res.json().await.unwrap();
+    let mut lost: Vec<(String, String)> = created["unavailable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["filter"].as_str().unwrap().to_string(),
+                u["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    lost.sort();
+    assert_eq!(
+        lost,
+        vec![
+            ("business_unit".to_string(), foreign_unit.to_string()),
+            ("customer".to_string(), foreign_customer.to_string()),
+        ],
+        "{created}"
+    );
+    assert_eq!(
+        created["effective_filters"],
+        json!({
+            "window": "7d",
+            "bucket": "day",
+            "model": "gpt-4o",
+            "key": key,
+            "business_unit": [unit],
+        }),
+        "the readable filters still apply and the emptied list drops its key"
+    );
+    assert_eq!(
+        created["filters"]["business_unit"],
+        json!([unit, foreign_unit])
+    );
+
+    // the dashboard surface still refuses a filter its routes do not read
+    let res = client
+        .post(&views)
+        .bearer_auth(&token)
+        .json(&json!({
+            "surface": "dashboard", "name": "Errors", "filters": {"status": "error"},
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
 }
 
 /// A provider or group may be scoped to one project of its org, and the control
