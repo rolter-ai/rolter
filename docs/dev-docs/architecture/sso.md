@@ -38,7 +38,9 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 2. The provider redirects back to `GET /auth/sso/{slug}/callback`.
 3. The callback **consumes** the state row (`DELETE … RETURNING`), so a replayed
    `code` + `state` pair finds nothing and is refused. States older than ten
-   minutes are treated as absent and swept.
+   minutes are refused, and a background sweep deletes the ones a login
+   abandoned at the provider leaves behind (#2414; see
+   [data-model.md](data-model.md#single-sign-on)).
 4. The code is exchanged at the `token_endpoint` with the PKCE verifier and the
    sealed client secret.
 5. The id token is verified against the provider's JWKS: signature by `kid`,
@@ -87,7 +89,8 @@ and receives the same body the JSON callback returns (`token`, `expires_at`,
 - **Single use.** The redemption is one `DELETE … RETURNING`, so two concurrent
   redemptions cannot both win.
 - **Sixty seconds.** The dashboard redeems it as soon as it loads. The clock is
-  the database's, and an expired row is swept on the next redemption.
+  the database's, and an expired row is deleted by the same background sweep
+  as login states.
 - **Hashed at rest.** `sso_exchange_codes` holds the SHA-256 of the code, so
   reading the table is not a sign-in. The code is 256 random bits, which is why
   the exchange needs no throttle of its own: the login throttle is keyed on an
@@ -261,7 +264,7 @@ the one place its query key and options are written, so they share one request.
 
 Unit and Postgres-gated integration tests drive a stub IdP in-process, which
 covers rolter's own logic. Interoperability is a separate question, so the
-[e2e harness](../../integration/e2e/README.md) runs the same flows against a
+[e2e harness](../../../integration/e2e/README.md) runs the same flows against a
 real Keycloak — genuine discovery document, real JWKS, real login form, real
 `/`-prefixed realm groups:
 
