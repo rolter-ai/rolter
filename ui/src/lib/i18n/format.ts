@@ -114,11 +114,14 @@ const CLOCK_MS = {
   fractionalSecondDigits: 3,
 } as Intl.DateTimeFormatOptions;
 
+// a named month so `08/06` is never read as 8 June or 6 August, and the zone
+// so the instant is unambiguous on an audit or incident timeline (#2219)
 const STAMP: Intl.DateTimeFormatOptions = {
   year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
+  month: "short",
+  day: "numeric",
   ...CLOCK,
+  timeZoneName: "short",
 };
 
 const STAMP_MS = {

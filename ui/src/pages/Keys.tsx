@@ -76,6 +76,7 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -578,7 +579,8 @@ function AddKeyDialog({
         unitId !== UNATTRIBUTED ||
         customerId !== UNATTRIBUTED
       }
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      errorMessage={create.isError ? describeError(create.error, t).message : undefined}
+      errorDetail={create.isError ? describeError(create.error, t).detail : undefined}
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
@@ -704,7 +706,8 @@ function EditKeyDialog({
       title={t("pages.virtualKeys.editTitle")}
       subtitle={name}
       dirty={providersChanged || attributionChanged}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? describeError(save.error, t).message : undefined}
+      errorDetail={save.isError ? describeError(save.error, t).detail : undefined}
       saveLabel={save.isPending ? t("pages.virtualKeys.saving") : t("pages.virtualKeys.save")}
       canSave={providersChanged || attributionChanged}
       saving={save.isPending}
