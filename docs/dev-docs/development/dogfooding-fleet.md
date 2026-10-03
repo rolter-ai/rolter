@@ -121,6 +121,15 @@ chart on their own defaults.
   from the snapshot and the `claude-sonnet-4` route with it. The gateway says
   so on every reload and the dashboard shows it under config problems; it is
   expected until #1133 lands.
+- **Payload capture is switched on by `just dogfood`.** `gateway.toml` declares
+  `[logging.payload_capture] enabled = true`, but the first snapshot replaces it
+  with the `logging_settings` row, which ships with capture off and which only
+  `just dogfood-seed` writes from a file. So `just dogfood` flips the row on
+  through `PUT /api/v1/logging-settings` once the control plane answers
+  (`payload-capture.sh`, #1911), changing only `payload_capture_enabled`; the
+  size cap, redaction and retention stay as the dashboard left them. Run
+  `just dogfood-capture off` to turn it off. The change survives a control-plane
+  restart, and the next `just dogfood` turns it back on.
 - **Adaptive routing is switched on by `just dogfood`.** `deepseek-r1` is the
   fleet's `strategy = "adaptive"` route, and that strategy only routes once the
   deployment-wide kill switch is on. The switch ships off, and the importer
