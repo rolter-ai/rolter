@@ -9123,7 +9123,18 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     );
 
     // the IdP drops the group; the next login revokes the role it granted and
-    // leaves the operator's grant alone
+    // leaves the operator's grant alone. someone else administers the org, so
+    // that admin grant is not its last one (#2558)
+    let other_admin = seed_user(&pool, "grace@example.com", false).await;
+    seed_membership(
+        &pool,
+        other_admin,
+        Some(org_id.parse().unwrap()),
+        None,
+        None,
+        "admin",
+    )
+    .await;
     client
         .delete(format!("{base}/api/v1/sso-group-mappings/{mapping_id}"))
         .bearer_auth("admintok")
@@ -18463,4 +18474,358 @@ async fn concurrent_revokes_of_two_org_admins_leave_one() {
             .await
             .unwrap();
     assert_eq!(left, 1);
+}
+
+async fn org_admin_rows(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "select source from memberships where user_id = $1 and org_id = $2 and role = 'admin' \
+         order by source",
+    )
+    .bind(holder)
+    .bind(org)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn last_admin_kept_audits(pool: &sqlx::PgPool, org: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(
+        "select count(*) from audit_log where org_id = $1 and action = 'membership.last_admin_kept'",
+    )
+    .bind(org)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// #2558: SCIM deprovisioning and `active: false` answer a SCIM 409 instead of
+/// deactivating the account that holds an org's last active admin grant.
+#[tokio::test]
+async fn scim_cannot_deactivate_an_orgs_last_admin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    seed_membership(&pool, boss, Some(org_id), None, None, "admin").await;
+
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:Error",
+        "{body}"
+    );
+    assert!(body["detail"]
+        .as_str()
+        .unwrap()
+        .contains("last active admin"));
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+    assert_eq!(org_admin_rows(&pool, boss, org_id).await, vec!["manual"]);
+
+    let deactivate = json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [{"op": "replace", "path": "active", "value": false}]
+    });
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+
+    // a deactivated admin is not a remainder
+    let second = seed_user(&pool, "second@example.com", false).await;
+    seed_membership(&pool, second, Some(org_id), None, None, "admin").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+
+    // with another active admin the same call deactivates
+    sqlx::query("update users set deactivated_at = null where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(user_row(&pool, boss).await, Some((false, true)));
+
+    // and now `second` is the last one: deactivating them races nobody, but
+    // the store refuses it the same way
+    let refused = rolter_store::postgres::repo::UserRepo(&pool)
+        .set_deactivated_guarding_org_admins(second, true)
+        .await
+        .unwrap();
+    assert!(matches!(
+        refused,
+        rolter_store::postgres::repo::DeactivationGuard::LastOrgAdmin(org) if org == org_id
+    ));
+}
+
+/// #2558: an SSO login whose groups no longer imply the org's last admin grant
+/// keeps that grant and audits it rather than failing the sign-in; once the org
+/// has another admin, the next login revokes it.
+#[tokio::test]
+async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "SyncOrg", "slug": "sync-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let (issuer, stub) = stub_idp::serve_stub().await;
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Stub IdP", "slug": "mixed", "issuer": issuer, "client_id": "rolter"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    for (group, role) in [("admins", "admin"), ("devs", "member")] {
+        let res = client
+            .post(format!(
+                "{base}/api/v1/sso-providers/{provider_id}/group-mappings"
+            ))
+            .bearer_auth("admintok")
+            .json(&json!({"group_name": group, "role": role, "org_id": org_id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    sso_login(&client, &base, &stub, &issuer, json!(["admins"]))
+        .await
+        .expect("first sign-in");
+    let ada: uuid::Uuid = sqlx::query_scalar("select id from users where email = $1")
+        .bind("ada@example.com")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["sso"]);
+
+    // the IdP moves ada out of the admin group while nobody else is admin: the
+    // sign-in still succeeds, the admin grant stays, and the audit says why
+    sso_login(&client, &base, &stub, &issuer, json!(["devs"]))
+        .await
+        .expect("a kept admin grant must not fail the sign-in");
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["sso"]);
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+    let granted: Value = sqlx::query_scalar(
+        "select detail->'granted_roles' from audit_log where action = 'auth.sso_login' \
+         order by at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(granted, json!(["admin", "member"]));
+
+    // with another active admin the next sign-in revokes it
+    let bob = seed_user(&pool, "bob@example.com", false).await;
+    seed_membership(&pool, bob, Some(org_uuid), None, None, "admin").await;
+    sso_login(&client, &base, &stub, &issuer, json!(["devs"]))
+        .await
+        .expect("sign-in");
+    assert!(org_admin_rows(&pool, ada, org_uuid).await.is_empty());
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+}
+
+/// #2558: a SCIM group sync that drops the org's last admin from the group
+/// keeps the grant and audits it; the sync itself succeeds, and a later sync
+/// revokes the grant once the org has another admin.
+#[tokio::test]
+async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "GroupOrg", "slug": "group-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "ada@example.com",
+            "emails": [{"value": "ada@example.com", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let ada: uuid::Uuid = scim_id.parse().unwrap();
+    let res = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-group-mappings"))
+        .bearer_auth("admintok")
+        .json(&json!({"group_name": "owners", "role": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let create_group = || {
+        client
+            .post(format!("{base}/scim/v2/Groups"))
+            .bearer_auth(&secret)
+            .json(&json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                "displayName": "owners",
+                "members": [{"value": scim_id}]
+            }))
+            .send()
+    };
+    let group: Value = create_group().await.unwrap().json().await.unwrap();
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["scim"]);
+
+    // the IdP deletes the group: the sync answers success, the grant stays
+    let res = client
+        .delete(format!(
+            "{base}/scim/v2/Groups/{}",
+            group["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["scim"]);
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+
+    // with another active admin, the same sync revokes it
+    let bob = seed_user(&pool, "bob@example.com", false).await;
+    seed_membership(&pool, bob, Some(org_uuid), None, None, "admin").await;
+    let group: Value = create_group().await.unwrap().json().await.unwrap();
+    let res = client
+        .delete(format!(
+            "{base}/scim/v2/Groups/{}",
+            group["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(org_admin_rows(&pool, ada, org_uuid).await.is_empty());
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
 }

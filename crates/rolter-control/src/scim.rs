@@ -30,8 +30,8 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    LockoutGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
-    VirtualKeyRepo,
+    DeactivationGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -596,15 +596,37 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 /// the audit row.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
-    if let LockoutGuard::WouldLockOut = UserRepo(pool).set_deactivated(user_id, deactivated).await?
+    match UserRepo(pool)
+        .set_deactivated_guarding_org_admins(user_id, deactivated)
+        .await?
     {
+        DeactivationGuard::Done(_) => {}
         // an IdP that disables the only superadmin would strand the deployment
         // with nobody who can administer it (#2344)
-        return Err(ScimError::new(
-            StatusCode::CONFLICT,
-            None,
-            "this account is the last active superadmin; make another account superadmin first",
-        ));
+        DeactivationGuard::LastSuperadmin => {
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active superadmin; make another account superadmin first",
+            ));
+        }
+        // the same for an org: the token is not a superadmin who could repair
+        // it afterwards, so the IdP is told and retries once there is another
+        // admin. the org id stays out of the message, since the account may
+        // administer an org this token's tenant cannot see (#2558)
+        DeactivationGuard::LastOrgAdmin(org_id) => {
+            tracing::warn!(
+                %org_id,
+                %user_id,
+                "refused a scim deactivation that would leave an org without an admin"
+            );
+            return Err(ScimError::new(
+                StatusCode::CONFLICT,
+                None,
+                "this account is the last active admin of an organization; grant admin to \
+                 another person first",
+            ));
+        }
     }
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;

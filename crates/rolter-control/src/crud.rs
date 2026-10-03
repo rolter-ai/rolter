@@ -5306,6 +5306,52 @@ pub(crate) fn last_org_admin() -> ApiError {
     }
 }
 
+/// Revoke a grant an identity provider produced and no longer implies (SSO
+/// group reconciliation on login, SCIM group sync), unless it is the org's last
+/// active admin grant (#2558).
+///
+/// The revoke goes through `MembershipRepo::delete_guarded`, so the count and
+/// the delete share one transaction under the org's admin lock. A refused
+/// revoke is not an error: the sign-in or the sync still succeeds, the grant
+/// stays, and a `membership.last_admin_kept` audit row plus a warning name the
+/// org. Both callers derive the wanted set from the IdP every time, so the
+/// next login or sync revokes the grant once the org has another admin.
+/// Returns whether the grant was kept.
+pub(crate) async fn revoke_idp_grant(state: &ControlState, stale: &Membership) -> ApiResult<bool> {
+    if MembershipRepo(pool(state))
+        .delete_guarded(stale.id, true)
+        .await?
+        != LockoutGuard::WouldLockOut
+    {
+        return Ok(false);
+    }
+    tracing::warn!(
+        org_id = ?stale.org_id,
+        user_id = %stale.user_id,
+        membership_id = %stale.id,
+        source = %stale.source,
+        "kept an identity-provider admin grant: revoking it would leave the org without an admin"
+    );
+    if let Err(err) = AuditLogRepo(pool(state))
+        .create(
+            stale.org_id,
+            None,
+            "membership.last_admin_kept",
+            Some("membership"),
+            Some(stale.id),
+            Some(serde_json::json!({
+                "user_id": stale.user_id,
+                "role": stale.role,
+                "source": stale.source,
+            })),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "failed to write audit log entry");
+    }
+    Ok(true)
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
