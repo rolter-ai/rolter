@@ -17315,6 +17315,82 @@ async fn scim_cannot_deprovision_the_last_active_superadmin() {
     assert_eq!(user_row(&pool, boss).await, Some((true, true)));
 }
 
+/// #2672: a SCIM create with `active:false` that adopts the last superadmin is
+/// refused before the identity is linked, so the IdP's retry gets the same 409
+/// rather than "userName already exists".
+#[tokio::test]
+async fn a_refused_scim_create_leaves_no_identity_behind() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let boss = seed_user(&pool, "boss@acme.test", true).await;
+
+    for attempt in ["first", "retry"] {
+        let res = client
+            .post(format!("{base}/scim/v2/Users"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                "userName": "boss@acme.test",
+                "emails": [{"value": "boss@acme.test", "primary": true}],
+                "active": false
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 409, "{attempt}");
+        let body: Value = res.json().await.unwrap();
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("last active superadmin"),
+            "{attempt}: {body}"
+        );
+        let linked: i64 =
+            sqlx::query_scalar("select count(*) from scim_identities where user_id = $1")
+                .bind(boss)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(linked, 0, "{attempt}: a refused create must not link");
+        assert_eq!(
+            user_row(&pool, boss).await,
+            Some((true, false)),
+            "{attempt}"
+        );
+    }
+}
+
 /// #2383: the SSO issuer, the guardrail webhook url and a plugin endpoint are
 /// operator-written URLs the control plane or the gateway later fetches, so a
 /// cloud-metadata address must be a 400 at save, naming the field.
