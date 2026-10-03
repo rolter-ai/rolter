@@ -882,6 +882,25 @@ bun run test:stories                            # every story file
 bun run test:stories src/pages/Keys.stories.tsx # or just these
 ```
 
+#### Using a pre-installed chromium
+
+Both browser runners — the story tests above and the e2e journeys in `ui/e2e/`
+(`ui/playwright.config.ts`) — launch the chromium revision the pinned Playwright
+downloads. In a sandbox where that download is blocked but a chromium is already
+installed, set `ROLTER_CHROMIUM_PATH` to the binary and both launch it through
+`launchOptions.executablePath` instead (#2678):
+
+```bash
+export ROLTER_CHROMIUM_PATH=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell
+bun run test:stories src/pages/Keys.stories.tsx
+```
+
+Playwright has no variable of its own for this: `PLAYWRIGHT_BROWSERS_PATH` only
+moves the cache, and still looks for the exact revision the pinned version wants.
+The story runner reads the variable in `ui/test-runner-jest.config.js`, which wraps
+the test-runner's stock jest config. Unset, nothing changes. The path must name a
+chromium Playwright can drive; the headless shell and the full build both work.
+
 #### Why `test:stories` rather than the two commands by hand
 
 `storybook dev -p <port>` **does not fail when the port is taken.** It logs
