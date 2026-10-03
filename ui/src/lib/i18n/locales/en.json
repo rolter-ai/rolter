@@ -120,6 +120,7 @@
       "placeholder": "Select…",
       "options": "Options",
       "clear": "Clear selection",
+      "use": "Use “{{value}}”",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
@@ -823,6 +824,15 @@
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
       "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "modelPlaceholder": "Choose or type a model",
+      "modelRequired": "Choose a model to price.",
+      "priceUnit": "{{currency}} per million tokens",
+      "priceRequired": "Enter a price. Type 0 if the model is free; empty stays unpriced.",
+      "priceInvalid": "Enter a price of 0 or more.",
+      "currencyRequired": "Choose a currency.",
+      "modelGroupRoutes": "Routes",
+      "modelGroupTraffic": "Seen in traffic",
+      "currencyBase": "base currency",
       "confirm": {
         "deleteTitle": "Delete the price for {{model}}?",
         "deleteBody": "Cost accounting for this model falls back to no known price.",
