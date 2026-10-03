@@ -56,7 +56,7 @@ jobs:
   # the way the old exact check-run names did (#903)
   verify-external-checks:
     name: assert external checks green
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # the wait's own deadline is 90 minutes; this only catches a hung step
     timeout-minutes: 100
     permissions:
@@ -101,7 +101,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,7 +109,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: build wheels (linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
@@ -118,7 +118,7 @@ jobs:
           target: x86_64
 
       - name: build wheels (linux aarch64)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         env:
           # the manylinux2014 aarch64 cross toolchain drives ring's perlasm
@@ -132,7 +132,7 @@ jobs:
           target: aarch64
 
       - name: build wheels (macos / windows)
-        if: matrix.os != 'ubuntu-latest'
+        if: matrix.os != 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
@@ -154,7 +154,7 @@ jobs:
       # no candidate at all and `pip install rolter` fails outright rather than
       # building from source. built once, on linux.
       - name: build sdist
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist
@@ -178,7 +178,7 @@ jobs:
     # and a skipped dependency would otherwise skip this job too (#992)
     if: ${{ !cancelled() && !failure() && vars.PYPI_PUBLISH_ENABLED == 'true' }}
     needs: [verify-external-checks, build-wheels, build-image, smoke-wheels, smoke-image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/project/rolter/
@@ -219,7 +219,7 @@ jobs:
     name: build image (${{ matrix.arch }})
     if: vars.DOCKER_PUBLISH_ENABLED == 'true'
     needs: [verify-external-checks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -304,7 +304,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - name: download wheels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -339,7 +339,7 @@ jobs:
     name: smoke image (${{ matrix.arch }})
     if: vars.DOCKER_PUBLISH_ENABLED == 'true'
     needs: build-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -431,7 +431,7 @@ jobs:
     # dependency would otherwise skip this job too
     if: ${{ !cancelled() && !failure() && vars.DOCKER_PUBLISH_ENABLED == 'true' }}
     needs: [verify-external-checks, build-wheels, build-image, smoke-wheels, smoke-image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write # push to GHCR under the repo owner
@@ -757,7 +757,7 @@ jobs:
         publish-docker,
         sign-images,
       ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read # read back the GHCR manifest we just pushed

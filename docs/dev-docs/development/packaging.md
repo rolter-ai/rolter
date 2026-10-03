@@ -27,12 +27,12 @@ Each release publishes five wheels plus a source distribution:
 
 | artifact            | built on                                                     |
 | ------------------- | ------------------------------------------------------------ |
-| `manylinux…x86_64`  | `ubuntu-latest`, `target: x86_64`                            |
-| `manylinux…aarch64` | `ubuntu-latest`, `target: aarch64`                           |
+| `manylinux…x86_64`  | `ubuntu-24.04`, `target: x86_64`                             |
+| `manylinux…aarch64` | `ubuntu-24.04`, `target: aarch64`                            |
 | `macosx…arm64`      | `macos-latest` (Apple Silicon, native)                       |
 | `macosx…x86_64`     | `macos-latest`, cross-compiled `target: x86_64-apple-darwin` |
 | `win_amd64`         | `windows-latest`                                             |
-| `.tar.gz` (sdist)   | `ubuntu-latest`, `command: sdist`                            |
+| `.tar.gz` (sdist)   | `ubuntu-24.04`, `command: sdist`                             |
 
 The macOS x86_64 wheel is cross-compiled rather than built on an Intel runner —
 the macOS SDK carries both architectures, so it needs no extra runner. The sdist

@@ -8,8 +8,9 @@ name: project-automation
 # an issue or PR opened with a workflow's GITHUB_TOKEN raises no `opened`
 # event, so this workflow never sees it. such a workflow dispatches this one
 # instead, naming the item and optionally an Area and Effort to seed; a dispatch
-# is the one event that token may start. extended.yml's `report failure` does
-# this for the nightly tracking issue (#2201), and anyone can do the same by
+# is the one event that token may start. the `report failure` jobs of
+# extended.yml (#2201) and ui-e2e.yml (#2677) do this for their nightly
+# tracking issues, and anyone can do the same by
 # hand for an item that missed the board.
 #
 # field and option ids are resolved by *name* at run time, never pinned:
@@ -65,7 +66,7 @@ permissions:
 jobs:
   add-to-board:
     name: add to project board
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # backstop only: RETRY_WINDOW below bounds the waiting, so this fires on a
     # hang, never on a rate limit
     timeout-minutes: 25
