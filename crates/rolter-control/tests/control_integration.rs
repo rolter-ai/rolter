@@ -3183,6 +3183,164 @@ async fn virtual_key_cost_attribution_round_trip() {
     assert!(orphaned[0]["business_unit_id"].is_null());
 }
 
+/// #2581: the business-unit and customer listings count the live virtual keys
+/// attributed to each row, so a zero-spend card can tell "no key" from "no
+/// traffic". A disabled or expired key is not live, and a row nothing points at
+/// still comes back with a zero rather than dropping out of the join.
+#[tokio::test]
+async fn attribution_listings_count_live_virtual_keys() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let pool = db.pool().clone();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+    async fn get(client: &reqwest::Client, url: String) -> Value {
+        let resp = client.get(&url).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "GET {url}");
+        resp.json().await.unwrap()
+    }
+    fn count_for(rows: &Value, id: &str) -> i64 {
+        rows.as_array()
+            .expect("a listing is an array")
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed"))["live_key_count"]
+            .as_i64()
+            .expect("live_key_count is an integer")
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+
+    let unit = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+        json!({"name": "Payments"}),
+    )
+    .await;
+    let unit_id = unit["id"].as_str().expect("unit id");
+    let idle_unit = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+        json!({"name": "Research"}),
+    )
+    .await;
+    let idle_unit_id = idle_unit["id"].as_str().expect("idle unit id");
+    let customer = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/customers"),
+        json!({"name": "Acme EU", "business_unit_id": unit_id}),
+    )
+    .await;
+    let customer_id = customer["id"].as_str().expect("customer id");
+    let idle_customer = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/customers"),
+        json!({"name": "Acme US"}),
+    )
+    .await;
+    let idle_customer_id = idle_customer["id"].as_str().expect("idle customer id");
+
+    // four keys on the same unit and customer: two live, one disabled, one
+    // expired. only the two live ones count
+    let mut key_ids = Vec::new();
+    for name in ["live-a", "live-b", "disabled", "expired"] {
+        let key = post(
+            &client,
+            format!("{base}/api/v1/projects/{project_id}/virtual-keys"),
+            json!({"name": name}),
+        )
+        .await;
+        let key_id = key["id"].as_str().expect("key id").to_string();
+        let attributed = client
+            .put(format!("{base}/api/v1/virtual-keys/{key_id}/attribution"))
+            .json(&json!({"business_unit_id": unit_id, "customer_id": customer_id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(attributed.status(), 200);
+        key_ids.push(key_id);
+    }
+    let disabled = client
+        .put(format!("{base}/api/v1/virtual-keys/{}", key_ids[2]))
+        .json(&json!({"disabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    // no endpoint backdates an expiry, so the store is told directly
+    sqlx::query("update virtual_keys set expires_at = now() - interval '1 day' where id = $1")
+        .bind(uuid::Uuid::parse_str(&key_ids[3]).expect("key uuid"))
+        .execute(&pool)
+        .await
+        .expect("expire key");
+
+    let units = get(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+    )
+    .await;
+    assert_eq!(count_for(&units, unit_id), 2);
+    assert_eq!(count_for(&units, idle_unit_id), 0);
+    // the row's own columns are still there beside the count
+    assert_eq!(units[0]["name"], "Payments");
+    assert_eq!(units[0]["org_id"], org_id);
+
+    let customers = get(&client, format!("{base}/api/v1/orgs/{org_id}/customers")).await;
+    assert_eq!(count_for(&customers, customer_id), 2);
+    assert_eq!(count_for(&customers, idle_customer_id), 0);
+    let listed_customer = customers
+        .as_array()
+        .expect("customers")
+        .iter()
+        .find(|row| row["id"] == customer_id)
+        .expect("customer listed");
+    assert_eq!(listed_customer["business_unit_id"], unit_id);
+
+    // re-enabling a key brings it back into the count
+    let enabled = client
+        .put(format!("{base}/api/v1/virtual-keys/{}", key_ids[2]))
+        .json(&json!({"disabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(enabled.status(), 200);
+    let units = get(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/business-units"),
+    )
+    .await;
+    assert_eq!(count_for(&units, unit_id), 3);
+}
+
 /// #2279: a prompt template version `PromptTemplatesConfig::validate` rejects
 /// used to be stored and published, after which the snapshot refused to be
 /// served at all and config propagation froze for every tenant. The endpoint
@@ -3931,19 +4089,25 @@ async fn admin_token_guards_crud_and_snapshot() {
     assert!(allowed.status().is_success(), "{}", allowed.status());
 }
 
-/// Every GET the served OpenAPI document does not mark public refuses an
-/// anonymous or forged caller once an admin token is configured (#1820).
+/// A forged bearer is refused on every operation the served OpenAPI document
+/// does not mark public, once an admin token is configured (#1820, #2464).
 ///
-/// The analytics and health routes answered anyone for months: they were merged
-/// onto the open router, the document said they needed a bearer, and nothing
-/// compared the two. This walks the document the control plane actually serves,
-/// so a route added later without a guard fails here rather than in a
-/// deployment — and so does a route that is open by design but was never marked
-/// `.public()`, which keeps the document honest about what an anonymous caller
-/// can ask. Only a 401 passes: before the fix these routes answered 503 in a
-/// test app with no ClickHouse, so "anything but 200" would have passed too.
+/// The anonymous half of this used to live here too. It is now
+/// `no_route_answers_an_anonymous_caller_unless_it_is_allowlisted` in
+/// `src/public_routes.rs`, which covers every method rather than only GET,
+/// pins `.public()` to a reasoned allowlist both ways, and needs no database:
+/// an anonymous caller has to be refused before any handler reaches the pool.
+///
+/// What that guard cannot exercise is a bearer that is present but wrong. It
+/// misses the admin token, so the extractor looks it up as a session token,
+/// and that lookup needs a real database — against the guard's pool that
+/// never connects it answers an error rather than "no such session". So this
+/// is the one case that stays here: a forged token must come back `401`, not
+/// a `500` from a lookup that trips over it nor a `200` from an extractor
+/// that treats any bearer as good enough. The `/gw` proxy is no longer exempt:
+/// it takes a session since #2463, and a forged one is refused like any other.
 #[tokio::test]
-async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller() {
+async fn every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer() {
     skip_without_db!();
     let db = fresh_db().await;
     let app =
@@ -3961,19 +4125,10 @@ async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller()
         .await
         .unwrap();
 
-    // authenticated downstream rather than here: the playground proxy hands the
-    // caller's virtual key to the gateway, and the gateway is what checks it
-    const CHECKED_DOWNSTREAM: &[&str] = &["/gw/{path}"];
     let nil = uuid::Uuid::nil().to_string();
     let mut answered = Vec::new();
     let mut walked = 0;
     for (path, item) in spec["paths"].as_object().expect("the document has paths") {
-        let Some(op) = item.get("get") else {
-            continue;
-        };
-        if op.get("security") == Some(&json!([])) || CHECKED_DOWNSTREAM.contains(&path.as_str()) {
-            continue;
-        }
         // every path parameter becomes the nil uuid: a guarded route has to
         // refuse the caller before it looks anything up
         let mut concrete = String::with_capacity(path.len());
@@ -3985,27 +4140,33 @@ async fn every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller()
             rest = &rest[close + 1..];
         }
         concrete.push_str(rest);
-        for bearer in [None, Some("forged")] {
-            let mut request = client.get(format!("http://{addr}{concrete}"));
-            if let Some(bearer) = bearer {
-                request = request.bearer_auth(bearer);
+        for method in ["get", "post", "put", "patch", "delete"] {
+            let Some(op) = item.get(method) else {
+                continue;
+            };
+            if op.get("security") == Some(&json!([])) {
+                continue;
             }
-            let status = request.send().await.unwrap().status();
+            let verb = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+                .expect("a standard method");
+            let status = client
+                .request(verb, format!("http://{addr}{concrete}"))
+                .bearer_auth("forged")
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap()
+                .status();
             if status != 401 {
-                let who = if bearer.is_some() {
-                    "forged bearer"
-                } else {
-                    "anonymous"
-                };
-                answered.push(format!("{path} ({who}) -> {status}"));
+                answered.push(format!("{} {path} -> {status}", method.to_uppercase()));
             }
+            walked += 1;
         }
-        walked += 1;
     }
-    assert!(walked > 50, "the sweep only reached {walked} routes");
+    assert!(walked > 50, "the sweep only reached {walked} operations");
     assert!(
         answered.is_empty(),
-        "routes that did not refuse a caller without credentials: {answered:#?}"
+        "operations that did not refuse a forged bearer: {answered:#?}"
     );
 }
 
@@ -5291,6 +5452,7 @@ async fn adaptive_routing_policy_is_superadmin_only_validated_and_audited() {
 #[tokio::test]
 async fn login_me_logout_round_trip() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
@@ -5301,7 +5463,7 @@ async fn login_me_logout_round_trip() {
     // seed a user the way `rolter-seed` does (same argon2id hashing call shape)
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     sqlx::query("insert into users (email, password_hash, is_superadmin) values ($1, $2, true)")
@@ -5340,7 +5502,7 @@ async fn login_me_logout_round_trip() {
     // correct credentials issue a session token
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "admin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "admin@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -5400,6 +5562,7 @@ async fn login_me_logout_round_trip() {
 #[tokio::test]
 async fn failed_logins_are_throttled_per_account_and_audited() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app(pool.clone()).await.unwrap();
@@ -5419,7 +5582,7 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
             "insert into users (email, password_hash, is_superadmin) values ($1, $2, true)",
         )
         .bind(email)
-        .bind(hash_for("correct horse battery staple"))
+        .bind(hash_for(&password))
         .execute(&pool)
         .await
         .unwrap();
@@ -5467,7 +5630,7 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
         .post(format!("{base}/api/v1/auth/login"))
         .json(&json!({
             "email": "bystander@example.com",
-            "password": "correct horse battery staple"
+            "password": password
         }))
         .send()
         .await
@@ -6387,6 +6550,7 @@ async fn sso_provider_updates_in_place_and_keeps_its_slug_and_mappings() {
 #[tokio::test]
 async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     skip_without_db!();
+    let client_secret = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     // the redirect uri is deployment-owned, so the control plane must know its
@@ -6444,7 +6608,7 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
             "slug": "stub",
             "issuer": issuer,
             "client_id": "rolter",
-            "client_secret": "s3cret",
+            "client_secret": client_secret,
             "group_claim": "groups"
         }))
         .send()
@@ -6457,7 +6621,7 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     // the client secret is sealed and never echoed back
     let provider_text = provider.to_string();
     assert!(
-        !provider_text.contains("s3cret") && !provider_text.contains("secret_ciphertext"),
+        !provider_text.contains(&client_secret) && !provider_text.contains("secret_ciphertext"),
         "client secret leaked into the api response: {provider_text}"
     );
     // the row names the two addresses an operator needs, built from the
@@ -6793,7 +6957,7 @@ async fn scim_users_are_provisioned_scoped_and_idempotent() {
             "externalId": "idp-1",
             "displayName": "Ada Lovelace",
             "emails": [{"value": "ada@example.com", "primary": true}],
-            "password": "hunter2"
+            "password": random_password()
         }))
         .send()
         .await
@@ -8130,6 +8294,7 @@ async fn open_mode_allows_unauthenticated_mutations() {
 #[tokio::test]
 async fn user_and_membership_lifecycle() {
     skip_without_db!();
+    let password = random_password();
     let (app, _db) = fresh_app().await;
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8163,7 +8328,7 @@ async fn user_and_membership_lifecycle() {
     let created = post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "dev@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "dev@example.com", "password": password, "role": "member"}),
     )
     .await;
     let user_id = created["user"]["id"].as_str().unwrap().to_string();
@@ -8190,7 +8355,7 @@ async fn user_and_membership_lifecycle() {
     // duplicate email is a conflict
     let dup = client
         .post(format!("{base}/api/v1/orgs/{org_id}/users"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -8224,7 +8389,7 @@ async fn user_and_membership_lifecycle() {
     // the account can log in before deactivation
     let ok = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -8244,7 +8409,7 @@ async fn user_and_membership_lifecycle() {
     // login is now blocked, but the user + memberships still exist
     let blocked = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -8294,6 +8459,7 @@ async fn user_and_membership_lifecycle() {
 #[tokio::test]
 async fn self_service_key_lifecycle() {
     skip_without_db!();
+    let password = random_password();
     let (app, _db) = fresh_app().await;
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8334,7 +8500,7 @@ async fn self_service_key_lifecycle() {
     post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "member@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "member@example.com", "password": password, "role": "member"}),
     )
     .await;
 
@@ -8342,7 +8508,7 @@ async fn self_service_key_lifecycle() {
     let login = post(
         &client,
         format!("{base}/api/v1/auth/login"),
-        json!({"email": "member@example.com", "password": "hunter2!!"}),
+        json!({"email": "member@example.com", "password": password}),
     )
     .await;
     let token = login["token"].as_str().unwrap().to_string();
@@ -8487,6 +8653,7 @@ async fn self_service_key_lifecycle() {
 #[tokio::test]
 async fn playground_key_is_scoped_by_the_server() {
     skip_without_db!();
+    let password = random_password();
     let (app, _db) = fresh_app().await;
     let addr = serve(app).await;
     let client = reqwest::Client::new();
@@ -8525,13 +8692,13 @@ async fn playground_key_is_scoped_by_the_server() {
     post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "operator@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "operator@example.com", "password": password, "role": "member"}),
     )
     .await;
     let login = post(
         &client,
         format!("{base}/api/v1/auth/login"),
-        json!({"email": "operator@example.com", "password": "hunter2!!"}),
+        json!({"email": "operator@example.com", "password": password}),
     )
     .await;
     let token = login["token"].as_str().unwrap().to_string();
@@ -8828,6 +8995,9 @@ async fn the_last_enabled_sso_provider_cannot_go_while_passwords_are_off() {
 #[tokio::test]
 async fn sso_and_password_login_coexist_per_org_policy() {
     skip_without_db!();
+    let password = random_password();
+    let client_secret = random_password();
+    let root_password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
@@ -8868,7 +9038,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     let invited: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/users"))
         .bearer_auth("admintok")
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -8886,7 +9056,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
 
     let logged_in = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -8900,7 +9070,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
         .bearer_auth("admintok")
         .json(&json!({
             "name": "Stub IdP", "slug": "mixed", "issuer": issuer,
-            "client_id": "rolter", "client_secret": "s3cret"
+            "client_id": "rolter", "client_secret": client_secret
         }))
         .send()
         .await
@@ -8962,7 +9132,18 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     );
 
     // the IdP drops the group; the next login revokes the role it granted and
-    // leaves the operator's grant alone
+    // leaves the operator's grant alone. someone else administers the org, so
+    // that admin grant is not its last one (#2558)
+    let other_admin = seed_user(&pool, "grace@example.com", false).await;
+    seed_membership(
+        &pool,
+        other_admin,
+        Some(org_id.parse().unwrap()),
+        None,
+        None,
+        "admin",
+    )
+    .await;
     client
         .delete(format!("{base}/api/v1/sso-group-mappings/{mapping_id}"))
         .bearer_auth("admintok")
@@ -9029,7 +9210,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     assert_eq!(enforced.status(), 200);
     let blocked = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -9041,7 +9222,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     let root: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/users"))
         .bearer_auth("admintok")
-        .json(&json!({"email": "root@example.com", "password": "break glass in case", "role": "admin"}))
+        .json(&json!({"email": "root@example.com", "password": root_password, "role": "admin"}))
         .send()
         .await
         .unwrap()
@@ -9056,7 +9237,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
         .unwrap();
     let super_login = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "root@example.com", "password": "break glass in case"}))
+        .json(&json!({"email": "root@example.com", "password": root_password}))
         .send()
         .await
         .unwrap();
@@ -9601,6 +9782,7 @@ async fn browser_sso_sign_in_ends_on_the_dashboard_with_a_one_time_code() {
 #[tokio::test]
 async fn invitations_onboard_accounts_once_and_expire_closed() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
@@ -9716,7 +9898,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     // back a live session
     let accepted: Value = client
         .post(format!("{base}/api/v1/invitations/accept/{token}/accept"))
-        .json(&json!({"password": "chosen by ada"}))
+        .json(&json!({"password": password}))
         .send()
         .await
         .unwrap()
@@ -9747,7 +9929,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     // the password the invitee chose is the one that works
     let login = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "chosen by ada"}))
+        .json(&json!({"email": "ada@example.com", "password": password}))
         .send()
         .await
         .unwrap();
@@ -9757,7 +9939,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     // membership appears
     let replay = client
         .post(format!("{base}/api/v1/invitations/accept/{token}/accept"))
-        .json(&json!({"password": "someone else's"}))
+        .json(&json!({"password": random_password()}))
         .send()
         .await
         .unwrap();
@@ -9792,7 +9974,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
         .post(format!(
             "{base}/api/v1/invitations/accept/{second_token}/accept"
         ))
-        .json(&json!({"password": "too late now"}))
+        .json(&json!({"password": random_password()}))
         .send()
         .await
         .unwrap();
@@ -9819,7 +10001,7 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
         .post(format!(
             "{base}/api/v1/invitations/accept/{third_token}/accept"
         ))
-        .json(&json!({"password": "way too late"}))
+        .json(&json!({"password": random_password()}))
         .send()
         .await
         .unwrap();
@@ -10902,6 +11084,8 @@ mod stub_resource {
 #[tokio::test]
 async fn mcp_oauth_consent_refresh_and_exchange() {
     skip_without_db!();
+    let password = random_password();
+    let client_secret = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
@@ -10925,7 +11109,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     // a member who will do the consenting
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -10943,7 +11127,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "ada@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -11016,7 +11200,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
             "authorize_url": format!("{authz}/authorize"),
             "token_url": format!("{authz}/token"),
             "client_id": "rolter",
-            "client_secret": "cli3nt-s3cret",
+            "client_secret": client_secret,
             "default_scopes": ["tools:read", "tools:write"],
             // this server publishes no metadata, so it is pinned to the
             // hand-configured endpoints and nothing is probed (#1347)
@@ -11035,7 +11219,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     );
     let registered_text = registered.to_string();
     assert!(
-        !registered_text.contains("cli3nt-s3cret"),
+        !registered_text.contains(&client_secret),
         "the client secret leaked into the api response: {registered_text}"
     );
     // and listing the servers must not carry it either
@@ -11048,7 +11232,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .json()
         .await
         .unwrap();
-    assert!(!servers.to_string().contains("cli3nt-s3cret"));
+    assert!(!servers.to_string().contains(&client_secret));
 
     // -- consent ------------------------------------------------------------
 
@@ -11104,7 +11288,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     let form = stub.form();
     assert!(form.contains("grant_type=authorization_code"));
     assert!(form.contains("code_verifier="));
-    assert!(form.contains("client_secret=cli3nt-s3cret"));
+    assert!(form.contains(&format!("client_secret={client_secret}")));
 
     // the same state cannot be redeemed twice
     let replayed = client
@@ -11320,6 +11504,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
 #[tokio::test]
 async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
@@ -11351,7 +11536,7 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
 
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11369,7 +11554,7 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "grace@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "grace@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -11640,6 +11825,7 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
 #[tokio::test]
 async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
@@ -11667,7 +11853,7 @@ async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
     let org_id = org["id"].as_str().unwrap().to_string();
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11685,7 +11871,7 @@ async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "lin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "lin@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -11912,6 +12098,7 @@ async fn config_version(pool: &sqlx::PgPool) -> i64 {
 #[tokio::test]
 async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
@@ -11941,7 +12128,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     // session rather than the admin token
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11959,7 +12146,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "mallory@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "mallory@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -12117,6 +12304,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
 #[tokio::test]
 async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
@@ -12147,7 +12335,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
 
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(password.as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -12165,7 +12353,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "repin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "repin@example.com", "password": password}))
         .send()
         .await
         .unwrap()
@@ -12347,6 +12535,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
 #[tokio::test]
 async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
     skip_without_db!();
+    let password = random_password();
     let db = fresh_db().await;
     let pool = db.pool().clone();
     let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
@@ -12374,7 +12563,7 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
     let mut ids = Vec::new();
     for email in ["owner@example.com", "other@example.com"] {
         let hash = argon2::Argon2::default()
-            .hash_password(b"correct horse battery staple")
+            .hash_password(password.as_bytes())
             .unwrap()
             .to_string();
         let id: uuid::Uuid = sqlx::query_scalar(
@@ -12393,7 +12582,7 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
             .unwrap();
         let login: Value = client
             .post(format!("{base}/api/v1/auth/login"))
-            .json(&json!({"email": email, "password": "correct horse battery staple"}))
+            .json(&json!({"email": email, "password": password}))
             .send()
             .await
             .unwrap()
@@ -12947,6 +13136,7 @@ async fn a_connector_edit_resets_health_only_when_endpoint_or_secret_changes() {
 #[tokio::test]
 async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password() {
     skip_without_db!();
+    let dashboard_secret = random_password();
     // sealing the dashboard secret needs a KEK, exactly as the provider-key
     // test does; the value is arbitrary because nothing here decrypts it
     std::env::set_var("ROLTER_KEK", TEST_KEK);
@@ -12983,7 +13173,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
             "required_headers": {"X-Mesh-Id": "edge-42"},
             "auth_bypass_routes": ["/v1/models"],
             "dashboard_auth_enabled": false,
-            "managed_dashboard_secret": "hunter2",
+            "managed_dashboard_secret": dashboard_secret,
         }))
         .send()
         .await
@@ -13039,7 +13229,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
     // the sealed dashboard secret must not ride along anywhere in the payload
     let payload = serde_json::to_string(&after).unwrap();
     assert!(
-        !payload.contains("hunter2"),
+        !payload.contains(&dashboard_secret),
         "the snapshot carries the secret"
     );
     assert!(!payload.contains("dashboard_credential"), "{payload}");
@@ -15387,6 +15577,191 @@ async fn provider_group_crud_advances_the_version_the_gateway_watches() {
     );
 }
 
+/// #2438: deleting a provider a route still targets answered a 500 carrying
+/// nothing but the store's foreign-key failure. It must refuse with a 409 that
+/// names the route, and leave the provider in place.
+#[tokio::test]
+async fn deleting_a_provider_a_route_targets_is_a_conflict_naming_the_route() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    let target = post(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}/targets"),
+        json!({"provider_id": provider_id, "weight": 1}),
+    )
+    .await;
+
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, 409, "{body}");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("route 'gpt-4o'"),
+        "the refusal does not name the route: {message}"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == provider_id)),
+        "the refused delete removed the provider: {listed}"
+    );
+
+    // once nothing references it the same delete goes through
+    let target_id = target["id"].as_str().expect("target id");
+    let resp = client
+        .delete(format!("{base}/api/v1/route-targets/{target_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204, "{}", resp.text().await.unwrap());
+}
+
+/// #2438: the same refusal for a provider a provider group still holds as a
+/// member, naming the group.
+#[tokio::test]
+async fn deleting_a_provider_a_group_holds_is_a_conflict_naming_the_group() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "vllm-a100-01", "kind": "openai", "api_base": "http://vllm.internal"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/provider-groups"),
+        json!({
+            "name": "Llama fleet",
+            "slug": "llama-fleet",
+            "members": [{"provider_id": provider_id, "weight": 1}],
+        }),
+    )
+    .await;
+
+    let resp = client
+        .delete(format!("{base}/api/v1/providers/{provider_id}"))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(status, 409, "{body}");
+    let message = body["error"]["message"].as_str().expect("error message");
+    assert!(
+        message.contains("provider group 'llama-fleet'"),
+        "the refusal does not name the group: {message}"
+    );
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == provider_id)),
+        "the refused delete removed the provider: {listed}"
+    );
+}
+
 /// A route's complexity policy reads at the same bar as the route it hangs off
 /// (#1666), and writes at the mutation bar as it always has.
 ///
@@ -17560,6 +17935,101 @@ async fn concurrent_demotions_cannot_both_remove_a_superadmin() {
     assert_eq!(left, 1);
 }
 
+/// #2705: a SCIM replace with `active:false` that the lockout guard refuses
+/// must not have renamed the account or rewritten its identity first.
+#[tokio::test]
+async fn a_refused_scim_replace_leaves_the_identity_unchanged() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "externalId": "ext-old",
+            "displayName": "Old Name",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    sqlx::query("update users set is_superadmin = true where id = $1")
+        .bind(boss)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = client
+        .put(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "renamed@acme.test",
+            "externalId": "ext-new",
+            "displayName": "New Name",
+            "active": false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("last active superadmin"),
+        "{body}"
+    );
+    let (user_name, external_id, display_name): (String, Option<String>, String) = sqlx::query_as(
+        "select user_name, external_id, display_name from scim_identities where user_id = $1",
+    )
+    .bind(boss)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(user_name, "boss@acme.test");
+    assert_eq!(external_id.as_deref(), Some("ext-old"));
+    assert_eq!(display_name, "Old Name");
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+}
+
 #[tokio::test]
 async fn scim_cannot_deprovision_the_last_active_superadmin() {
     skip_without_db!();
@@ -17647,6 +18117,82 @@ async fn scim_cannot_deprovision_the_last_active_superadmin() {
         .unwrap();
     assert_eq!(res.status(), 204);
     assert_eq!(user_row(&pool, boss).await, Some((true, true)));
+}
+
+/// #2672: a SCIM create with `active:false` that adopts the last superadmin is
+/// refused before the identity is linked, so the IdP's retry gets the same 409
+/// rather than "userName already exists".
+#[tokio::test]
+async fn a_refused_scim_create_leaves_no_identity_behind() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let boss = seed_user(&pool, "boss@acme.test", true).await;
+
+    for attempt in ["first", "retry"] {
+        let res = client
+            .post(format!("{base}/scim/v2/Users"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                "userName": "boss@acme.test",
+                "emails": [{"value": "boss@acme.test", "primary": true}],
+                "active": false
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 409, "{attempt}");
+        let body: Value = res.json().await.unwrap();
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("last active superadmin"),
+            "{attempt}: {body}"
+        );
+        let linked: i64 =
+            sqlx::query_scalar("select count(*) from scim_identities where user_id = $1")
+                .bind(boss)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(linked, 0, "{attempt}: a refused create must not link");
+        assert_eq!(
+            user_row(&pool, boss).await,
+            Some((true, false)),
+            "{attempt}"
+        );
+    }
 }
 
 /// #2383: the SSO issuer, the guardrail webhook url and a plugin endpoint are
@@ -17946,4 +18492,358 @@ async fn concurrent_revokes_of_two_org_admins_leave_one() {
             .await
             .unwrap();
     assert_eq!(left, 1);
+}
+
+async fn org_admin_rows(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> Vec<String> {
+    sqlx::query_scalar(
+        "select source from memberships where user_id = $1 and org_id = $2 and role = 'admin' \
+         order by source",
+    )
+    .bind(holder)
+    .bind(org)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn last_admin_kept_audits(pool: &sqlx::PgPool, org: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(
+        "select count(*) from audit_log where org_id = $1 and action = 'membership.last_admin_kept'",
+    )
+    .bind(org)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// #2558: SCIM deprovisioning and `active: false` answer a SCIM 409 instead of
+/// deactivating the account that holds an org's last active admin grant.
+#[tokio::test]
+async fn scim_cannot_deactivate_an_orgs_last_admin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    seed_membership(&pool, boss, Some(org_id), None, None, "admin").await;
+
+    let res = client
+        .delete(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["schemas"][0], "urn:ietf:params:scim:api:messages:2.0:Error",
+        "{body}"
+    );
+    assert!(body["detail"]
+        .as_str()
+        .unwrap()
+        .contains("last active admin"));
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+    assert_eq!(org_admin_rows(&pool, boss, org_id).await, vec!["manual"]);
+
+    let deactivate = json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [{"op": "replace", "path": "active", "value": false}]
+    });
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+
+    // a deactivated admin is not a remainder
+    let second = seed_user(&pool, "second@example.com", false).await;
+    seed_membership(&pool, second, Some(org_id), None, None, "admin").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    assert_eq!(user_row(&pool, boss).await, Some((false, false)));
+
+    // with another active admin the same call deactivates
+    sqlx::query("update users set deactivated_at = null where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .patch(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&deactivate)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(user_row(&pool, boss).await, Some((false, true)));
+
+    // and now `second` is the last one: deactivating them races nobody, but
+    // the store refuses it the same way
+    let refused = rolter_store::postgres::repo::UserRepo(&pool)
+        .set_deactivated_guarding_org_admins(second, true)
+        .await
+        .unwrap();
+    assert!(matches!(
+        refused,
+        rolter_store::postgres::repo::DeactivationGuard::LastOrgAdmin(org) if org == org_id
+    ));
+}
+
+/// #2558: an SSO login whose groups no longer imply the org's last admin grant
+/// keeps that grant and audits it rather than failing the sign-in; once the org
+/// has another admin, the next login revokes it.
+#[tokio::test]
+async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "SyncOrg", "slug": "sync-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let (issuer, stub) = stub_idp::serve_stub().await;
+    let provider: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "name": "Stub IdP", "slug": "mixed", "issuer": issuer, "client_id": "rolter"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    for (group, role) in [("admins", "admin"), ("devs", "member")] {
+        let res = client
+            .post(format!(
+                "{base}/api/v1/sso-providers/{provider_id}/group-mappings"
+            ))
+            .bearer_auth("admintok")
+            .json(&json!({"group_name": group, "role": role, "org_id": org_id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    sso_login(&client, &base, &stub, &issuer, json!(["admins"]))
+        .await
+        .expect("first sign-in");
+    let ada: uuid::Uuid = sqlx::query_scalar("select id from users where email = $1")
+        .bind("ada@example.com")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["sso"]);
+
+    // the IdP moves ada out of the admin group while nobody else is admin: the
+    // sign-in still succeeds, the admin grant stays, and the audit says why
+    sso_login(&client, &base, &stub, &issuer, json!(["devs"]))
+        .await
+        .expect("a kept admin grant must not fail the sign-in");
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["sso"]);
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+    let granted: Value = sqlx::query_scalar(
+        "select detail->'granted_roles' from audit_log where action = 'auth.sso_login' \
+         order by at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(granted, json!(["admin", "member"]));
+
+    // with another active admin the next sign-in revokes it
+    let bob = seed_user(&pool, "bob@example.com", false).await;
+    seed_membership(&pool, bob, Some(org_uuid), None, None, "admin").await;
+    sso_login(&client, &base, &stub, &issuer, json!(["devs"]))
+        .await
+        .expect("sign-in");
+    assert!(org_admin_rows(&pool, ada, org_uuid).await.is_empty());
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+}
+
+/// #2558: a SCIM group sync that drops the org's last admin from the group
+/// keeps the grant and audits it; the sync itself succeeds, and a later sync
+/// revokes the grant once the org has another admin.
+#[tokio::test]
+async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "GroupOrg", "slug": "group-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let org_uuid: uuid::Uuid = org_id.parse().unwrap();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret = minted["secret"].as_str().unwrap().to_string();
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "ada@example.com",
+            "emails": [{"value": "ada@example.com", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let ada: uuid::Uuid = scim_id.parse().unwrap();
+    let res = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-group-mappings"))
+        .bearer_auth("admintok")
+        .json(&json!({"group_name": "owners", "role": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let create_group = || {
+        client
+            .post(format!("{base}/scim/v2/Groups"))
+            .bearer_auth(&secret)
+            .json(&json!({
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+                "displayName": "owners",
+                "members": [{"value": scim_id}]
+            }))
+            .send()
+    };
+    let group: Value = create_group().await.unwrap().json().await.unwrap();
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["scim"]);
+
+    // the IdP deletes the group: the sync answers success, the grant stays
+    let res = client
+        .delete(format!(
+            "{base}/scim/v2/Groups/{}",
+            group["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(org_admin_rows(&pool, ada, org_uuid).await, vec!["scim"]);
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
+
+    // with another active admin, the same sync revokes it
+    let bob = seed_user(&pool, "bob@example.com", false).await;
+    seed_membership(&pool, bob, Some(org_uuid), None, None, "admin").await;
+    let group: Value = create_group().await.unwrap().json().await.unwrap();
+    let res = client
+        .delete(format!(
+            "{base}/scim/v2/Groups/{}",
+            group["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(org_admin_rows(&pool, ada, org_uuid).await.is_empty());
+    assert_eq!(last_admin_kept_audits(&pool, org_uuid).await, 1);
 }

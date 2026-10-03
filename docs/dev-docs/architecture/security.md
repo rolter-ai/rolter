@@ -473,9 +473,18 @@ SCIM bearer) are not on the list: anonymously they answer `401`, and the guard r
 - `the_allowlist_is_sorted_unique_and_explained` rejects duplicates and an
   empty-looking reason.
 
-The database-backed `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller`
-in `tests/control_integration.rs` (#1820) is the same idea over real sessions
-for GETs and stays as a second layer.
+That is the one anonymous-route guard. It replaced a GET-only sweep in
+`tests/control_integration.rs` (#1820) that read `.public()` from the document
+and exempted `/gw`; the allowlist guard covers every method, needs no
+database, and `/gw` takes a session since #2463 (#2464).
+
+What stays in `tests/control_integration.rs` is the one case the guard cannot
+reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
+bearer that is present but is not the admin token is looked up as a session
+token, and that lookup needs a real database, so against the guard's
+never-connecting pool it would answer an error rather than `401`. The test
+sends every operation not marked `.public()` with a forged bearer against a
+real database and requires `401` from each.
 
 To open a route deliberately: add it to `PUBLIC_ROUTES` with a reason, and mark
 the operation `.public()` in `openapi.rs`. To close one: take `AnySession`,

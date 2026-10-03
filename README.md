@@ -20,7 +20,7 @@
   <a href="https://github.com/rolter-ai/rolter/releases/latest"><img src="https://img.shields.io/github/v/release/rolter-ai/rolter" alt="Latest release"></a>
   <a href="https://crates.io/crates/rolter"><img src="https://img.shields.io/crates/v/rolter" alt="crates.io"></a>
   <a href="https://pypi.org/project/rolter/"><img src="https://img.shields.io/pypi/v/rolter" alt="PyPI"></a>
-  <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.82-blue" alt="MSRV: Rust 1.82"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.91-blue" alt="MSRV: Rust 1.91"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/rolter-ai/rolter" alt="License"></a>
 </p>
 

@@ -63,6 +63,12 @@ it at an HTTP endpoint to bring it back.
 One list is authoritative — `rolter_core::MCP_TRANSPORTS` — and the database
 check constraints, the API validation and the dashboard dropdown all match it.
 
+`websocket` stays accepted although this gateway never proxies it: dropping it
+would invalidate registry rows already stored under it. The same list is what
+the tool-call log ingest route accepts, so `websocket` is **ingest-only** — only
+an external producer can submit a log row with it; every row the gateway itself
+writes is `streamable_http` or `sse`.
+
 ## Manage the registry
 
 The dashboard's MCP Catalog reads the organization registry directly. An admin
