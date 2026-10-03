@@ -390,16 +390,33 @@ pub(crate) fn random_token() -> String {
 /// A provider whose org has single sign-on turned off is refused here, before
 /// the member is sent to the identity provider, with the same `sso_disabled`
 /// refusal the callback gives (#2339): a browser is sent back to the login
-/// screen, any other caller gets the `403`.
+/// screen, any other caller gets the `403`. A slug no enabled provider answers
+/// to is refused the same way with `unknown_provider` (#2606), the JSON caller
+/// keeping its `400`.
 async fn start_login(
     State(state): State<ControlState>,
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Response> {
-    let provider = SsoRepo(pool(&state))
-        .find_provider_by_slug(&slug)
-        .await?
-        .ok_or_else(|| invalid(format!("no enabled sso provider '{slug}'")))?;
+    let Some(provider) = SsoRepo(pool(&state)).find_provider_by_slug(&slug).await? else {
+        let error = invalid(format!("no enabled sso provider '{slug}'"));
+        if !crate::mcp_oauth_flow::prefers_html(&headers) {
+            return Ok(([(header::VARY, "accept")], error.into_response()).into_response());
+        }
+        // the slug is not echoed: nothing vouches for it, and the login
+        // screen has no provider to name
+        let failure = CallbackFailure {
+            reason: SsoFailure::UnknownProvider,
+            slug: None,
+            error,
+        };
+        tracing::info!(
+            reason = failure.reason.code(),
+            "sso sign-in refused: unknown provider"
+        );
+        let response = Redirect::to(&refusal_url(public_base_url(&state), &failure));
+        return Ok(([(header::VARY, "accept")], response).into_response());
+    };
     if !OrgAuthPolicyRepo(pool(&state))
         .get(provider.org_id)
         .await?
@@ -558,6 +575,9 @@ enum SsoFailure {
     StateExpired,
     /// the org turned sso off
     SsoDisabled,
+    /// no enabled provider answers to the slug: a stale bookmark, or a
+    /// provider deleted or disabled since the page loaded
+    UnknownProvider,
     /// the user is in no mapped group and the provider has no default role
     NoMappedGroup,
     /// the account is deactivated
@@ -578,6 +598,7 @@ impl SsoFailure {
             Self::IdpError => "idp_error",
             Self::StateExpired => "state_expired",
             Self::SsoDisabled => "sso_disabled",
+            Self::UnknownProvider => "unknown_provider",
             Self::NoMappedGroup => "no_mapped_group",
             Self::AccountDeactivated => "account_deactivated",
             Self::IdpVerificationFailed => "idp_verification_failed",
@@ -1929,6 +1950,7 @@ mod tests {
             IdpError,
             StateExpired,
             SsoDisabled,
+            UnknownProvider,
             NoMappedGroup,
             AccountDeactivated,
             IdpVerificationFailed,
@@ -1942,6 +1964,7 @@ mod tests {
                 "idp_error",
                 "state_expired",
                 "sso_disabled",
+                "unknown_provider",
                 "no_mapped_group",
                 "account_deactivated",
                 "idp_verification_failed",
