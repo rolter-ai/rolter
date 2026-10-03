@@ -248,6 +248,17 @@ language = "system"
 files = "^(Cargo\\.toml|charts/rolter/Chart\\.yaml)$"
 pass_filenames = false
 
+# the same helm lint and strict renders CI runs (scripts/check-helm-chart.sh).
+# without helm on PATH the script skips with a notice rather than failing, as
+# CI is the authority and not every contributor touches the chart
+[[repos.hooks]]
+id = "helm-render"
+name = "helm chart renders strictly"
+entry = "bash scripts/check-helm-chart.sh"
+language = "system"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "cargo-clippy-postgres"
 name = "cargo clippy (postgres)"

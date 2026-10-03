@@ -139,9 +139,16 @@ policy checks, and UI lint/build checks. Install the system tools used by the
 project-specific hooks:
 
 ```bash
-brew install actionlint taplo typos-cli
+brew install actionlint taplo typos-cli helm
 cargo install cargo-nextest cargo-deny
 ```
+
+The `helm-render` hook runs when a change touches `charts/` (or the render
+scripts). It calls `scripts/check-helm-chart.sh`, the same script CI's `helm chart` steps
+call: `helm lint`, then each render case piped through the strict YAML checker,
+so a duplicate key in a template fails the commit with CI's message (#2191).
+Without `helm` on PATH it prints a notice and passes, because CI still runs it;
+`bash scripts/check-helm-chart.sh` runs it by hand.
 
 `cargo-nextest` is recommended but optional for the push hook; it falls back to
 `cargo test`. CI remains authoritative for database-backed tests that need

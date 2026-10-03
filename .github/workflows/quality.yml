@@ -900,6 +900,8 @@ jobs:
       # helm's own loader tolerates a duplicate mapping key, kubectl's
       # server-side apply and the GitOps controllers do not, and a duplicate
       # `env:` sat in both deployment templates unnoticed until #1090.
+      # the render cases live in scripts/check-helm-chart.sh, which the
+      # `helm-render` prek hook runs too (#2191), so the two cannot drift.
       # `uv run --script` installs only the pyyaml pinned in the checker's
       # inline metadata (#1901); run as part of the repo-root project, uv
       # would build the rolter maturin wheel first, about 3.5 minutes per job
@@ -908,33 +910,21 @@ jobs:
       - name: helm chart (render defaults)
         id: helm-render-defaults
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh defaults
       - name: helm chart (render with preflight disabled)
         id: helm-render-no-preflight
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter --set preflight.enabled=false \
-            | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh no-preflight
       - name: helm chart (render with every preflight option on)
         id: helm-render-all-preflight
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter \
-            --set preflight.connect=true \
-            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
-            --set 'secretEnv[0].name=ROLTER_KEK' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
-            | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh all-preflight
       # the launcher in each Deployment's preflight initContainer runs its own
       # release check, so one setting must reach both (#2382)
       - name: helm chart (update check reaches every launcher container)
         id: helm-update-check
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true
-          helm template ci charts/rolter --set control.updateCheck=false \
-            | uv run --script scripts/check-chart-update-check.py false
+        run: bash scripts/check-helm-chart.sh update-check
 
       # the verdict for the whole job, and the one place that knows which step
       # must run on which event. outcomes arrive through env, never inline in
@@ -1051,13 +1041,13 @@ jobs:
             "prek run chart-appversion --all-files"
           row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"
           row "helm chart" "helm chart (render defaults)" "${OUTCOME_HELM_RENDER_DEFAULTS}" yes \
-            "helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh defaults (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (render with preflight disabled)" "${OUTCOME_HELM_RENDER_NO_PREFLIGHT}" yes \
-            "helm template ci charts/rolter --set preflight.enabled=false | uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh no-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (render with every preflight option on)" "${OUTCOME_HELM_RENDER_ALL_PREFLIGHT}" yes \
-            "the helm template command of this step in quality.yml, piped to uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh all-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (update check reaches every launcher container)" "${OUTCOME_HELM_UPDATE_CHECK}" yes \
-            "helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true (and --set control.updateCheck=false with false)"
+            "bash scripts/check-helm-chart.sh update-check (or prek run helm-render --all-files for all of them)"
 
           echo >> "${summary}"
           if [ "${failed}" -ne 0 ]; then
