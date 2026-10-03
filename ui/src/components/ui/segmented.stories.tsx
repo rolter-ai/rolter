@@ -91,19 +91,39 @@ export const SelectsOnClick: Story = {
 };
 
 /**
- * Every option is a real, tabbable `<button>`: `Tab` walks into the group and
- * `Enter` picks an option — a div with an `onClick` would do neither.
+ * Roving tabindex: the checked option is the group's one tab stop, the arrow
+ * keys move focus and selection together and wrap, Home/End jump to the ends.
  */
 export const SelectsFromTheKeyboard: Story = {
-  render: () => <Controlled />,
+  render: () => (
+    <>
+      <Controlled />
+      <button type="button">after</button>
+    </>
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.tab();
     await expect(canvas.getByRole("radio", { name: "Lock all" })).toHaveFocus();
-    await userEvent.tab();
+    await userEvent.keyboard("{ArrowRight}");
     await expect(canvas.getByRole("radio", { name: "Unlock all" })).toHaveFocus();
-    await userEvent.keyboard("{Enter}");
     await expect(canvas.getByText("mode: unlockAll")).toBeVisible();
+    await userEvent.keyboard("{End}");
+    await expect(canvas.getByRole("radio", { name: "Manual" })).toHaveFocus();
+    await expect(canvas.getByText("mode: manual")).toBeVisible();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(canvas.getByText("mode: lockAll")).toBeVisible();
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect(canvas.getByText("mode: manual")).toBeVisible();
+    await userEvent.keyboard("{Home}");
+    await expect(canvas.getByRole("radio", { name: "Lock all" })).toHaveFocus();
+    // one tab stop: Tab leaves the group instead of walking its options
+    await expect(canvas.getByRole("radio", { name: "Unlock all" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+    await userEvent.tab();
+    await expect(canvas.getByRole("button", { name: "after" })).toHaveFocus();
   },
 };
 

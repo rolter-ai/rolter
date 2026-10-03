@@ -73,7 +73,7 @@ This guide takes a deployment from nothing to "our people and our applications c
   <Step title="Follow the Getting started card">
     A fresh deployment opens on a **Getting started** card with the four steps between an empty control plane and a client calling Rolter, each ticked from the deployment itself:
 
-    1. **Make a call with no credentials** — the Playground answers with `fake-llm`.
+    1. **Make a call with no credentials** — the Playground answers with `fake-llm`. It mints its own short-lived key, which for a project with no routes yet reaches `fake-llm` alone, so this works before steps 2 and 3.
     2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
     3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add model** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on.
     4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.

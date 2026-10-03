@@ -658,7 +658,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             tokio::spawn(async move { sample_pool_acquire(pool, metrics).await });
         }
     }
-    let http = reqwest::Client::new();
+    let http = proxy::gateway_client();
 
     // the throttle shares redis with config pub/sub when there is one, so every
     // replica counts against the same budget. without redis it is process-local
@@ -1117,6 +1117,11 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         // renew MCP OAuth sessions before they lapse, so a user consents once
         // rather than every hour (#707)
         mcp_oauth_flow::start_refresher(state.clone());
+        // abandoned sso logins and unredeemed exchange codes are otherwise
+        // only removed when the same flow returns, which it never does (#2414)
+        if let Some(pool) = state.pool.clone() {
+            sso::start_state_sweeper(pool);
+        }
         api = api
             .merge(access_control::router())
             .merge(alerting::router())

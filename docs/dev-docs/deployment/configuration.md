@@ -1,6 +1,6 @@
 # Configuration reference
 
-The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`rolter.example.toml`](../../rolter.example.toml). At runtime, the control plane is the source of truth and applies changes without a restart ([config-and-hot-reload.md](../architecture/config-and-hot-reload.md)).
+The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`rolter.example.toml`](../../../rolter.example.toml). At runtime, the control plane is the source of truth and applies changes without a restart ([config-and-hot-reload.md](../architecture/config-and-hot-reload.md)).
 
 ## Schema
 
@@ -265,7 +265,7 @@ Each `[[guardrails.rules]]` entry:
 - `builtin` (string) — one of `email`, `phone`, `api_token`, `payment_card`; **or** `pattern` (string) for a custom regex. Set exactly one.
 - `stage` (string, default `pre_call`) — `pre_call` scans request content before proxying; `post_call` masks the response body before it reaches the client
 - `action` (string, default `annotate`) — `annotate` (count only, forward unchanged), `block` (reject with an OpenAI-compatible `guardrail_blocked` error), or `redact` (replace each match with `replacement`)
-- `replacement` (string) — redaction token; defaults to the built-in entity token (e.g. `[REDACTED:EMAIL]`) or `[REDACTED]`
+- `replacement` (string) — redaction token; defaults to the built-in entity token (e.g. `[REDACTED:EMAIL]`) or `[REDACTED]`; an empty or whitespace-only value counts as omitted, so a match is never deleted outright
 - `include_system` (bool, default `false`) — also scan operator-authored `system`/`developer` messages; excluded by default
 
 > `default_on` was removed. It documented a per-request client opt-in that was
@@ -355,8 +355,8 @@ Each `[[prompt_templates.templates]]` entry is one immutable version:
 - `routes` (array of string, default all) — public model names this template applies to; empty means every route
 - `[[prompt_templates.templates.variables]]` — a named variable a decorator may reference as `{{ name }}`:
   - `name` (string, `[A-Za-z_][A-Za-z0-9_]*`)
-  - `required` (bool, default `false`) — the caller must supply it; mutually exclusive with `default`
-  - `default` (string) — value used when the caller omits it
+  - `required` (bool, default `false`) — the caller must supply it on every request the template applies to, whether or not a decorator references it; mutually exclusive with `default`
+  - `default` (string) — value used when the caller omits it; an optional variable with no default renders as the empty string
 - `[[prompt_templates.templates.decorators]]` — a message injected around the caller's own messages:
   - `role` (string, default `system`) — `system`, `assistant`, or `user`
   - `position` (string, default `prepend`) — `prepend` (before the caller's messages) or `append` (after), both in declared order

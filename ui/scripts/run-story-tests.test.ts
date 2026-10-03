@@ -18,6 +18,7 @@ import {
   parseListeningPids,
   parseWorkingDirectory,
   portIsFree,
+  stopChild,
   type StorybookIndex,
 } from "./run-story-tests";
 
@@ -254,5 +255,43 @@ describe("claimPort / claimFreePort (#2323)", () => {
     } finally {
       rmSync(d, { recursive: true, force: true });
     }
+  });
+});
+
+describe("stopChild", () => {
+  /** A child that exits on the named signal only, or never. */
+  function fakeChild(diesOn: NodeJS.Signals | null) {
+    const listeners: (() => void)[] = [];
+    const child = {
+      pid: 1,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      once: (_: string, fn: () => void) => void listeners.push(fn),
+    };
+    const sent: string[] = [];
+    const signal = (sig: NodeJS.Signals) => {
+      sent.push(sig);
+      if (sig === diesOn) setTimeout(() => listeners.forEach((fn) => fn()), 5);
+    };
+    return { child: child as never, sent, signal };
+  }
+
+  it("resolves after SIGTERM when the child exits", async () => {
+    const { child, sent, signal } = fakeChild("SIGTERM");
+    await stopChild(child, signal, 200, 200);
+    expect(sent).toEqual(["SIGTERM"]);
+  });
+
+  it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    const { child, sent, signal } = fakeChild("SIGKILL");
+    await stopChild(child, signal, 20, 200);
+    expect(sent).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+
+  it("does nothing for a child that already exited", async () => {
+    const { child, sent, signal } = fakeChild(null);
+    (child as { exitCode: number | null }).exitCode = 0;
+    await stopChild(child, signal);
+    expect(sent).toEqual([]);
   });
 });

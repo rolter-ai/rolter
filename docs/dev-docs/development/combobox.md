@@ -26,16 +26,17 @@ const options: ComboboxOption[] = [
 </Field>;
 ```
 
-| Prop                 | What it is for                                                                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------- |
-| `options`            | `{ value, label, description?, group?, disabled? }[]`                                             |
-| `value` / `onChange` | controlled; `""` means nothing selected                                                           |
-| `placeholder`        | shown while nothing is selected; defaults to `common.combobox.placeholder`                        |
-| `clearable`          | adds an × that resets the selection — for an optional field                                       |
-| `size`               | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs` |
-| `className`          | wrapper layout only (margins, width) — the control's own height comes from `size`                 |
-| `listClassName`      | the popup, mainly to widen it past the control                                                    |
-| `title`              | native tooltip, for a compact control whose label sits elsewhere                                  |
+| Prop                 | What it is for                                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `options`            | `{ value, label, description?, group?, disabled? }[]`                                                            |
+| `value` / `onChange` | controlled; `""` means nothing selected                                                                          |
+| `placeholder`        | shown while nothing is selected; defaults to `common.combobox.placeholder`                                       |
+| `allowCustom`        | accepts a value outside `options`: a typed string with no exact match gets a "Use …" row (`common.combobox.use`) |
+| `clearable`          | adds an × that resets the selection — for an optional field                                                      |
+| `size`               | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs`                |
+| `className`          | wrapper layout only (margins, width) — the control's own height comes from `size`                                |
+| `listClassName`      | the popup, mainly to widen it past the control                                                                   |
+| `title`              | native tooltip, for a compact control whose label sits elsewhere                                                 |
 
 `description` is the secondary line under the label. The Playground's model
 picker uses it for what `owned_by` says, which the native control could not

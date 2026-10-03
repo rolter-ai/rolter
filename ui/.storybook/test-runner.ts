@@ -1,6 +1,7 @@
 import type { TestRunnerConfig } from "@storybook/test-runner";
 import { getStoryContext } from "@storybook/test-runner";
 import { appendFileSync } from "node:fs";
+import type { Page } from "playwright";
 import { checkA11y, getViolations, injectAxe } from "axe-playwright";
 
 import { PAGE_A11Y_RULE_IDS, PAGE_A11Y_STORY_ID } from "../src/lib/story-a11y.ts";
@@ -52,6 +53,24 @@ const DISABLED_RULES: Record<string, { enabled: boolean }> = {
 // soon as the iframe's script has run
 type PreviewGlobal = { __STORYBOOK_PREVIEW__?: { ready(): Promise<unknown> } };
 
+// axe keeps running in the tab after a story times out, and the next story's
+// run then dies with "Axe is already running" (#2661) — one slow story became
+// two failures. axe-core exposes no cancel, so the next story waits the stale
+// run out, bounded, before starting its own
+type AxeGlobal = { axe?: { _running?: boolean } };
+
+async function settleAxe(page: Page, id: string, waitMs = 30_000): Promise<void> {
+  const idle = () => !(globalThis as AxeGlobal).axe?._running;
+  if (await page.evaluate(idle)) return;
+  try {
+    await page.waitForFunction(idle, undefined, { timeout: waitMs });
+  } catch {
+    throw new Error(
+      `${id}: an axe run left over from an earlier story did not finish in ${waitMs}ms`,
+    );
+  }
+}
+
 const config: TestRunnerConfig = {
   async preVisit(page, context) {
     await page.waitForFunction(() => !!(globalThis as PreviewGlobal).__STORYBOOK_PREVIEW__);
@@ -94,6 +113,7 @@ const config: TestRunnerConfig = {
           "by the docgen transform and the story passes asserting nothing (#1373).",
       );
     }
+    await settleAxe(page, context.id);
     // ROLTER_AXE_TALLY=<path> re-measures the whole band (#1244): every
     // violation at every impact is appended as one JSON line per story so the
     // per-rule table in docs/dev-docs/development/testing.md can be regenerated. it

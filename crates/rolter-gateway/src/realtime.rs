@@ -514,8 +514,12 @@ async fn relay(
         variant: _,
     } = session;
     let closing = state.realtime_sessions.closing.clone();
-    let (meter, exhausted) = meter.spawn();
-    let mut exhausted = Some(exhausted);
+    let channels = meter.spawn();
+    let meter = channels.handle;
+    let mut exhausted = Some(channels.closure);
+    // only a content policy reads the scope after the upgrade, so a session
+    // without one has nothing to follow a re-scope with
+    let mut rescoped = policy.is_some().then_some(channels.scope);
     let mut turns = TurnTracker::default();
     let (mut client_sender, mut client_receiver) = socket.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
@@ -552,6 +556,12 @@ async fn relay(
         let budget_wait = async {
             match exhausted.as_mut() {
                 Some(verdict) => verdict.await.ok(),
+                None => std::future::pending().await,
+            }
+        };
+        let scope_wait = async {
+            match rescoped.as_mut() {
+                Some(scope) => scope.changed().await.is_ok(),
                 None => std::future::pending().await,
             }
         };
@@ -595,6 +605,15 @@ async fn relay(
                 // the meter stopped without a verdict: keep relaying under the
                 // session's other limits rather than polling a closed channel
                 None => exhausted = None,
+            },
+            changed = scope_wait => match rescoped.as_mut() {
+                Some(scope) if changed => {
+                    if let Some(policy) = policy.as_mut() {
+                        policy.rescope(&scope.borrow_and_update());
+                    }
+                }
+                // the meter is gone, and with it any later re-scope
+                _ => rescoped = None,
             },
             message = client_receiver.next() => match message {
                 Some(Ok(message)) => {

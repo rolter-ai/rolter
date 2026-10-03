@@ -112,7 +112,9 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub client: ClientConfig,
     /// deployment-wide ingress policy owned by the control plane's Security
-    /// screen (#1162); empty for a file-configured gateway
+    /// screen (#1162). A file-configured gateway may set the same two keys
+    /// under `[security]` (`required_headers`, `auth_bypass_routes`) and both
+    /// are enforced; absent, the policy is empty and adds no rules
     #[serde(default)]
     pub security: SecurityPolicyConfig,
     /// inference parameters filled in when a client omits them
@@ -555,6 +557,12 @@ fn default_metrics_path() -> String {
 /// by a test in `rolter-control`. `stdio` is deliberately absent: it names a
 /// local subprocess, which a hosted control plane cannot dial and the gateway's
 /// HTTP proxy path has never served.
+///
+/// `websocket` is accepted although the gateway has no proxy path for it: it
+/// stays valid for registry rows already stored under the check constraints and
+/// for external producers posting tool-call events, so dropping it would orphan
+/// stored data (#2432). The `/mcp/{server}` proxy rejects it with
+/// `mcp_transport_unsupported`, so the gateway itself never writes such a row.
 pub const MCP_TRANSPORTS: &[&str] = &["sse", "streamable_http", "websocket"];
 
 /// Gateway request paths reserved by the built-in routes; the metrics path must
@@ -3048,6 +3056,36 @@ impl GatewayConfig {
         Ok(config)
     }
 
+    /// One warning per provider or group that sets `project_scoped = true`.
+    ///
+    /// A file names no projects, so the flag means "the project this file is
+    /// imported into" and only `rolter-seed --import` acts on it. It is kept out
+    /// of [`GatewayConfig::load`] on purpose: the seeder loads through the same
+    /// function and must stay silent. Callers that serve the file directly
+    /// (the gateway, `rolter check`) log these lines themselves (#2468).
+    pub fn project_scoped_warnings(&self) -> Vec<String> {
+        let providers = self
+            .providers
+            .iter()
+            .filter(|p| p.project_scoped)
+            .map(|p| ("provider", p.name.as_str()));
+        let groups = self
+            .provider_groups
+            .iter()
+            .filter(|g| g.project_scoped)
+            .map(|g| ("provider group", g.name.as_str()));
+        providers
+            .chain(groups)
+            .map(|(what, name)| {
+                format!(
+                    "{what} '{name}' sets project_scoped = true, which a gateway reading this \
+                     file directly ignores (a file names no projects); it only takes effect \
+                     through the control plane, via `rolter-seed --import`"
+                )
+            })
+            .collect()
+    }
+
     /// Return the CA bundles a provider should trust. An explicit provider
     /// value replaces the global setting. `ROLTER_CA_BUNDLE` replaces the
     /// global config value for container-friendly deployment.
@@ -3259,7 +3297,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &mut self.routes {
             let unknown = route.advanced.guardrails.unknown_rules(&rule_names);
@@ -3270,12 +3308,12 @@ impl GatewayConfig {
                 .advanced
                 .guardrails
                 .disable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             route
                 .advanced
                 .guardrails
                 .enable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             let mut seen = std::collections::HashSet::new();
             for name in unknown.into_iter().filter(|name| seen.insert(name.clone())) {
                 warnings.push(format!(
@@ -3930,7 +3968,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &self.routes {
             for unknown in route.advanced.guardrails.unknown_rules(&rule_names) {
@@ -5990,6 +6028,14 @@ mod tests {
     }
 
     #[test]
+    fn a_padded_guardrail_override_matches_the_trimmed_rule_name() {
+        let mut cfg = config_with_guardrail_override(&[" live "], &[]);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+        assert!(cfg.sanitize_for_snapshot().is_empty());
+        assert_eq!(cfg.routes[0].advanced.guardrails.disable.len(), 1);
+    }
+
+    #[test]
     fn a_file_config_with_an_unknown_guardrail_override_still_fails_validation() {
         let cfg = config_with_guardrail_override(&["typo"], &[]);
         let problems = cfg.validate().expect_err("typo must be refused");
@@ -6920,5 +6966,44 @@ mod tests {
                 "no warning names {needle}"
             );
         }
+    }
+
+    #[test]
+    fn project_scoped_warnings_name_each_flagged_entry() {
+        let cfg = GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "scoped"
+            kind = "openai"
+            api_base = "https://api.example.com/v1"
+            api_key_env = "K"
+            project_scoped = true
+
+            [[providers]]
+            name = "shared"
+            kind = "openai"
+            api_base = "https://api.example.com/v1"
+            api_key_env = "K"
+
+            [[provider_groups]]
+            name = "scoped-group"
+            project_scoped = true
+            "#,
+        )
+        .expect("parses");
+        let warnings = cfg.project_scoped_warnings();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("provider 'scoped'"));
+        assert!(warnings[1].contains("provider group 'scoped-group'"));
+        assert!(warnings.iter().all(|w| w.contains("rolter-seed --import")));
+    }
+
+    #[test]
+    fn project_scoped_warnings_are_empty_when_unset() {
+        let cfg = GatewayConfig::from_toml_str(
+            "[[providers]]\nname = \"shared\"\nkind = \"openai\"\napi_base = \"https://api.example.com/v1\"\napi_key_env = \"K\"\n",
+        )
+        .expect("parses");
+        assert!(cfg.project_scoped_warnings().is_empty());
     }
 }

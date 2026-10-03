@@ -410,8 +410,13 @@ the things a body would carry are the reasons this endpoint exists:
   scopes cannot be a key that "cannot address a model the user could not already
   address", because the client can ask for everything. The list is computed here
   from the routes configured in the project being minted against, and written
-  out explicitly — an empty `models` array means _every_ model, so a project with
-  no routes is a `400` rather than a key with the widest possible reach.
+  out explicitly — an empty `models` array means _every_ model. A project with
+  no routes yet gets `models = ["fake-llm"]` instead (#2300): the built-in is
+  the one model a fresh deployment can answer, and a managed gateway refuses a
+  keyless call even for it (`authenticate` in
+  `crates/rolter-gateway/src/handlers.rs` checks the key before the builtin is
+  resolved), so this key is what lets the first Getting started call work
+  before any provider or route exists, without reaching anything else.
 - **Lifetime.** `expires_in_days` has a floor of one day. A playground key lives
   `PLAYGROUND_KEY_TTL_MINUTES` (30) and the dashboard asks for a fresh one, so a
   credential does not outlive the tab holding it.
@@ -423,14 +428,15 @@ reach, which makes it a snapshot of what the caller could reach rather than a
 standing grant.
 
 The dashboard calls this once per project as the Playground opens, and once
-more per **Mint key** / **Renew key** — never in a loop, since a refusal (a
-routeless project answers `400`, no session answers `401`) is a state the
-operator has to act on rather than one a retry can clear. The automatic call
-waits for `my_virtual_key:create` from `/api/v1/rbac/effective` and is not made
-on an explicit refusal, so a viewer is not sent into a `403` on arrival. The
-endpoint takes no body, so `400` is the one client error it gives, and the
-Playground reads that status as "this project routes nothing": it explains the
-precondition, links Routing Rules and offers no retry (#2061). With no key and
+more per **Mint key** / **Renew key** — never in a loop, since a refusal (no
+session answers `401`) is a state the operator has to act on rather than one a
+retry can clear. The automatic call waits for `my_virtual_key:create` from
+`/api/v1/rbac/effective` and is not made on an explicit refusal, so a viewer is
+not sent into a `403` on arrival. A minted key whose `models` is exactly
+`["fake-llm"]` is the routeless project's: the Playground keeps Send live, says
+the key reaches the built-in only and links Routing Rules, since a route added
+later is outside that key's reach until **Renew key** mints a wider one
+(#2061, #2300). With no key and
 no mint due, the Playground asks `GET /gw/v1/models` once without a key; a
 gateway no control plane manages, holding no keys, answers it, and the screen
 then sends without a key rather than holding back its Send buttons. Both the Virtual Keys screen and the account's
@@ -469,6 +475,10 @@ Human users authenticate to the control plane. Two providers ship today: **local
 Roles are granted via `memberships` at an **org / team / project** scope. Permission checks resolve the most specific membership for the target resource.
 
 The deployment always keeps one active superadmin (`is_superadmin` and not deactivated, #2344). `UserRepo::update_account`, `set_deactivated` and `delete` take one transaction-scoped advisory lock (`pg_advisory_xact_lock(hashtextextended('superadmins', 0))`) before they count the other active superadmins, and return `LockoutGuard::WouldLockOut` when the target is the last one. The API maps that to `409` with `error.code = last_superadmin`; SCIM deprovisioning and `active: false` answer a SCIM `409`. The lock is one key for the whole set rather than a row lock on the target because two concurrent demotions of two different superadmins would each lock only their own row and each see the other still active. `ROLTER_ADMIN_TOKEN` is not an account and never counts as a remaining superadmin, nor is it exempt. The `rolter-seed` bootstrap and `rolter mfa reset` only create or promote accounts or clear a second factor, so they cannot shrink the set.
+
+An org also keeps one active org-scoped `admin` grant (#2311). `MembershipRepo::delete_guarded` takes `pg_advisory_xact_lock(hashtextextended('org_admins:' || org, 0))`, re-counts the other admin grants held by non-deactivated users under it, and returns `LockoutGuard::WouldLockOut` when the target is the last; `delete_membership` maps that to `409` with `error.code = last_org_admin` and passes `protect_last_admin = !principal.is_superadmin()`. The control plane has no membership update route (the dashboard's role change is grant-then-revoke), so the revoke is the downgrade path and is covered by the same guard. Deleting or deactivating a user through `/api/v1/users` is superadmin-only and therefore exempt.
+
+The identity-provider paths are guarded too (#2558), each in the way that fits who is on the other end. **SCIM deactivation** (`DELETE /scim/v2/Users/{id}`, `active: false` through `PATCH`, `PUT` or a provisioning `POST`) goes through `UserRepo::set_deactivated_guarding_org_admins`, which in one transaction takes the superadmin lock, then the `org_admins` lock of every org where the account holds an active org-scoped `admin` grant in ascending org order (so two deactivations cannot deadlock), and returns `DeactivationGuard::LastOrgAdmin(org)` when no other active account holds one there. It answers a SCIM `409`, like the last-superadmin refusal: a SCIM token is not a superadmin who could repair the org afterwards, the IdP surfaces the error and retries, and the account is global, so every org it administers counts, not only the token's. The message does not name the org, which the token's tenant may not be able to see. **Group reconciliation** (SSO on login, SCIM group sync) instead revokes each stale `sso`/`scim` grant through `crud::revoke_idp_grant`, which calls `delete_guarded(id, true)` and, on `WouldLockOut`, keeps the grant, logs a warning and writes a `membership.last_admin_kept` audit row. Failing there would turn an IdP group change into a sign-in the admin cannot complete, or a group sync that never converges; keeping the grant is safe because both paths derive the wanted set from the IdP on every run, so the next login or sync revokes it once the org has another admin. On SSO the kept role is reported in the login's `granted_roles`, since it is still in force.
 
 Sessions are stateful rows (`sessions`, peppered token digest), so revocation is a delete. Deactivation, deletion, SCIM deprovisioning and a break-glass factor reset remove every session the account holds. A password set through `PUT /api/v1/users/{id}` does the same, except for the session that sent the request, so a superadmin resetting their own password stays signed in where they did it (`SessionRepo::delete_for_user_except`, #1936). The `user.update` audit detail carries `password_changed` and `sessions_revoked`.
 

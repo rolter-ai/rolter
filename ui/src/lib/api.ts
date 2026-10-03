@@ -816,8 +816,8 @@ export function deleteTeam(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// cost attribution: business units roll teams up, customers attribute spend to
-// the org's own customers. both are retired rather than deleted once they have
+// cost attribution: spend reaches a business unit or customer through the virtual keys assigned to it;
+// customers can also roll up into a unit. both are retired rather than deleted once they have
 // history, so `retired_at` is part of the row, not a separate lookup
 
 export interface BusinessUnitRow {
@@ -827,6 +827,13 @@ export interface BusinessUnitRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /**
+   * Virtual keys attributed to this unit that are live: not disabled and not
+   * past their expiry (#2581). Only the org-wide listing carries it; a create
+   * or update answer, or a control plane older than the field, leaves it out,
+   * so absent means "not known" rather than zero.
+   */
+  live_key_count?: number;
 }
 
 export interface CustomerRow {
@@ -837,6 +844,8 @@ export interface CustomerRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /** live virtual keys attributed to this customer; see `BusinessUnitRow` */
+  live_key_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -2980,8 +2989,8 @@ export const PLAYGROUND_PURPOSE = "playground";
  * Takes no input on purpose: the server scopes the key to the routes the
  * project actually has and fixes its lifetime at half an hour, so the browser
  * cannot ask for a wider or longer-lived key than the one it is handed. A
- * project with no routes answers 400 rather than minting a key that reaches
- * every model.
+ * project with no routes yet gets a key that reaches the built-in `fake-llm`
+ * alone, never an empty list, which would reach every model (#2300).
  */
 export function mintPlaygroundKey(projectId: string): Promise<MintedKey> {
   return sendJson<MintedKey>("POST", `/api/v1/me/projects/${projectId}/playground-key`);
@@ -3602,7 +3611,7 @@ export function collectorConfigUrl(base: string): string {
 // ---------------------------------------------------------------------------
 // mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
 
-export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse"] as const;
+export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse", "websocket"] as const;
 export const MCP_STATUSES = [
   "success",
   "error",
