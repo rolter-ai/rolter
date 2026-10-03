@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -202,143 +203,139 @@ function ClientSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.baseUrl")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.baseUrlHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.baseUrl")}
+        description={t("pages.clientSettings.baseUrlHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="client-public-base-url"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
+              {t("pages.clientSettings.publicBaseUrl")}
+            </label>
+            <Input
+              id="client-public-base-url"
+              className="sm:min-w-[320px] font-mono text-xs"
+              aria-label={t("pages.clientSettings.publicBaseUrl")}
+              placeholder={BASE_URL_PLACEHOLDER}
+              value={form.publicBaseUrl}
+              onChange={(e) => set({ publicBaseUrl: e.target.value })}
+            />
+          </div>
+          {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
         </div>
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="client-public-base-url"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.clientSettings.publicBaseUrl")}
-          </label>
-          <Input
-            id="client-public-base-url"
-            className="sm:min-w-[320px] font-mono text-xs"
-            aria-label={t("pages.clientSettings.publicBaseUrl")}
-            placeholder={BASE_URL_PLACEHOLDER}
-            value={form.publicBaseUrl}
-            onChange={(e) => set({ publicBaseUrl: e.target.value })}
+      </SettingsPanel>
+
+      <SettingsPanel
+        title={t("pages.clientSettings.forwarded")}
+        description={t("pages.clientSettings.forwardedHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <textarea
+            aria-label={t("pages.clientSettings.forwarded")}
+            className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
+            placeholder={t("pages.clientSettings.forwardedPlaceholder")}
+            value={form.forwarded}
+            onChange={(e) => set({ forwarded: e.target.value })}
           />
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{t("pages.clientSettings.alwaysPropagated")}</span>
+            {dto.always_propagated.map((h) => (
+              <Badge key={h} tone="info" className="font-mono">
+                {h}
+              </Badge>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{t("pages.clientSettings.neverForwarded")}</span>
+            {dto.reserved.map((h) => (
+              <Badge key={h} tone="neutral" className="font-mono">
+                {h}
+              </Badge>
+            ))}
+          </div>
         </div>
-        {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.forwarded")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.forwardedHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.injected")}
+        description={t("pages.clientSettings.injectedHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-2">
+            {form.injected.length === 0 && (
+              <p className="text-xs text-[color:var(--text-subtle)]">
+                {t("pages.clientSettings.injectedNone")}
+              </p>
+            )}
+            {form.injected.map((row, i) => (
+              <div key={row.id} className="flex items-center gap-2">
+                <Input
+                  className="max-w-[220px] font-mono text-xs"
+                  aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
+                  placeholder="x-partner-id"
+                  value={row.name}
+                  onChange={(e) =>
+                    set({
+                      injected: form.injected.map((r) =>
+                        r.id === row.id ? { ...r, name: e.target.value } : r,
+                      ),
+                    })
+                  }
+                />
+                <Input
+                  className="flex-1 font-mono text-xs"
+                  aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
+                  placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
+                  value={row.value}
+                  onChange={(e) =>
+                    set({
+                      injected: form.injected.map((r) =>
+                        r.id === row.id ? { ...r, value: e.target.value } : r,
+                      ),
+                    })
+                  }
+                />
+                <DeleteIconButton
+                  label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
+                  onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
+                />
+              </div>
+            ))}
+          </div>
+          <div>
+            <Button variant="outline" onClick={() => set({ injected: [...form.injected, pair()] })}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              {t("pages.clientSettings.addHeader")}
+            </Button>
+          </div>
         </div>
-        <textarea
-          aria-label={t("pages.clientSettings.forwarded")}
-          className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
-          placeholder={t("pages.clientSettings.forwardedPlaceholder")}
-          value={form.forwarded}
-          onChange={(e) => set({ forwarded: e.target.value })}
-        />
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>{t("pages.clientSettings.alwaysPropagated")}</span>
-          {dto.always_propagated.map((h) => (
-            <Badge key={h} tone="info" className="font-mono">
-              {h}
-            </Badge>
-          ))}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>{t("pages.clientSettings.neverForwarded")}</span>
-          {dto.reserved.map((h) => (
-            <Badge key={h} tone="neutral" className="font-mono">
-              {h}
-            </Badge>
-          ))}
-        </div>
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.injected")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.injectedHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.correlation")}
+        description={t("pages.clientSettings.correlationHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="client-request-id-header"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
+              {t("pages.clientSettings.requestIdHeader")}
+            </label>
+            <Input
+              id="client-request-id-header"
+              className="max-w-[240px] font-mono text-xs"
+              aria-label={t("pages.clientSettings.requestIdHeader")}
+              value={form.requestIdHeader}
+              onChange={(e) => set({ requestIdHeader: e.target.value })}
+            />
+          </div>
         </div>
-        <div className="flex flex-col gap-2">
-          {form.injected.length === 0 && (
-            <p className="text-xs text-[color:var(--text-subtle)]">
-              {t("pages.clientSettings.injectedNone")}
-            </p>
-          )}
-          {form.injected.map((row, i) => (
-            <div key={row.id} className="flex items-center gap-2">
-              <Input
-                className="max-w-[220px] font-mono text-xs"
-                aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
-                placeholder="x-partner-id"
-                value={row.name}
-                onChange={(e) =>
-                  set({
-                    injected: form.injected.map((r) =>
-                      r.id === row.id ? { ...r, name: e.target.value } : r,
-                    ),
-                  })
-                }
-              />
-              <Input
-                className="flex-1 font-mono text-xs"
-                aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
-                placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
-                value={row.value}
-                onChange={(e) =>
-                  set({
-                    injected: form.injected.map((r) =>
-                      r.id === row.id ? { ...r, value: e.target.value } : r,
-                    ),
-                  })
-                }
-              />
-              <DeleteIconButton
-                label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
-                onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
-              />
-            </div>
-          ))}
-        </div>
-        <div>
-          <Button variant="outline" onClick={() => set({ injected: [...form.injected, pair()] })}>
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            {t("pages.clientSettings.addHeader")}
-          </Button>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.correlation")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.correlationHint")}
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="client-request-id-header"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.clientSettings.requestIdHeader")}
-          </label>
-          <Input
-            id="client-request-id-header"
-            className="max-w-[240px] font-mono text-xs"
-            aria-label={t("pages.clientSettings.requestIdHeader")}
-            value={form.requestIdHeader}
-            onChange={(e) => set({ requestIdHeader: e.target.value })}
-          />
-        </div>
-      </section>
+      </SettingsPanel>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {localError && (
