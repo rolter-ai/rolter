@@ -777,6 +777,9 @@ impl From<ApiError> for ScimError {
         match err {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
+            ApiError::CodedForbidden { message, .. } => {
+                Self::new(StatusCode::FORBIDDEN, None, message)
+            }
             ApiError::Core(err) => err.into(),
             ApiError::Curated(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)

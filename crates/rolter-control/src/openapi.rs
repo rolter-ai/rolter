@@ -2005,7 +2005,13 @@ fn operations() -> Vec<Op> {
                 "startSsoLogin",
                 "Begin an SSO login",
             )
-            .public(),
+            .public()
+            .see_other(
+                "the identity provider's authorization endpoint. While the provider's org has \
+                 single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
+                 dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
+                 other caller gets a `403` with `error.code` `sso_disabled`",
+            ),
             Op::get(
                 "/auth/sso/{slug}/callback",
                 "ssoCallback",
@@ -3295,11 +3301,17 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
-        // the SSO callback is the only other one (#2297)
+        // the SSO callback is another (#2297)
         let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
         assert!(sso["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
+        // the start of an sso login redirects too, and names the refusal it
+        // can end in (#2339)
+        let start = &doc["paths"]["/auth/sso/{slug}/start"]["get"]["responses"];
+        assert!(start["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_disabled")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3308,7 +3320,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 2);
+        assert_eq!(redirects, 3);
     }
 
     #[test]

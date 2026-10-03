@@ -1741,11 +1741,22 @@ impl SsoRepo<'_> {
         Ok(rows.pop())
     }
 
-    /// every enabled provider across all orgs, for the login screen. Returns
-    /// names and slugs the login URL already exposes; never secrets.
-    pub async fn list_enabled_providers(&self) -> Result<Vec<SsoProvider>> {
+    /// Every provider the login screen may offer: enabled, and owned by an org
+    /// whose auth policy allows single sign-on. An org with no policy row
+    /// allows it, as [`OrgAuthPolicyRepo::get`] reads it, so a deployment that
+    /// never set a policy keeps its buttons. Returns names and slugs the login
+    /// URL already exposes; never secrets.
+    pub async fn list_sign_in_providers(&self) -> Result<Vec<SsoProvider>> {
+        // `not exists` rather than a join, so the shared column list needs no
+        // table prefix and a missing policy row reads as sso on (#2339)
         sqlx::query_as(&format!(
-            "select {SSO_PROVIDER_COLUMNS} from sso_providers where enabled order by name"
+            "select {SSO_PROVIDER_COLUMNS} from sso_providers
+             where enabled
+               and not exists (
+                   select 1 from org_auth_policies p
+                   where p.org_id = sso_providers.org_id and not p.allow_sso
+               )
+             order by name"
         ))
         .fetch_all(self.0)
         .await

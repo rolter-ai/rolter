@@ -15,10 +15,11 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
+import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
-import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
+import { GroupMappings, MAPPABLE_ROLES } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +59,7 @@ import {
   type SecretGap,
 } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
+import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
@@ -296,16 +298,6 @@ const MFA_KEY: Record<MfaPolicy, string> = {
   required_superadmin: "requiredSuperadmin",
   required_all: "requiredAll",
 };
-
-/**
- * The break-glass procedure, for the confirmation that warns about a lockout.
- *
- * A link to our own docs on the forge rather than to a docs site this
- * deployment may not be able to reach — and the command itself is in the copy,
- * so an operator with no network still knows what to run.
- */
-const MFA_DOCS_URL =
-  "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/security/two-factor-authentication.mdx#break-glass-a-lost-device";
 
 /**
  * How long an org may give its members before a `required_*` policy starts
@@ -651,14 +643,7 @@ function SignInPolicyCard({
             it happens rather than after */}
         <p className="text-xs text-muted-foreground">
           {t("pages.sso.policy.mfaConfirm.breakGlass")}{" "}
-          <a
-            href={MFA_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            {t("pages.sso.policy.mfaConfirm.breakGlassLink")}
-          </a>
+          <DocsLink page="breakGlass" label={t("pages.sso.policy.mfaConfirm.breakGlassLink")} />
         </p>
       </ConfirmDialog>
     </section>
