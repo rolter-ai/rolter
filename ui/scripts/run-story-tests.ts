@@ -170,7 +170,7 @@ export function claimPort(port: number, lockDir = defaultLockDir()): PortClaim |
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    let holder = Number.NaN;
+    let holder: number;
     try {
       holder = Number(readFileSync(file, "utf8").trim());
     } catch {
