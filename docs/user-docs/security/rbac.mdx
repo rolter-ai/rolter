@@ -334,7 +334,7 @@ curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
 - `display_name` is 1 to 80 characters and `bio` up to 500, after surrounding whitespace is trimmed. Control characters are refused (a bio may contain line breaks) and so is a value that is only whitespace.
 - An omitted field is left alone; `null` or `""` clears it.
 - `GET /api/v1/auth/me` returns both fields on `user`, and the users list returns them for admins.
-- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
+- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC keep an editable name.
 - Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
 
 ## Your own preferences
@@ -416,5 +416,5 @@ Rolter ships with **local user accounts** secured with email and password. You c
 **OAuth2 / OIDC single sign-on** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is available today, and **SCIM** provisions and deprovisions accounts from the same providers. See [Single sign-on](/security/single-sign-on) and [User provisioning](/security/user-provisioning). A first SSO sign-in gives an account that has no display name the one your identity provider sends; the user can still change it.
 
 <Info>
-  If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
+  LDAP and SAML sign-in are not available. Rolter contains the beginnings of an LDAP directory provider, but no configuration, sign-in route or dashboard screen reaches it, so a directory user cannot sign in through it today. If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
 </Info>

@@ -143,6 +143,11 @@ impl From<rolter_core::Error> for ScimError {
             // text; the crud api answers the same error with a 400 too
             rolter_core::Error::Config(message) => Self::invalid(message),
             rolter_core::Error::Unauthorized => Self::unauthorized(),
+            rolter_core::Error::AlreadyExists(_) => Self::new(
+                StatusCode::CONFLICT,
+                Some("uniqueness"),
+                "a resource with that identifier already exists",
+            ),
             other => {
                 tracing::warn!(error = %other, "internal scim error");
                 Self::new(
@@ -195,6 +200,15 @@ impl FromRequestParts<ControlState> for ScimPrincipal {
 /// Render a user + identity as a SCIM Users resource. `active` mirrors the
 /// account's deactivation flag, which is the only lifecycle state SCIM and the
 /// dashboard both act on.
+///
+/// `displayName` is echoed from `scim_identities` exactly as the IdP last sent
+/// it, not from the sanitised copy on `users.display_name` (#2731). IdPs
+/// reconcile by comparing what they pushed with what the resource returns, so
+/// echoing a trimmed or control-stripped name would read as drift and be
+/// pushed again on every sync. The account column is also shared by every org
+/// that provisions the same person, and keeps its previous value when a name
+/// sanitises to nothing, so it is not this org's `displayName` to report. The
+/// value only ever leaves as an escaped JSON string to the IdP that sent it.
 fn user_resource(user: &User, identity: &ScimIdentity) -> Value {
     let mut resource = json!({
         "schemas": [USER_SCHEMA],
@@ -878,9 +892,12 @@ impl From<ApiError> for ScimError {
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }
-            ApiError::CodedConflict { message, .. } => {
-                Self::new(StatusCode::CONFLICT, None, message)
+            ApiError::CodedConflict { code, message } => {
+                // a taken name is what scim calls a uniqueness conflict
+                let scim_type = (code == crate::crud::NAME_TAKEN).then_some("uniqueness");
+                Self::new(StatusCode::CONFLICT, scim_type, message)
             }
+            ApiError::InvalidField { message, .. } => Self::invalid(message),
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 None,

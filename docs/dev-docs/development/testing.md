@@ -81,10 +81,12 @@ A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
 unconfirmed part shape fails loudly instead of producing a shortened body.
 
-Test grouping is configured in [`.config/nextest.toml`](../../../.config/nextest.toml):
-the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
-reset the schema per test, so they run in a single-threaded group to avoid
-clobbering each other.
+[`.config/nextest.toml`](../../../.config/nextest.toml) defines no test group: the
+Postgres-backed `rolter-store`/`rolter-control` suites run in parallel, because
+every test owns a `TestSchema` and every worktree its own database. They used to
+share a single-threaded `serial-db` group; removing it (#1429) took the two suites
+from 389-572s to 155-342s on a 4-core machine with all 781 tests green in each of
+six runs. The file records the numbers.
 
 ## The Postgres test database
 
@@ -187,11 +189,9 @@ A test holds about one connection at a time, so a worktree costs roughly one
 connection per test thread plus a handful for the harness. The pool size barely
 moves the peak; the number of tests running at once does. That is why the stock
 limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
-24-thread workstation. Under `cargo nextest` the `serial-db` group in
-[`.config/nextest.toml`](../../../.config/nextest.toml) runs one postgres test at a
-time per worktree, so a worktree holds only a few connections there; the numbers
-above are the case for `cargo test`, and for nextest too if that group goes
-(#1429).
+24-thread workstation. The numbers above apply to `cargo nextest` as well as
+`cargo test`: the `serial-db` group that used to hold a worktree to one postgres
+test at a time was removed (#1429).
 
 So the budget is kept in two places:
 
@@ -450,6 +450,11 @@ Everything else runs under nextest, which gives each test **its own process**.
 whole suite as **threads in one process** sharing one environment. Two rules
 follow, and both have bitten:
 
+When the coverage job goes red, each failing test is named in an `::error`
+annotation on the check run ("coverage test failed"), with its panic location
+and message (`.github/scripts/annotate-test-failures.sh`, #2753). Read those
+rather than the raw job log, which not every triage path can download.
+
 - **Never set a process-wide environment variable to a value only your test
   wants.** `Kek::from_env()` is read at request time, so a test that installs
   its own `ROLTER_KEK` is read by another test's in-flight request, and a value
@@ -496,8 +501,8 @@ Policy (ROL-246):
 The checks that read the tree and build nothing run as steps of one job,
 `static checks` (`static` in `quality.yml`): gitleaks over the working tree and
 the branch history, the session-url check over the PR's commits, migrations
-append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
-release handoff checker, its self-test and the release gate scripts' fixture
+append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, ruff
+over `scripts/*.py`, the release handoff checker, its self-test and the release gate scripts' fixture
 test, the board automation retry policy, and the helm chart's appVersion check,
 lint and its renders (`scripts/check-helm-chart.sh`, shared with the `helm-render` prek hook). Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
@@ -550,11 +555,12 @@ link. `rust lint` holds fmt, clippy (default features and `postgres`),
 `cargo doc` with warnings as errors, `cargo hack` over each feature and the
 cross-crate feature combination. None of them invokes the linker, so the job
 skips the wild linker. `rust build` holds the publish verify build
-(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, and
-last the three advisory `semver-checks` steps. Until #2025 these were six jobs:
+(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, the
+[published-port image smoke](#published-port-image-smoke), and last the three
+advisory `semver-checks` steps. Until #2025 these were six jobs:
 `fmt / clippy`, `feature matrix`, `cargo doc (warnings = errors)`,
 `package (publish verify)`, `gateway smoke (fake-llm)` and
-`semver-checks (advisory)`.
+`semver-checks (advisory)`; the image smoke was a seventh until #2037.
 
 They follow the rules of the static checks job above: every check step runs
 under `!cancelled()` and is guarded on the setup it reads, and a `report` step
@@ -671,8 +677,36 @@ declares, and the pull request that fixes them comes from the workflow below
 instead of from Dependabot. A package that only arrives transitively through
 `bun.lock` raises no alert at all: every transitive `ui` alert was marked
 `fixed` the moment `package-lock.json` was deleted, with no version having
-changed. Nothing monitors that class until #1930 audits the lockfile itself, and
-#1931 tracks the vulnerable transitive packages `bun audit` reports today.
+changed. The nightly `ui lockfile audit` job closes that gap by reading the
+lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931 and #2660
+track the vulnerable transitive packages it reports today.
+
+### UI lockfile audit
+
+The `ui lockfile audit` job in `.github/workflows/extended.yml` (#1930) runs
+`bun audit --json` against `ui/bun.lock` every night and on demand, through
+`ui/scripts/audit-lockfile.ts`. It is informational and never a merge gate: a new
+advisory lands on code that is already merged, and a gate would turn every
+unrelated pull request red for it. The failure reaches `report failure` like any
+other `extended.yml` job, which opens or comments on the `extended.yml: nightly
+checks failing` issue. The findings themselves are in the run: one `::error` or
+`::warning` annotation per advisory and a table in the job summary. A run
+that cannot read `bun audit` output fails rather than reading as clean.
+
+To acknowledge an advisory that is accepted rather than fixed, add a row to
+`ui/audit-accepted.json`:
+
+```json
+[{ "id": "GHSA-xxxx-xxxx-xxxx", "reason": "dev-only, never reaches the build", "issue": "#1234" }]
+```
+
+A row names the advisory, not the package, so a different advisory on the same
+package still fails. All three fields are required; the script rejects a row with
+no reason or no tracking issue. A row whose advisory is no longer reported is
+flagged as stale, so remove it. Run the audit locally with
+`cd ui && bun install --frozen-lockfile && bun scripts/audit-lockfile.ts`.
+`ui-security-updates.yml` does not list these findings under "left for a hand
+bump": that workflow plans from Dependabot alerts alone.
 
 ### UI security updates
 
@@ -967,6 +1001,15 @@ times the only thing that caught it was fetching `/index.json` by hand.
   worktree, or a process whose cwd lsof will not disclose — fails the run. On a
   machine with no `lsof` the check is skipped with a warning rather than failing;
   the index check still applies
+- **it renders one story of each file once, untimed.** `storybook dev` compiles
+  on demand, so whichever story ran first paid for the whole preview and its
+  screen's module graph inside its own 15 second budget — about 30s for
+  `Screens/Users › Loaded`, which timed out with nothing wrong with it (#2637).
+  A timed-out test also leaves its `postVisit` axe run going in the same tab, so
+  the story after it failed too, with "Axe is already running". The warm-up
+  opens the first indexed story of each file in headless chromium and waits for
+  it to render; a warm-up that fails is only logged, since the timed run says
+  more precisely what is wrong. CI never hit this: it tests a static build
 - only then does it run the tests, one file per invocation — the positional
   pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
   dies with a shell syntax error
@@ -988,9 +1031,13 @@ bun run test-storybook --url http://127.0.0.1:6006
 The test-runner declares its own loose `playwright` range, so without the pin it
 resolves a different version from `@playwright/test` and launches a browser
 revision `playwright install` never downloaded — the test-runner then fails at
-launch and the play tests silently stop running (#737). Keep both on one version,
-and install `chromium-headless-shell` alongside `chromium`, since the test-runner
-launches the shell rather than the full build.
+launch and the play tests silently stop running (#737). The pin must equal
+`@playwright/test`: an override wins over the dependency range, so a bump of
+`@playwright/test` that skips it installs nothing new and playwright stays frozen
+(#2028). `bun run check:playwright-pin` (`ui/scripts/check-playwright-pin.ts`)
+fails when `overrides.playwright`, `overrides.playwright-core` and
+`devDependencies["@playwright/test"]` differ, so move all three together. Install `chromium-headless-shell` alongside `chromium`,
+since the test-runner launches the shell rather than the full build.
 
 The static build is the one that matters. `storybook dev` serves modules
 unbundled and answers from a warm cache, so it is consistently faster than the
@@ -1593,22 +1640,70 @@ gh workflow run ui-e2e.yml --ref <branch>
 
 ### Published-port image smoke
 
-The `image-smoke` job builds the single image from `docker/Dockerfile` and runs
-it the way the quickstart does: default command (`rolter easy-up`), ports
-published with `-p`, curled from the host. It checks three states: with no
-`ROLTER_ADMIN_TOKEN` and no `ROLTER_ALLOW_OPEN_MODE` the container exits with the
-refusal; acknowledged open, the gateway answers `fake-llm` and the control plane
-serves the dashboard; closed by a throwaway token, `/internal/snapshot` is 401
-without it and 200 with it. A bind on the container's loopback passes every
-check made from inside the container and answers nothing through a published
-port, which is how #1891 shipped. Run it locally against any tag:
+The image smoke runs the single image the way the quickstart does: default
+command (`rolter easy-up`), ports published with `-p`, curled from the host. It
+checks three states: with no `ROLTER_ADMIN_TOKEN` and no
+`ROLTER_ALLOW_OPEN_MODE` the container exits with the refusal; acknowledged
+open, the gateway answers `fake-llm` and the control plane serves the dashboard;
+closed by a throwaway token, `/internal/snapshot` is 401 without it and 200 with
+it. It also checks that both `rolter-control` and `rolter easy-up` accept
+`--database-url`, so an image built without the `postgres` feature fails. A bind
+on the container's loopback passes every check made from inside the container
+and answers nothing through a published port, which is how #1891 shipped.
+
+On every `quality.yml` call it runs as steps of the `rust build` job, against
+the `runtime-prebuilt` target of `docker/Dockerfile` (#2037). That target and
+the published `runtime` target share one `runtime-base` stage, which holds the
+base image and its `nonroot` user, the working directory, the bundled
+`/app/rolter.toml`, the environment (`ROLTER_UI_DIR=/app/ui/dist` among it), the
+exposed ports and the default command. Apart from the base, described below,
+only the source of the three binaries and of `/app/ui/dist` differs: `runtime` compiles them in its builder stages,
+while `runtime-prebuilt` copies them from two named build contexts,
+`rolter-bin` and `rolter-ui`. The job fills those with a dev-profile
+`cargo build --workspace --features postgres`, the features the Dockerfile
+builds with, on its warm Rust cache, stripped into a directory of their own, and
+a `vite build` of the dashboard. It used to be a job of its own that built
+`runtime`, a cold release build of about five minutes on every call for a smoke
+that takes seconds; the prebuilt path adds an estimated two to three minutes to
+`rust build` once the cache is warm, and frees one runner per call.
+
+The trade is that a pull request no longer builds the Dockerfile's builder
+stages. A change that breaks them (a workspace member the `COPY` lines miss, a
+`bun.lock` the image cannot install) surfaces in `extended.yml`'s nightly
+compose smoke, which builds `runtime`, and in `release.yml`, which builds it
+for each architecture and runs this same script against each pushed digest in
+its `smoke image` job before anything is published. Build `runtime` locally
+when you touch those stages.
+
+Run it locally either way:
 
 ```bash
+# the published target, compiled in docker (a cold release build)
 docker build -f docker/Dockerfile --target runtime -t rolter:dev .
+bash docker/smoke/image-smoke.sh rolter:dev
+
+# what CI runs: binaries and dashboard built on the host
+cargo build --workspace --features postgres
+(cd ui && bun install --frozen-lockfile && bun run build)
+docker build -f docker/Dockerfile --target runtime-prebuilt \
+  --build-arg RUNTIME_DISTRO=debian13 \
+  --build-context rolter-bin=target/debug \
+  --build-context rolter-ui=ui/dist -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
+The one other difference is the base. The prebuilt binaries have to run on the
+image's glibc, and a Rust build on Ubuntu 24.04, the CI runner, compiles aws-lc
+against glibc 2.39 headers that redirect `strtol` and `sscanf` to
+`__isoc23_*` symbols from glibc 2.38. Debian 12's glibc is 2.36, so those
+binaries do not start on the published base. The Dockerfile therefore names
+both distroless releases as stages, `distroless-debian12` and
+`distroless-debian13`, and `runtime-base` builds on
+`distroless-${RUNTIME_DISTRO}`, which defaults to `debian12`. CI and the local
+command above pass `RUNTIME_DISTRO=debian13` (glibc 2.41). Both are the same
+distroless `nonroot` image, uid 65532, so the user the smoke runs as does not
+change; the debian12 base itself is smoked by `release.yml`. Bump the two
+digests together.
+
 It needs no secrets and no compose stack, so unlike the compose smoke it runs
-on every push and is blocking. The release workflow's `smoke image` job runs the
-same script against each architecture's pushed digest before anything is
-published.
+on every push and is blocking.

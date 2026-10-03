@@ -220,8 +220,9 @@ export function adminOfProject(projectId: string): StoryMemberships {
  * both are deployment-wide catalogs a superadmin alone writes, which let two
  * screens gate on capabilities the control plane does not define while their
  * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
- * generated copy of `CAPABILITIES` instead, and a test fails the build when
- * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ * copy of `crates/rolter-control/rbac-matrix.json` instead — the matrix the
+ * rolter-control test suite writes from `CAPABILITIES` (#1369) — and a test
+ * fails the build when that copy and the artifact disagree.
  *
  * A bare role is one org membership, which every row of every chain reaches.
  */

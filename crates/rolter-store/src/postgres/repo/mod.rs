@@ -14,7 +14,7 @@ mod labels;
 mod mcp;
 mod mfa;
 mod saved_views;
-mod support;
+pub(super) mod support;
 
 pub use guardrails::*;
 pub use labels::*;
@@ -2595,6 +2595,22 @@ impl ProviderKeyRepo<'_> {
             .await
             .map_err(store_err)?;
         Ok(())
+    }
+
+    /// Which of `provider_ids` have a stored credential, in one query so a
+    /// listing never asks per row. Reads only the key column, never the
+    /// ciphertext or nonce.
+    pub async fn stored_among(
+        &self,
+        provider_ids: &[Uuid],
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select provider_id from provider_keys where provider_id = any($1)")
+                .bind(provider_ids)
+                .fetch_all(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok(ids.into_iter().collect())
     }
 
     /// Whether a credential is stored for `provider_id`.

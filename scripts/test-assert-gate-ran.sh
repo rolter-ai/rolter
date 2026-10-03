@@ -45,6 +45,56 @@ static_check "the step keys on the pr head, not the merge commit" \
 # shellcheck disable=SC2016
 static_check "the step leaves its own run out" 'SELF_RUN_ID: ${{ github.run_id }}'
 
+# ── #2031: a retarget is not a metadata edit ──────────────────────────────────
+# github sends `edited` for a title edit, a body edit and a base-branch change.
+# a new base is a new tree to gate (the merge of head into base, and the
+# `base.sha..head.sha` range quality.yml scans), so every expression in ci.yml
+# that reads `edited` must also read `changes.base`, or that guard lets a
+# retarget reuse a gate run made against the old base. comments are prose,
+# not guards
+metadata_only="github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base"
+awk '
+  /^[[:space:]]*#/ { next }
+  /\$\{\{/ && /edited/ { print FNR ": " $0 }
+' "$workflow" >"$work/edited-guards.txt"
+if [ ! -s "$work/edited-guards.txt" ]; then
+  echo "FAIL [workflow wiring] no expression in ci.yml reads the edited action, so the retarget check has nothing to check" >&2
+  failures=$((failures + 1))
+fi
+while IFS= read -r line; do
+  case $line in
+    *"github.event.action == 'edited' && !github.event.changes.base"*) ;;
+    *)
+      echo "FAIL [workflow wiring] ci.yml line ${line%%:*} reads the edited action without excluding a base change: ${line#*: }" >&2
+      failures=$((failures + 1))
+      ;;
+  esac
+done <"$work/edited-guards.txt"
+
+# the gate jobs skip exactly the metadata-only edit, the fast-path step runs on
+# exactly it, and the verdict branches on the same expression through env
+for job in quality codeql gate-ok; do
+  guard=$(awk -v job="  $job:" '
+    $0 == job { in_job = 1; next }
+    in_job && /^  [a-z]/ { exit }
+    in_job && /^    if: / { print; exit }
+  ' "$workflow")
+  case $guard in
+    *"!($metadata_only)"*) ;;
+    *)
+      echo "FAIL [workflow wiring] job $job must run on every event but a metadata-only edit, got: ${guard:-no if}" >&2
+      failures=$((failures + 1))
+      ;;
+  esac
+done
+static_check "the fast path runs on a metadata-only edit and nothing else" \
+  "if: \${{ !cancelled() && $metadata_only }}"
+if ! grep -qF "METADATA_ONLY: \${{ $metadata_only }}" "$workflow" ||
+  ! grep -qF 'if [ "${METADATA_ONLY}" = "true" ]; then' "$workflow"; then
+  echo "FAIL [workflow wiring] ci-ok's verdict must branch on METADATA_ONLY, or it judges a retarget as a metadata edit" >&2
+  failures=$((failures + 1))
+fi
+
 # the job timeout has to sit above the script's own deadline, or a bare
 # timeout with no explanation is what a long gate produces
 wait_minutes=$(awk -F= '

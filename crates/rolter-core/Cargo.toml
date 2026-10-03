@@ -55,6 +55,8 @@ criterion.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # `#[tokio::test]` for the scheduler-metrics assertions (#834)
 tokio = { workspace = true }
+# unit tests generate their credentials at run time rather than writing them out
+uuid.workspace = true
 
 # criterion benches use their own harness; `cargo bench -p rolter-core`
 # runs them, `cargo bench --no-run` just compiles them (CI guards this)

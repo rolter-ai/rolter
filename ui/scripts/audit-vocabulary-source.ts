@@ -7,7 +7,8 @@ import { join } from "node:path";
  * The Audit Log screen's filters used to be hand-written lists that drifted
  * from what `log_audit` and its siblings record. The control plane has no
  * endpoint listing the distinct values, so this reads them out of its Rust
- * source, the way `rbac-matrix-source.ts` reads the capability table:
+ * source, the way the capability table was read until #1369 replaced that
+ * parser with a checked artifact:
  * `gen-audit-vocabulary.ts` writes `src/lib/audit-vocabulary.json` and
  * `audit-vocabulary-source.test.ts` fails the build while the two disagree.
  *

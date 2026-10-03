@@ -548,6 +548,36 @@ max_secs = 300
 
 ---
 
+### \[cache\]
+
+Global exact-match response-cache settings. Backed by Redis; off by default. Individual routes must also opt in or carry a virtual-key cache override.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for global response caching.
+</ParamField>
+
+<ParamField path="default_ttl_secs" default="60" type="u64">
+  Default entry time-to-live in seconds, overridable per route.
+</ParamField>
+
+<ParamField path="namespace" default="rolter:cache" type="string">
+  Redis key prefix for cache entries to isolate and flush entries easily.
+</ParamField>
+
+<ParamField path="max_entry_bytes" default="1048576" type="u64">
+  Largest response body in bytes that may be cached (defaults to 1 MiB).
+</ParamField>
+
+```toml
+[cache]
+enabled = true
+default_ttl_secs = 60
+namespace = "rolter:cache"
+max_entry_bytes = 1048576
+```
+
+---
+
 ### \[timeouts\]
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
