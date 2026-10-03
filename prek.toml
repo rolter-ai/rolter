@@ -179,6 +179,15 @@ language = "system"
 files = "^docs/user-docs/(docs\\.json|llms\\.txt|.*\\.mdx)$|^scripts/gen-llms-txt\\.ts$"
 pass_filenames = false
 
+# pinned like the ci step; see #2187 / #2185
+[[repos.hooks]]
+id = "ruff"
+name = "ruff (scripts)"
+entry = "uvx ruff@0.15.0 check scripts"
+language = "system"
+files = "^(scripts/.*\\.py|ruff\\.toml)$"
+pass_filenames = false
+
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek
 # builds the environment from the script's own inline metadata (PEP 723), the
 # same pin `uv run --script` resolves in quality.yml. `--self-test` also runs

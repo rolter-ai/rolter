@@ -867,6 +867,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/test-release-gate.sh
 
+      # ── python: the gate scripts under scripts/ ───────────────────────────
+      # the release handoff and rendered-manifest checkers are part of the merge
+      # gate, so drift in them is drift in the gate. rules live in ruff.toml;
+      # the pin is bumped by hand like the zizmor one (#2185)
+      - name: ruff (scripts)
+        id: ruff
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
+        run: uvx ruff@0.15.0 check scripts
+
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
       # which to report, and it only runs on master when an issue or PR is
@@ -964,6 +973,7 @@ jobs:
           OUTCOME_RELEASE_HANDOFF: ${{ steps.release-handoff.outcome }}
           OUTCOME_RELEASE_HANDOFF_SELF_TEST: ${{ steps.release-handoff-self-test.outcome }}
           OUTCOME_RELEASE_GATE: ${{ steps.release-gate.outcome }}
+          OUTCOME_RUFF: ${{ steps.ruff.outcome }}
           OUTCOME_PROJECT_AUTOMATION: ${{ steps.project-automation.outcome }}
           OUTCOME_CHART_APPVERSION: ${{ steps.chart-appversion.outcome }}
           OUTCOME_HELM_LINT: ${{ steps.helm-lint.outcome }}
@@ -1045,6 +1055,7 @@ jobs:
             "prek run release-handoff-self-test --all-files"
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
+          row "ruff" "ruff (scripts)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "helm chart" "helm chart (appVersion tracks the workspace version)" "${OUTCOME_CHART_APPVERSION}" yes \
