@@ -2304,8 +2304,7 @@
         "body": "Register your OIDC provider and members sign in with the company account they already have — rolter turns the groups in their id token into roles here, so joiners and leavers are handled in the directory instead of one invitation at a time."
       },
       "publicUrl": {
-        "title": "The redirect and login URLs use the default address",
-        "body": "<code>ROLTER_PUBLIC_URL</code> is not set, so the control plane builds them from <code>{{url}}</code>, which reaches rolter only from a browser on its own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your users open rolter at and restart the control plane before you copy a redirect URI into your identity provider."
+        "title": "The redirect and login URLs use the default address"
       },
       "confirm": {
         "title": "Delete provider {{name}}?",
@@ -2343,7 +2342,6 @@
         "redirectUriHint": "Register this in your identity provider when you create the application there. The provider then issues the client ID and secret below.",
         "redirectUriEmpty": "Type a slug to see the redirect URI.",
         "redirectUriInvalid": "The slug above is not valid, so there is no redirect URI to register yet.",
-        "redirectUriDefault": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which reaches rolter only from a browser on the control plane's own host.",
         "redirectUriUnknown": "The control plane's public address could not be read, so only the path is shown. The full redirect URI is the value of <code>ROLTER_PUBLIC_URL</code> followed by this path.",
         "issuer": "Issuer URL",
         "issuerHint": "The provider's OIDC issuer. Its discovery document and signing keys are read from here.",
