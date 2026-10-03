@@ -64,16 +64,17 @@ jobs:
   # cargo doc, cargo-deny, gitleaks, actionlint, ui, storybook, smoke, +
   # informational
   # checks). the release paths do not re-run it: release-plz.yml's
-  # `release-gate` waits for `ci-ok` on this workflow's push run, and
-  # release.yml's `verify-external-checks` requires `ci-ok` on the tagged sha,
-  # so nothing publishes a commit this gate has not passed. only the one-shot
+  # `release-gate` and release.yml's `verify-external-checks` both wait for
+  # `ci-ok` on this workflow's push run for the commit they publish, so nothing
+  # publishes a commit this gate has not passed. only the one-shot
   # publish-bootstrap.yml still calls quality.yml directly.
   quality:
     # a title-only edit reruns ci-ok only; the heavy gate already ran
     # (or is still running — see the concurrency group above, which keeps an
     # `edited` run from cancelling it) and never needs re-running for a
     # metadata change. `ci-ok` verifies that claim against the api before it
-    # accepts this skip, so "still running" means red rather than green.
+    # accepts this skip, so "still running" means it waits for the verdict
+    # rather than reporting green.
     #
     # the condition is scoped to `pull_request` on purpose. only that event
     # carries `action: edited`, so the extra clause changes nothing today — it
@@ -98,7 +99,7 @@ jobs:
   # two, and three jobs spent most of their time on setup. the shared leg still
   # uploads one sarif per language under its old `/language:<name>` category,
   # so code scanning keeps the same four configurations. the leg name has no
-  # comma because release.yml splits its required-check list on commas
+  # comma because release.yml splits its required-job list on commas
   codeql:
     name: codeql (${{ matrix.leg }})
     # scoped to `pull_request` for the same reason `quality` is: no other event
@@ -169,7 +170,7 @@ jobs:
       # make the dependency sources available so the rust extractor resolves
       # calls into crates instead of leaving them unresolved
       - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
@@ -275,6 +276,12 @@ jobs:
     if: always()
     needs: [quality, codeql]
     runs-on: ubuntu-latest
+    # above the fast path's 90-minute wait for an in-flight gate
+    # (scripts/assert-gate-ran.sh), so its own deadline, with a message that
+    # says what to do, is what fires rather than a bare job timeout. every
+    # other path through this job takes seconds, since it starts only once
+    # `quality` and `codeql` are done
+    timeout-minutes: 110
     permissions:
       contents: read
       # listing this workflow's other runs on the same head sha is the whole
@@ -304,8 +311,13 @@ jobs:
       # reads the newest one, so a retitle during an in-flight gate run made the
       # commit mergeable before a single test had run (#1328, seen on #1315 and
       # #1267). this step turns the assumption into a check: the fast-path may
-      # only report green when a real gate run for this exact sha has already
-      # completed successfully and nothing else is still running on it.
+      # only report green when a real gate run for this exact sha recorded a
+      # passing `gate-ok` and no other run on it still owes a gate verdict.
+      #
+      # when a gate is still in flight the step waits for its verdict rather
+      # than declining at once. a red `ci-ok` is not superseded by a later
+      # green one on the same sha: the status rollup keeps both and the pr
+      # stays blocked until the red run is re-run by hand (#2391)
       - name: assert the gate already ran for this commit
         id: fast-path
         # the fast path is a pull-request affordance and nothing else. a
@@ -320,74 +332,10 @@ jobs:
           # runs and check-runs that branch protection reads hang off the PR head
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SELF_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          runs="${RUNNER_TEMP}/ci-runs.json"
-          # scoped to ci.yml by filename: a run of any other workflow on this sha
-          # says nothing about this gate. no pipeline here on purpose — under
-          # `pipefail` a `| head`/`| grep -q` short-circuit fails the step for the
-          # wrong reason (#1291, #1306), so the body goes to a file and jq reads it
-          attempt=1
-          while true; do
-            if gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${HEAD_SHA}&per_page=100&exclude_pull_requests=true" > "${runs}"; then
-              break
-            fi
-            if [ "${attempt}" -ge 3 ]; then
-              # a flaking query must never resolve to green: no answer is not an answer
-              echo "::error::could not list ci runs for ${HEAD_SHA} after ${attempt} attempts; refusing to report green without a gate result"
-              exit 1
-            fi
-            attempt=$((attempt + 1))
-            sleep 5
-          done
-
-          echo "ci runs on ${HEAD_SHA}:"
-          jq -r '.workflow_runs[] | "  \(.id) \(.event) \(.status) \(.conclusion // "-")"' "${runs}"
-
-          # this listing contains the current run too — drop it by id, never by
-          # name, since every run of this workflow shares the name
-          unfinished="$(jq --arg self "${SELF_RUN_ID}" \
-            '[.workflow_runs[] | select((.id | tostring) != $self) | select(.status != "completed")] | length' "${runs}")"
-
-          # a run counts as a gate pass when its `gate-ok` job concluded
-          # success — not when the run as a whole did. the run's conclusion
-          # folds in `ci-ok`'s pr title and pr body steps, neither of which
-          # says anything about whether the code was gated, and a failed body
-          # check on a frozen dirty body used to strand the sha forever
-          # (#1522). a cancelled run reaches this loop as `completed` with no
-          # `gate-ok` job, so it counts as no run at all rather than as a pass,
-          # exactly as before
-          passed=0
-          while IFS= read -r run_id; do
-            [ -n "${run_id}" ] || continue
-            jobs="${RUNNER_TEMP}/ci-jobs-${run_id}.json"
-            if ! gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" > "${jobs}"; then
-              # same rule as the listing above: no answer is not an answer
-              echo "::error::could not list jobs for ci run ${run_id}; refusing to report green without a gate result"
-              exit 1
-            fi
-            ok="$(jq '[.jobs[] | select(.name == "gate-ok") | select(.conclusion == "success")] | length' "${jobs}")"
-            echo "  run ${run_id}: gate-ok success jobs = ${ok}"
-            if [ "${ok}" -gt 0 ]; then
-              passed=$((passed + 1))
-            fi
-          done < <(jq -r --arg self "${SELF_RUN_ID}" \
-            '.workflow_runs[] | select((.id | tostring) != $self) | select(.status == "completed") | .id' "${runs}")
-
-          # the two branches below both end this job red, because `failure` is
-          # the only non-success conclusion a job can reach on its own (#1511).
-          # they mean very different things, though, so say which one it is
-          # rather than leaving one message to cover both
-          if [ "${unfinished}" -gt 0 ]; then
-            echo "::notice::nothing is wrong with ${HEAD_SHA}. ${unfinished} ci run(s) on it are still queued or in progress, so this metadata-only run has no gate result to report yet. the in-flight run writes its own, newer ci-ok when it finishes and that is the one branch protection reads -- no action is needed here"
-            echo "::error::gate still running on ${HEAD_SHA}: declining to report green over an unfinished gate (see the notice above; this is expected and self-healing)"
-            exit 1
-          fi
-          if [ "${passed}" -eq 0 ]; then
-            echo "::error::no completed ci run on ${HEAD_SHA} recorded a passing gate-ok job (a cancelled run counts as none); the heavy gate failed, was cancelled, or never ran here — push a fix or re-run the gate instead of editing the title to go green"
-            exit 1
-          fi
-          echo "gate already passed for ${HEAD_SHA} in ${passed} completed run(s)"
+        # the logic lives in a script so it can be exercised against a fake gh
+        # and clock (scripts/test-assert-gate-ran.sh); the checkout above
+        # already runs on every pull_request event
+        run: bash scripts/assert-gate-ran.sh
 
       # the pr title must be one conventional commit line from the type and
       # scope allowlists below. the action takes the pr number from the payload

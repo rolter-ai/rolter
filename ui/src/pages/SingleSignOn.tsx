@@ -587,7 +587,7 @@ function SignInPolicyCard({
             else save.mutate();
           }}
         >
-          {save.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {save.isPending && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {t("pages.sso.policy.save")}
         </GatedButton>
       </footer>
@@ -817,7 +817,7 @@ function ProviderCard({
             onClick={() => onClearSecret(provider)}
           >
             {clearingSecret ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <Eraser className="h-3.5 w-3.5" />
             )}

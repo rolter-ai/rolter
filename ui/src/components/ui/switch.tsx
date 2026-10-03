@@ -19,6 +19,10 @@ export type SwitchProps = Omit<
   onCheckedChange?: (checked: boolean) => void;
 } & SwitchLabel;
 
+// the off track is --zinc-500, not --muted: --muted is the same tone as
+// --surface-subtle, so inside a SwitchRow the track vanished (#2365). zinc-500
+// clears 3:1 as a shape on all four surfaces (3.08:1 worst, on --surface-subtle)
+//
 // minimal switch primitive (no radix dependency); mirrors the Rolter Design
 // System Switch — track + thumb, brand-red when on
 const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
@@ -34,7 +38,7 @@ const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "bg-[color:var(--red-folk)]" : "bg-muted",
+        checked ? "bg-[color:var(--red-folk)]" : "bg-[color:var(--zinc-500)]",
         className,
       )}
       {...props}

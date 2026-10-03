@@ -217,7 +217,7 @@ function ClientSettingsScreen() {
           </label>
           <Input
             id="client-public-base-url"
-            className="min-w-[320px] font-mono text-xs"
+            className="sm:min-w-[320px] font-mono text-xs"
             aria-label={t("pages.clientSettings.publicBaseUrl")}
             placeholder={BASE_URL_PLACEHOLDER}
             value={form.publicBaseUrl}

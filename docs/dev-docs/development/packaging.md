@@ -149,7 +149,7 @@ release-plz.yml ── release-gate ──► release ──►  crates.io publi
       ▼
 release.yml
   │
-  ├─ gate ──── verify-external-checks (ci-ok + CodeQL green for the tagged sha)
+  ├─ gate ──── verify-external-checks (tagged sha on master; ci-ok + codeql (*) of its ci.yml push run)
   │
   ├─ build ─── build-wheels  (5 wheels + sdist)
   │            build-image   (per arch, pushed as untagged digests)
@@ -248,17 +248,23 @@ check-run called `ci-ok` on a master commit: a `pull_request` run from master
 into another branch reports on master's head, and workflows fired by outsiders
 write check-runs there too. A `ci.yml` push run on a sha can only come from
 `ci.yml` at that sha, and a later push never cancels it. `release.yml`'s
-`verify-external-checks` still matches check-run names
-([below](#the-gate-is-asserted-not-re-run)); the two are separate mechanisms.
+`verify-external-checks` runs the same script on the commit its tag names
+([below](#the-gate-is-asserted-not-re-run)). Before it waits, the script also
+requires the sha to be on master: `compare/<sha>...master` must report `ahead`
+or `identical`, and anything else (`behind`, `diverged`) fails at once.
 
 The publish is bound to the gate, not to the detector. A detector that wrongly
 reports nothing pending leaves `verified` unset, which delays a release but
 never publishes one unverified. `scripts/check-release-handoff.py` asserts that
-binding, that the wait step is the bare script call, and that the script's one
-write of `verified` is its last command. `scripts/test-release-gate.sh` runs
+binding, that the wait step is the bare script call (in `release.yml` too, on
+the sha the tag resolves to and with the `codeql (*)` default), that the
+script's one write of `verified` is its last command, and that it compares the
+sha with master in the right direction. `scripts/test-release-gate.sh` runs
 both scripts against a fake `gh`, `curl`, `cargo` and clock, checking that the
-output is written exactly when the wait exits 0, as a step of `quality.yml`'s
-`static checks` job and as a prek hook.
+output is written exactly when the wait exits 0, that a commit master is
+`behind` or `diverged` of is refused before any run is read, and how the
+`REQUIRED_JOBS` patterns match, as a step of `quality.yml`'s `static checks`
+job and as a prek hook.
 
 The job waits rather than re-running `quality.yml` on the merge commit, which
 cost 27 jobs on every push while `ci.yml`'s own push run was gating the same
@@ -400,15 +406,15 @@ red instead of quietly leaving a channel behind.
 
 ### Publishing gates
 
-| Gate                                    | Effect                                                                                                    |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed |
-| `release:ready` label on the release PR | `ci.yml` runs on the release PR only while it is present, so without it the PR stays `BLOCKED`            |
-| `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed                                |
-| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names `verify-external-checks` requires (comma-separated)                                 |
-| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                           |
-| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                                                          |
-| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored                                           |
+| Gate                                    | Effect                                                                                                                            |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed                         |
+| `release:ready` label on the release PR | `ci.yml` runs on the release PR only while it is present, so without it the PR stays `BLOCKED`                                    |
+| `verify-external-checks`                | tagged commit is on master, and its `ci.yml` push run's `ci-ok` and `codeql (*)` jobs succeeded; fail-closed                      |
+| `RELEASE_REQUIRED_JOBS` repo variable   | emergency override of the job names `verify-external-checks` requires (comma-separated, one `*` each); `ci-ok` is always required |
+| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                                                   |
+| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                                                                                  |
+| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored                                                                   |
 
 Wheels are built with `maturin-action` but uploaded with `pypa/gh-action-pypi-publish`:
 `maturin upload` is deprecated and slated for removal ([PyO3/maturin#2334]). The
@@ -422,8 +428,8 @@ holds.
 ### The gate is asserted, not re-run
 
 `release.yml` does **not** run `quality.yml` itself. It asserts that the tagged
-commit already passed it, by requiring `ci-ok` among the check-runs recorded for
-that SHA. That is deliberate, and it is what makes the gate correct:
+commit already passed it on master, by reading that commit's `ci.yml` push run.
+That is deliberate, and it is what makes the gate correct:
 
 A local reusable workflow (`uses: ./…`) always checks out the _caller's_ ref. On
 a `workflow_dispatch` the caller ref is `master`, while `build-wheels` checks out
@@ -433,31 +439,45 @@ into `quality.yml` fixes that but makes the shared workflow check out an
 arbitrary dispatch-supplied ref in a default-branch context, whose caches
 trusted runs later restore — cache poisoning, and CodeQL flags it.
 
-Asserting settles both. Every commit on master carries a `ci-ok` check-run from
-`ci.yml`, and release-plz tags only after `release-gate` has seen `ci-ok` succeed
-on the release commit's `ci.yml` push run
-([above](#the-cratesio-publish-waits-for-the-push-run)), so a tagged commit is
-verified by construction. The assertion binds to the
-_tagged_ SHA — which re-running never did — costs no duplicate 20-minute run,
-and checks out nothing.
+Asserting settles both: it binds the gate to the _tagged_ SHA, which re-running
+never did, and costs no duplicate run. `verify-external-checks` resolves the
+tag to a commit, then runs `scripts/wait-for-ci-gate.sh`
+([above](#the-cratesio-publish-waits-for-the-push-run)) on it with
+`REQUIRED_JOBS='ci-ok,codeql (*)'`:
 
-On the release-plz path the loop normally passes on its first poll:
-`release-gate` saw `ci-ok` finish before the tag existed, and `ci-ok` needs
-every CodeQL leg. A tag dispatched by hand, or a check re-run after tagging, can
-still leave a required check pending, and that is expected, not a failure: the
-job waits up to 45 minutes for a verdict, fails immediately on a real
-non-success, and fails closed if a required check never appears.
+1. The commit must be on master: `compare/<sha>...master` is `ahead` or
+   `identical`. The `tag` input resolves any ref, so without this a tag pushed
+   on a pull request head would be judged by that pull request's own run.
+2. It waits for the newest `ci.yml` run on the sha with `event=push` and
+   `branch=master`, for up to 90 minutes.
+3. That run's `ci-ok` job, and every job matching `codeql (*)`, must have
+   concluded `success` (`actions/runs/<id>/jobs`). Each entry must match at
+   least one job, so a renamed CodeQL leg is caught by the `*` rather than
+   blocking every release, and a missing one fails closed.
+
+It used to keep the newest check-run per _name_ on the sha instead, and that
+proves little ([#2034]): any run can post a check-run called `ci-ok`, a tag on
+a pull request head carries that pull request's `ci-ok` from a `ci.yml` the
+pull request can edit, and `ci.yml`'s `pull_request` trigger has no `branches:`
+filter, so a pull request from a branch at a master sha into another base
+reports its `ci-ok` on that master sha.
+
+On the release-plz path the gate passes on its first poll: `release-gate`
+already saw `ci-ok` succeed on the same push run before the tag existed, and
+`ci-ok` needs every CodeQL leg. A tag dispatched by hand on a commit whose push
+run is still going waits for it. The job checks out only the gate script, from
+the workflow's own commit and never from `inputs.tag`, with
+`persist-credentials: false`, and holds `contents: read` and `actions: read`.
 
 [#988]: https://github.com/rolter-ai/rolter/issues/988
+[#2034]: https://github.com/rolter-ai/rolter/issues/2034
 
-`RELEASE_REQUIRED_CHECKS` holds exact check-run _names_, so it rots whenever a
-scanner is renamed or reconfigured — and since the gate is fail-closed, a stale
-name silently blocks every release instead of failing at the source. This bit
-rolter once already: the variable still named the CodeQL _default setup_ jobs
-(`Analyze (rust)`, …) after the repo moved to advanced setup (`codeql (rust)`,
-…), so no release could publish even with a working tag dispatch. If the gate
-reports "required check … not found", compare it against the check-run names
-the job log prints and update the variable.
+`RELEASE_REQUIRED_JOBS` is an emergency override for the job list and is unset
+normally. It names _job_ names of the `ci.yml` run, not check-run names, and
+cannot drop `ci-ok`, which the script always requires. If the gate reports "no
+job matching …", compare it against the job names the log prints for that run.
+The `RELEASE_REQUIRED_CHECKS` variable the old check-run loop read is no longer
+consulted; delete it if it is still set.
 
 ### Releasing a tag by hand
 

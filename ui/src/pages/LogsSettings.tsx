@@ -7,12 +7,14 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { serverFieldError } from "@/lib/field-errors";
 import { sampleShare } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
@@ -57,29 +59,48 @@ const parsePercent = (value: string) => (value.trim() === "" ? Number.NaN : Numb
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // returns a catalog key, translated by the caller
-function validate(form: FormState): string | null {
+// every failing field is reported at once, keyed by field (#2096)
+type FieldKey = "samplePercent" | "maxBytes" | "retentionDays" | "payloadRetentionHours";
+type FieldErrors = Partial<Record<FieldKey, string>>;
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const FIELD_ORDER: FieldKey[] = [
+  "samplePercent",
+  "maxBytes",
+  "retentionDays",
+  "payloadRetentionHours",
+];
+
+// the wire names a 400 opens with, mapped to the field they belong to
+const WIRE_FIELDS: Record<string, FieldKey> = {
+  sample_rate: "samplePercent",
+  payload_capture_max_bytes: "maxBytes",
+  retention_days: "retentionDays",
+  payload_retention_hours: "payloadRetentionHours",
+};
+
+function validate(form: FormState): FieldErrors {
+  const errors: FieldErrors = {};
   const percent = parsePercent(form.samplePercent);
   if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-    return "pages.logsSettings.errors.sampleRange";
+    errors.samplePercent = "pages.logsSettings.errors.sampleRange";
   }
   const maxBytes = Number(form.maxBytes);
   if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > 1_048_576) {
-    return "pages.logsSettings.errors.maxBytes";
+    errors.maxBytes = "pages.logsSettings.errors.maxBytes";
   }
   const days = Number(form.retentionDays);
-  if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    return "pages.logsSettings.errors.retentionDays";
-  }
+  const daysOk = Number.isInteger(days) && days >= 1 && days <= 3650;
+  if (!daysOk) errors.retentionDays = "pages.logsSettings.errors.retentionDays";
   const hours = Number(form.payloadRetentionHours);
   if (!Number.isInteger(hours) || hours < 1 || hours > 8760) {
-    return "pages.logsSettings.errors.payloadRetentionHours";
+    errors.payloadRetentionHours = "pages.logsSettings.errors.payloadRetentionHours";
+  } else if (daysOk && hours > days * 24) {
+    // raw bodies are the sensitive half: keeping them past the metadata they
+    // belong to would leak prompt content the operator meant to expire
+    errors.payloadRetentionHours = "pages.logsSettings.errors.payloadOutlivesLog";
   }
-  // raw bodies are the sensitive half: keeping them past the metadata they
-  // belong to would leak prompt content the operator meant to expire
-  if (hours > days * 24) {
-    return "pages.logsSettings.errors.payloadOutlivesLog";
-  }
-  return null;
+  return errors;
 }
 
 // global request-log policy, persisted via /api/v1/logging-settings (superadmin
@@ -104,6 +125,14 @@ function LogsSettingsScreen() {
   const [form, setForm] = React.useState<FormState | null>(null);
   const sampleHintId = React.useId();
   const sampleWarningId = React.useId();
+  const base = React.useId();
+  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
+  const ids: Record<FieldKey, string> = {
+    samplePercent: `${base}-sample`,
+    maxBytes: "logs-max-bytes",
+    retentionDays: "logs-retention-days",
+    payloadRetentionHours: "logs-payload-retention-hours",
+  };
   React.useEffect(() => {
     if (settings.data && form === null) {
       setForm(fromDto(settings.data));
@@ -129,6 +158,7 @@ function LogsSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["logging-settings"] });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -136,6 +166,12 @@ function LogsSettingsScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(ids[named.field])?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.logsSettings") }),
@@ -167,7 +203,39 @@ function LogsSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form);
+  // an edit answers the server's complaint about that field
+  const edit = (key: FieldKey, value: string) => {
+    set({ [key]: value });
+    setServerErrors((e) => ({ ...e, [key]: undefined }));
+  };
+  const local = validate(form);
+  const errors: Record<FieldKey, string | undefined> = {
+    samplePercent: local.samplePercent ? t(local.samplePercent) : serverErrors.samplePercent,
+    maxBytes: local.maxBytes ? t(local.maxBytes) : serverErrors.maxBytes,
+    retentionDays: local.retentionDays ? t(local.retentionDays) : serverErrors.retentionDays,
+    payloadRetentionHours: local.payloadRetentionHours
+      ? t(local.payloadRetentionHours)
+      : serverErrors.payloadRetentionHours,
+  };
+  const invalid = FIELD_ORDER.filter((key) => errors[key]);
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2096)
+  const submit = () => {
+    const first = invalid.find((key) => {
+      const node = document.getElementById(ids[key]);
+      return node !== null && !(node as HTMLInputElement).disabled;
+    });
+    if (invalid.length > 0) {
+      if (first) document.getElementById(ids[first])?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
+  const errorId = (key: FieldKey) => `${ids[key]}-error`;
+  const invalidProps = (key: FieldKey) => ({
+    "aria-invalid": errors[key] ? (true as const) : undefined,
+    "aria-describedby": describedBy(!!errors[key] && errorId(key)),
+  });
   const capture = form.captureEnabled;
 
   return (
@@ -183,15 +251,22 @@ function LogsSettingsScreen() {
           <Input
             className="max-w-[120px]"
             inputMode="decimal"
+            id={ids.samplePercent}
             aria-label={t("pages.logsSettings.sampleRatePercent")}
-            aria-describedby={`${sampleHintId} ${sampleWarningId}`}
+            aria-invalid={errors.samplePercent ? true : undefined}
+            aria-describedby={describedBy(
+              sampleHintId,
+              sampleWarningId,
+              !!errors.samplePercent && errorId("samplePercent"),
+            )}
             value={form.samplePercent}
-            onChange={(e) => set({ samplePercent: e.target.value })}
+            onChange={(e) => edit("samplePercent", e.target.value)}
           />
           <span className="text-sm text-muted-foreground">
             {t("pages.logsSettings.percentOfRequests")}
           </span>
         </div>
+        <FieldError id={errorId("samplePercent")} error={errors.samplePercent} />
         <SampledLogWarning id={sampleWarningId} percent={parsePercent(form.samplePercent)} />
       </section>
 
@@ -247,9 +322,11 @@ function LogsSettingsScreen() {
             inputMode="numeric"
             disabled={!capture}
             aria-label={t("pages.logsSettings.maxBytes")}
+            {...invalidProps("maxBytes")}
             value={form.maxBytes}
-            onChange={(e) => set({ maxBytes: e.target.value })}
+            onChange={(e) => edit("maxBytes", e.target.value)}
           />
+          <FieldError id={errorId("maxBytes")} error={errors.maxBytes} />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
             {t("pages.logsSettings.maxBytesHint")}
           </span>
@@ -301,9 +378,11 @@ function LogsSettingsScreen() {
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.retentionDaysAria")}
+              {...invalidProps("retentionDays")}
               value={form.retentionDays}
-              onChange={(e) => set({ retentionDays: e.target.value })}
+              onChange={(e) => edit("retentionDays", e.target.value)}
             />
+            <FieldError id={errorId("retentionDays")} error={errors.retentionDays} />
           </div>
           <div className="flex flex-col gap-1.5">
             <label
@@ -317,8 +396,13 @@ function LogsSettingsScreen() {
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.payloadRetentionHoursAria")}
+              {...invalidProps("payloadRetentionHours")}
               value={form.payloadRetentionHours}
-              onChange={(e) => set({ payloadRetentionHours: e.target.value })}
+              onChange={(e) => edit("payloadRetentionHours", e.target.value)}
+            />
+            <FieldError
+              id={errorId("payloadRetentionHours")}
+              error={errors.payloadRetentionHours}
             />
           </div>
         </div>
@@ -334,10 +418,17 @@ function LogsSettingsScreen() {
       />
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{t(localError)}</span>
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
+          </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

@@ -553,7 +553,7 @@ export function ProviderSheet({
               >
                 {test.isPending ? (
                   <>
-                    <Loader2 className="size-4 animate-spin" />
+                    <Loader2 className="size-4 motion-safe:animate-spin" />
                     {t("providerSheet.testing")}
                   </>
                 ) : (

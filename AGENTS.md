@@ -117,8 +117,10 @@ docs(architecture): document reload-free config propagation
   authoring tool — the footer is injected on create only, so a direct patch
   sticks. Strip it as soon as you see it: `ci-ok` reads the live body after the
   gate, so the PR's opening run goes green on its own once the line is gone.
-  The `edited` run the strip starts may go red first with _gate still running_;
-  leave it, the opening run's newer `ci-ok` supersedes it. This is a
+  The `edited` run the strip starts waits for the opening run's gate and then
+  reports its verdict, so it ends green with it; a red `ci-ok` is never
+  superseded by a newer green one on the same sha, so a red one left over from
+  a failed gate has to be re-run (`gh run rerun <id> --failed`). This is a
   workaround for tooling this repo does not control; the check itself never
   gets a carve-out for it. See
   [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).

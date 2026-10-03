@@ -109,6 +109,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
@@ -263,6 +265,30 @@
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "requestFailed": "gateway request failed: {{status}}"
+    },
+    "api": {
+      "unreachable": "Could not reach the server. Check your connection and try again.",
+      "unauthorized": "Your session is missing or has expired. Sign in again.",
+      "forbidden": "Your role does not permit this.",
+      "rateLimited": "Too many attempts. Wait a moment and try again.",
+      "server": "The control plane hit an error. Try again, and check its logs if it persists.",
+      "generic": "The server rejected this request.",
+      "codes": {
+        "analytics_query_failed": "The analytics query failed.",
+        "internal": "The control plane hit an internal error.",
+        "invalid_credentials": "The email or password is wrong.",
+        "invalid_cursor": "The page position is no longer valid. Reload the list.",
+        "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_query": "The filter is not valid.",
+        "invalid_time_bound": "The time range is not valid.",
+        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "no_such_endpoint": "This control plane does not offer that feature.",
+        "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
+        "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "too_many_attempts": "Too many failed attempts. Try again later.",
+        "unauthenticated": "Your session is missing or has expired. Sign in again."
+      }
     }
   },
   "locale": {
@@ -463,7 +489,7 @@
     "plugins": "Plugins",
     "alerting": "Alerting",
     "alerting-channels": "Channels",
-    "alerting-rules": "Rules",
+    "alerting-rules": "Alert Rules",
     "alerting-history": "History",
     "governance": "Governance",
     "virtual-keys": "Virtual Keys",
@@ -477,7 +503,7 @@
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
     "guardrails": "Guardrails",
-    "guardrail-rules": "Rules",
+    "guardrail-rules": "Guardrail Rules",
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
@@ -2426,7 +2452,10 @@
       "grainProvider": "probed · {{sources}}",
       "incidents": "Incidents",
       "mttr": "MTTR",
-      "noEvents": "No events in window.",
+      "noTimeline": "No timeline.",
+      "timelineSummary": "Health timeline, {{from}} to {{to}}: {{failures}} failures in {{events}} events over {{buckets}} hourly buckets",
+      "legendOk": "No failures",
+      "legendFailed": "Failures (taller = larger share)",
       "slaAtRisk": "SLA at risk",
       "slaBreaching": "below SLA",
       "slaWithin": "within SLA",
@@ -3057,8 +3086,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "enforceVk": "Enforce Virtual Keys on Inference",
-      "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
       "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
       "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
@@ -3095,10 +3122,6 @@
         "body_one": "This save loosens security in the way listed below.",
         "body_other": "This save loosens security in {{count}} ways, listed below.",
         "confirm": "Save changes",
-        "virtualKeys": {
-          "label": "Virtual keys are no longer enforced on inference",
-          "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
         "bypassRoute": {
           "label": "Auth bypass route added:",
           "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
@@ -3590,7 +3613,7 @@
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
-      "title": "Rules",
+      "title": "Alert Rules",
       "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {

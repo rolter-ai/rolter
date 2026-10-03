@@ -19,6 +19,21 @@ import { REPEATED_SHAPES } from "./repeated-shapes-allowlist";
 const PRIMITIVES = ["Card", "Combobox", "Dialog", "Field", "SwitchRow"];
 const SCREEN = "src/pages/Example.tsx";
 
+describe("the bare-animation rule", () => {
+  it("fails a bare animate-spin and animate-pulse, in a primitive too", () => {
+    const source = `<Loader2 className="h-4 w-4 animate-spin" />\n<i className="animate-pulse" />`;
+    for (const file of [SCREEN, "src/components/ui/status-row.tsx"]) {
+      const found = checkSource(source, file).violations.map((v) => v.found);
+      expect(found).toEqual(["animate-spin", "animate-pulse"]);
+    }
+  });
+
+  it("accepts the motion-safe: variants", () => {
+    const source = `<Loader2 className="motion-safe:animate-spin" />\n<i className="cn(x && 'motion-safe:animate-pulse')" />`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+  });
+});
+
 describe("the element rules", () => {
   it("fails a bare select and names Combobox", () => {
     const [violation] = checkSource(`const f = () => <select value={v} />;`, SCREEN).violations;

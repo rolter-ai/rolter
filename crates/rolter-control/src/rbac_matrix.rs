@@ -1679,6 +1679,38 @@ mod tests {
         );
     }
 
+    /// Every control-plane mutation body is decoded through `SafeJson`, which
+    /// rejects control characters in every string and answers in the OpenAI
+    /// error envelope (#1968). A plain `Json<T>` extractor skips both, so only
+    /// the modules below, which speak another wire format, may take one.
+    #[test]
+    fn no_handler_takes_a_plain_json_body() {
+        // login / sso exchange run before a session exists and answer their
+        // own envelope; scim speaks rfc 7644 errors; ui_events and mcp_logs
+        // are machine ingest endpoints with their own bounded schemas
+        const EXEMPT: &[&str] = &[
+            "auth.rs",
+            "sso.rs",
+            "scim.rs",
+            "scim_groups.rs",
+            "ui_events.rs",
+            "mcp_logs.rs",
+        ];
+        for (name, source) in MODULES {
+            if EXEMPT.contains(name) {
+                continue;
+            }
+            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+            for line in production.lines() {
+                let line = line.trim_start();
+                assert!(
+                    !(line.starts_with("Json(") && line.contains("): Json<")),
+                    "{name} takes a plain Json body ({line}); use SafeJson",
+                );
+            }
+        }
+    }
+
     /// No handler names a `Role` — every guarded route resolves its requirement
     /// from [`CAPABILITIES`] through `cap!` / `superadmin_cap!`. This is what
     /// makes `GET /api/v1/rbac/matrix` provably the rule set the guard enforces.

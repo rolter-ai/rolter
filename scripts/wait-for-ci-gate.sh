@@ -1,26 +1,41 @@
 #!/usr/bin/env bash
 # waits for the ci.yml *push* run on one master commit to finish, then exits 0
-# only if that run's `ci-ok` job concluded success. its last action is writing
-# `verified=true` to $GITHUB_OUTPUT, so reaching the end of this script is the
-# only way the step that runs it can report a verified commit.
+# only if that run's `ci-ok` job, and every other job named in REQUIRED_JOBS,
+# concluded success. its last action is writing `verified=true` to
+# $GITHUB_OUTPUT, so reaching the end of this script is the only way the step
+# that runs it can report a verified commit.
 #
 #   REPO=rolter-ai/rolter SHA=<40-hex sha> GH_TOKEN=... bash scripts/wait-for-ci-gate.sh
+#   REQUIRED_JOBS='ci-ok,codeql (*)' ...            # optional, see below
 #
-# release-plz.yml's `release-gate` job runs this before the crates.io publish
-# (#2025). it is bound to a run rather than to a check-run name on purpose: any
+# two gates run it. release-plz.yml's `release-gate` runs it before the
+# crates.io publish (#2025), and release.yml's `verify-external-checks` runs it
+# on the commit a release tag names before anything reaches pypi or ghcr
+# (#2034). it is bound to a run rather than to a check-run name on purpose: any
 # workflow can post a check-run called `ci-ok` on a master sha (a pull_request
 # run from master into another branch reports on master's head, and workflows
-# fired by outsiders write check-runs there too), while a ci.yml push run on
-# a sha can only come from ci.yml at that sha. release.yml's
-# `verify-external-checks` still matches check-run names; the two are
-# different mechanisms, not copies of each other.
+# fired by outsiders write check-runs there too), while a ci.yml push run on a
+# sha can only come from ci.yml at that sha.
 #
-# fails closed: an api call that still fails after three attempts, a completed
-# run with no `ci-ok` job, any conclusion other than success, and no verdict
-# after 90 minutes all exit 1. the deadline is sized from the push gate (median
-# ~29 min, max 61 min over 26 runs), and the calling job's timeout sits above it.
-# recovery for a timeout or a red run is in docs/dev-docs/development/packaging.md
-# ("The crates.io publish waits for the push run").
+# before it waits, it requires the sha to be on master (`compare/<sha>...master`
+# is `ahead` or `identical`). release.yml resolves any ref a dispatch names, so
+# without this a tag pushed on a pull request head would be judged by whatever
+# runs exist there; with it, a commit that never landed fails at once instead
+# of after the deadline.
+#
+# REQUIRED_JOBS is a comma-separated list of job names in that run, on top of
+# `ci-ok`, which is always required and cannot be listed away. one `*` in an
+# entry matches any run of characters, so `codeql (*)` covers every codeql
+# matrix leg however the legs are renamed. every entry must match at least one
+# job, and every job it matches must have concluded success.
+#
+# fails closed: an api call that still fails after three attempts, a sha that is
+# not on master, a completed run missing a required job, any conclusion other
+# than success, and no verdict after 90 minutes all exit 1. the deadline is
+# sized from the push gate (median ~29 min, max 61 min over 26 runs), and the
+# calling job's timeout sits above it. recovery for a timeout or a red run is in
+# docs/dev-docs/development/packaging.md ("The crates.io publish waits for the
+# push run").
 #
 # bash 3.2 compatible, so the fixture tests (scripts/test-release-gate.sh) run
 # on a stock mac too.
@@ -35,6 +50,21 @@ if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
   echo "::error::SHA '$SHA' is not a full commit sha; refusing to gate on it"
   exit 1
 fi
+
+# the extra required jobs, trimmed, empty entries dropped. checked before any
+# call so a typo in the list fails at once rather than after the wait
+extra_jobs=()
+IFS=',' read -ra listed <<<"${REQUIRED_JOBS:-}"
+for entry in ${listed[@]+"${listed[@]}"}; do
+  entry=$(printf '%s' "$entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -z "$entry" ] && continue
+  stars=$(printf '%s' "$entry" | tr -cd '*' | wc -c | tr -d ' ')
+  if [ "$stars" -gt 1 ]; then
+    echo "::error::REQUIRED_JOBS entry '$entry' has more than one '*'; only one wildcard per entry is supported"
+    exit 1
+  fi
+  extra_jobs+=("$entry")
+done
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -58,6 +88,22 @@ summary() {
     printf '%s\n' "$1" >>"$GITHUB_STEP_SUMMARY"
   fi
 }
+
+# the sha must be on master: master equal to it or ahead of it. `behind` and
+# `diverged` both mean the commit never landed, whatever runs it carries
+api "repos/${REPO}/compare/${SHA}...master?per_page=1" "$work/compare.json"
+if ! on_master=$(jq -r '.status // ""' "$work/compare.json"); then
+  echo "::error::the comparison of ${SHA} with master was not the expected json; refusing to publish without a gate result"
+  exit 1
+fi
+case $on_master in
+  ahead | identical) echo "${SHA} is on master (master is ${on_master} of it)" ;;
+  *)
+    echo "::error::${SHA} is not on master (compare ${SHA}...master says '${on_master:-nothing}'); refusing to publish a commit the master push gate never passed"
+    summary "release gate: \`${SHA}\` is not on master (compare status \`${on_master:-none}\`)"
+    exit 1
+    ;;
+esac
 
 runs_path="repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=push&branch=master&per_page=100"
 deadline=$(($(date -u +%s) + deadline_minutes * 60))
@@ -122,6 +168,35 @@ if [ -n "$bad" ]; then
   summary "release gate: ci-ok on ci.yml run ${run_id} concluded \`${bad}\` for \`${SHA}\`"
   exit 1
 fi
+
+# the other required jobs, each matched as a pattern with at most one `*`. the
+# same rule as ci-ok: it must exist, and no job it matches may be anything but
+# green
+for want in ${extra_jobs[@]+"${extra_jobs[@]}"}; do
+  verdict=$(jq -r --arg p "$want" '
+    def matches($p):
+      if ($p | contains("*")) then
+        ($p | split("*")) as $s
+        | startswith($s[0]) and endswith($s[1])
+          and length >= ($s[0] | length) + ($s[1] | length)
+      else . == $p end;
+    [.jobs[] | select(.name | matches($p))]
+    | "\(length)\t\([.[] | select(.conclusion != "success") | "\(.name)=\(.conclusion // .status)"] | join(","))"
+  ' "$work/jobs.json")
+  matched=${verdict%%$'\t'*}
+  bad=${verdict#*$'\t'}
+  if [ "$matched" -eq 0 ]; then
+    echo "::error::ci.yml run ${run_id} has no job matching '${want}'; refusing to publish ${SHA}. if the job was renamed, update the list this gate is given (REQUIRED_JOBS) to match the job names above"
+    summary "release gate: ci.yml run ${run_id} on \`${SHA}\` has no job matching \`${want}\`"
+    exit 1
+  fi
+  if [ -n "$bad" ]; then
+    echo "::error::required job '${want}' on ci.yml run ${run_id} did not succeed (${bad}); refusing to publish ${SHA}"
+    summary "release gate: \`${want}\` on ci.yml run ${run_id} did not succeed for \`${SHA}\` (${bad})"
+    exit 1
+  fi
+  echo "${want}: ${matched} job(s) succeeded on ci.yml push run ${run_id}"
+done
 
 echo "ci-ok succeeded on ci.yml push run ${run_id} for ${SHA}"
 summary "release gate: ci-ok succeeded on the ci.yml push run for \`${SHA}\` (${run_url:-run ${run_id}})"

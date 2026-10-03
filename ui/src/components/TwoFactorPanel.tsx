@@ -10,6 +10,7 @@ import { downloadRecoveryCodes, EnrolSteps, RecoveryCodesList } from "@/componen
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -287,27 +288,29 @@ function EnrolDialog({
         <DialogDescription>{t("account.mfa.enrol.subtitle")}</DialogDescription>
       </DialogHeader>
 
-      {enrolment.isLoading && <PanelSkeleton panels={1} height={176} />}
-      {enrolment.error && (
-        <LoadError
-          error={enrolment.error}
-          resource={t("errors.resources.twoFactorSecret")}
-          onRetry={() => void enrolment.refetch()}
-        />
-      )}
-      {enrolment.data && (
-        <EnrolSteps
-          enrolment={enrolment.data}
-          code={code}
-          onCodeChange={setCode}
-          onSubmit={() => confirm.mutate()}
-        />
-      )}
-      {confirm.isError && (
-        <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-          {(confirm.error as Error).message}
-        </p>
-      )}
+      <DialogBody>
+        {enrolment.isLoading && <PanelSkeleton panels={1} height={176} />}
+        {enrolment.error && (
+          <LoadError
+            error={enrolment.error}
+            resource={t("errors.resources.twoFactorSecret")}
+            onRetry={() => void enrolment.refetch()}
+          />
+        )}
+        {enrolment.data && (
+          <EnrolSteps
+            enrolment={enrolment.data}
+            code={code}
+            onCodeChange={setCode}
+            onSubmit={() => confirm.mutate()}
+          />
+        )}
+        {confirm.isError && (
+          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+            {(confirm.error as Error).message}
+          </p>
+        )}
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

@@ -12358,6 +12358,37 @@ async fn collector_config_renders_enabled_connectors_and_hides_disabled_ones() {
     assert!(!body.contains("disabled.example.com"), "{body}");
 }
 
+/// #1968: connector bodies go through `SafeJson` like every other handler.
+#[tokio::test]
+async fn a_connector_name_with_a_nul_byte_is_rejected() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let resp = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth("sekrit")
+        .json(&json!({
+            "name": "bad\u{0}name",
+            "kind": "otlp_http",
+            "endpoint": "https://collector.example.com/v1/logs",
+            "enabled": true,
+            "sampling_rate": 1.0,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]["message"].is_string(), "{body}");
+}
+
 #[tokio::test]
 async fn collector_config_renders_a_managed_secret_as_a_bearer_header() {
     skip_without_db!();
@@ -12604,7 +12635,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(before["config"]["security"]["virtual_key_required"], false);
+    assert!(before["config"]["security"]["virtual_key_required"].is_null());
     assert!(before["config"]["security"]["required_headers"].is_null());
     assert!(before["config"]["security"]["auth_bypass_routes"].is_null());
 
@@ -12626,7 +12657,10 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .json()
         .await
         .unwrap();
-    assert_eq!(saved["virtual_key_required"], true, "{saved}");
+    // an old client still sends the retired virtual-key switch (#2357): the
+    // save goes through, and the field neither comes back nor reaches a gateway
+    assert!(saved["auth_bypass_routes"].is_array(), "{saved}");
+    assert!(saved.get("virtual_key_required").is_none(), "{saved}");
     // the dashboard password was removed because nothing enforced it (#2356):
     // an old client's fields are ignored, and none of them comes back
     for field in [
@@ -12648,6 +12682,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .unwrap();
     assert!(read.get("dashboard_auth_enabled").is_none(), "{read}");
     assert!(read.get("dashboard_secret_configured").is_none(), "{read}");
+    assert!(read.get("virtual_key_required").is_none(), "{read}");
     // and the toggle that controlled nothing is gone from the surface (#1162)
     assert!(saved.get("allow_direct_provider_keys").is_none());
 
@@ -12661,7 +12696,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
         .await
         .unwrap();
     let security = &after["config"]["security"];
-    assert_eq!(security["virtual_key_required"], true);
+    assert!(security.get("virtual_key_required").is_none(), "{security}");
     // header names are lowercased on the way through, because that is how the
     // gateway looks them up
     assert_eq!(security["required_headers"]["x-mesh-id"], "edge-42");
@@ -17416,4 +17451,165 @@ async fn operator_written_urls_the_egress_policy_denies_are_refused_at_save() {
         "plugin endpoint",
     )
     .await;
+}
+
+async fn grant_id(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> uuid::Uuid {
+    sqlx::query_scalar("select id from memberships where user_id = $1 and org_id = $2")
+        .bind(holder)
+        .bind(org)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_last_org_admin_grant_cannot_be_revoked_except_by_a_superadmin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    let first = seed_user(&pool, "first@example.com", false).await;
+    let second = seed_user(&pool, "second@example.com", false).await;
+    let first_token = seed_session(&pool, first, "org_admin_first").await;
+    seed_membership(&pool, first, Some(org_id), None, None, "admin").await;
+    let first_grant = grant_id(&pool, first, org_id).await;
+
+    // the only admin: refused with the stable code, grant kept
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "last_org_admin", "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("last admin"));
+    assert_eq!(grant_id(&pool, first, org_id).await, first_grant);
+
+    // a deactivated admin is not a remainder
+    seed_membership(&pool, second, Some(org_id), None, None, "admin").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // a lower role is not an admin either
+    sqlx::query("update users set deactivated_at = null where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let second_grant = grant_id(&pool, second, org_id).await;
+    sqlx::query("update memberships set role = 'member' where id = $1")
+        .bind(second_grant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // a second active admin exists: the first can go, then the second is last
+    sqlx::query("update memberships set role = 'admin' where id = $1")
+        .bind(second_grant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{first_grant}"))
+        .bearer_auth(&first_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let second_token = seed_session(&pool, second, "org_admin_second").await;
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{second_grant}"))
+        .bearer_auth(&second_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+
+    // the superadmin (here the admin token) may still repair the org
+    let res = client
+        .delete(format!("{base}/api/v1/memberships/{second_grant}"))
+        .bearer_auth("admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+}
+
+#[tokio::test]
+async fn concurrent_revokes_of_two_org_admins_leave_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    // applies the migrations
+    let _app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Race', 'race') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let a = seed_user(&pool, "a@example.com", false).await;
+    let b = seed_user(&pool, "b@example.com", false).await;
+    seed_membership(&pool, a, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, b, Some(org_id), None, None, "admin").await;
+    let ga = grant_id(&pool, a, org_id).await;
+    let gb = grant_id(&pool, b, org_id).await;
+
+    let repo_a = rolter_store::postgres::repo::MembershipRepo(&pool);
+    let repo_b = rolter_store::postgres::repo::MembershipRepo(&pool);
+    let (ra, rb) = tokio::join!(
+        repo_a.delete_guarded(ga, true),
+        repo_b.delete_guarded(gb, true)
+    );
+    let refused = [ra.unwrap(), rb.unwrap()]
+        .iter()
+        .filter(|r| matches!(r, rolter_store::postgres::repo::LockoutGuard::WouldLockOut))
+        .count();
+    assert_eq!(refused, 1);
+    let left: i64 =
+        sqlx::query_scalar("select count(*) from memberships where org_id = $1 and role = 'admin'")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 1);
 }
