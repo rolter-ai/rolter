@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
@@ -353,9 +354,7 @@ function SlaPill({ state }: { state: SlaState }) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline>{label}</Overline>
       <div className="font-mono text-sm text-[color:var(--text-secondary)]">{value}</div>
     </div>
   );
@@ -573,9 +572,7 @@ export default function Health() {
               </div>
               {group.targets.length > 0 && (
                 <div className="border-t border-[color:var(--border-subtle)] pt-2">
-                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    {t("pages.health.targets", { count: group.targets.length })}
-                  </div>
+                  <Overline>{t("pages.health.targets", { count: group.targets.length })}</Overline>
                   <div className="divide-y divide-[color:var(--border-subtle)]">
                     {group.targets.map((row) => (
                       <TargetRow

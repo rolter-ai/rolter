@@ -3,6 +3,8 @@ import { ArrowLeftRight, CircleHelp, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -171,14 +173,11 @@ export default function ComplexityRouter() {
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr))]">
         {configured.map(({ route, tiers }) => (
-          <div
-            key={route.id}
-            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
-          >
+          <CardStack key={route.id}>
             <div className="flex items-center gap-2.5">
-              <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--red-folk-text)]">
+              <IconFrame className="text-[color:var(--red-folk-text)]">
                 <ArrowLeftRight className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <span className="min-w-0 truncate font-mono text-sm font-semibold">
                 {route.model}
               </span>
@@ -220,7 +219,7 @@ export default function ComplexityRouter() {
                 {t("pages.complexityRouter.editPolicy")}
               </GatedButton>
             </div>
-          </div>
+          </CardStack>
         ))}
       </div>
 

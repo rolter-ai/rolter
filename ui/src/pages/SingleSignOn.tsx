@@ -12,6 +12,7 @@ import {
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
@@ -464,7 +465,7 @@ function SignInPolicyCard({
   const bothOff = !password && !sso;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
         <h2 className="text-sm font-medium text-foreground">{t("pages.sso.policy.title")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.subtitle")}</p>
@@ -631,7 +632,7 @@ function SignInPolicyCard({
           <DocsLink page="breakGlass" label={t("pages.sso.policy.mfaConfirm.breakGlassLink")} />
         </p>
       </ConfirmDialog>
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -710,7 +711,7 @@ function ProviderCard({
   const held = lastWayIn ? reasonId : undefined;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="flex items-start gap-3 px-4 py-3.5">
         <KeyRound aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -840,7 +841,7 @@ function ProviderCard({
       </div>
 
       <ProviderMappings provider={provider} />
-    </section>
+    </SurfacePanel>
   );
 }
 
