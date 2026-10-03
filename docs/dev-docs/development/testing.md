@@ -1504,44 +1504,65 @@ story's own `StrictMode`, the walk stops there, and nothing below it is doubled.
 Double rendering follows a different rule, the fiber's mode, which is why the
 renders still come in pairs and the story looks strict.
 
-So mount the `StrictMode` first and the subject into it later. The host renders
-the subject only when its own state says so, `render` starts it without one, and
-the play function mounts it with a click:
+So mount the `StrictMode` first and the subject into it later, and prove that
+the double-invoke ran. `StrictModeHost` in `ui/src/pages/story-strict.tsx` is
+that host (#1887): `render` hands it the subject, it renders a `StrictMode` with
+the subject absent, and `mountStrictly()` from `ui/src/pages/story-harness.tsx`
+clicks its mount button and then calls `expectDoubleInvoked()`. A probe placed
+beside the subject counts its effect's mounts and cleanups, and
+`expectDoubleInvoked()` fails the story with the reason unless it reads two
+mounts and one cleanup:
 
 ```tsx
 export const StrictModeDoesNotInventAnAbandon: Story = {
   render: () => (
-    <React.StrictMode>
-      <Unmountable mounted={false} />
-    </React.StrictMode>
+    <StrictModeHost>
+      <Unmountable />
+    </StrictModeHost>
   ),
   play: async () => {
-    // mounts the sheet in a later commit, under a StrictMode that is already there
-    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
-    // the double-invoke has happened by the time the sheet can be used
+    // mounts the sheet in a later commit and fails unless it was double-invoked
+    await mountStrictly();
+    // everything from here runs against a sheet that was mounted, unmounted and remounted
   },
 };
 ```
+
+`ui/src/pages/story-strict.test.tsx` is the negative proof, under `bun test`:
+it runs the real react-dom reconciler with Storybook's boundary above the
+`StrictMode`, reads one mount and no cleanup in the same-commit shape, and
+checks that `doubleInvokeFailure()`, the verdict `expectDoubleInvoked()` throws
+with, refuses those counts.
 
 This is also the app's own shape. `ui/src/main.tsx` makes the root strict long
 before anyone opens a sheet, so a story built this way runs the same lifecycle a
 browser on `bun run dev` does.
 
+It only runs on React's development build. The double-invoke is
+development-only, so the production build mounts every effect once, `StrictMode`
+or not. `storybook build` bundles the production build by default. That is why
+`ui/.storybook/main.ts` sets `features.developmentModeForBuild`, so the static
+build that `bun run build-storybook` writes and the `ui, storybook, docs` job
+tests carries the same React that `storybook dev` and `bun run dev` serve. With
+the flag off, every `StrictModeHost` story fails `expectDoubleInvoked()` in CI
+and still passes under `bun run test:stories`. Before #1887 added the probe,
+the `StrictMode*` stories in `EditorSheet.stories.tsx` passed in CI with no
+double-invoke ever running. The static build is a test fixture and is published
+nowhere, so nothing ships the development build.
+
 Two more habits keep such a story from passing for the wrong reason:
 
 - **Anchor an absence on something that happened.** "No `form_abandon`" is also
-  true before the sheet has finished mounting, so `expectNoUxEvent(…)` on the
-  line after the click proves nothing. `StrictModeDoesNotInventAnAbandon` first
+  true before a deferred emit has had its turn, so `expectNoUxEvent(…)` on the
+  line after `mountStrictly()` proves little. `StrictModeDoesNotInventAnAbandon` first
   presses the sheet's save button and waits for its `form_submit`: the button
   cannot be pressed until the sheet has mounted, been remounted and settled, so
   the absence asserted after that point covers the whole double-invoke.
 - **Watch it fail once.** Break the code the story guards and run the file with
   `bun run test:stories`; for #1739 that meant emitting the abandon straight
-  from the effect cleanup. A StrictMode story that stays green against the
-  broken code is asserting against a lifecycle that never ran. When the reason
-  is unclear, a probe settles it: a child whose effect counts its mounts and
-  cleanups should read two mounts and one cleanup under a working `StrictMode`,
-  and reads one and zero in the same-commit shape.
+  from the effect cleanup. `expectDoubleInvoked()` proves the lifecycle ran,
+  not that the story asserts anything about it, so a story that stays green
+  against the broken code still needs a sharper assertion.
 
 `framework.options.strictMode` in `ui/.storybook/main.ts` would put a
 `StrictMode` above that boundary for every story. It is off, and turning it on
