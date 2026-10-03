@@ -774,10 +774,28 @@ jobs:
 
       # ── workflow lint: validate the CI yaml itself ────────────────────────
       # agents edit workflows too; catch syntax and shell smells early.
+      # the version and its sha256 are pinned here, and only here: a new
+      # actionlint release that adds a rule must not fail every open pr with no
+      # change in this repo. taiki-e/install-action has no actionlint manifest,
+      # so the release tarball is fetched and verified by hand. to bump, change
+      # both values (the digest is in the release's actionlint_<v>_checksums.txt)
+      # in a deliberate pr, see docs/dev-docs/development/testing.md
       - name: actionlint
         id: actionlint
         if: ${{ !cancelled() }}
-        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="${RUNNER_TEMP}/actionlint.tar.gz"
+          bindir="${RUNNER_TEMP}/actionlint-bin"
+          curl -fsSL --retry 3 -o "${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict -
+          mkdir -p "${bindir}"
+          tar -xzf "${tarball}" -C "${bindir}" actionlint
+          "${bindir}/actionlint" -version
+          "${bindir}/actionlint" -color
 
       # ── workflow security: zizmor static analysis ─────────────────────────
       # catches workflow security smells (unpinned actions, template injection
