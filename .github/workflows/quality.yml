@@ -13,7 +13,8 @@ name: quality
 # the rust checks that link nothing, `rust build` for the ones that link or boot
 # a binary. each runs one named step per concern plus a report step that names
 # whichever failed. `ui, storybook, docs` does the same for every check that
-# runs on bun. nextest, the image smoke and coverage run as jobs of their own.
+# runs on bun; `rust build` also builds and smokes the runtime image (#2037).
+# nextest and coverage run as jobs of their own.
 # ci.yml's `ci-ok`, the single check branch protection requires, needs every
 # job here and runs the pr title and body checks as steps of its own (#2045).
 # coverage runs as informational (continue-on-error) on pull requests only; the
@@ -226,8 +227,9 @@ jobs:
   rust-build:
     name: rust build
     runs-on: ubuntu-latest
-    # about 3.5 min warm; the three builds can take 20 cold, and the semver
-    # step carries a limit of its own
+    # about 3.5 min warm before the image smoke, which adds a debug build of the
+    # image binaries, a vite build and the smoke itself; the builds can take 20
+    # cold, and the semver step carries a limit of its own
     timeout-minutes: 45
     # no job-level RUSTFLAGS here, ever: the variable replaces every `rustflags`
     # entry in cargo's config, the wild-linker action's `--ld-path` included,
@@ -328,6 +330,66 @@ jobs:
           cat /tmp/stream.txt
           grep -q 'data:' /tmp/stream.txt
 
+      # ── image smoke (published ports) ─────────────────────────────────────
+      # runs the single image the way the quickstart documents (default
+      # command, ports published with `-p`) and curls both planes from the
+      # host, plus the refusal with no admin token and no acknowledgement.
+      # `rolter --version` and every in-process test pass on an image whose
+      # planes bind the container's loopback, which a published port never
+      # reaches (#1891); only this sees it.
+      #
+      # it used to be a job of its own that ran `docker build --target runtime`,
+      # a cold release build of the workspace (about 5 min, the BuildKit cargo
+      # cache mounts start empty on a hosted runner) for a 1 s smoke (#2037).
+      # it now builds `runtime-prebuilt`, the same runtime layout (base, user,
+      # workdir, bundled config, env, ports, default command) around debug
+      # binaries built here on this job's warm cache and a dashboard built
+      # here with vite. its base is distroless debian13 rather than the
+      # published debian12: this runner's glibc headers make aws-lc link
+      # glibc 2.38 symbols, which debian 12's 2.36 lacks, so the binaries would
+      # not start there. the release build itself is still exercised: nightly by
+      # extended.yml's compose smoke, and before anything is published by
+      # release.yml's `smoke image`, which runs the same script against every
+      # pushed architecture's digest
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        id: setup-bun
+        if: ${{ !cancelled() }}
+        with:
+          bun-version-file: .bun-version
+      - name: build the dashboard for the image
+        id: image-ui
+        if: ${{ !cancelled() && steps.setup-bun.outcome == 'success' }}
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      # the features the Dockerfile builds with (CARGO_FEATURES=postgres), in
+      # the dev profile, so it reuses this job's cache instead of compiling the
+      # workspace in release mode. the binaries are stripped into a directory of
+      # their own, so the dev profile's debug info stays out of the image layer
+      - name: build the image binaries
+        id: image-bins
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && steps.wild.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cargo build --workspace --features postgres --locked
+          mkdir -p "${RUNNER_TEMP}/image-bin"
+          install -s -m 0755 target/debug/rolter target/debug/rolter-gateway target/debug/rolter-control \
+            "${RUNNER_TEMP}/image-bin/"
+      - name: build the image (runtime-prebuilt)
+        id: image-build
+        if: ${{ !cancelled() && steps.image-ui.outcome == 'success' && steps.image-bins.outcome == 'success' }}
+        run: |
+          docker build -f docker/Dockerfile --target runtime-prebuilt \
+            --build-arg RUNTIME_DISTRO=debian13 \
+            --build-context rolter-bin="${RUNNER_TEMP}/image-bin" \
+            --build-context rolter-ui=ui/dist \
+            -t rolter:image-smoke .
+      - name: run it with published ports and curl both planes
+        id: image-smoke
+        if: ${{ !cancelled() && steps.image-build.outcome == 'success' }}
+        run: bash docker/smoke/image-smoke.sh rolter:image-smoke
+
       # ── semver-checks (advisory) ──────────────────────────────────────────
       # notice when a change moves a shared crate's rust API. scoped
       # deliberately: the baseline is the commit this change lands on, not the
@@ -421,6 +483,11 @@ jobs:
           OUTCOME_SDIST: ${{ steps.sdist.outcome }}
           OUTCOME_SMOKE_BUILD: ${{ steps.smoke-build.outcome }}
           OUTCOME_SMOKE_PROBE: ${{ steps.smoke-probe.outcome }}
+          OUTCOME_SETUP_BUN: ${{ steps.setup-bun.outcome }}
+          OUTCOME_IMAGE_UI: ${{ steps.image-ui.outcome }}
+          OUTCOME_IMAGE_BINS: ${{ steps.image-bins.outcome }}
+          OUTCOME_IMAGE_BUILD: ${{ steps.image-build.outcome }}
+          OUTCOME_IMAGE_SMOKE: ${{ steps.image-smoke.outcome }}
           OUTCOME_SEMVER_INSTALL: ${{ steps.semver-install.outcome }}
           OUTCOME_BASELINE: ${{ steps.baseline.outcome }}
           OUTCOME_SEMVER: ${{ steps.semver.outcome }}
@@ -483,6 +550,15 @@ jobs:
           row "gateway smoke (fake-llm)" "build gateway" "${OUTCOME_SMOKE_BUILD}" "cargo build -p rolter-gateway"
           row "gateway smoke (fake-llm)" "boot + probe" "${OUTCOME_SMOKE_PROBE}" \
             "./target/debug/rolter-gateway --config /nonexistent.toml, then the curl probes of this step in quality.yml"
+          row "image smoke (published ports)" "set up bun" "${OUTCOME_SETUP_BUN}" "${setup}"
+          row "image smoke (published ports)" "build the dashboard for the image" "${OUTCOME_IMAGE_UI}" \
+            "cd ui && bun install --frozen-lockfile && bun run build"
+          row "image smoke (published ports)" "build the image binaries" "${OUTCOME_IMAGE_BINS}" \
+            "cargo build --workspace --features postgres --locked"
+          row "image smoke (published ports)" "build the image (runtime-prebuilt)" "${OUTCOME_IMAGE_BUILD}" \
+            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-arg RUNTIME_DISTRO=debian13 --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
+          row "image smoke (published ports)" "run it with published ports and curl both planes" "${OUTCOME_IMAGE_SMOKE}" \
+            "bash docker/smoke/image-smoke.sh rolter:image-smoke"
           advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
             "cargo install cargo-semver-checks --locked"
           advisory "semver-checks (advisory)" "resolve baseline" "${OUTCOME_BASELINE}" \
@@ -1327,26 +1403,6 @@ jobs:
             exit 1
           fi
           echo "every ui, storybook and docs check passed" >> "${summary}"
-
-  # ── image smoke: the single image through published ports ───────────────────
-  # runs the image the quickstart documents (default command, ports published
-  # with `-p`) and curls both planes from the host, plus the refusal with no
-  # admin token and no acknowledgement. `rolter --version` and every in-process
-  # test pass on an image whose planes bind the container's loopback, which a
-  # published port never reaches (#1891); only this sees it. blocking, unlike
-  # extended.yml's compose smoke: it needs no secrets and no compose stack
-  image-smoke:
-    name: image smoke (published ports)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: build the image
-        run: docker build -f docker/Dockerfile --target runtime -t rolter:image-smoke .
-      - name: run it with published ports and curl both planes
-        run: bash docker/smoke/image-smoke.sh rolter:image-smoke
 
   # ── informational checks ────────────────────────────────────────────────────
   # non-blocking for now (continue-on-error); promote to required once their
