@@ -160,7 +160,7 @@ export const NoFilterMatch: Story = {
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await userEvent.type(canvas.getByLabelText("Search models"), "nonexistent");
     await waitFor(() => expect(canvas.getByText(/No models match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -719,7 +719,7 @@ export const NoLabelMatch: Story = {
       await within(document.body).findByRole("option", { name: "tier=legacy" }),
     );
     await waitFor(() => expect(canvas.getByText(/No models match/i)).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
   },
 };

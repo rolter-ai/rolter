@@ -105,7 +105,7 @@ jobs:
     # scoped to `pull_request` for the same reason `quality` is: no other event
     # may inherit the title-edit fast path
     if: github.event_name != 'pull_request' || github.event.action != 'edited'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
@@ -246,7 +246,7 @@ jobs:
     # record and must not leave one behind
     if: github.event_name != 'pull_request' || github.event.action != 'edited'
     needs: [quality, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: record that the heavy gate passed on this run
         run: echo "quality and codeql both succeeded on this run"
@@ -275,7 +275,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [quality, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # above the fast path's 90-minute wait for an in-flight gate
     # (scripts/assert-gate-ran.sh), so its own deadline, with a message that
     # says what to do, is what fires rather than a bare job timeout. every
