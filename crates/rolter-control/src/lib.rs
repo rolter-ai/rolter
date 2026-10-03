@@ -2746,10 +2746,13 @@ mod tests {
         let masked = redact_url(&format!(
             "http://u:{secret}@ch:8123/?password={secret}&db=x"
         ));
-        assert!(!masked.contains(&secret), "{masked}");
-        assert!(masked.contains("db=x"), "{masked}");
+        assert!(!masked.contains(&secret), "the secret survived redaction");
+        assert!(
+            masked.contains("db=x"),
+            "a non-secret query value was dropped"
+        );
         let junk = redact_url(&format!("not a url {secret}"));
-        assert!(!junk.contains(&secret), "{junk}");
+        assert!(!junk.contains(&secret), "an unparsable url kept the secret");
         assert_eq!(junk, INVALID_URL_PLACEHOLDER);
     }
 

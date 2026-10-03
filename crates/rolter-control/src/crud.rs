@@ -6071,9 +6071,10 @@ mod error_body_tests {
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["error"]["message"], INTERNAL_ERROR);
             let text = body.to_string();
-            for fragment in ["db.internal", "tenant_a", &password] {
+            for fragment in ["db.internal", "tenant_a"] {
                 assert!(!text.contains(fragment), "{fragment} reached the body");
             }
+            assert!(!text.contains(&password), "the password reached the body");
         }
     }
 

@@ -167,10 +167,22 @@ mod tests {
         let out = redact_url(&format!(
             "http://ch:8123/?user=default&password={secret}&database=logs"
         ));
-        assert!(!out.contains(&secret), "{out}");
-        assert!(out.contains("password=***"), "{out}");
-        assert!(out.contains("user=default"), "{out}");
-        assert!(out.contains("database=logs"), "{out}");
+        assert!(
+            !out.contains(&secret),
+            "the password value survived redaction"
+        );
+        assert!(
+            out.contains("password=***"),
+            "the password value was not masked"
+        );
+        assert!(
+            out.contains("user=default"),
+            "a non-secret query value was dropped"
+        );
+        assert!(
+            out.contains("database=logs"),
+            "a non-secret query value was dropped"
+        );
         let out = redact_url("https://h/x?X-Amz-Signature=abc&api_key=def");
         assert!(!out.contains("abc") && !out.contains("def"), "{out}");
     }
@@ -191,7 +203,10 @@ mod tests {
             String::new(),
         ] {
             let out = redact_url(&raw);
-            assert_eq!(out, INVALID_URL_PLACEHOLDER, "input {raw:?}");
+            assert_eq!(
+                out, INVALID_URL_PLACEHOLDER,
+                "an invalid url was not replaced"
+            );
         }
     }
 
