@@ -38,6 +38,24 @@ export const SeveralProblems: Story = {
   },
 };
 
+/** #2390: a dropped entry and a budget served as a monthly cap share one title that is true of both. */
+export const DroppedAndServedDifferently: Story = {
+  args: {
+    problems: [
+      "route 'gpt-4o-mini' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+      "budget 'team-cap' on team 'research' has period '7d', which the gateway does not recognise, so it is enforced as a monthly cap; set it to one of daily, weekly, monthly",
+    ],
+  },
+  play: async ({ canvas }) => {
+    await expect(
+      await canvas.findByText("2 config entries are not being served as written"),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText(/not being served to gateways/)).toBeNull();
+    await expect(await canvas.findByText(/omitted from the snapshot/)).toBeInTheDocument();
+    await expect(await canvas.findByText(/enforced as a monthly cap/)).toBeInTheDocument();
+  },
+};
+
 /** The healthy fleet: the notice must take up no space at all. */
 export const Healthy: Story = {
   args: { problems: [] },

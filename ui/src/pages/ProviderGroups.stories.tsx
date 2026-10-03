@@ -122,7 +122,7 @@ export const NoSearchMatch: Story = {
     await waitFor(() => expect(canvas.getByText("frontier")).toBeVisible());
     await userEvent.type(canvas.getByLabelText("Search provider groups"), "zzz");
     await waitFor(() => expect(canvas.getByText(/No provider groups match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -356,7 +356,7 @@ export const NoLabelMatch: Story = {
       await within(document.body).findByRole("option", { name: "tier=legacy" }),
     );
     await waitFor(() => expect(canvas.getByText(/No provider groups match/i)).toBeVisible());
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     // both narrowings went, so the group is back
     await waitFor(() => expect(canvas.getAllByText("frontier").length).toBeGreaterThan(0));
   },

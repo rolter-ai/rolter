@@ -61,7 +61,7 @@ jobs:
   # fails the job when one was skipped
   rust-lint:
     name: rust lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
     # requests no longer cache for each other. a hung step fails the gate in
     # half an hour instead of GitHub's 360-minute default
@@ -226,7 +226,7 @@ jobs:
   # failure into a warning, never an error (ADR-0032, ADR-0034)
   rust-build:
     name: rust build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 3.5 min warm before the image smoke, which adds a debug build of the
     # image binaries, a vite build and the smoke itself; the builds can take 20
     # cold, and the semver step carries a limit of its own
@@ -578,7 +578,7 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
     # a hung test fails the gate in half an hour instead of GitHub's 360-minute
@@ -680,7 +680,7 @@ jobs:
   # report, or it runs without the report ever vouching for it
   static:
     name: static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 90 s of work. without a timeout a hung step would hold the runner,
     # and every sibling's verdict with it, for GitHub's 360-minute default
     timeout-minutes: 20
@@ -818,6 +818,14 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha || 'origin/master' }}
         run: bash scripts/check-migrations-immutable.sh "${BASE}"
 
+      # ── docs: dev-docs relative links resolve ─────────────────────────────
+      # mdBook only checks links inside the book, so a `../../` that should
+      # have been `../../../` pointed at nothing and nothing failed. see #1926.
+      - name: dev-docs links
+        id: dev-docs-links
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-dev-docs-links.py
+
       # ── spelling: docs / comments / identifiers ───────────────────────────
       # false positives are pinned in .github/config/typos.toml with an
       # explaining comment each.
@@ -850,10 +858,28 @@ jobs:
 
       # ── workflow lint: validate the CI yaml itself ────────────────────────
       # agents edit workflows too; catch syntax and shell smells early.
+      # the version and its sha256 are pinned here, and only here: a new
+      # actionlint release that adds a rule must not fail every open pr with no
+      # change in this repo. taiki-e/install-action has no actionlint manifest,
+      # so the release tarball is fetched and verified by hand. to bump, change
+      # both values (the digest is in the release's actionlint_<v>_checksums.txt)
+      # in a deliberate pr, see docs/dev-docs/development/testing.md
       - name: actionlint
         id: actionlint
         if: ${{ !cancelled() }}
-        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="${RUNNER_TEMP}/actionlint.tar.gz"
+          bindir="${RUNNER_TEMP}/actionlint-bin"
+          curl -fsSL --retry 3 -o "${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict -
+          mkdir -p "${bindir}"
+          tar -xzf "${tarball}" -C "${bindir}" actionlint
+          "${bindir}/actionlint" -version
+          "${bindir}/actionlint" -color
 
       # ── workflow security: zizmor static analysis ─────────────────────────
       # catches workflow security smells (unpinned actions, template injection
@@ -976,6 +1002,8 @@ jobs:
       # helm's own loader tolerates a duplicate mapping key, kubectl's
       # server-side apply and the GitOps controllers do not, and a duplicate
       # `env:` sat in both deployment templates unnoticed until #1090.
+      # the render cases live in scripts/check-helm-chart.sh, which the
+      # `helm-render` prek hook runs too (#2191), so the two cannot drift.
       # `uv run --script` installs only the pyyaml pinned in the checker's
       # inline metadata (#1901); run as part of the repo-root project, uv
       # would build the rolter maturin wheel first, about 3.5 minutes per job
@@ -984,33 +1012,21 @@ jobs:
       - name: helm chart (render defaults)
         id: helm-render-defaults
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh defaults
       - name: helm chart (render with preflight disabled)
         id: helm-render-no-preflight
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter --set preflight.enabled=false \
-            | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh no-preflight
       - name: helm chart (render with every preflight option on)
         id: helm-render-all-preflight
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter \
-            --set preflight.connect=true \
-            --set env.databaseUrl=postgres://u:p@db:5432/rolter \
-            --set 'secretEnv[0].name=ROLTER_KEK' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.name=rolter' \
-            --set 'secretEnv[0].valueFrom.secretKeyRef.key=kek' \
-            | uv run --script scripts/check-rendered-manifests.py
+        run: bash scripts/check-helm-chart.sh all-preflight
       # the launcher in each Deployment's preflight initContainer runs its own
       # release check, so one setting must reach both (#2382)
       - name: helm chart (update check reaches every launcher container)
         id: helm-update-check
         if: ${{ !cancelled() && steps.helm.outcome == 'success' && steps.uv.outcome == 'success' }}
-        run: |
-          helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true
-          helm template ci charts/rolter --set control.updateCheck=false \
-            | uv run --script scripts/check-chart-update-check.py false
+        run: bash scripts/check-helm-chart.sh update-check
 
       # the verdict for the whole job, and the one place that knows which step
       # must run on which event. outcomes arrive through env, never inline in
@@ -1031,6 +1047,7 @@ jobs:
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
+          OUTCOME_DEV_DOCS_LINKS: ${{ steps.dev-docs-links.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
           OUTCOME_CARGO_DENY: ${{ steps.cargo-deny.outcome }}
@@ -1107,6 +1124,8 @@ jobs:
             "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
+          row "dev-docs links" "dev-docs links" "${OUTCOME_DEV_DOCS_LINKS}" yes \
+            "prek run dev-docs-links --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
           row "taplo fmt" "taplo fmt" "${OUTCOME_TAPLO}" yes "prek run taplo --all-files"
           row "cargo-deny" "cargo-deny" "${OUTCOME_CARGO_DENY}" yes \
@@ -1127,13 +1146,13 @@ jobs:
             "prek run chart-appversion --all-files"
           row "helm chart" "helm chart (lint)" "${OUTCOME_HELM_LINT}" yes "helm lint charts/rolter"
           row "helm chart" "helm chart (render defaults)" "${OUTCOME_HELM_RENDER_DEFAULTS}" yes \
-            "helm template ci charts/rolter | uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh defaults (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (render with preflight disabled)" "${OUTCOME_HELM_RENDER_NO_PREFLIGHT}" yes \
-            "helm template ci charts/rolter --set preflight.enabled=false | uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh no-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (render with every preflight option on)" "${OUTCOME_HELM_RENDER_ALL_PREFLIGHT}" yes \
-            "the helm template command of this step in quality.yml, piped to uv run --script scripts/check-rendered-manifests.py"
+            "bash scripts/check-helm-chart.sh all-preflight (or prek run helm-render --all-files for all of them)"
           row "helm chart" "helm chart (update check reaches every launcher container)" "${OUTCOME_HELM_UPDATE_CHECK}" yes \
-            "helm template ci charts/rolter | uv run --script scripts/check-chart-update-check.py true (and --set control.updateCheck=false with false)"
+            "bash scripts/check-helm-chart.sh update-check (or prek run helm-render --all-files for all of them)"
 
           echo >> "${summary}"
           if [ "${failed}" -ne 0 ]; then
@@ -1159,7 +1178,7 @@ jobs:
   # `bun install` does not hide a docs failure
   ui:
     name: ui, storybook, docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # about 5-6 min, most of it the chromium download and the storybook build.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
     # 360-minute default
@@ -1424,7 +1443,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
     # integration tests actually run under coverage (they self-skip when

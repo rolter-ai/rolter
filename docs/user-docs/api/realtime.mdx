@@ -97,12 +97,29 @@ budget ran out; lower `usage_flush_secs` to tighten that.
 **When the key is revoked mid-session**, rolter closes the session too. Every flush
 tick looks the session's virtual key up again in the current configuration. A key
 that was disabled, has expired or was deleted, a `models` list that no longer
-names the session's model, and a route the key can no longer reach all end the
-session, so revoking access is not left waiting on `max_session_secs`. The client
-receives a Realtime `error` event with code `invalid_api_key` (key gone),
-`model_not_allowed` or `route_not_allowed`, then a close frame with code `1008`.
-The bound is one flush interval, `usage_flush_secs` (one second when that is `0`),
-plus the time for the change to reach the gateway.
+names the session's model, a route the key can no longer reach, and a
+`providers` list that no longer includes the provider the session is connected
+to all end the session, so revoking access is not left waiting on
+`max_session_secs`. The client receives a Realtime `error` event with code
+`invalid_api_key` (key gone), `model_not_allowed`, `route_not_allowed` or
+`provider_not_allowed`, then a close frame with code `1008`. The bound is one
+flush interval, `usage_flush_secs` (one second when that is `0`), plus the time
+for the change to reach the gateway.
+
+**When the key is moved or its limits change mid-session**, the same tick applies
+the change to the open session rather than leaving it on what it was opened with:
+
+- Budgets, rate limits and prices edited while a session is open apply from its
+  next tick. A budget lowered below what its scope already spent closes the
+  session with `insufficient_quota`.
+- A key moved to another team or project in the same organization keeps its
+  session. Later turns are logged and charged under the new team and project,
+  and a spent budget there closes the session.
+- A key moved to another organization, or to a project whose `pre_upstream`
+  plugins differ from the old one's, closes the session with an `error` event
+  of code `key_scope_changed` and a `1008` close. The client should open a new
+  session, which is admitted under the key's new scope.
+- A change to any other key leaves the session alone.
 
 **A response cut short** (the client leaves, the upstream drops, or the session
 is closed mid-answer) never reports its usage, although the provider bills
