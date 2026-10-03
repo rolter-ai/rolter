@@ -961,12 +961,16 @@ mod tests {
         }
         pool.close().await;
 
-        // the sweep steps aside when another process holds the advisory lock,
-        // so retry rather than assert on a single attempt — a suite running
-        // beside this one would otherwise fail the test for behaving correctly
-        for _ in 0..10 {
+        // the sweep steps aside while another connection holds the advisory
+        // lock, and the process-wide sweep holds it for as long as it takes to
+        // drain a backlog left by earlier runs. Wait on that condition with a
+        // deadline instead of a fixed attempt count: a lock holder is bounded
+        // by the same ceiling as one guard's cleanup, so outlasting it means a
+        // real failure rather than a busy sweeper
+        let deadline = std::time::Instant::now() + CLEANUP_TIMEOUT * 2;
+        loop {
             sweep_stale_schemas(&url).await.expect("sweep");
-            if !schema_exists(&url, &dead).await {
+            if !schema_exists(&url, &dead).await || std::time::Instant::now() >= deadline {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;

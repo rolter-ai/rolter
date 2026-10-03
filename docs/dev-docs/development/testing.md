@@ -51,10 +51,14 @@ throw it away.
 3. Dispatch the workflow (`gh workflow run gemini-interactions-smoke.yml`),
    optionally with `-f model=<id>`.
 
-Until the secret exists the workflow **fails** rather than skipping. A green
-tick from a run that made no request reads as "the wire format is still
-confirmed" when nothing was checked — worse than no sweep at all. Pass
-`-f allow_unconfigured=true` for a deliberate dry run of the workflow itself.
+Until the secret exists the workflow **skips** every live step and says so: the
+job summary reads "skipped: GEMINI_API_KEY not configured" and a notice
+annotation repeats it on the run. The run is not red (a weekly failure for a
+secret nobody has added teaches people to ignore scheduled failures, #2033), but
+it is also not evidence: a skipped run made no request and confirms nothing
+about the wire format. Check the summary, not just the tick, before treating the
+sweep as having run. Once the secret is present the steps run as before and a
+failure is a real finding.
 
 Each run records the wire shapes it observed into the job summary and uploads
 the full log as an artifact. A billable run should leave evidence behind: the
@@ -77,7 +81,7 @@ A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
 unconfirmed part shape fails loudly instead of producing a shortened body.
 
-Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
+Test grouping is configured in [`.config/nextest.toml`](../../../.config/nextest.toml):
 the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
 reset the schema per test, so they run in a single-threaded group to avoid
 clobbering each other.
@@ -119,7 +123,7 @@ run, they just share the database the url names.
 `ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
 up writing to. The database is derived from the workspace the test binary was
 compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
-[`rolter_store::postgres::test_database`](../../crates/rolter-store/src/postgres/test_database.rs).
+[`rolter_store::postgres::test_database`](../../../crates/rolter-store/src/postgres/test_database.rs).
 A new worktree is therefore isolated without exporting anything, which is the
 point: this repository expects several agents working several worktrees at once
 (see [worktrees.md](worktrees.md)), so concurrent suites against one database is
@@ -151,10 +155,11 @@ from pg_database where datname like 'rolter_test_wt%';
 
 Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
 exactly as given — a throwaway database that is already private, or a deliberate
-reproduction of the shared-database behaviour. The derivation also steps aside
-when it cannot create a database (a role without `CREATEDB`, for instance): it
-prints why and falls back to the configured url, because losing isolation is
-better than losing the suite.
+reproduction of the shared-database behaviour. The derivation never falls back
+silently (#1898): a failure to create the database is retried with a bounded
+backoff, then `test_database::url()` panics naming the cause, because a quiet
+fallback would put one worktree's migrations in a database other worktrees are
+reading. A role without `CREATEDB` should set the opt-out above.
 
 ### The connection budget
 
@@ -223,7 +228,7 @@ Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
 `search_path`, because plain `cargo test` — which the coverage job runs — puts
 every test in one process as a thread, and a shared `public` schema would race
 on DDL. Build it through
-[`rolter_store::postgres::test_schema::TestSchema`](../../crates/rolter-store/src/postgres/test_schema.rs)
+[`rolter_store::postgres::test_schema::TestSchema`](../../../crates/rolter-store/src/postgres/test_schema.rs)
 rather than by hand; other crates reach it through the store's `test-support`
 feature, which `rolter-control` already carries as a dev-dependency.
 
@@ -292,7 +297,7 @@ sweep, so nothing is reclaimed until you drop it yourself.
 ### What keeps all of this honest
 
 Three rules hold the isolation together, and
-[`crates/rolter-store/tests/db_test_isolation.rs`](../../crates/rolter-store/tests/db_test_isolation.rs)
+[`crates/rolter-store/tests/db_test_isolation.rs`](../../../crates/rolter-store/tests/db_test_isolation.rs)
 fails the build when a new test breaks one — the same shape of source-level
 drift guard as the gateway's `lock_discipline.rs`:
 
@@ -381,6 +386,17 @@ black-box harness can only approximate with sleeps:
   request-log and health-event rows must still reach a ClickHouse stand-in
   before the child exits, proving the shutdown sink drain (#1924).
 
+The SIGTERM tests assert request-log and health-event rows but not an MCP
+tool-call row, deliberately. The MCP proxy authenticates with a database virtual
+key, and a TOML config cannot define one, so a child process started from a
+config file cannot reach `/mcp/{server}` without also standing up Postgres and a
+snapshot source. The in-process test
+`mcp_events_are_flushed_by_the_shutdown_drain` (`tests/integration.rs`, #2431)
+covers the MCP row's drain instead. It runs the same shutdown sink drain the
+child process runs, and the child-process tests already prove the signal reaches
+it, so the only untested seam is the signal wiring, which MCP rows share with the
+others.
+
 All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:
@@ -453,8 +469,8 @@ CI runs coverage in the `coverage` job of `quality.yml` on every pull request
 [`extended.yml`](#nightly-extended-checks), whose run also saves the Rust cache
 the PR job restores under the shared key `coverage`. Both enforce a
 **ratcheting baseline**: the committed baseline lives in
-[`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
-[`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
+[`.github/coverage-baseline.txt`](../../../.github/coverage-baseline.txt), and
+[`.github/scripts/coverage-ratchet.sh`](../../../.github/scripts/coverage-ratchet.sh)
 fails the step if the current percentage drops more than
 `COVERAGE_TOLERANCE` points (default `0.5`) below it. The job also uploads the
 `lcov.info` report as a CI artifact.
@@ -480,10 +496,10 @@ Policy (ROL-246):
 The checks that read the tree and build nothing run as steps of one job,
 `static checks` (`static` in `quality.yml`): gitleaks over the working tree and
 the branch history, the session-url check over the PR's commits, migrations
-append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
+append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
 release handoff checker, its self-test and the release gate scripts' fixture
 test, the board automation retry policy, and the helm chart's appVersion check,
-lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
+lint and its renders (`scripts/check-helm-chart.sh`, shared with the `helm-render` prek hook). Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
 a push starts draws on the same 20 concurrent slots. The decision and its
 trade-offs are in
@@ -518,6 +534,14 @@ check added to the job therefore needs three things: its step, an `OUTCOME_*`
 line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
+
+The `dev-docs links` step runs `scripts/check-dev-docs-links.py` (also the
+`dev-docs-links` prek hook). It fails on any relative link in a `.md` file under
+`docs/dev-docs/` that does not resolve to an existing file or directory, with
+the `#anchor` stripped. mdBook only validates links inside the book, so a link to
+a repository file written with one `../` too few used to point at nothing. From
+`docs/dev-docs/<section>/` the repository root is `../../../`; from
+`docs/dev-docs/` itself it is `../../`.
 
 ### The rust lint and rust build jobs
 
@@ -753,6 +777,16 @@ actionlint has no entry for `vulnerability-alerts` yet
 `.github/actionlint.yaml` ignores that one message in that one file. Any other
 permission typo in the workflow still fails the check.
 
+CI pins actionlint to **1.7.12**: the `actionlint` step in `quality.yml` downloads that release's
+tarball and checks it against a pinned sha256 before running it, so a new release that adds or
+tightens a rule cannot turn every open PR red on its own. (`taiki-e/install-action` has no
+actionlint manifest, which is why the step fetches it by hand.) Raising the version is a
+deliberate PR that changes `ACTIONLINT_VERSION` and `ACTIONLINT_SHA256` together, takes the digest
+from the release's `actionlint_<version>_checksums.txt`, and fixes whatever the newer rules
+report; it is also the moment to drop the `vulnerability-alerts` ignore above if the new release
+knows that scope. The `prek` hook runs whichever `actionlint` is on your `PATH`, so install the
+pinned version locally when the two disagree.
+
 ### Secret scanning
 
 The two gitleaks steps of the `static checks` job run the gitleaks **CLI** from
@@ -881,6 +915,25 @@ bunx playwright install --with-deps chromium chromium-headless-shell
 bun run test:stories                            # every story file
 bun run test:stories src/pages/Keys.stories.tsx # or just these
 ```
+
+#### Using a pre-installed chromium
+
+Both browser runners — the story tests above and the e2e journeys in `ui/e2e/`
+(`ui/playwright.config.ts`) — launch the chromium revision the pinned Playwright
+downloads. In a sandbox where that download is blocked but a chromium is already
+installed, set `ROLTER_CHROMIUM_PATH` to the binary and both launch it through
+`launchOptions.executablePath` instead (#2678):
+
+```bash
+export ROLTER_CHROMIUM_PATH=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell
+bun run test:stories src/pages/Keys.stories.tsx
+```
+
+Playwright has no variable of its own for this: `PLAYWRIGHT_BROWSERS_PATH` only
+moves the cache, and still looks for the exact revision the pinned version wants.
+The story runner reads the variable in `ui/test-runner-jest.config.js`, which wraps
+the test-runner's stock jest config. Unset, nothing changes. The path must name a
+chromium Playwright can drive; the headless shell and the full build both work.
 
 #### Why `test:stories` rather than the two commands by hand
 
@@ -1169,6 +1222,33 @@ await expect(within(canvasElement).getByRole("button")).toBeDisabled();
 One thing the check deliberately does not see, and which a reviewer still has
 to: a data query more than one statement after the sheet opened.
 
+#### Text inside a `CodeBlock` is a container assertion
+
+`CodeBlock` paints its value as one text node and swaps it for token and line
+spans once the lazy highlight chunk resolves
+([#2644](https://github.com/rolter-ai/rolter/issues/2644)). So a
+`getByText(/"model": "gpt-4o"/)` or `findByText("curl https://…")` aimed at code
+passes only while it wins the race against that chunk: afterwards the key, the
+colon and the value sit in separate spans and no single element carries the
+string. The same story is green locally, where the chunk is cached, and red in
+CI. Only `language="text"` and values past `HIGHLIGHT_CHAR_LIMIT` never
+highlight.
+
+Assert on the container's text instead, and let it retry:
+
+```ts
+const body = within(drawer).getByRole("region", { name: /^Request — / });
+await waitFor(() => expect(body).toHaveTextContent(/"model": "gpt-4o"/));
+```
+
+`CodeBlock` names its scroll region from `label`, so the region is the handle.
+`toHaveTextContent` reads `textContent`, which is the same before and after
+highlighting; the `waitFor` is for the data behind the block, not the chunk. A
+matcher function over `textContent` is the alternative when a query is wanted.
+`check:waits` cannot see this: whether a string lives inside a `CodeBlock`
+depends on the page, not on the line, and a heuristic over the argument would
+flag prose as often as code. A reviewer still has to.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
@@ -1410,7 +1490,7 @@ than one assertion needs.
 
 ### Nightly extended checks
 
-[`.github/workflows/extended.yml`](../../.github/workflows/extended.yml) holds
+[`.github/workflows/extended.yml`](../../../.github/workflows/extended.yml) holds
 the informational checks that need a full build and gate nothing. It runs nightly
 at 01:41 UTC and on `workflow_dispatch`, rather than on every push, so none of
 them takes a slot from the 20-job runner pool while PRs wait
@@ -1425,8 +1505,14 @@ them takes a slot from the 20-job runner pool while PRs wait
 
 The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
 and outranks the default a toolchain action sets, so a plain `cargo check` would
-test stable and never the declared version. It is red until #2026 settles
-`rust-version` against a lockfile that already needs 1.88.
+test stable and never the declared version; the step prints `rustc --version`
+for that toolchain first, so the log shows which compiler ran. The declared
+version is 1.91 (#2026): the lockfile alone needs 1.88 (redis, tonic, icu and
+`time` declare it), and our own code calls `str::floor_char_boundary`, stable
+since 1.91. To find the floor again after a dependency bump or a newer std API,
+install the candidate with `rustup toolchain install <ver> --profile minimal`
+and run `cargo +<ver> check --workspace --all-features`; the version below it
+must fail.
 
 None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
 failure has to reach the `report failure` job as `failure`. On `master` that
@@ -1461,9 +1547,9 @@ it end-to-end. Run it locally with the same script CI uses:
 bash docker/smoke/smoke.sh
 ```
 
-It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
+It layers [`docker/docker-compose.ci.yml`](../../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
-[`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
+[`docker/smoke/rolter.smoke.toml`](../../../docker/smoke/rolter.smoke.toml) (a
 keyless open config, `require_auth = false`) into the gateway and the control
 plane, so the built-in `fake-llm` model answers without any provider secret. The
 control plane gets it too because the gateway follows the control plane's
@@ -1477,6 +1563,37 @@ is the check that the two planes are wired together. It then always dumps
 compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).
+
+### Nightly dashboard journeys
+
+[`.github/workflows/ui-e2e.yml`](../../.github/workflows/ui-e2e.yml) runs the
+Playwright journeys in `ui/e2e/` against the fake-vLLM compose stack
+(`integration/e2e/docker-compose.e2e.yml`), nightly at 03:17 UTC and on
+`workflow_dispatch`. Like `extended.yml` it gates nothing, and for the same
+reason: one run holds a runner for about ten minutes, and most pull requests touch
+`ui/`, so a path-filtered PR trigger would take a slot from the 20-job pool on
+nearly every push ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). Why it
+stays out of `ci-ok` is in
+[ci-gating.md](ci-gating.md#suites-that-stay-out-of-ci-ok).
+
+A failing `master` run used to sit unread in the Actions tab; it was red for a
+week before anyone noticed (#2677). The workflow now ends in a `report failure`
+job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+`ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
+fails, and comments on it with the run link while it stays open. The run's
+`playwright-report` artifact holds the trace and screenshots. A new issue gets
+the `Maintenance, CI & DX` milestone and a `project-automation.yml` dispatch
+with `area=ui` and `effort=S`, both best-effort as in `extended.yml`. The two
+workflows use different titles, so they never share an issue. Close it once
+the fix lands; the next failure opens a new one.
+
+A pull request that changes a screen a journey walks through, or the control
+plane API under it, should dispatch the suite on its branch before merging. A
+failure there shows in that run and leaves the issue alone:
+
+```bash
+gh workflow run ui-e2e.yml --ref <branch>
+```
 
 ### Published-port image smoke
 

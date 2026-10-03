@@ -18,6 +18,8 @@ This is what makes the feature safe to turn on mid-flight: enabling it cannot ch
 
 The whole feature is off by default. With `enabled` false — or with every field empty — request bodies reach the provider untouched.
 
+On the dashboard the fields are disabled while the switch is off, and they are not validated then: an out-of-range value already stored never blocks **Save**, and saving keeps it unchanged. Turning the switch back on checks every field again.
+
 ---
 
 ## Sampling
