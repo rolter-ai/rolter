@@ -311,10 +311,10 @@ function Timeline({
         <>
           <div
             aria-hidden="true"
-            className="flex justify-between gap-2 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+            className="flex flex-wrap justify-between gap-x-2 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
           >
             <span>{first}</span>
-            {buckets.length > 1 && <span className="text-right">{last}</span>}
+            {buckets.length > 1 && <span className="ml-auto text-right">{last}</span>}
           </div>
           <div
             aria-hidden="true"

@@ -159,6 +159,16 @@ language = "system"
 files = "^crates/rolter-store/migrations/"
 pass_filenames = false
 
+# relative links in docs/dev-docs/ must resolve; mdBook does not check the ones
+# that leave the book (#1926)
+[[repos.hooks]]
+id = "dev-docs-links"
+name = "dev-docs relative links resolve"
+entry = "python3 scripts/check-dev-docs-links.py"
+language = "system"
+files = '^docs/dev-docs/|^scripts/check-dev-docs-links\.py$'
+pass_filenames = false
+
 # the other half of the tree ui/'s `format:check` does not reach. it runs the
 # whole set rather than the staged files so the hook and the ci job can never
 # disagree about what "formatted" means
@@ -256,6 +266,17 @@ name = "chart appVersion tracks the workspace version"
 entry = "python3 scripts/sync-chart-appversion.py"
 language = "system"
 files = "^(Cargo\\.toml|charts/rolter/Chart\\.yaml)$"
+pass_filenames = false
+
+# the same helm lint and strict renders CI runs (scripts/check-helm-chart.sh).
+# without helm on PATH the script skips with a notice rather than failing, as
+# CI is the authority and not every contributor touches the chart
+[[repos.hooks]]
+id = "helm-render"
+name = "helm chart renders strictly"
+entry = "bash scripts/check-helm-chart.sh"
+language = "system"
+files = "^(charts/|scripts/(check-helm-chart\\.sh|check-rendered-manifests\\.py|check-chart-update-check\\.py)$)"
 pass_filenames = false
 
 [[repos.hooks]]

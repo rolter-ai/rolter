@@ -110,7 +110,7 @@ request logs start leaving for the endpoint from the moment you press **Create**
 
 The pencil on a connector's card opens the same sheet filled with its name, endpoint and sampling
 rate, the rate read as a percentage. Saving sends one `PUT` to the connector's own id, so the
-connector is not deleted and re-added and keeps its health and the time of its last test. Sampling
+connector is not deleted and re-added and keeps its health and the time of its last test unless the endpoint or secret changes. Sampling
 is checked the way it is on **Add connector**, and a rate you did not touch goes back exactly as it
 is stored. The sheet has no start switch: whether a connector is sending is still the switch on its
 card, and an edit leaves it as it found it.
@@ -124,8 +124,11 @@ never sent to the new endpoint. Type that endpoint's own secret to replace it. A
 the same origin, such as another path, keeps the secret. The audit entry records that the secret was
 dropped, never the endpoint or the secret.
 
-A save keeps the health the last test recorded, and after a new endpoint or secret that describes
-the old one. The confirmation says so: run **Test delivery** on the card.
+A save that changes neither the endpoint nor the secret, such as a rename or a new sampling rate,
+keeps the health the last test recorded. A save that changes the endpoint or types a new secret
+resets the health to `unknown` and clears the time and error of the last test in the same
+transaction, because that result described the old endpoint or credential. Run **Test delivery**
+on the card to record a new one.
 
 ### Credentials are write-only
 

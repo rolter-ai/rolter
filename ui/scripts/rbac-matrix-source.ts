@@ -159,3 +159,44 @@ export function drift(expected: CapabilityRow[], actual: CapabilityRow[]): strin
   }
   return differences;
 }
+
+/**
+ * The chain fields `chain_at` clears for each scope, read out of its match arms
+ * (#2376), spelled the way `ScopeChain` spells them (`team`, `project`).
+ *
+ * `rbac/effective` decides every row at the part of the chain its `scope`
+ * names, and `src/lib/rbac-capabilities.ts` ports that as `CHAIN_TRIMS`; this
+ * is what the test pins the port to. Refuses a function whose shape it does
+ * not recognise rather than reporting an empty rule, and insists the fallback
+ * arm still hands back the whole chain.
+ */
+export function parseChainTrims(source: string): Record<string, string[]> {
+  const start = source.indexOf("fn chain_at(");
+  if (start < 0) throw new Error(`no \`fn chain_at\` in ${SOURCE}`);
+  const end = source.indexOf("\n}\n", start);
+  if (end < 0) throw new Error(`could not find the end of \`chain_at\` in ${SOURCE}`);
+  const body = source.slice(start, end).replace(/\/\/[^\n]*/g, "");
+  const trims: Record<string, string[]> = {};
+  for (const [, scope, fields] of body.matchAll(/"(\w+)"\s*=>\s*ScopeChain\s*\{([^}]*)\}/g)) {
+    const cleared = [...fields!.matchAll(/(\w+):\s*None/g)].map(([, field]) => field!);
+    if (!/\.\.chain/.test(fields!) || cleared.length === 0) {
+      throw new Error(`the \`"${scope}"\` arm of \`chain_at\` in ${SOURCE} is not a trim`);
+    }
+    trims[scope!] = cleared;
+  }
+  const arms = body.match(/=>/g)?.length ?? 0;
+  if (Object.keys(trims).length === 0 || arms !== Object.keys(trims).length + 1) {
+    throw new Error(
+      `parsed ${Object.keys(trims).length} of ${arms} \`chain_at\` arms in ${SOURCE}`,
+    );
+  }
+  if (!/_\s*=>\s*chain\s*,?\s*\}/.test(body)) {
+    throw new Error(`the fallback arm of \`chain_at\` in ${SOURCE} no longer returns the chain`);
+  }
+  return trims;
+}
+
+/** Read and parse `chain_at` from `path`. */
+export function readChainTrims(path: string): Record<string, string[]> {
+  return parseChainTrims(readFileSync(path, "utf8"));
+}
