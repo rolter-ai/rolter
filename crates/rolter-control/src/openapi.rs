@@ -2010,7 +2010,9 @@ fn operations() -> Vec<Op> {
                 "the identity provider's authorization endpoint. While the provider's org has \
                  single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
                  dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
-                 other caller gets a `403` with `error.code` `sso_disabled`",
+                 other caller gets a `403` with `error.code` `sso_disabled`. A slug no enabled provider \
+                 answers to sends a browser to `/login` with `sso_error=unknown_provider`, and any \
+                 other caller a `400`",
             ),
             Op::get(
                 "/auth/sso/{slug}/callback",

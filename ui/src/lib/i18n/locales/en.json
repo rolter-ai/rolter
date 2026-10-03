@@ -18,6 +18,7 @@
         "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
         "state_expired": "This sign-in took too long or was already used. Start it again.",
         "sso_disabled": "Single sign-on is turned off for this organization.",
+        "unknown_provider": "That single sign-on option is no longer available. Pick another way to sign in, or contact your administrator.",
         "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
         "account_deactivated": "This account has been deactivated. Contact your administrator.",
         "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",

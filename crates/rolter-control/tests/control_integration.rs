@@ -9274,6 +9274,27 @@ async fn sso_off_hides_the_provider_and_refuses_its_login() {
     let body: Value = callback.json().await.unwrap();
     assert_eq!(body["error"]["code"], "sso_disabled", "{body}");
 
+    // a slug no enabled provider answers to: a browser goes back to the login
+    // screen, a JSON caller keeps the 400
+    let unknown_json = client
+        .get(format!("{base}/auth/sso/nobody/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown_json.status(), 400);
+    assert!(unknown_json.headers().get("location").is_none());
+    let unknown_browser = client
+        .get(format!("{base}/auth/sso/nobody/start"))
+        .header("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown_browser.status(), 303);
+    assert_eq!(
+        unknown_browser.headers()["location"].to_str().unwrap(),
+        format!("{base}/login?sso_error=unknown_provider")
+    );
+
     // the other org's provider still starts
     let other = client
         .get(format!("{base}/auth/sso/other/start"))

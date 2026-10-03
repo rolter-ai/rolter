@@ -32,7 +32,10 @@ Authorization code with PKCE, no implicit grant, no client-side tokens:
 1. `GET /auth/sso/{slug}/start` refuses a provider whose org has `allow_sso`
    off with the same `sso_disabled` refusal the callback gives (a browser is
    redirected to `/login?sso_error=sso_disabled&sso=<slug>`, any other caller
-   gets a `403` with `error.code` `sso_disabled`), and otherwise mints a
+   gets a `403` with `error.code` `sso_disabled`). A slug no enabled provider
+   answers to is refused the same way: a browser is redirected to
+   `/login?sso_error=unknown_provider` (no `sso=`, nothing vouches for the
+   slug), any other caller gets the `400`. Otherwise it mints a
    `state`, a `nonce` and a PKCE verifier, stores them in `sso_login_states`,
    and redirects to the provider's `authorization_endpoint`.
 2. The provider redirects back to `GET /auth/sso/{slug}/callback`.
@@ -113,6 +116,7 @@ in the URL.
 | `idp_error`               | the provider answered with an `error` (declined, policy)             |
 | `state_expired`           | no `state`/`code`, or a state unknown, expired, spent or mismatched  |
 | `sso_disabled`            | the org turned SSO off                                               |
+| `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
 | `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
 | `account_deactivated`     | the account is deactivated                                           |
 | `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
