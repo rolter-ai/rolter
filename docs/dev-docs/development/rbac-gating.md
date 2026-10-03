@@ -98,8 +98,9 @@ read from the org's project list. The query key is the provider's, so rows
 sharing a scope share one request. A project the dashboard cannot place
 (deleted, or not listable by this caller) keeps the page's answer and the `403`
 stays the backstop. Stories play a project admin with
-`role={adminOfProject(id)}` on `Harness`, which answers `rbac/effective` per
-queried chain.
+`role={adminOfProject(id)}` on `Harness` — a viewer of the org plus an admin
+membership on the project — and the stub answers `rbac/effective` for the
+queried chain, deciding each row at its own scope as the server does.
 
 Budgets and rate limits (#2529) are the second user. A cap names its own scope,
 so `capGateScope(row, { byTeam, keyProjectId })` (`ui/src/lib/limit-scope.ts`)
@@ -233,6 +234,32 @@ which also suppresses the native tooltip, so a refused button re-enables pointer
 events through an inline style. `disabled` still swallows the click; the
 `RefusedSwallowsTheClick` story asserts exactly that.
 
+### The reason is reachable without a pointer
+
+A disabled element takes no focus, so a reason held only in the `title` reached
+the mouse and nothing else (#2005). Every gated control (`GatedButton`,
+`GatedSwitch`, `GatedCombobox`, `DeleteIconButton`, `RowIconButton`) therefore
+sits in `RefusalWrap` (`ui/src/components/ui/refusal-wrap.tsx`). While the
+control is refused the wrapper is a focusable `role="group"`, named by the
+control it wraps (`aria-labelledby`) and described by the reason
+(`aria-describedby`, pointing at visually hidden text beside it), so Tab stops on
+it and a screen reader reads "Add provider, group, Requires the Admin role". The
+control stays a real `disabled`, and the `title` stays for the mouse. While the
+control is allowed the wrapper is `display: contents`, as before. A new gated
+primitive wraps itself in `RefusalWrap` rather than hand-rolling a second one.
+
+## Counts, toasts and charts (#2005)
+
+Three other things only some users used to get, fixed in the shared primitives:
+
+- `ListSummary` renders a polite live region (`role="status"`) from the first
+  paint, even while empty, so the count a search or filter changes is announced.
+- Toasts are paused while the pointer or focus is on the card (WCAG 2.2.1), and
+  an error has no timer at all: it stays until dismissed. A caller may still pass
+  a `duration`.
+- A `LineChart` given a `label` carries a visually hidden table of the values it
+  plots, captioned with that label.
+
 ## One query, per scope
 
 `CapabilityProvider` sits above the shell in `App.tsx` — above, because the rail
@@ -250,6 +277,17 @@ minus the per-tenant custom roles, rendered by the control plane itself from
 `CAPABILITIES`. `ui/src/lib/rbac-capabilities.ts` serves that copy as
 `matrixFixture()` unchanged and derives `effectiveFor()` from it the way
 `allowed_for` does.
+
+`allowed_for` decides each capability at the part of the queried chain its
+`scope` names (`chain_at`, #1877): an org-scoped row at the org alone, a
+team-scoped row at org + team, anything else at the whole chain, each with the
+role `resolve_role` picks there (most specific membership wins, ties to the
+higher role). `effectiveFor()` ports both (#2376), so a team admin's stub
+answers `role: "admin"` yet lacks `team:create` and `plugin:create`, exactly as
+the server does. A bare `role="admin"` is one org membership, which reaches
+every part of every chain; pass memberships to play anyone held lower.
+`rbac-matrix-source.test.ts` also re-parses `chain_at`'s match arms and fails
+when the port's `CHAIN_TRIMS` disagrees with them.
 
 It used to be a table typed out by hand in `story-harness.tsx`, and nothing
 compared the two. So it drifted — #1258 found it calling `model` and

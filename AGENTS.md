@@ -130,26 +130,28 @@ docs(architecture): document reload-free config propagation
 
 Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre-commit` hook in `prek.toml`.
 
-### Merging through the queue
+### Merging (the merge queue is not on yet)
 
-`master` is behind a **merge queue** ([ADR-0033](docs/dev-docs/adr/2026-09-18-merge-queue.md)).
-`gh pr merge` on a PR targeting `master` _enqueues_ it rather than merging it:
-GitHub builds `master` + the queued entries, runs `ci-ok` against that tree, and
-merges only if it passes. So a PR is not merged when the command returns — check
-with `gh pr view <n> --json state,mergedAt` before reporting it landed. If the
-merge-group run fails, the PR is dequeued with a comment and `master` is
-untouched; fix the branch and requeue. Details, including what the queue means
-for the `merge_group` trigger in `ci.yml`, are in
+`master` is **not** behind a merge queue today. [ADR-0033](docs/dev-docs/adr/2026-09-18-merge-queue.md)
+decided on one and the repository side (`merge_group:` in `ci.yml`) shipped, but
+the branch-protection setting was never switched on, so that trigger has never
+fired. `gh pr merge` on a PR targeting `master` merges it directly once its
+`ci-ok` is green, and nothing re-runs `ci-ok` against the combined tree first: a
+semantic conflict between two green PRs is only caught by `master`'s own push
+run, after the merge. Watch that run after you merge, and do not assume a failing
+combination was dequeued. Details, and the admin steps that would turn the queue
+on, are in
 [`docs/dev-docs/development/merge-protection.md`](docs/dev-docs/development/merge-protection.md).
+Tracked in #2029.
 
 ### Merging a stacked PR
 
 GitHub's stacked pull requests are enabled on this repository, and they change
-how a chain of dependent PRs must be merged. The queue does not change any of
-this: a stacked child targets its parent's branch, which is neither protected nor
-queued, so children merge exactly as below. Only the bottom PR of a stack targets
-`master`, and it goes through the queue like anything else — which means the
-children retarget onto `master` a few minutes later than they used to. Both rules below cost a PR when
+how a chain of dependent PRs must be merged. A stacked child targets its
+parent's branch, which is neither protected nor queued, so children merge exactly
+as below; only the bottom PR of a stack targets `master`. (If the queue is ever
+switched on, the bottom PR goes through it and the children retarget onto
+`master` a few minutes later.) Both rules below cost a PR when
 they are broken, and the loss is silent and irreversible.
 
 - **`gh pr merge` does not work on a stacked PR.** Both the GraphQL path and
@@ -232,7 +234,7 @@ by #123`, `Child of #456`) so it survives for whoever can.
 
 ## CI
 
-- `ci-ok` is the single required status check. It needs `quality` and `codeql`, and runs the PR-title and agent-session-url checks as its own steps, so a title or body edit costs one job. The heavy gate lives in the reusable `.github/workflows/quality.yml`; the release paths do not re-run it, they publish a commit only once its `ci-ok` is green. It is also the check the merge queue asks for, which is why enabling the queue needed no second name anywhere.
+- `ci-ok` is the single required status check. It needs `quality` and `codeql`, and runs the PR-title and agent-session-url checks as its own steps, so a title or body edit costs one job. The heavy gate lives in the reusable `.github/workflows/quality.yml`; the release paths do not re-run it, they publish a commit only once its `ci-ok` is green. It is also the check a merge queue would ask for, which is why enabling the queue needs no second name anywhere.
 - Every action is pinned to a full commit SHA; `zizmor` and `actionlint` run over the workflows, both blocking — a zizmor finding at `medium` or above fails `ci-ok` (#1456), so fix it rather than suppressing it; see [`docs/dev-docs/development/testing.md`](docs/dev-docs/development/testing.md). `quality.yml` takes **no secrets** — it must stay that way so dependabot and fork PRs, which receive none, pass the same gate (#734); secret scanning uses the free gitleaks CLI from a pinned digest, not the licensed action.
 - PR titles are validated against a fixed scope allowlist — a scope outside the list above fails CI. A title edit re-runs only `ci-ok` (its title and body steps) and skips the heavy gate, but `ci-ok` only accepts that skip once it has confirmed through the API that a full gate run for the same head sha already completed successfully — so retitling a PR can never report green over a run that is still going or that failed. Push runs on `master` are never cancelled, so every merge commit keeps a completed run. Both rules, and why the fast path exists, are in [`docs/dev-docs/development/ci-gating.md`](docs/dev-docs/development/ci-gating.md).
 
