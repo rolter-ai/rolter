@@ -153,6 +153,65 @@ export const Loaded: Story = {
     // the headline is the provider-grain row, and it names what fed it
     await expect(within(dead).getByText("probed · probe, status_page")).toBeVisible();
     await expect(within(dead).getByText("uptime · 200 events")).toBeVisible();
+
+    // #2116: the strip names its range, its legend and its values as text
+    const strip = within(dead).getAllByTestId("health-timeline")[0];
+    await expect(strip).toHaveAccessibleName(
+      /Health timeline, .* to .*: 20 failures in 3,600 events/,
+    );
+    await expect(within(dead).getByText("No failures")).toBeVisible();
+    await expect(within(strip).getAllByRole("listitem")).toHaveLength(12);
+    await expect(within(strip).getAllByText(/20 error/)).toHaveLength(1);
+    // a start and an end label, formatted rather than the raw ISO string
+    await expect(within(dead).queryByText(/T\d\d:00:00Z/)).toBeNull();
+
+    // the failing bucket takes --status-danger, is taller than a clean one,
+    // and the clean ones keep the success fill
+    const bars = Array.from(strip.querySelectorAll<HTMLElement>(":scope > div[aria-hidden]"));
+    const down = bars.filter((b) => b.dataset.down);
+    await expect(down).toHaveLength(1);
+    await expect(getComputedStyle(down[0]).backgroundColor).toBe(
+      resolveColorToken("--status-danger"),
+    );
+    await expect(getComputedStyle(bars[0]).backgroundColor).not.toBe(
+      resolveColorToken("--status-danger"),
+    );
+    await expect(parseFloat(down[0].style.height)).toBeGreaterThan(
+      parseFloat(bars[0].style.height),
+    );
+
+    // a target with no timeline rows says so, never "no events" beside counts
+    const mini = canvas.getByTestId("health-target-gpt-4o-mini");
+    await expect(within(mini).getByText("No timeline.")).toBeVisible();
+    await expect(canvas.queryByText(/No events in window/)).toBeNull();
+  },
+};
+
+// one timeout among thousands must not look like an outage: height follows the share
+export const FailureShare: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/health/uptime", () => ({ data: [uptimeRow("share", "share", 20000, 11, ["probe"])] })],
+        ["/health/mttr", () => ({ data: [] })],
+        [
+          "/health/timeline",
+          () => ({
+            data: [...strip("share", "share", { 3: 1, 8: 5000 }, 10000).slice(0, 12)],
+          }),
+        ],
+      ])}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const timeline = await waitFor(() => canvas.getByTestId("health-timeline"));
+    const bars = Array.from(timeline.querySelectorAll<HTMLElement>(":scope > div[aria-hidden]"));
+    const h = (i: number) => parseFloat(bars[i].style.height);
+    await expect(h(3)).toBeLessThan(h(8));
+    await expect(h(8)).toBe(100);
   },
 };
 
@@ -287,6 +346,28 @@ export const SlaStates: Story = {
 
     // the line above the grid says what "at risk" means
     await expect(canvas.getByText(/SLA at risk means/)).toBeVisible();
+  },
+};
+
+// the timeline read fails while uptime succeeds: the grid still renders under
+// the error, and must not claim "no events" beside non-zero counts
+export const TimelineFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/health/uptime", () => ({ data: UPTIME })],
+        ["/health/mttr", () => ({ data: MTTR })],
+        ["/health/timeline", () => json({ error: { message: "boom" } }, 500)],
+      ])}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("health-card-openai-dead")).toBeVisible());
+    await expect(canvas.queryByText(/No events in window/)).toBeNull();
+    await expect(canvas.getAllByText("No timeline.").length).toBeGreaterThan(0);
   },
 };
 
