@@ -1398,8 +1398,7 @@
         "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
         "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
         "noMatchTitle": "No transitions match these filters",
-        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
-        "clearFilters": "Clear filters"
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest."
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",
@@ -2603,7 +2602,6 @@
       "statusErrors": "Errors",
       "allModels": "All models",
       "allKeys": "All keys",
-      "clearFilters": "Clear filters",
       "latency": "Latency",
       "cost": "Cost",
       "unpricedOnly": "Unpriced only",

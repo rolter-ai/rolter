@@ -668,7 +668,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               className="w-full justify-start px-2 text-muted-foreground"
             >
               <FilterX aria-hidden className="h-3.5 w-3.5" />
-              {t("pages.logs.clearFilters")}
+              {t("common.clearFilters")}
             </Button>
             {/* one choice of three rather than a pair of checkboxes, which
                 cleared both ticks without a word when a reader checked both
@@ -1071,7 +1071,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                   </Button>
                   {filterCount > 0 && (
                     <Button variant="outline" onClick={filters.clear}>
-                      {t("pages.logs.clearFilters")}
+                      {t("common.clearFilters")}
                     </Button>
                   )}
                 </>
@@ -1087,7 +1087,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               actions={
                 filterCount ? (
                   <Button variant="outline" onClick={filters.clear}>
-                    {t("pages.logs.clearFilters")}
+                    {t("common.clearFilters")}
                   </Button>
                 ) : undefined
               }
