@@ -120,7 +120,7 @@ export function validateAccepted(raw: unknown): Accepted[] {
 }
 
 function cell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+  return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 }
 
 export function renderSummary(result: Result): string {

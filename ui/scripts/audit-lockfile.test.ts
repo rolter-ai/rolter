@@ -52,6 +52,14 @@ describe("audit-lockfile", () => {
     expect(renderSummary(r)).toContain("No unaccepted advisories");
   });
 
+  it("escapes a backslash before a pipe so the pipe stays escaped", () => {
+    const r = classify(
+      { pkg: [{ ...adv("GHSA-aaaa-bbbb-cccc", "high", "<1"), title: "a \\| b" }] },
+      [],
+    );
+    expect(renderSummary(r)).toContain("a \\\\\\| b");
+  });
+
   it("escapes pipes in the table and annotates high as error, moderate as warning", () => {
     const r = classify(REPORT, []);
     expect(renderSummary(r)).toContain("title \\| with pipe");
