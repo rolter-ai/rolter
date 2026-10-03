@@ -1084,7 +1084,7 @@ async fn reconcile_grants(
     {
         // the org's last admin grant outlives the group change rather than
         // failing the sign-in; it stays in force, so it is reported (#2558)
-        if crate::crud::revoke_idp_grant(state, stale).await? {
+        if crate::crud::revoke_idp_grant(state, stale, true).await? {
             granted.push(stale.role.clone());
         }
     }

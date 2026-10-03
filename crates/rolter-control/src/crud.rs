@@ -5295,9 +5295,18 @@ pub(crate) fn last_org_admin() -> ApiError {
 /// org. Both callers derive the wanted set from the IdP every time, so the
 /// next login or sync revokes the grant once the org has another admin.
 /// Returns whether the grant was kept.
-pub(crate) async fn revoke_idp_grant(state: &ControlState, stale: &Membership) -> ApiResult<bool> {
+///
+/// `protect` is false only when a superadmin's operator action triggered the
+/// reconciliation (deleting a SCIM group mapping), matching
+/// `delete_membership`, where a superadmin may revoke an org's last admin
+/// grant. Login and IdP sync always pass true (#2673).
+pub(crate) async fn revoke_idp_grant(
+    state: &ControlState,
+    stale: &Membership,
+    protect: bool,
+) -> ApiResult<bool> {
     if MembershipRepo(pool(state))
-        .delete_guarded(stale.id, true)
+        .delete_guarded(stale.id, protect)
         .await?
         != LockoutGuard::WouldLockOut
     {

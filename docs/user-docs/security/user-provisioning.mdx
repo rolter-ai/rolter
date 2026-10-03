@@ -118,7 +118,7 @@ Every group change recomputes the affected people's provisioning-granted roles f
 - Removing someone from a group revokes exactly what that group gave them, right away.
 - A role **you** granted by hand — in the dashboard, through the API, or through an invitation — is never touched by a sync. Manual and provisioned grants coexist.
 - Deleting a group, or deprovisioning a user, withdraws the roles involved in the same request.
-- The one exception is an organization's **last active admin** grant: a sync that would withdraw it keeps it, still answers success, and records `membership.last_admin_kept` in the audit log. The next sync that touches that person withdraws it once someone else holds `admin` on the organization.
+- The one exception is an organization's **last active admin** grant: a sync that would withdraw it keeps it, still answers success, and records `membership.last_admin_kept` in the audit log. The next sync that touches that person withdraws it once someone else holds `admin` on the organization. Deleting a group mapping from the dashboard or the API follows the same rule for an org admin, but a **superadmin** deleting the mapping withdraws even the last admin grant, exactly as a superadmin revoking it directly would.
 
 <Warning>
 Because a mapping is a way to grant a role, creating or deleting one requires the **admin** role on the org — the same bar as granting a role directly.
