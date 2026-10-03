@@ -80,6 +80,7 @@
     "mcp_tool_group.update",
     "membership.create",
     "membership.delete",
+    "membership.last_admin_kept",
     "model_defaults.update",
     "model_label.create",
     "model_label.delete",
