@@ -53,7 +53,8 @@ Traces are sampled, and the request log is complete while its
 [`sample_rate`](/observability/log-settings#sampling) is `1`, the default. For
 "is this actually getting worse", use the log. Below `1` the percentiles and
 the error share below are estimates from the logged requests, and `requests`
-counts only those.
+counts only those; the dashboard's analytics endpoints scale their counts and
+sums by each row's `sample_weight`, a raw query does not.
 
 ```sql
 SELECT

@@ -65,7 +65,7 @@ permissions:
 jobs:
   add-to-board:
     name: add to project board
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # backstop only: RETRY_WINDOW below bounds the waiting, so this fires on a
     # hang, never on a rate limit
     timeout-minutes: 25

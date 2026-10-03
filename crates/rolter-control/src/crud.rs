@@ -30,9 +30,9 @@ use rolter_store::postgres::models::{
 use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
     BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
-    ProjectRepo, PromptTemplateRepo, ProviderGroupRepo, ProviderKeyRepo, ProviderRepo,
-    RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo, UserRepo,
-    VirtualKeyRepo,
+    ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -237,6 +237,10 @@ pub(crate) enum ApiError {
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
     Forbidden,
+    /// a 403 that is about policy rather than the caller's role, with a `code`
+    /// a client can branch on. Same contract as [`ApiError::CodedConflict`]:
+    /// `code` is part of the API and never renamed
+    CodedForbidden { code: &'static str, message: String },
     /// the client has spent its budget of rejected attempts on a token
     /// endpoint and is locked for a while (429, #1079). Carries the remaining
     /// lock, which is rendered as `Retry-After`
@@ -261,7 +265,7 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let code = match &self {
-            Self::CodedConflict { code, .. } => Some(*code),
+            Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
             _ => None,
         };
         let (status, message) = match self {
@@ -290,6 +294,7 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN,
                 "insufficient role for this resource".to_string(),
             ),
+            Self::CodedForbidden { message, .. } => (StatusCode::FORBIDDEN, message),
             Self::TooManyAttempts(_) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many rejected attempts; try again later".to_string(),
@@ -3264,7 +3269,13 @@ async fn delete_provider(
         None => ScopeChain::org(existing.org_id),
     };
     authorize(&state, &principal, chain, cap!("provider", Delete)).await?;
-    ProviderRepo(pool(&state)).delete(id).await?;
+    if let ProviderDeletion::InUse(dependents) = ProviderRepo(pool(&state)).delete(id).await? {
+        return Err(ApiError::Conflict(format!(
+            "provider '{}' is used by {}; remove it from them before deleting it",
+            existing.name,
+            dependents.join(", ")
+        )));
+    }
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -5270,6 +5281,20 @@ pub(crate) fn last_superadmin() -> ApiError {
     }
 }
 
+/// stable code of the 409 for a write that would leave an org with no active
+/// org-scoped admin (#2311)
+pub(crate) const LAST_ORG_ADMIN: &str = "last_org_admin";
+
+/// the refusal for revoking an org's last admin grant. a superadmin is exempt
+pub(crate) fn last_org_admin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_ORG_ADMIN,
+        message: "this is the organization's last admin grant; grant admin to another person \
+                  first, or ask a superadmin"
+            .to_string(),
+    }
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -5524,7 +5549,15 @@ async fn delete_membership(
     };
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("membership", Delete)).await?;
-    MembershipRepo(pool).delete(id).await?;
+    // a superadmin can always repair an org, so only the other callers are
+    // kept from leaving it without an admin (#2311)
+    if MembershipRepo(pool)
+        .delete_guarded(id, !matches!(principal, Principal::Superadmin))
+        .await?
+        == LockoutGuard::WouldLockOut
+    {
+        return Err(last_org_admin());
+    }
     log_audit(
         &state,
         &principal,

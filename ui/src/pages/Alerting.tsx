@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -29,7 +28,7 @@ import {
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
@@ -1234,7 +1233,11 @@ function AlertHistoryScreen() {
               <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
-              <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+              {/* the rule name is what tells two rows of one state apart, so it wraps
+                  rather than truncates (#2428) */}
+              <ListCell className="min-w-0 break-words font-mono text-xs">
+                {ruleName(n.rule_id)}
+              </ListCell>
               {/* the diagnosis of a failed delivery wraps rather than truncates:
                   `channel secret could not be unsealed; check ROLTER_KEK` cut to
                   `channel secret could not be…` names the fault and hides what to
@@ -1264,15 +1267,12 @@ function AlertHistoryScreen() {
             actions={
               filtering ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("pages.alerting.history.clearFilters")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
-                <Link
-                  to="/alerting-rules"
-                  className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
+                <EmptyStateLink to="/alerting-rules">
                   {t("pages.alerting.history.emptyAction")}
-                </Link>
+                </EmptyStateLink>
               )
             }
           />

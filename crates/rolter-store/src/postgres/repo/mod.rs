@@ -1246,6 +1246,18 @@ impl SkillRepo<'_> {
     }
 }
 
+/// What [`ProviderRepo::delete`] did with a provider that exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum ProviderDeletion {
+    /// The provider is gone.
+    Deleted,
+    /// The provider was left in place because something still uses it. Each
+    /// entry names one referrer for the refusal, as `route '<model>'` or
+    /// `provider group '<slug>'`, routes first.
+    InUse(Vec<String>),
+}
+
 /// Upstream providers, scoped to an org.
 pub struct ProviderRepo<'a>(pub &'a PgPool);
 
@@ -1488,16 +1500,67 @@ impl ProviderRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from providers where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
+    /// Delete provider `id` unless a route target or a provider-group member
+    /// still references it (#2438).
+    ///
+    /// Both references are `on delete restrict`, so the database would refuse
+    /// anyway, but only with a foreign-key error that names nothing the caller
+    /// can act on. The check and the delete share one transaction that holds
+    /// the provider row `for update`: inserting a target or a member takes a
+    /// `for key share` lock on the provider it references, which conflicts
+    /// with that, so no reference can land between the check and the delete.
+    pub async fn delete(&self, id: Uuid) -> Result<ProviderDeletion> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let found: Option<Uuid> =
+            sqlx::query_scalar("select id from providers where id = $1 for update")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        if found.is_none() {
             return Err(Error::NotFound(format!("provider {id}")));
         }
-        Ok(())
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1
+             order by r.model",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1
+             order by g.slug",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if !routes.is_empty() || !groups.is_empty() {
+            // nothing was written, so dropping the transaction just releases the lock
+            return Ok(ProviderDeletion::InUse(
+                routes
+                    .into_iter()
+                    .map(|model| format!("route '{model}'"))
+                    .chain(
+                        groups
+                            .into_iter()
+                            .map(|slug| format!("provider group '{slug}'")),
+                    )
+                    .collect(),
+            ));
+        }
+        sqlx::query("delete from providers where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(ProviderDeletion::Deleted)
     }
 }
 
@@ -1741,11 +1804,22 @@ impl SsoRepo<'_> {
         Ok(rows.pop())
     }
 
-    /// every enabled provider across all orgs, for the login screen. Returns
-    /// names and slugs the login URL already exposes; never secrets.
-    pub async fn list_enabled_providers(&self) -> Result<Vec<SsoProvider>> {
+    /// Every provider the login screen may offer: enabled, and owned by an org
+    /// whose auth policy allows single sign-on. An org with no policy row
+    /// allows it, as [`OrgAuthPolicyRepo::get`] reads it, so a deployment that
+    /// never set a policy keeps its buttons. Returns names and slugs the login
+    /// URL already exposes; never secrets.
+    pub async fn list_sign_in_providers(&self) -> Result<Vec<SsoProvider>> {
+        // `not exists` rather than a join, so the shared column list needs no
+        // table prefix and a missing policy row reads as sso on (#2339)
         sqlx::query_as(&format!(
-            "select {SSO_PROVIDER_COLUMNS} from sso_providers where enabled order by name"
+            "select {SSO_PROVIDER_COLUMNS} from sso_providers
+             where enabled
+               and not exists (
+                   select 1 from org_auth_policies p
+                   where p.org_id = sso_providers.org_id and not p.allow_sso
+               )
+             order by name"
         ))
         .fetch_all(self.0)
         .await
@@ -3619,6 +3693,70 @@ impl MembershipRepo<'_> {
         .fetch_one(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// delete a grant, refused with [`LockoutGuard::WouldLockOut`] when it is
+    /// an org-scoped `admin` grant held by an active account and no other
+    /// active account holds one for that org (#2311). a per-org advisory lock
+    /// held to the end of the transaction orders two concurrent revocations of
+    /// two different admins, so the second one counts the first one's commit.
+    /// `protect_last_admin = false` skips the check (the superadmin override).
+    pub async fn delete_guarded(
+        &self,
+        id: Uuid,
+        protect_last_admin: bool,
+    ) -> Result<LockoutGuard<()>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if protect_last_admin {
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "select org_id from memberships where id = $1 and role = 'admin'",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?
+            .flatten();
+            if let Some(org) = org {
+                sqlx::query(
+                    "select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))",
+                )
+                .bind(org)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                // read again under the lock: a concurrent revoke may have
+                // committed while this one waited
+                let last: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id = $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     ) and not exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if last {
+                    return Ok(LockoutGuard::WouldLockOut);
+                }
+            }
+        }
+        let res = sqlx::query("delete from memberships where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("membership {id}")));
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done(()))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
