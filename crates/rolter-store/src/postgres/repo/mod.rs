@@ -14,7 +14,7 @@ mod labels;
 mod mcp;
 mod mfa;
 mod saved_views;
-mod support;
+pub(super) mod support;
 
 pub use guardrails::*;
 pub use labels::*;

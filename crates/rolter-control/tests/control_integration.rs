@@ -17203,6 +17203,7 @@ async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_
         "another project's route took a scoped provider: {body}"
     );
     assert!(body.to_string().contains("private-one"), "{body}");
+    assert_eq!(body["error"]["code"], "scope_mismatch", "{body}");
     assert_eq!(target(&r1, &private_id).await.0, 200);
     assert_eq!(target(&r1, &shared_id).await.0, 200, "org-wide fallback");
     assert_eq!(target(&r2, &shared_id).await.0, 200, "org-wide option");
@@ -17228,6 +17229,8 @@ async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_
     );
     let (status, body) = group("foreign-group", Some(&foreign_project), &[]).await;
     assert_eq!(status, 400, "cross-org group scope: {body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "project_id", "{body}");
     let (status, own) = group("own-pool", Some(&p1), &[&private_id, &shared_id]).await;
     assert_eq!(status, 200, "{own}");
     assert_eq!(own["project_id"], p1.as_str());
@@ -17268,6 +17271,7 @@ async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_
     .await;
     assert_eq!(status, 409, "scoped away from route-two: {body}");
     assert!(body.to_string().contains("route-two"), "{body}");
+    assert_eq!(body["error"]["code"], "scope_mismatch", "{body}");
 
     // a project that still owns a provider cannot be deleted out from under it
     let resp = client
@@ -17276,6 +17280,8 @@ async fn a_provider_scoped_to_a_project_is_refused_to_other_projects_routes_and_
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "referenced", "{body}");
     let resp = client
         .delete(format!("{base}/api/v1/teams/{team}"))
         .send()
@@ -18340,6 +18346,91 @@ async fn grant_id(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> u
         .fetch_one(pool)
         .await
         .unwrap()
+}
+
+/// The common refusals carry a stable `code` the dashboard translates, next to
+/// the unchanged message and status (#2567).
+#[tokio::test]
+async fn common_refusals_carry_a_stable_code() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let post = |url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let res = client
+                .post(url)
+                .bearer_auth("admintok")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+
+    let (status, org) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{org}");
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    // a unique violation the handler does not check first is a 409, not a 500,
+    // and says nothing about the constraint it hit
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme again", "slug": "acme"}),
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"]["code"], "name_taken", "{body}");
+    assert!(
+        !body.to_string().contains("orgs_slug"),
+        "the constraint name leaked: {body}"
+    );
+
+    // the explicit name check carries the same code and keeps its message
+    let provider =
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"});
+    let url = format!("{base}/api/v1/orgs/{org_id}/providers");
+    assert_eq!(post(url.clone(), provider.clone()).await.0, 200);
+    let (status, body) = post(url.clone(), provider).await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"]["code"], "name_taken", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already in use"),
+        "{body}"
+    );
+
+    // a field refusal names the field
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Bad", "slug": "Not A Slug"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "slug", "{body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "a\u{0}b"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "name", "{body}");
 }
 
 #[tokio::test]

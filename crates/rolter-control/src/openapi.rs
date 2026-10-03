@@ -2355,8 +2355,15 @@ fn error_schemas(p: &Prim) -> Value {
                     "properties": {
                         "message": string,
                         "type": string,
-                        "code": string,
-                        "param": nullable_string
+                        "code": {
+                            "type": "string",
+                            "description": "stable, never renamed; a client branches on it \
+                                rather than on `message`. The common ones are `name_taken`, \
+                                `invalid_field`, `referenced` and `scope_mismatch` (#2567)"
+                        },
+                        "param": nullable_string,
+                        // the field an `invalid_field` refusal is about
+                        "field": string
                     }
                 }
             }

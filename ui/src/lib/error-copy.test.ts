@@ -19,6 +19,19 @@ describe("describeError", () => {
     expect(copy).toEqual({ message: "errors.api.codes.last_superadmin" });
   });
 
+  it("keeps an invalid_field message as detail, since only it names the field", () => {
+    const copy = describeError(new ApiError("slug must match ^[a-z0-9]", 400, "invalid_field"), t);
+    expect(copy).toEqual({
+      message: "errors.api.codes.invalid_field",
+      detail: "slug must match ^[a-z0-9]",
+    });
+  });
+
+  it("translates a taken name without the server's words", () => {
+    const copy = describeError(new ApiError("provider name 'x' is in use", 409, "name_taken"), t);
+    expect(copy).toEqual({ message: "errors.api.codes.name_taken" });
+  });
+
   it("falls back to the status for an uncoded 401, 403, 429 and 5xx", () => {
     expect(describeError(new ApiError("x", 401), t).message).toBe("errors.api.unauthorized");
     expect(describeError(new ApiError("x", 403), t).message).toBe("errors.api.forbidden");
