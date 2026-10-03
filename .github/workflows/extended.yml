@@ -55,7 +55,7 @@ jobs:
   # ROLTER_DATABASE_URL). see ROL-245
   compose-smoke:
     name: compose smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,11 +70,12 @@ jobs:
   # Cargo.toml so the job follows the declaration, and cargo runs it as
   # `cargo +<msrv>`: rust-toolchain.toml pins `stable` and outranks the rustup
   # default the toolchain action sets, so a plain `cargo check` here would test
-  # stable and never the msrv. it is red until #2026 settles the declared
-  # version against a lockfile that already needs 1.88
+  # stable and never the msrv. the floor is set by our own code as well as the
+  # lockfile: 1.91 is the first release with a stable `str::floor_char_boundary`,
+  # above the 1.88 that redis, tonic, icu and time declare (#2026)
   msrv:
     name: msrv build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,7 +101,12 @@ jobs:
       - name: cargo check (msrv)
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
-        run: cargo +"$MSRV" check --workspace --all-features
+        run: |
+          set -euo pipefail
+          # the log names the compiler that ran, so a stable run cannot pass for the msrv
+          rustc +"$MSRV" --version
+          cargo +"$MSRV" --version
+          cargo +"$MSRV" check --workspace --all-features
 
   # ── coverage on master ──────────────────────────────────────────────────────
   # the same run as quality.yml's `coverage (informational)`, which now runs on
@@ -111,7 +117,7 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:
@@ -181,7 +187,7 @@ jobs:
   # reads bun.lock
   bun-pin:
     name: bun pin
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,7 +259,7 @@ jobs:
     name: report failure
     needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin, ui-audit]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       issues: write

@@ -52,7 +52,7 @@ concurrency:
 jobs:
   update:
     name: raise ui security updates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       vulnerability-alerts: read # list the open dependabot alerts
       contents: write # push the update branch
