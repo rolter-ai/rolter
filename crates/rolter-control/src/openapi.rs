@@ -124,14 +124,6 @@ impl QueryParam {
     }
 }
 
-/// the `409` an account write answers when it would leave no active superadmin
-const LAST_SUPERADMIN_409: &str =
-    "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
-
-/// the `409` revoking an org's last admin grant answers (#2311)
-const LAST_ORG_ADMIN_409: &str =
-    "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
-
 /// One documented operation: a path, a method, and what crosses the wire.
 #[derive(Clone, Copy)]
 struct Op {
@@ -151,9 +143,6 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
-    /// when this operation can answer `409` with a stable `error.code`, what
-    /// that refusal means
-    conflict: Option<&'static str>,
 }
 
 impl Op {
@@ -174,7 +163,6 @@ impl Op {
             query: &[],
             public: false,
             see_other: None,
-            conflict: None,
         }
     }
 
@@ -224,11 +212,6 @@ impl Op {
         self
     }
 
-    fn conflict(mut self, description: &'static str) -> Self {
-        self.conflict = Some(description);
-        self
-    }
-
     fn to_json(self) -> Value {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
@@ -267,12 +250,6 @@ impl Op {
                     "description": description,
                     "headers": {"Location": {"schema": {"type": "string"}}}
                 }),
-            );
-        }
-        if let Some(description) = self.conflict {
-            responses.insert(
-                "409".into(),
-                json!({"$ref": "#/components/responses/Error", "description": description}),
             );
         }
         responses.insert(
@@ -402,12 +379,6 @@ const SCOPE_QUERY: &[QueryParam] = &[
 /// The time window the analytics, health and usage summaries share.
 const WINDOW_QUERY: &[QueryParam] = &[SINCE, UNTIL];
 
-const SAVED_VIEW_QUERY: &[QueryParam] = &[QueryParam::new(
-    "surface",
-    "string",
-    "only presets of one screen: llm_logs or dashboard",
-)];
-
 /// The window plus the bucket only the timeseries endpoint reads.
 const TIMESERIES_QUERY: &[QueryParam] = &[
     SINCE,
@@ -522,11 +493,6 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "string",
         "exact W3C trace id; with no `since`, searches every retained row",
     ),
-    QueryParam::new(
-        "unpriced",
-        "boolean",
-        "`true` returns only requests recorded as unpriced; omit for every request",
-    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -579,12 +545,15 @@ fn operations() -> Vec<Op> {
                 "/api/v1/config",
                 "getConfig",
                 "The assembled gateway configuration, with every secret redacted",
-            ),
+            )
+            // deliberately open: `redact_config_for_dashboard` strips it first
+            .public(),
             Op::get(
                 "/api/v1/config/problems",
                 "getConfigProblems",
                 "Configuration problems detected in the assembled config",
-            ),
+            )
+            .public(),
             Op::get(
                 "/api/v1/config/export",
                 "exportConfig",
@@ -594,13 +563,15 @@ fn operations() -> Vec<Op> {
                 "/api/v1/currency",
                 "getCurrency",
                 "Supported currencies and their conversion rates",
-            ),
+            )
+            .public(),
             Op::get(
                 "/api/v1/provider-kinds",
                 "getProviderKinds",
                 "Provider kinds this build can talk to",
-            ),
-            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog"),
+            )
+            .public(),
+            Op::get("/api/v1/roles", "listRoles", "The built-in role catalog").public(),
             Op::get(
                 "/api/v1/stability",
                 "getStability",
@@ -670,9 +641,7 @@ fn operations() -> Vec<Op> {
                 "/api/v1/auth/logout",
                 "logout",
                 "Revoke the current session",
-            )
-            // idempotent: a missing or already-dead token is a quiet `204`
-            .public(),
+            ),
             Op::get(
                 "/api/v1/auth/me",
                 "authMe",
@@ -709,12 +678,6 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/audit-log",
                 "listAuditLog",
                 "Page an organization's audit log",
-            )
-            .query(AUDIT_LOG_QUERY),
-            Op::get(
-                "/api/v1/audit-log",
-                "listDeploymentAuditLog",
-                "Page the deployment-wide audit log (superadmin)",
             )
             .query(AUDIT_LOG_QUERY),
             Op::get(
@@ -831,10 +794,8 @@ fn operations() -> Vec<Op> {
             .ok(Payload::Ref("CreatedUser")),
             Op::put("/api/v1/users/{id}", "updateUser", "Edit a global account")
                 .body(Payload::Ref("UpdateUser"))
-                .ok(Payload::Ref("User"))
-                .conflict(LAST_SUPERADMIN_409),
-            Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
-                .conflict(LAST_SUPERADMIN_409),
+                .ok(Payload::Ref("User")),
+            Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account"),
             Op::get(
                 "/api/v1/orgs/{org_id}/memberships",
                 "listMemberships",
@@ -852,8 +813,7 @@ fn operations() -> Vec<Op> {
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
-            )
-            .conflict(LAST_ORG_ADMIN_409),
+            ),
         ],
     ));
 
@@ -1170,47 +1130,6 @@ fn operations() -> Vec<Op> {
                 "Spend and usage for the calling account's keys",
             )
             .query(WINDOW_QUERY),
-            Op::patch(
-                "/api/v1/me/profile",
-                "updateMyProfile",
-                "Change the calling account's own display name and bio (any role)",
-            ),
-            Op::get(
-                "/api/v1/me/preferences",
-                "getMyPreferences",
-                "The calling account's preferences, with the default scope it can still read",
-            ),
-            Op::put(
-                "/api/v1/me/preferences",
-                "putMyPreferences",
-                "Replace the calling account's whole preferences document (any role)",
-            ),
-            Op::get(
-                "/api/v1/me/saved-views",
-                "listMySavedViews",
-                "The calling account's saved filter presets, with what it can no longer read (any role)",
-            )
-            .query(SAVED_VIEW_QUERY),
-            Op::post(
-                "/api/v1/me/saved-views",
-                "createMySavedView",
-                "Save a named filter preset for LLM Logs or the Dashboard (any role)",
-            ),
-            Op::get(
-                "/api/v1/me/saved-views/{id}",
-                "getMySavedView",
-                "One of the calling account's saved filter presets",
-            ),
-            Op::patch(
-                "/api/v1/me/saved-views/{id}",
-                "updateMySavedView",
-                "Rename a saved filter preset and/or replace its filters",
-            ),
-            Op::delete(
-                "/api/v1/me/saved-views/{id}",
-                "deleteMySavedView",
-                "Delete a saved filter preset",
-            ),
             Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
@@ -2011,18 +1930,6 @@ fn operations() -> Vec<Op> {
                 "ssoCallback",
                 "OAuth/OIDC redirect target for an SSO login",
             )
-            .public()
-            .see_other(
-                "sent to a browser (`Accept: text/html`): the dashboard's `/login` screen, with \
-                 `sso_code=` (a one-time code for `POST /auth/sso/exchange`) on success or \
-                 `sso_error=` (a stable code, plus `sso=` once the provider is known) on a \
-                 refusal. Any other caller gets the session JSON or the error",
-            ),
-            Op::post(
-                "/auth/sso/exchange",
-                "exchangeSsoCode",
-                "Redeem the one-time code a browser SSO sign-in ended with for its session",
-            )
             .public(),
         ],
     ));
@@ -2578,7 +2485,6 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
                 "created_at": timestamp
             }
         },
@@ -2593,8 +2499,7 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": {"type": ["string", "null"], "description": "sealed with the KEK before storage; never returned"},
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": string_list,
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the provider to one project of the org; omit for an org-wide provider. Needs the provider create capability at that project (an environment-variable credential needs it at the org)"}
+                "egress_proxies": string_list
             },
             "additionalProperties": false
         },
@@ -2609,8 +2514,7 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key": nullable_string,
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
-                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}},
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the provider to it, null to make it org-wide. Refused with 409 while a route or group of another project uses the provider"}
+                "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}}
             },
             "additionalProperties": false
         },
@@ -2620,9 +2524,7 @@ fn provider_schemas(p: &Prim) -> Value {
             "required": ["id", "org_id", "name", "slug", "strategy", "created_at"],
             "properties": {
                 "id": uuid, "org_id": uuid, "name": string, "slug": string,
-                "strategy": string,
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the group is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
-                "created_at": timestamp
+                "strategy": string, "created_at": timestamp
             }
         },
         "ProviderGroupMember": {
@@ -2664,8 +2566,7 @@ fn provider_schemas(p: &Prim) -> Value {
                 "name": string,
                 "slug": nullable_string,
                 "strategy": {"type": "string", "default": "round_robin"},
-                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}},
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the group to one project of the org; omit for an org-wide group. A scoped group may hold that project's providers and org-wide ones; an org-wide group only org-wide ones (409 otherwise)"}
+                "members": {"type": "array", "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}}
             },
             "additionalProperties": false
         },
@@ -2680,8 +2581,7 @@ fn provider_schemas(p: &Prim) -> Value {
                     "type": ["array", "null"],
                     "description": "when present, replaces the entire membership",
                     "items": {"$ref": "#/components/schemas/ProviderGroupMemberInput"}
-                },
-                "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the group to it, null to make it org-wide"}
+                }
             },
             "additionalProperties": false
         }
@@ -2834,17 +2734,6 @@ fn governance_schemas(p: &Prim) -> Value {
         "type": "string",
         "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
     });
-    // what `validate_period` in `crud.rs` accepts, read off the same table the
-    // snapshot loader uses, so the documented set cannot drift from it (#1902)
-    let periods: Vec<&str> = rolter_core::BudgetPeriod::SPELLINGS
-        .iter()
-        .map(|(spelling, _)| *spelling)
-        .collect();
-    let period = json!({
-        "type": "string",
-        "enum": periods,
-        "description": "daily, 1d and 24h reset at 00:00 UTC; monthly and 30d on the first of the calendar month, UTC; total, lifetime and all never reset. Case-insensitive. There are no rolling windows such as 7d"
-    });
     json!({
         "Budget": {
             "type": "object",
@@ -2854,10 +2743,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "limit_usd": {"type": "string", "description": "decimal(12,4) as text"},
-                "period": {
-                    "type": "string",
-                    "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
-                },
+                "period": string,
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
                 "created_at": timestamp
             }
@@ -2868,13 +2754,8 @@ fn governance_schemas(p: &Prim) -> Value {
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
-                "period": {
-                    "type": "string",
-                    "enum": period["enum"],
-                    "description": period["description"],
-                    "default": "30d"
-                },
+                "limit_usd": string,
+                "period": {"type": "string", "default": "30d"},
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
             },
             "additionalProperties": false
@@ -2884,7 +2765,7 @@ fn governance_schemas(p: &Prim) -> Value {
             "description": "every field is optional; omit one to leave it unchanged. The scope is not editable. An edit that changes nothing writes nothing",
             "properties": {
                 "limit_usd": {"type": "string", "description": "a decimal from 0 to 99999999.9999, the most the numeric(12,4) column holds"},
-                "period": period,
+                "period": string,
                 "unpriced_policy": {
                     "type": ["string", "null"],
                     "enum": ["ignore", "warn", "block", null],
@@ -2908,13 +2789,12 @@ fn governance_schemas(p: &Prim) -> Value {
         },
         "CreateRateLimit": {
             "type": "object",
-            "description": "at least one of rpm and tpm must be set; omitted or null leaves that dimension uncapped",
             "required": ["scope_type", "scope_id"],
             "properties": {
                 "scope_type": scope_type,
                 "scope_id": uuid,
-                "rpm": {"type": ["integer", "null"], "minimum": 1},
-                "tpm": {"type": ["integer", "null"], "minimum": 1}
+                "rpm": {"type": ["integer", "null"]},
+                "tpm": {"type": ["integer", "null"]}
             },
             "additionalProperties": false
         },
@@ -3288,11 +3168,6 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
-        // the SSO callback is the only other one (#2297)
-        let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
-        assert!(sso["303"]["description"]
-            .as_str()
-            .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3301,7 +3176,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 2);
+        assert_eq!(redirects, 1);
     }
 
     #[test]
@@ -3320,8 +3195,6 @@ mod tests {
         // a request is found by the id its client was handed (#1849)
         assert!(names.contains("request_id"), "{names:?}");
         assert!(names.contains("trace_id"), "{names:?}");
-        // and the unpriced ones can be asked for by themselves
-        assert!(names.contains("unpriced"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");
@@ -3576,11 +3449,7 @@ mod tests {
     #[test]
     fn the_keyset_paged_logs_document_their_cursors() {
         let doc = document();
-        for path in [
-            "/api/v1/mcp/logs",
-            "/api/v1/orgs/{org_id}/audit-log",
-            "/api/v1/audit-log",
-        ] {
+        for path in ["/api/v1/mcp/logs", "/api/v1/orgs/{org_id}/audit-log"] {
             let params = doc["paths"][path]["get"]["parameters"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{path} declares its query parameters"));

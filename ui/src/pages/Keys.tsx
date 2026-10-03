@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Key } from "lucide-react";
+import { Check, Copy, Pencil, Plus, Key } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -36,7 +36,6 @@ import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
-import { KeyNextStep } from "@/components/KeyNextStep";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   ListActionsHeader,
@@ -54,7 +53,14 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SecretRevealDialog } from "@/components/ui/secret-reveal";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
 import { Tag } from "@/components/ui/tag";
 import {
   PLAYGROUND_PURPOSE,
@@ -76,7 +82,6 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -217,7 +222,7 @@ export default function Keys() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
           {/* a list that has not loaded exports a header line and no rows,
               which reads as a project with no keys (#2056) */}
           <Button variant="outline" disabled={!keys.isSuccess} onClick={exportCsv}>
@@ -481,20 +486,7 @@ export default function Keys() {
         }}
       />
 
-      {/* the plaintext is shown once; `created` is dropped on close, so it is
-          never re-fetchable */}
-      <SecretRevealDialog
-        name="virtual-key-created"
-        open={!!created}
-        onOpenChange={(open) => !open && setCreated(null)}
-        title={t("pages.virtualKeys.createdTitle")}
-        description={t("pages.virtualKeys.createdBody")}
-        secret={created?.key ?? ""}
-        copyLabel={t("common.copy")}
-        size="lg"
-      >
-        <KeyNextStep models={created?.models ?? []} />
-      </SecretRevealDialog>
+      <CreatedKeyDialog created={created} onOpenChange={(open) => !open && setCreated(null)} />
     </PageBody>
   );
 }
@@ -579,8 +571,7 @@ function AddKeyDialog({
         unitId !== UNATTRIBUTED ||
         customerId !== UNATTRIBUTED
       }
-      errorMessage={create.isError ? describeError(create.error, t).message : undefined}
-      errorDetail={create.isError ? describeError(create.error, t).detail : undefined}
+      errorMessage={create.isError ? (create.error as Error).message : undefined}
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
@@ -706,8 +697,7 @@ function EditKeyDialog({
       title={t("pages.virtualKeys.editTitle")}
       subtitle={name}
       dirty={providersChanged || attributionChanged}
-      errorMessage={save.isError ? describeError(save.error, t).message : undefined}
-      errorDetail={save.isError ? describeError(save.error, t).detail : undefined}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={save.isPending ? t("pages.virtualKeys.saving") : t("pages.virtualKeys.save")}
       canSave={providersChanged || attributionChanged}
       saving={save.isPending}
@@ -728,5 +718,58 @@ function EditKeyDialog({
         />
       </div>
     </EditorSheet>
+  );
+}
+
+// shows the plaintext secret exactly once, right after creation; state is
+// local to this dialog and is discarded on close, never re-fetchable
+function CreatedKeyDialog({
+  created,
+  onOpenChange,
+}: {
+  created: CreatedVirtualKey | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (created) setCopied(false);
+  }, [created]);
+
+  const copy = async () => {
+    if (!created) return;
+    try {
+      await navigator.clipboard.writeText(created.key);
+      setCopied(true);
+    } catch {
+      // clipboard unavailable — user can still select/copy the text manually
+    }
+  };
+
+  return (
+    <Dialog open={!!created} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>{t("pages.virtualKeys.createdTitle")}</DialogTitle>
+        <DialogDescription>{t("pages.virtualKeys.createdBody")}</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
+        <div className="flex items-center justify-between gap-2">
+          <code className="break-all text-sm">{created?.key}</code>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copy}
+            aria-label={copied ? t("common.copied") : t("common.copy")}
+            title={copied ? t("common.copied") : t("common.copy")}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      </div>
+      <DialogFooter>
+        <Button onClick={() => onOpenChange(false)}>{t("common.done")}</Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

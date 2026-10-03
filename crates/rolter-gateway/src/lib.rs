@@ -27,10 +27,8 @@ mod cache;
 mod cache_policy_tests;
 mod cache_telemetry;
 mod cancel;
-mod clickhouse_client;
 #[doc(hidden)]
 pub mod cooldowns;
-mod egress_client;
 mod error;
 mod fake_llm;
 mod genai;
@@ -41,7 +39,6 @@ pub mod health;
 mod health_events;
 mod load;
 mod logging;
-mod mcp_log;
 mod mcp_proxy;
 mod metrics;
 pub mod model_catalog;
@@ -54,12 +51,10 @@ mod prompt_templates;
 mod queue;
 mod rate_limits;
 mod realtime;
-mod realtime_guard;
 mod realtime_metering;
 mod redis_conn;
 mod response_registry;
 mod semantic;
-mod sink_drain;
 mod state;
 mod status_page;
 mod trace;
@@ -191,14 +186,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             )
             .await
             {
-                log_endpoint("inheriting the control plane's log destination", &url);
+                tracing::info!(%url, "inheriting the control plane's log destination");
                 config.logging.clickhouse_url = Some(url);
             }
         }
     }
 
     if let Some(url) = &config.logging.clickhouse_url {
-        log_endpoint("clickhouse request logging enabled", url);
+        tracing::info!(%url, "clickhouse request logging enabled");
     } else if args.snapshot_url.is_some() {
         // an empty analytics screen and a quiet deployment look identical, so
         // say which one this is while the operator is still reading the log
@@ -265,7 +260,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(snapshot_url) = args.snapshot_url {
         let telemetry_snapshot_url = snapshot_url.clone();
         let period = std::time::Duration::from_secs(args.snapshot_poll_secs.max(1));
-        tracing::info!(snapshot_url = %rolter_core::redact::redact_url(&snapshot_url), poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
+        tracing::info!(%snapshot_url, poll_secs = args.snapshot_poll_secs, pubsub = args.redis_url.is_some(), "config watcher enabled");
         // both the cluster inventory and the adaptive-routing scoreboard are
         // keyed on this node's id, and a node that cannot name itself is
         // dropped by the control plane; say so here rather than leaving two
@@ -329,14 +324,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(
             grace_secs = REALTIME_DRAIN_GRACE.as_secs(),
             "realtime sessions still open after the drain grace; their unflushed usage is lost"
-        );
-    }
-    // last, so the rows the requests and realtime meters above produced are
-    // already queued when the sinks are told to stop
-    if !realtime.drain_sinks(SINK_DRAIN_GRACE).await {
-        tracing::warn!(
-            grace_secs = SINK_DRAIN_GRACE.as_secs(),
-            "request-log, health-event or usage sinks did not finish flushing; what they still held is lost"
         );
     }
     tracing::info!("rolter-gateway shut down cleanly");
@@ -465,14 +452,6 @@ pub fn build_router_from_config(config: &GatewayConfig) -> Router {
 /// still waiting on Redis.
 const REALTIME_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How long shutdown waits for the request-log writer, the health-event writer
-/// and the usage-recording workers to flush and stop, after the realtime drain.
-/// A healthy ClickHouse or Redis takes milliseconds; the bound only matters when
-/// one is unreachable, and it is kept short so the HTTP drain, the realtime
-/// grace and this still fit inside the 30 seconds an orchestrator usually allows
-/// before `SIGKILL`.
-const SINK_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
 /// or `SIGTERM` on Unix — the signal orchestrators send on rollout/scale-down).
 async fn shutdown_signal() {
@@ -495,78 +474,5 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
         _ = terminate => tracing::info!("received SIGTERM, draining"),
-    }
-}
-
-/// Log that a datastore endpoint is in use, with the credentials in its url
-/// masked (#2406). Every startup line that names one goes through here.
-fn log_endpoint(what: &str, url: &str) {
-    tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
-}
-
-#[cfg(test)]
-mod startup_log_tests {
-    use std::sync::Arc;
-
-    use parking_lot::Mutex;
-    use tracing_subscriber::layer::SubscriberExt;
-
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<String>>>);
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            struct Fields(String);
-            impl tracing::field::Visit for Fields {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    self.0.push_str(&format!("{}={value:?} ", field.name()));
-                }
-            }
-            let mut fields = Fields(String::new());
-            event.record(&mut fields);
-            self.0.lock().push(fields.0);
-        }
-    }
-
-    /// A throwaway secret built at run time, so no credential-shaped literal
-    /// sits in the source for secret scanners to flag
-    fn throwaway_secret(tag: &str) -> String {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        format!("{tag}{}x{nanos}", std::process::id())
-    }
-
-    #[test]
-    fn startup_lines_keep_the_clickhouse_password_out() {
-        let user_secret = throwaway_secret("u");
-        let query_secret = throwaway_secret("q");
-        let captured = Captured::default();
-        let subscriber = tracing_subscriber::registry().with(captured.clone());
-        tracing::subscriber::with_default(subscriber, || {
-            super::log_endpoint(
-                "clickhouse request logging enabled",
-                &format!("http://default:{user_secret}@ch:8123/?password={query_secret}"),
-            );
-        });
-        let seen = captured.0.lock().join("\n");
-        for secret in [&user_secret, &query_secret] {
-            // the message names neither the secret nor the captured line, so a
-            // failure cannot itself print the credential
-            assert!(
-                !seen.contains(secret.as_str()),
-                "a test credential reached the startup log"
-            );
-        }
-        assert!(seen.contains("ch:8123"), "{seen}");
     }
 }

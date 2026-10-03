@@ -45,116 +45,18 @@ export const AxisLabelsAreNotClipped: Story = {
   play: async ({ canvasElement }) => {
     const svg = canvasElement.querySelector("svg");
     await expect(svg).toBeTruthy();
-    // the viewBox is as wide as the chart is drawn, which is the frame's width
-    const viewBoxWidth = svg!.viewBox.baseVal.width;
+    const viewBoxWidth = 640;
     const labels = [...canvasElement.querySelectorAll("text")].filter((node) =>
       /^\d{2}:\d{2}$/.test(node.textContent ?? ""),
     );
     await expect(labels.length).toBeGreaterThan(0);
-    // an approximate half-width for an 11px monospace `HH:MM`
-    const halfLabel = 17;
+    // an approximate half-width for a 9px monospace `HH:MM`
+    const halfLabel = 14;
     for (const label of labels) {
       const x = Number(label.getAttribute("x"));
       await expect(x - halfLabel).toBeGreaterThan(0);
       await expect(x + halfLabel).toBeLessThan(viewBoxWidth);
     }
-  },
-};
-
-/** the axis text of the chart in `canvasElement`, measured as it is drawn on screen */
-function axisOf(canvasElement: HTMLElement) {
-  const svg = canvasElement.querySelector("svg") as SVGSVGElement;
-  const frame = svg.getBoundingClientRect();
-  const scale = frame.width / svg.viewBox.baseVal.width;
-  const text = [...svg.querySelectorAll("text")];
-  return { frame, scale, text, boxes: text.map((node) => node.getBoundingClientRect()) };
-}
-
-const DAY = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00"];
-
-/**
- * #1994: the chart was a 640-wide viewBox scaled to whatever the card gave it,
- * so on a phone (233px here) its 9px axis text was drawn at about 3px and the
- * plot was a third as tall as it was set to be. It is drawn at the width it is
- * given: one viewBox unit is one pixel, the text is read at the size it was set,
- * and the x labels are thinned to what fits rather than overlapping.
- */
-export const DrawnAtTheWidthItHas: Story = {
-  args: {
-    height: 220,
-    labels: DAY,
-    series: [{ name: "spend", values: [4.27, 5.9, 6.9, 7.3, 8.1, 8.8, 7.2, 9.5] }],
-    formatValue: (v: number) => money.currency(v),
-  },
-  render: (args) => (
-    <div style={{ width: 233 }}>
-      <LineChart {...args} />
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const { frame, scale, text, boxes } = axisOf(canvasElement);
-    await expect(scale).toBeGreaterThan(0.95);
-    await expect(scale).toBeLessThan(1.05);
-    await expect(frame.height).toBeCloseTo(220, 0);
-    for (const node of text) {
-      await expect(parseFloat(getComputedStyle(node).fontSize) * scale).toBeGreaterThanOrEqual(10);
-    }
-    // nothing is clipped by the frame, and no two x labels touch
-    for (const box of boxes) {
-      await expect(box.left).toBeGreaterThanOrEqual(frame.left);
-      await expect(box.right).toBeLessThanOrEqual(frame.right);
-    }
-    const clock = text
-      .map((node, i) => [node, boxes[i]] as const)
-      .filter(([node]) => /^\d{2}:\d{2}$/.test(node.textContent ?? ""))
-      .map(([, box]) => box);
-    await expect(clock.length).toBeGreaterThan(1);
-    await expect(clock.length).toBeLessThan(DAY.length);
-    for (let i = 1; i < clock.length; i += 1) {
-      await expect(clock[i].left).toBeGreaterThanOrEqual(clock[i - 1].right);
-    }
-  },
-};
-
-/**
- * The same chart across a wide card keeps every label, up to the six the axis
- * carries, and still draws at one unit to the pixel.
- */
-export const DrawnAtTheWidthItHasWhenWide: Story = {
-  args: DrawnAtTheWidthItHas.args,
-  render: (args) => (
-    <div style={{ width: 720 }}>
-      <LineChart {...args} />
-    </div>
-  ),
-  play: async ({ canvasElement }) => {
-    const { scale, text } = axisOf(canvasElement);
-    await expect(scale).toBeGreaterThan(0.95);
-    await expect(scale).toBeLessThan(1.05);
-    const clock = text.filter((node) => /^\d{2}:\d{2}$/.test(node.textContent ?? ""));
-    await expect(clock).toHaveLength(4);
-  },
-};
-
-/**
- * A tick label wider than the gutter was clipped at the frame's left edge: the
- * gutter was a fixed 44 units, and `$12,345.67` is wider than that at any size.
- * It is as wide as the longest label.
- */
-export const WideTickLabelsGetTheirOwnGutter: Story = {
-  args: {
-    height: 200,
-    labels: ["00:00", "06:00", "12:00", "18:00"],
-    series: [{ name: "spend", values: [1200, 4300.5, 8800.25, 12345.67] }],
-    formatValue: (v: number) => money.currency(v),
-  },
-  play: async ({ canvasElement }) => {
-    const { frame, boxes, text } = axisOf(canvasElement);
-    const ticks = text
-      .map((node, i) => [node, boxes[i]] as const)
-      .filter(([node]) => (node.textContent ?? "").startsWith("$"));
-    await expect(ticks.length).toBeGreaterThanOrEqual(5);
-    for (const [, box] of ticks) await expect(box.left).toBeGreaterThanOrEqual(frame.left);
   },
 };
 

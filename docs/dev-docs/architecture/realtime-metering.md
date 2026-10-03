@@ -140,29 +140,6 @@ The overshoot is bounded: at most the spend of one flush window, plus whatever
 turn was in flight when the budget ran out. An operator who needs a tighter
 bound lowers `usage_flush_secs`.
 
-## A key revoked mid-session
-
-Authentication happens once, at the upgrade, so a session opened a moment
-before its key was disabled, expired or deleted would otherwise run until
-`max_session_secs` (#1881). The session keeps the peppered digest of the key it
-was opened with, and every tick of the meter, in the snapshot it loads for that
-tick, calls `handlers::recheck_session_access`. That is the upgrade's own
-sequence: the `snap.keys` lookup and `is_active` test `authenticate` does,
-`authorize_model`, `named_route_for` and `authorize_route`, so narrowing `models`
-or removing route access reaches a live session as well. The refusal wording
-comes from `AccessDenial::message_and_code`, shared with the HTTP responses.
-
-A failure closes the session like a spent budget does: an `error` event, then a
-`1008` close and the upstream leg closed. The event code is `invalid_api_key`
-for a disabled, expired or deleted key (the HTTP 401 carries no code, so this is
-the OpenAI one), otherwise the denial's `model_not_allowed` /
-`route_not_allowed`, or `model_not_found` when the route was removed. The check
-runs before the budget read and shares its channel, so a revoked key is reported
-instead of a spent budget. The bound is one flush interval, or the one-second
-tick when `usage_flush_secs = 0`, plus snapshot propagation. A session opened
-without a key (auth disabled) has nothing to re-check. The key's scope is fixed
-at the upgrade: moving a key to another org does not re-scope a live session.
-
 ## Responses cut short
 
 A response still in flight when the session ends never reports usage, but the
@@ -170,15 +147,14 @@ upstream generated part of it and will bill it. The last flush writes a row
 for it with `usage_unknown = 1`, zero tokens, and the reason the session ended
 as its status:
 
-| Session ended because           | `status`          | `error`                                |
-| ------------------------------- | ----------------- | -------------------------------------- |
-| the client closed or went away  | `499`             | `client disconnected`                  |
-| the upstream closed the session | `502`             | `upstream closed the realtime session` |
-| the upstream connection failed  | `502`             | `upstream realtime connection failed`  |
-| `max_session_secs` or idle time | `408`             | `realtime session closed by <limit>`   |
-| a budget ran out                | `402`             | the budget refusal message             |
-| its key or access was revoked   | `401`/`403`/`404` | the refusal the upgrade would give     |
-| the gateway shut down           | `503`             | `gateway shutting down`                |
+| Session ended because           | `status` | `error`                                |
+| ------------------------------- | -------- | -------------------------------------- |
+| the client closed or went away  | `499`    | `client disconnected`                  |
+| the upstream closed the session | `502`    | `upstream closed the realtime session` |
+| the upstream connection failed  | `502`    | `upstream realtime connection failed`  |
+| `max_session_secs` or idle time | `408`    | `realtime session closed by <limit>`   |
+| a budget ran out                | `402`    | the budget refusal message             |
+| the gateway shut down           | `503`    | `gateway shutting down`                |
 
 This follows [Client disconnects](client-disconnects.md) and
 [Billed but withheld](billed-but-withheld.md): spend that cannot be counted is
@@ -223,30 +199,9 @@ So the gateway drains realtime sessions itself (`Sessions` in `realtime.rs`,
    A session still open after it is logged as a warning.
 
 The budget and `tpm` writes are awaited by the meter, so they land before the
-process exits. The request-log rows are handed to the shared ClickHouse writer
-and the budget and `tpm` records to the usage-recording workers; both are
-flushed by the sink drain that runs after the realtime drain (below).
-
-### Sink drain
-
-The request-log writer, the health-event writer, the MCP tool-call writer and the usage-recording workers
-(`SinkTasks` in `sink_drain.rs`, `AppState::drain_sinks`) each hold work that
-only leaves the process once they flush: up to `[logging] flush_ms` of rows in a
-batch, whatever is queued on their channel, and any budget or `tpm` record not
-yet written to Redis. They cannot rely on "every sender dropped" to finish,
-because `AppState` clones live on in the prober, scraper and watcher tasks, so
-at shutdown they used to be cancelled mid-batch (#1924).
-
-After the HTTP and realtime drains, `run()` cancels each sink's token. The task
-closes its receiver, which still yields everything already queued and then
-`None`, so the normal "senders gone" path flushes the remainder and exits. The
-three sinks drain concurrently and the process waits at most 5 seconds for all
-of them. That bound is deliberately short: a healthy ClickHouse or Redis takes
-milliseconds, so it only ever expires when one is unreachable, and it must not
-push the HTTP drain, the 10 second realtime grace and this wait past the 30
-seconds an orchestrator usually allows before `SIGKILL`. When it expires, a
-warning is logged and whatever the sinks still held is lost. A `try_send` that
-races the close is counted as dropped, like any other full or stopped queue.
+process exits. The request-log rows are handed to the shared ClickHouse writer,
+which is not drained at shutdown yet, so rows from the last `[logging]
+flush_ms` can still be lost. That gap is not specific to realtime (#1924).
 
 ## Failure modes
 
@@ -261,197 +216,18 @@ races the close is counted as dropped, like any other full or stopped queue.
 - **The relay task dies.** The meter sees its channel close, flushes what it
   was already handed and stops.
 - **The process shuts down.** Covered by [Shutdown](#shutdown). A `SIGKILL`, or
-  a drain that outlives its 10 seconds (realtime) or 5 seconds (sinks), still
-  loses whatever the meter or the writers had not written.
-
-## Content policy on a bidirectional stream (#1880)
-
-A realtime session used to relay frames without consulting the guardrails, the
-guardrail webhook or the plugins, so a key that a rule stopped on
-`/v1/chat/completions` could send the same text over a socket. The chat
-pipelines scan a whole body at one moment; a session has events in both
-directions and no such moment. This section records how the same rules apply to
-it. The code is `crates/rolter-gateway/src/realtime_guard.rs`.
-
-The policy is resolved once, when the session opens, from the snapshot and the
-route's rule selection, and pinned for the session like the target: a reload
-does not change what a live session is held to, and the tenant's rules cannot
-be swapped under a compiled rule index. When the route has no applicable
-guardrail rule, no webhook and no `pre_upstream` plugin, there is no policy and
-the relay forwards frames exactly as before, with no parsing and no copy. Audio
-frames are never parsed on either leg.
-
-### What is in scope
-
-| Direction | Event                                                                                                                            | Text checked                                               | Stage             |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------- |
-| client    | `conversation.item.create`                                                                                                       | `item.content[].text` and `.transcript`, `item.output`     | `pre_call` rules  |
-| client    | `session.update`                                                                                                                 | `session.instructions` (treated as system text)            | `pre_call` rules  |
-| client    | `response.create`                                                                                                                | `response.instructions` (system), `response.input[]` items | `pre_call` rules  |
-| server    | `response.output_text.delta`, `response.text.delta`, `response.audio_transcript.delta`, `response.output_audio_transcript.delta` | `delta`                                                    | `post_call` rules |
-| server    | the matching `.done` events, `response.content_part.done`, `response.output_item.done`, `response.done`                          | `text` and `transcript` of the completed content           | `post_call` rules |
-| server    | `response.function_call_arguments.done`, and `function_call` items in `response.output_item.done` / `response.done`              | `arguments` (a JSON document in a string)                  | `post_call` rules |
-
-Instructions are operator-authored in the same sense as a chat system message,
-so a rule scans them only when it sets `include_system`, exactly as on the HTTP
-path. The route's `advanced.guardrails` `enable`/`disable` selection applies.
-Audio is out of scope except where the provider supplies a transcript, which is
-text and is checked like any other. The model's completed
-tool-call arguments are scanned too (see below); streamed argument deltas and
-input-audio transcription events are not (see the limits below).
-
-### What `block` does mid-session
-
-A WebSocket has no status code to refuse with and ending the session for one
-matched phrase would punish the whole conversation, so a block is scoped to the
-event or response that matched and the session stays open:
-
-- **A blocked client event** is not forwarded. The client receives an
-  OpenAI-shaped `error` event (`code: guardrail_blocked`, or `plugin_blocked`
-  for a plugin) carrying the offending client `event_id` in `error.event_id`
-  when it sent one. The message names the rule, never the matched text.
-  Upstream never sees the event, so its conversation state is unchanged.
-- **A blocked server delta** is dropped and the client receives the `error`
-  event in its place. Rolter then sends `response.cancel` upstream so the model
-  stops generating text nobody will read, and drops the remaining text events
-  of that response. The `.done` events and `response.done` are still delivered,
-  with their text blanked, so the client's turn ends and the turn is metered
-  and billed as usual.
-- **A blocked completed text** (a `.done` event or `response.done` whose whole
-  text matches) is delivered with the matching text blanked and an `error`
-  event ahead of it.
-
-Closing the socket was rejected as the default: it throws away the session's
-audio state for a policy hit, and a client can reconnect and send the same
-text. A close would be safer only if a blocked event could be followed by
-others that depend on it, and the relay forwards nothing from the blocked
-event, so nothing does. The budget and revoked-key closures stay closures
-because they end the right to be on the socket, not one message.
-
-`redact` rules rewrite the text in place on both legs and count in the same
-`guardrail_redactions_total` / `guardrail_output_redactions_total` counters;
-`annotate` rules only count. Blocks count in `guardrail_blocks_total` and
-`guardrail_output_blocks_total`.
-
-### Output: deltas against the completed text
-
-A guardrail on one delta can miss a pattern the model splits across two. There
-are two ways to close that, and the trade-off decides it:
-
-- **Buffer until the item is complete**, then check once. Exact, but a text
-  response then arrives all at once at the end, which defeats the reason to use
-  realtime, and on a model that speaks, text deltas are the transcript of audio
-  the client is already playing.
-- **Check as it streams.** Latency is untouched, at the price that a match can
-  be partly out before it is recognised.
-
-Rolter streams. Each delta is checked alone, and also together with the last 512
-bytes of what was already delivered for the same item, so a pattern split across
-deltas is caught by the delta that completes it and that delta is withheld. The
-completed text is checked again at the `.done` events as a backstop. The leak
-this accepts is the first part of a pattern before the delta that completes it,
-and a pattern longer than the window split across more deltas than that. An
-operator who cannot accept that should not enable `post_call` rules on realtime
-routes, or should serve the route's output only through the chat pipelines,
-which buffer.
-
-`redact` on a delta rewrites that delta only: a match split across deltas is
-not redacted, since the first part has gone. A `redact` rule that must hold
-should be paired with a `block` rule for the same entity.
-
-### Webhook and plugins
-
-- **Guardrail webhook** (`pre_call` stage): consulted for each in-scope client
-  event with the event as its content. `block` refuses the event as above;
-  `transform` replaces it, and only with an event of the same `type`, since a
-  transform that changed the kind of event could carry text past the checks
-  that ran on the original. Failures follow the webhook's `failure_mode`. The
-  consult is awaited inline, so a slow webhook delays that session's relay for
-  its timeout; the other sessions are unaffected.
-- **`pre_upstream` plugins**: run on the same client events, after the
-  guardrails and the webhook, with the same block/transform contract.
-- **`pre_route` plugins** do not apply, permanently: the route is chosen from
-  the URL when the socket is opened and there is no body to consult them on. A
-  session is already bound to its route by then, so a plugin that rewrites the
-  model or the route has nothing to act on.
-- **`post_response` plugins** do not apply, decided in #2489. A plugin is
-  written against a whole chat-shaped response body and may transform it. On a
-  session the text has already been delivered delta by delta when
-  `response.done` arrives, so a transform could only rewrite the summary the
-  client already holds the parts of, and a block could only blank it. Calling
-  the plugin with an event shape it was not written for, to enforce nothing,
-  would be worse than not calling it. A `post_call` guardrail rule is what
-  applies to the output of a realtime route, and it acts on each delta.
-- **The PII sanitizer** does not apply, decided in #2489. Its contract is one
-  call per body that returns placeholders and an opaque token, and a second
-  call that exchanges that token for plaintext over the whole reply. rolter
-  does not hold the mapping and does not know the service's placeholder format,
-  so there is no placeholder-sized tail to buffer across deltas, and each
-  restore would be an HTTP call per delta. The mapping would also have to
-  outlive one event: a reply can mention a placeholder from an earlier turn, so
-  a session would hold a token per client event and ask the service to restore
-  against all of them. The chat pipelines make the same call for the same
-  reason: a streamed response cannot have the response leg, and `streaming`
-  chooses between refusing it and serving it unrestored. A realtime session is
-  always streamed, so sanitizing only the request leg would send the model
-  placeholders it will echo back, which the client would never see restored.
-  **A fail-closed sanitizer refuses the session (#2496).** With
-  `[pii_sanitizer]` enabled and `failure_mode = "fail_closed"`, the upgrade is
-  refused with HTTP 400 `sanitizer_unsupported_on_realtime` before any budget,
-  rate-limit or upstream side effect, so a deployment that made the sanitizer a
-  hard requirement never gets an unsanitized session. This is the chat path's
-  contract: `fail_closed` means no unsanitized body reaches the provider. The
-  sanitizer config is deployment-wide, so there is no per-tenant scope to
-  consult. Under `fail_open` (availability over enforcement) the session is
-  admitted unsanitized, as a chat request is when the sanitizer is down; use a
-  `redact` guardrail rule, which removes the entity in place and needs no
-  mapping, to protect those sessions.
-- **Guardrails are pinned when the session opens.** A snapshot reload does not
-  change the rules, webhook or plugins a live session is held to; a changed
-  rule applies to the next session. Ending live sessions on a rule change was
-  rejected for the same reason a block does not close the socket.
-- **The webhook and plugins are awaited inline**, so a slow one delays that
-  session's relay for its timeout. Moving them off the relay task would let a
-  later event overtake an earlier one that is still being judged, which is the
-  ordering a policy must not lose.
-
-While a policy applies, a binary client frame is refused with an `error` event:
-the protocol is JSON text, and an upstream that read JSON out of a binary frame
-would skip every check above.
-
-### Other limits
-
-- The model's function-call arguments are checked once complete, at
-  `response.function_call_arguments.done` and in the `function_call` item of
-  `response.output_item.done` / `response.done`. A `block` withholds the `.done`
-  event, sends the client the `error` event, sends `response.cancel` upstream
-  and blanks `arguments` in the item events that follow, so the client's turn
-  ends and nothing is left for it to run (an empty string is not JSON, where
-  `{}` would run the tool with no arguments). A `redact` rewrites the string in
-  place; a rule that can change the JSON's shape should be a `block` rule.
-  Streamed `response.function_call_arguments.delta` events are not scanned: a
-  fragment of JSON is not worth matching and a client acts on the completed
-  call, not on the fragments. The arguments are still shown to a client that
-  renders deltas, so such a client should render only the completed call.
-  Tool outputs the client sends back are checked as `item.output`.
-- `conversation.item.input_audio_transcription.completed` (what the user said)
-  is not scanned: the audio has already reached the model, so a block there
-  could only notify.
-- Each event has its own scan-byte budget (`max_scan_bytes`); an event larger
-  than it is passed unscanned, as a body is on the HTTP path.
+  a drain that outlives its 10 seconds, still loses whatever the meter had not
+  written.
 
 ## What is not metered
 
 These are tracked rather than silently missing:
 
-- The PII sanitizer and `post_response`/`pre_route` plugins do not run on
-  realtime events, by decision (see
-  [Webhook and plugins](#webhook-and-plugins)); built-in guardrails, the
-  guardrail webhook and `pre_upstream` plugins do (see
-  [Content policy](#content-policy-on-a-bidirectional-stream-1880)).
+- Guardrails and plugins do not run on realtime events (#1880). This is why
   `realtime` still carries its [stability marker](../development/stability-markers.md):
-  its note names the gaps that remain (the PII sanitizer, which fails closed
-  but does not run, and `pre_route` / `post_response` plugins), and the dashboard's translated notes follow it.
+  the marker's note named guardrails alongside metering, and a subsystem
+  graduates in the pull request that closes the last gap its note names.
+- A revoked or expired key does not end a live session (#1881).
 - Audio and text tokens are priced at the same rate, because a price row has one
   input and one output rate (#1882).
 - Input-audio transcription runs a second model whose usage arrives on
@@ -468,7 +244,7 @@ ends, an unpriced model is refused under `block`, a spent budget refuses a new
 session, a session is closed when its budget runs out, a budget spent by other
 traffic closes an idle session on the flush timer and, with
 `usage_flush_secs = 0`, on the one-second budget tick, usage is charged while
-the session continues, a session is closed when its key is disabled or its `models` are narrowed (and left alone when nothing changed), `rpm` applies per key rather than per process, and turn
+the session continues, `rpm` applies per key rather than per process, and turn
 tokens fill the key's `tpm` window. The Redis-backed ones read
 `ROLTER_TEST_REDIS_URL` and skip, or skip their Redis assertions, without it.
 
@@ -482,16 +258,6 @@ sends its `EXPIRE` only after that reply, so a budget key that carries its
 expiry proves the meter ran to the end of its flush instead of merely starting
 it. `Sessions` itself is unit-tested for holding the drain while a meter or an
 upgrade is still running.
-
-`crates/rolter-gateway/tests/realtime_guardrails.rs` drives real sessions
-against a mock upstream that records what it is sent: a blocked client event is
-refused with an `error` event and the session carries on, a blocked
-`session.update` instruction never reaches the upstream, a redacted client event
-is rewritten before it is forwarded, a blocked server delta is withheld and the
-response cancelled, a blocked function call's arguments are withheld, blanked
-in the item events and the response cancelled (and clean or redacted ones pass
-or are rewritten), a match split across deltas is caught, a clean response is
-unchanged, and the guardrail webhook refuses a client event.
 
 The tracker's frame handling, including which deltas count as a first token, is
 unit-tested in `realtime_metering.rs` itself.

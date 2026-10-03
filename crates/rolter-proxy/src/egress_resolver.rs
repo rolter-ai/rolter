@@ -47,7 +47,33 @@ fn filter_addrs(
     host: &str,
     addrs: Vec<SocketAddr>,
 ) -> std::result::Result<Vec<SocketAddr>, String> {
-    policy.filter_resolved(host, addrs)
+    if policy.host_is_allowed(host) {
+        return Ok(addrs);
+    }
+    let mut denied: Option<&'static str> = None;
+    let allowed: Vec<SocketAddr> = addrs
+        .into_iter()
+        .filter(|addr| match policy.deny_reason(addr.ip()) {
+            Some(reason) => {
+                denied = Some(reason);
+                false
+            }
+            None => true,
+        })
+        .collect();
+    // a partial denial still connects: a multi-homed upstream with one denied
+    // address is reachable on the others, and refusing the whole name would
+    // take down a legitimate provider. only a name with *nothing* left is an
+    // error, and rebinding to a denied address leaves exactly nothing
+    if allowed.is_empty() {
+        if let Some(reason) = denied {
+            return Err(format!(
+                "'{host}' resolves only to {reason} addresses, which the egress policy denies \
+                 (allow it explicitly via egress.allow_hosts if this is intentional)"
+            ));
+        }
+    }
+    Ok(allowed)
 }
 
 impl Resolve for EgressResolver {

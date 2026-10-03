@@ -273,8 +273,6 @@ export function OrgScopePicker({
   label,
   className,
   disabled,
-  id,
-  size = "sm",
 }: {
   orgId: string | undefined;
   value: ScopeTarget;
@@ -283,10 +281,6 @@ export function OrgScopePicker({
   label: string;
   className?: string;
   disabled?: boolean;
-  /** the control's id, so a `Field` wrapped round the picker labels it */
-  id?: string;
-  /** `sm` beside a toolbar's compact controls, `default` in a sheet's form rows */
-  size?: "default" | "sm";
 }) {
   const { t } = useTranslation();
   const scope = useOrgScope(orgId);
@@ -300,9 +294,8 @@ export function OrgScopePicker({
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <Combobox
-        id={id}
         className={cn("w-[196px]", className)}
-        size={size}
+        size="sm"
         value={value}
         onChange={onChange}
         aria-label={label}

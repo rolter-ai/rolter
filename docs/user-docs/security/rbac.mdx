@@ -57,49 +57,6 @@ Carol  →  viewer  at  team: platform
   The control plane enforces RBAC for all management operations. The gateway data plane does not consult roles — it checks that the incoming virtual key exists, is active, and is allowed to access the requested model, and that the model belongs to the key's own organization. The one place the two meet is an access profile's [model and route policy](#model-and-route-policy), which does reach the gateway.
 </Note>
 
-The most specific grant wins even when it is the lower role: an org admin who is also a viewer on one project is a viewer there. Two grants at the same scope resolve to the higher of the two.
-
-### Managing roles on the Users screen
-
-**Governance → Users** lists everyone holding a role in the selected organization, and the **Roles** column shows each of their grants on its own line: the role, then the scope it applies at, with teams and projects named. A scope the dashboard cannot name (the team or project was deleted, your account cannot see it, or its list failed to load) is marked **Unresolved scope**. A grant that came from your identity provider is marked **from SSO** or **from SCIM**.
-
-Each row leads with the person's **display name** and shows the email beneath it; an account with no name shows the email alone, and the search box matches either. The person's **bio**, when they wrote one, follows as a line saying who to ask about what. Everyone sets their own under **Account → Profile**: a display name of up to 80 characters on one line and a bio of up to 500 characters, either of which can be cleared by emptying the field. The rail's account menu shows the same name, falling back to the email. On an account provisioned over SCIM the name is read-only (_Your name is managed by your identity provider_) and the bio stays editable. `PATCH /api/v1/me/profile`.
-
-- **Grant a role.** The **+** at the end of a person's row opens a sheet with two fields: **Scope** (the whole organization, any team, or any project in any team, picked by name) and **Role**. If the person already holds that role at that scope, the sheet says so and does not send it. `POST /api/v1/orgs/{org_id}/memberships`.
-- **Revoke a role.** The **×** button beside a grant asks first. The confirmation names the person, the role and the scope, and says what they lose. It works this out the same way the control plane resolves a role: either no other grant of theirs reaches that scope, or another grant takes over there, which can be a wider role than the one you revoked. It also tells you when this is their last role in the organization (they drop off the list, but the account is kept), when the grant came from SSO or SCIM (the identity provider grants it again at the next sign-in or sync unless you change the group mapping), and when it is your own role. `DELETE /api/v1/memberships/{id}`.
-- **The last admin stays.** An organization always keeps one active org-scoped `admin` grant. Revoking or downgrading the last one, as an org admin or any other non-superadmin, is refused with `409` and the stable code `last_org_admin`; the message says to grant admin to someone else first. A grant held by a deactivated account does not count as a remaining admin, and a superadmin is exempt, so they can always repair an org. Two admins revoked at the same moment cannot both succeed: one is refused.
-- **Change a role.** The **⇄** button beside a grant opens a confirmation where you pick the new role. The control plane has no update for a membership, so rolter sends two requests: it grants the new role first, then revokes the old one. At one scope the higher role applies, so for that moment the person has exactly the old role or the new one, and never no role at all. If the second request fails, the dialog tells you they now hold both roles and which one applies, and offers to retry the revoke. The grant is not sent again.
-
-Each control is disabled for callers who do not hold admin at the scope the dashboard is showing, and its tooltip names the role it needs. The server still checks every request, against your role at the grant's own scope. When it refuses with `403`, the dialog stays open with the server's message and says that revoking at that scope takes admin there or above. If a grant is already gone, for example revoked in another tab or removed by SSO reconciliation, the revoke counts as done and the list refreshes.
-
-### Inviting people on the Users screen
-
-**Invite user** opens a sheet that brings someone in at the organization, a team or a project.
-
-- **Email and method.** The default method is an invitation link: the person chooses their own password, so nobody else ever knows it. **Set a password now** creates the account yourself and is the exception below.
-- **Scope.** The whole organization, any team, or any project in any team, picked by name, the same picker as when you grant a role. The role field is named for the scope you pick (**Org role**, **Team role**, **Project role**) and lists **Admin**, **Member** and **Viewer**. An invitation is authorized at the scope it grants, so a team admin invites into their own team or its projects without an org admin. If the control plane refuses it, the sheet stays open with its message and says that inviting at that scope takes admin there or on a scope above it. `POST /api/v1/orgs/{org_id}/invitations` with `scope_type` and `scope_id`.
-- **Inviting an address again replaces its pending invitation.** The email is compared without regard to case. The earlier link, expired or not, is revoked and stops working, and only the new link is live. The audit entry for the new invitation records the id it replaced.
-- **An account created with a password** takes its role on the whole organization only, because that endpoint has no scope. The scope picker is locked to the organization and says so. Invite by link to choose a team or a project.
-- **The link.** After **Invite** a dialog shows the link once, with what accepting it grants, and a **Copy link** button. rolter does not send email, so you send the link yourself. The link cannot be shown again, so closing the dialog before you have copied it asks "Close without copying?"; Cancel keeps it open. If the browser will not let the page use the clipboard, which is common on a dashboard served over plain `http`, the dialog says the copy failed in a message that stays, and the link stays on screen, selected: copy it by hand with Ctrl+C or Cmd+C, which counts as copied. **Select value** selects it again.
-
-Under the users table, **Pending invitations** lists every invitation that has not been accepted or revoked: the address, the role, the scope by name, who sent it and when it expires. A link works once and expires after seven days. An invitation past its expiry stays in the list, marked **Expired**, because it still holds its address: an organization keeps one unaccepted invitation per address, and inviting an address that already has one is refused with the control plane's own message. Revoke the listed one first. **Sent by** is read from the users list, so it says **not recorded** for an invitation sent with the admin token or by an account since deleted, and **unknown** for a sender you cannot list.
-
-An org admin sees every invitation of the organization, a team admin the ones into the teams and projects they administer, and someone with neither sees no section.
-
-The **×** at the end of a row revokes the invitation. The confirmation names the address, the role and the scope, and says the link stops working straight away; for an expired one it says revoking only frees the address. `DELETE /api/v1/invitations/{id}`. If the person accepted in the meantime, the control plane answers `404` because only unaccepted invitations can be revoked: the dialog says it is no longer pending and the list refreshes. Like the role controls, the button is disabled for callers without admin at the scope the dashboard is showing, and the server checks again at the invitation's own scope.
-
-### Blocking, removing and promoting people on the Users screen
-
-An account reaches across every organization its person belongs to, so these controls need a superadmin: an admin sees them disabled, with a tooltip that says so. Each of them asks first, and every confirmation names the account.
-
-- **Deactivate.** The button at the end of a row opens a confirmation. Deactivating blocks sign-in, ends every session the account has open, and stops the virtual keys the person minted for themselves at the gateway (see [When someone leaves](#when-someone-leaves)). The row's status turns **Deactivated**, the account also shows under the **Deactivated** tab above the table, and the button becomes **Reactivate**, with its own icon. Reactivating restores sign-in and those keys at once and asks nothing, because it only gives access back and deactivating again undoes it. `PUT /api/v1/users/{id}` with `deactivated`.
-- **Superadmin.** The **Superadmin** switch in the edit sheet takes effect when you press **Save**. Turning it on asks first: the confirmation says a superadmin reaches every organization, team and project, and every deployment-wide setting and account, whatever roles they hold. Turning it off saves without asking, except on your own account. `PUT /api/v1/users/{id}` with `is_superadmin`.
-- **Delete.** **Delete** at the foot of the edit sheet opens a confirmation that says the account leaves every organization and not only this one, with its roles and sessions, and that the keys it minted for itself are disabled rather than deleted. It cannot be undone. To block sign-in and keep the account, deactivate it instead. `DELETE /api/v1/users/{id}`.
-
-The control plane refuses one thing: leaving the deployment without an active superadmin. Taking superadmin off the last active superadmin, deactivating it, or deleting it answers `409` with the error code `last_superadmin` and changes nothing; the message says to make another account superadmin first. A deactivated superadmin does not count as the one that remains, and neither does `ROLTER_ADMIN_TOKEN`, which is not an account — the token is refused the same way, so the rule does not depend on who asks. An identity provider deprovisioning the last active superadmin over SCIM is refused with a `409` as well. Everything else is allowed against yourself: you can deactivate or delete the account you are signed in with, or take superadmin off it, as long as another active superadmin remains. When the account is your own, the confirmation says you are signed out now, or lose the access you are using, and that only another superadmin can undo it. The dashboard does not warn about the last superadmin ahead of time, because its users list holds only the people with a role in the selected organization and cannot tell whether another superadmin exists; it shows the control plane's refusal instead.
-
-If the control plane refuses the change, the confirmation stays open with its message and a line saying the change takes a superadmin. If the account was deleted elsewhere in the meantime, the control plane answers `404`: the confirmation says the account no longer exists and the list refreshes.
-
 ## Who sees which request logs
 
 The request log, the usage and spend rollups and provider health are not only gated — each answer is filtered to the caller:
@@ -107,7 +64,7 @@ The request log, the usage and spend rollups and provider health are not only ga
 - A request-log row is visible to anyone holding a role at the row's org, team or project. A project viewer sees that project's rows, an org viewer the whole org's, and nobody sees another org's.
 - The request and response **bodies** that [payload capture](/observability/log-settings#payload-capture) stored are shown to **members and admins** of the row's project. A viewer gets the row with the bodies withheld, and the log says so.
 - A project admin can let the project's **viewers** read the bodies too: **Viewers can read captured payloads** in the project's settings (the gear next to the project in the scope switcher), or [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). It is off by default.
-- Provider health follows provider access: an org-level role in the provider's org. Each health record carries the org that owned the provider when it was written, and the match is on that org, so a provider name another org used and deleted never brings its history to the next org that creates it. Records with no org are visible only to unrestricted callers (the admin token and superadmins): those of providers defined in the gateway's own config file, and, after upgrading, those written before the org was recorded. Until they age out (90 days), an org viewer's health history starts empty at the upgrade.
+- Provider health follows provider access: an org-level role in the provider's org. Health records name the provider but not its org, so the match is by provider name. If another org once had a provider with the same name and deleted it, that provider's health history stays readable under the name until it expires (90 days). Provider names are unique across the deployment, so this takes a delete; tracked in [#1908](https://github.com/rolter-ai/rolter/issues/1908).
 - The admin token and superadmins see everything; so does every caller in [open mode](#open-mode-running-with-no-admin-token). A caller with no valid credentials gets `401`.
 - A control plane with an admin token but no database has no accounts, so the admin token is the only credential these routes accept. The dashboard cannot send it yet, so its Dashboard, Logs and Health screens show a sign-in error there instead of data; see [signing in](/concepts/dashboard#signing-in).
 
@@ -117,7 +74,7 @@ A virtual key reaches only its own organization's routes, providers and provider
 
 The same boundary holds when you configure things: a route target or a provider-group member must be a provider of the route's own organization, and an id from another organization is answered with `404`, as if it did not exist. Route names and provider names are unique across the whole deployment for now, and provider slugs and provider group slugs share one namespace. A name another organization already uses is refused with `409 Conflict`, without naming that organization, and so is a route name that is another organization's `provider-slug/…` or `group-slug/…` address, or `fake-llm`. That last check runs one way: a provider or group created later with the slug of another organization's existing `slug/…` route is accepted. Your organization's keys reach your provider at that address, while keys from a config file, which carry no organization, reach the other organization's route.
 
-Within an organization, a route is visible to every key by default. An admin can narrow it to the project it lives in — **This project** under a model's **Access & permissions** — or to listed teams and keys. **This project** narrows the route only: a provider stays reachable org-wide as `provider-slug/model` unless the provider itself is scoped to a project, which you set on its own sheet ([project-scoped providers](/concepts/providers-and-routes#project-scoped-providers)). See [per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings).
+Within an organization, a route is visible to every key by default. An admin can narrow it to the project it lives in — **This project** under a model's **Access & permissions** — or to listed teams and keys. **This project** narrows the route only; the provider behind it stays reachable org-wide as `provider-slug/model` ([#1919](https://github.com/rolter-ai/rolter/issues/1919)). See [per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings).
 
 Keys and routes declared in the gateway's own config file belong to the deployment rather than to an organization: those routes are available to every key, and those keys reach every route.
 
@@ -137,7 +94,7 @@ Someone with no role anywhere in an organization gets `403` for its lists, and n
 
 ## When someone leaves
 
-Deactivating a person — from the [Users screen](#blocking-removing-and-promoting-people-on-the-users-screen), `PUT /api/v1/users/{id}`, or your identity provider through SCIM — signs them out everywhere and stops the virtual keys they minted for themselves at the gateway on the next config refresh. Removing their last role that reaches a key's project does the same for that key. Reactivating them, or giving the role back, brings the same keys back.
+Deactivating a person — from the Users screen, `PUT /api/v1/users/{id}`, or your identity provider through SCIM — signs them out everywhere and stops the virtual keys they minted for themselves at the gateway on the next config refresh. Removing their last role that reaches a key's project does the same for that key. Reactivating them, or giving the role back, brings the same keys back.
 
 Deleting the account disables those keys for good: they stay listed on the project, disabled, and an admin has to re-enable one deliberately.
 
@@ -147,9 +104,7 @@ Keys an admin minted for a project — the ones applications use — have no own
 
 Sign-ins, failed sign-ins, lockouts, second-factor changes, break-glass resets and account edits belong to a person rather than an organization. An organization's audit log (**Governance → Audit Logs**, or `GET /api/v1/orgs/{org_id}/audit-log`) shows them for the organization's own people — anyone holding a role in it, its teams or its projects — and never for anyone else's. Filter on the `auth.*` actions to find them. Deleting an account is recorded in the audit log of every organization the account belonged to.
 
-Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered belong to no organization's audit log. A superadmin reads them, together with every other row, through the deployment-wide `GET /api/v1/audit-log`. It takes the same query parameters as the per-organization read (`limit`, `actor`, `action`, `target_type`, `start_at`, `end_at`, `cursor`, `direction`, `include_total`) and answers with the same page shape, newest first, each page carrying the `next_cursor` for the one after it. Everyone else, organization admins included, gets `403`. The `deployment_audit_log:read` capability in `GET /api/v1/rbac/matrix` is superadmin-only.
-
-In the dashboard, a superadmin sees a scope switch on **Governance → Audit Logs**: **Whole deployment** reads that endpoint with the same filters and paging as the organization view. Rows with no organization are marked **No org**, and a sign-in attempt against an unregistered address shows **Unknown address** as its actor. Nobody else is offered the switch.
+Account events of someone with no role in any organization — a superadmin's own sign-ins, for instance — and attempts against an email address nobody registered are recorded, but not yet shown in any organization's audit log.
 
 ## Ask the server what a role can do
 
@@ -160,8 +115,6 @@ Rolter publishes its own permission table, so you never have to keep a copy in s
 | `GET /api/v1/rbac/matrix`                                 | For every resource, the minimum role each of read / create / update / delete takes — or that the action is reserved for a superadmin, open to any authenticated caller (`authenticated_only`), or does not exist. |
 | `GET /api/v1/rbac/effective?org_id=&team_id=&project_id=` | What _you_ may do at that scope, resolved from your own memberships.                                                                                                                                              |
 
-Providers and provider groups can be scoped to one project, so a project admin is answered `yes` to creating, editing and deleting them when the query names their project, and the dashboard offers those controls on that project. An org-wide provider or group stays an org admin's: a project admin who tries it anyway gets `403`.
-
 Both read the same table the control plane enforces with, so the answer is never a guess: a request that `effective` says you cannot make returns `403` if you make it anyway.
 
 A resource's sub-resources sit at the same bar as the resource itself. A route's complexity-routing tiers are the one part of a route with their own endpoint, and they follow that rule: reading them takes `route:read`, replacing them takes `route:update`. So a viewer sees every policy on the **Complexity Router** screen for the routes it can already list, and changes none of them.
@@ -169,10 +122,6 @@ A resource's sub-resources sit at the same bar as the resource itself. A route's
 ### Reading it in the dashboard
 
 **Roles & Permissions** renders `GET /api/v1/rbac/matrix` directly, so the grid on screen is the deployment's own rule set rather than a copy of it. One row per resource, grouped by the scope the resource lives under (deployment-wide, organization, team, project); one column per role, with the built-in three first and your org's custom roles after them, ordered by the base role each extends.
-
-Every signed-in role can open **Roles & Permissions**, since the matrix describes what roles can do rather than anyone's data. Your organization's custom roles appear on it for anyone holding a role in that organization.
-
-Budgets and rate limits follow the scope chain: anyone holding a role on a project, a viewer included, can read the budgets and rate limits set on that project, on its team and on its organization, the caps that throttle their own keys. Another project's or team's are not shown, and creating, changing or deleting a cap stays an admin's of the scope it is set on.
 
 Each cell carries four chips, one each for read, create, update and delete in that order, and each chip says one of five things:
 
@@ -319,65 +268,6 @@ Set the token to close it:
 ```bash
 export ROLTER_ADMIN_TOKEN="$(openssl rand -hex 24)"
 ```
-
-## Your own profile
-
-Any signed-in account, a viewer included, can set a display name and a short bio with `PATCH /api/v1/me/profile`. The route writes only the caller's own row, so it needs no role and does not widen `user:update`, which stays superadmin-only.
-
-```bash
-curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "Grace Hopper", "bio": "Ask me about the nightly batch."}'
-```
-
-- `display_name` is 1 to 80 characters and `bio` up to 500, after surrounding whitespace is trimmed. Control characters are refused (a bio may contain line breaks) and so is a value that is only whitespace.
-- An omitted field is left alone; `null` or `""` clears it.
-- `GET /api/v1/auth/me` returns both fields on `user`, and the users list returns them for admins.
-- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
-- Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
-
-## Your own preferences
-
-Any signed-in account keeps a small preferences document on the server, so the dashboard language, default scope, default Playground model and chart time zone follow the account to another browser. `GET /api/v1/me/preferences` reads it and `PUT /api/v1/me/preferences` saves it. Like the profile route it writes only the caller's own row and needs no role; there is no route that reads anyone else's.
-
-```bash
-curl -X PUT "$ROLTER_URL/api/v1/me/preferences" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"language": "ru", "default_playground_model": "gpt-4o", "chart_time_zone": "Europe/Berlin"}'
-```
-
-- Keys: `language` (`en` or `ru`, the dashboard's catalogs), `default_org_id`, `default_team_id`, `default_project_id` (UUIDs), `default_playground_model` (up to 200 characters) and `chart_time_zone` (an IANA name such as `Europe/Berlin` or `UTC`; the server checks its shape and the browser rejects a name it does not know). A key that is missing or `null` means "use the deployment default". An unknown key is refused with `400`.
-- `PUT` replaces the whole document: a key you leave out is cleared. Send every value you want to keep.
-- Preferences never widen access. A default scope you cannot read is stored as written, because access can change later, but `GET` also returns `effective_default_scope` (`org_id`, `team_id`, `project_id`): your stored default if you can still read it, otherwise the first scope you can read, otherwise `null`. The dashboard opens on that and never on the raw `default_*_id` fields.
-- Each change is written to the audit log as `user.preferences.update`, listing the key names that changed but not their values.
-- The dashboard edits all of this on **Settings → Preferences**, and the language picker in the sidebar saves to the same document. The saved language, Playground model and time zone apply on every browser you sign in on; a scope you pick in the scope switcher wins for the session, and your saved default is used the next time you sign in. A time zone the browser does not recognise is ignored and times follow the browser's own zone.
-
-## Saved views
-
-Any signed-in account, a viewer included, can save the filters it has built on **LLM Logs** or the **Dashboard** as a named preset and apply it again on any browser. A preset is private: every route reads and writes only the caller's own presets, there is no sharing, and another account's preset id answers `404` exactly as an id that does not exist does.
-
-| Method and path                      | Does                                                                        |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `GET /api/v1/me/saved-views`         | list your presets, oldest first; `?surface=llm_logs` or `dashboard` narrows |
-| `POST /api/v1/me/saved-views`        | save one: `{"surface", "name", "filters"}`                                  |
-| `GET /api/v1/me/saved-views/{id}`    | read one                                                                    |
-| `PATCH /api/v1/me/saved-views/{id}`  | rename (`name`) and/or replace the whole filter set (`filters`)             |
-| `DELETE /api/v1/me/saved-views/{id}` | delete one                                                                  |
-
-```bash
-curl -X POST "$ROLTER_URL/api/v1/me/saved-views" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"surface": "llm_logs", "name": "Errors on gpt-4o", "filters": {"window": "7d", "status": "error", "model": "gpt-4o"}}'
-```
-
-- `surface` is `llm_logs` or `dashboard` and cannot be changed afterwards. A name is 1 to 80 characters, is trimmed, and is unique per surface ignoring case (`409` otherwise). You may keep 50 presets per surface (`409` beyond that).
-- `filters` is an object whose keys are allow-listed per surface and mirror the query parameters the screen sends; an unknown key or a value of the wrong type is refused with `400`. **LLM Logs**: `window`, `status` (`all`, `error` or `success`), `model`, `key` (a virtual key id), `business_unit` and `customer` (lists of ids). **Dashboard**: `window` and `bucket` (`hour`, `day`, `week` or `month`). `window` is one of `24h`, `7d`, `30d`, `mtd` or `last-month`: a rolling window's name, not timestamps, so a saved "last 7 days" always means the seven days before you open it.
-- A preset never widens access: it only remembers parameters, and the analytics routes still scope every row to what you can read.
-- A preset can name a virtual key, business unit or customer you can no longer read, because your membership was removed or the row was deleted. Reads return the preset as stored in `filters`, the same set without those entries in `effective_filters`, and `unavailable`, a list of `{"filter": "key" | "business_unit" | "customer", "id": ...}` naming what was dropped, so a screen applies the rest and says what it left out. Models and windows are never unavailable. Whether you can still read a key, unit or customer is decided by the same rule as the listings of those resources.
-- Each create, update and delete is written to the audit log as `user.saved_view.create`, `user.saved_view.update` or `user.saved_view.delete` with the preset's id, surface and name, never the filter values.
 
 ### Self-service endpoints do not work in open mode
 

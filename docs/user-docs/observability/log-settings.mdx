@@ -53,7 +53,7 @@ A captured body is shown to the **members and admins** of the project the reques
 
 ### Why a payload panel is empty
 
-The log detail drawer explains a missing body instead of leaving an empty panel. A request with neither body stored gets one note, under a **Request and response** heading, and a body can be missing for three different reasons:
+The **Request** and **Response** panels in the log detail drawer are empty whenever no body was stored, and a body can be missing for three different reasons:
 
 - payload capture was off when the request ran;
 - capture was on, but the request's model or virtual key falls outside the allow-lists above;
@@ -61,11 +61,9 @@ The log detail drawer explains a missing body instead of leaving an empty panel.
 
 A fourth reason is certain rather than guessed: the body was captured, but your role on the request's project is below the bar [above](#who-can-read-captured-payloads). The server withholds it and says so, and the drawer tells you it is your role rather than listing the other three.
 
-A request can also have one body and not the other. Capture stores the two together, so the body that is there rules out the three reasons above, and the missing one was empty when it was logged: a response the upstream never sent, for example. The drawer shows the stored body and puts a short note under the heading of the missing one, with no link to this page.
-
 Bodies captured by a gateway from v0.1.0 or earlier also stop showing once the control plane is upgraded; see [Upgrading](/deployment/upgrading#captured-payloads-from-older-gateways).
 
-The log row does not record which of the first three applies, so the note names all three. A superadmin — the only role that can read this policy — sees the answer narrowed to the actual reason, because the screen reads the live setting for them, and gets a link straight to this page's settings screen. Everyone else is told that a superadmin sets payload capture, since the link would only lead them to a refusal.
+The log row does not record which of the first three applies, so the drawer names all three. A superadmin — the only role that can read this policy — sees the answer narrowed to the actual reason, because the screen reads the live setting for them, and gets a link straight to this page's settings screen. Everyone else is told that a superadmin sets payload capture, since the link would only lead them to a refusal.
 
 ### Capture in the dogfooding profile
 

@@ -158,37 +158,6 @@ export const FailedWithANonError: Story = {
   },
 };
 
-// the message keeps the gap the children keep between themselves (gap-2.5 =
-// 10px), and a dialog with no children adds none above it (#2359)
-export const FailedGapUnderChildren: Story = {
-  args: { error: new Error("dashboard authentication requires a credential") },
-  render: (args) => (
-    <ConfirmDialog {...args}>
-      <ul className="flex flex-col gap-2.5">
-        <li data-testid="first">first loosening</li>
-        <li data-testid="last">last loosening</li>
-      </ul>
-    </ConfirmDialog>
-  ),
-  play: async () => {
-    const canvas = screen();
-    const alert = await canvas.findByRole("alert");
-    const last = canvas.getByTestId("last").getBoundingClientRect();
-    const first = canvas.getByTestId("first").getBoundingClientRect();
-    const gap = alert.getBoundingClientRect().top - last.bottom;
-    await expect(gap).toBeCloseTo(last.top - first.bottom, 0);
-    await expect(gap).toBeGreaterThan(0);
-  },
-};
-
-export const FailedWithoutChildrenAddsNoGap: Story = {
-  args: { error: new Error("channel is referenced by 2 alert rules") },
-  play: async () => {
-    const alert = await screen().findByRole("alert");
-    await expect(getComputedStyle(alert).marginTop).toBe("0px");
-  },
-};
-
 export const NeutralTone: Story = {
   args: {
     tone: "default",

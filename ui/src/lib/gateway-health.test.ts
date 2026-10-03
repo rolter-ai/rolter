@@ -9,11 +9,9 @@ import {
 } from "@/lib/gateway-health";
 
 const originalFetch = globalThis.fetch;
-const originalStorage = globalThis.localStorage;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  globalThis.localStorage = originalStorage;
 });
 
 describe("readinessFrom", () => {
@@ -47,10 +45,7 @@ describe("readinessFrom", () => {
 });
 
 describe("fetchGatewayReadiness", () => {
-  it("asks /gw/readyz with the dashboard session, and nothing else", async () => {
-    globalThis.localStorage = {
-      getItem: (k: string) => (k === "rolter.session.token" ? "sess-1" : null),
-    } as unknown as Storage;
+  it("asks /gw/readyz without the dashboard's credentials", async () => {
     let sent: { url: string; init?: RequestInit } | undefined;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       sent = { url: String(input), init };
@@ -59,19 +54,8 @@ describe("fetchGatewayReadiness", () => {
 
     expect(await fetchGatewayReadiness()).toBe("ready");
     expect(sent?.url).toBe("/gw/readyz");
-    expect(sent?.init?.headers).toEqual({ Authorization: "Bearer sess-1" });
+    expect(sent?.init?.headers).toBeUndefined();
     expect(sent?.init?.cache).toBe("no-store");
-  });
-
-  it("sends no Authorization in open mode", async () => {
-    globalThis.localStorage = { getItem: () => null } as unknown as Storage;
-    let headers: HeadersInit | undefined;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      headers = init?.headers;
-      return new Response("ok", { status: 200 });
-    }) as unknown as typeof fetch;
-    await fetchGatewayReadiness();
-    expect(headers).toEqual({});
   });
 
   it("throws on an answer that is not the gateway's", async () => {

@@ -90,71 +90,11 @@ export const RejectsAnUndatedVersion: Story = {
     await userEvent.clear(version);
     await userEvent.type(version, "latest");
     await waitFor(() =>
-      expect(version).toHaveAccessibleDescription(
-        "Anthropic version must be a dated release like 2023-06-01.",
-      ),
+      expect(
+        canvas.getByText("Anthropic version must be a dated release like 2023-06-01."),
+      ).toBeVisible(),
     );
-    await expect(version).toHaveAttribute("aria-invalid", "true");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-  },
-};
-
-// every failing field is marked at once, each with its own message, and a
-// press on Save moves focus to the first one instead of doing nothing (#2096)
-export const MarksEveryInvalidField: Story = {
-  render: () => <Harness fetchStub={async () => json(BASE)} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const version = await canvas.findByLabelText("Anthropic API version");
-    const tokens = canvas.getByLabelText("Default max tokens");
-    await userEvent.clear(version);
-    await userEvent.type(version, "latest");
-    await userEvent.clear(tokens);
-    await userEvent.type(tokens, "0");
-    await waitFor(() => {
-      expect(version).toHaveAttribute("aria-invalid", "true");
-      expect(tokens).toHaveAttribute("aria-invalid", "true");
-    });
-    await expect(version).toHaveAccessibleDescription(
-      "Anthropic version must be a dated release like 2023-06-01.",
-    );
-    await expect(tokens).toHaveAccessibleDescription(
-      "Default max tokens must be a whole number between 1 and 1000000.",
-    );
-    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
-    await expect(version).toHaveFocus();
-  },
-};
-
-// a 400 that names a field lands on that field, with focus, not in a toast
-export const ServerRejectionLandsOnTheField: Story = {
-  render: () => {
-    const stub: FetchStub = async (_input, init) => {
-      if (init?.method === "PUT") {
-        return json(
-          { error: { message: "default_max_tokens must be between 1 and 1000000" } },
-          400,
-        );
-      }
-      return json(BASE);
-    };
-    return <Harness fetchStub={stub} />;
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const tokens = await canvas.findByLabelText("Default max tokens");
-    await userEvent.clear(tokens);
-    await userEvent.type(tokens, "8192");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
-    await waitFor(() => expect(tokens).toHaveAttribute("aria-invalid", "true"));
-    await expect(tokens).toHaveAccessibleDescription(
-      "default_max_tokens must be between 1 and 1000000",
-    );
-    await waitFor(() => expect(tokens).toHaveFocus());
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
   },
 };
 

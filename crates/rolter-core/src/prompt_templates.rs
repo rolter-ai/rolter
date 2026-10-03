@@ -195,21 +195,6 @@ fn is_valid_var_name(name: &str) -> bool {
 }
 
 impl PromptTemplatesConfig {
-    /// Every problem with `template` considered on its own: everything
-    /// [`validate`](Self::validate) checks per template, without the
-    /// cross-template fact (a duplicated `(id, version)`).
-    ///
-    /// It runs `validate` over a one-template config rather than restating the
-    /// rules, so the control plane's create-time check, the snapshot prune and
-    /// the final validation cannot disagree about what is malformed.
-    pub fn template_problems(template: &PromptTemplate) -> Vec<String> {
-        Self {
-            enabled: true,
-            templates: vec![template.clone()],
-        }
-        .validate()
-    }
-
     /// Validate every template: unique `(id, version)`, well-formed variables,
     /// and decorator placeholders that reference only declared variables.
     /// Returns human-readable problems for the aggregate config validator.

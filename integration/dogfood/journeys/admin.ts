@@ -31,12 +31,7 @@ await step("A1a.4", "require a second factor for the org", async () => {
   try {
     const r = await api("POST", "/api/v1/auth/login", undefined, { email: "viewer@rolter.local", password: PASSWORD });
     const code = r.json?.error?.code ?? r.json?.error?.type ?? "";
-    if (r.status === 200 && r.json?.mfa_enrolment_required && r.json?.enrolment_token) {
-      const enrol = await api("POST", "/api/v1/auth/mfa/enroll", undefined, { enrolment_token: r.json.enrolment_token });
-      assert(enrol.status === 200, `enrolment secret ${enrol.status} ${JSON.stringify(enrol.json).slice(0, 120)}`);
-      return ["pass", `the viewer gets no session, only an enrolment token (expires_in ${r.json.expires_in}s); POST /auth/mfa/enroll mints the secret to arm the factor`];
-    }
-    return r.status === 200 ? ["fail", "the viewer still signs in without a factor"] : ["partial", `a member without a factor is refused (${r.status} ${code}), not walked through enrolment`];
+    return r.status === 200 ? ["fail", "the viewer still signs in without a factor"] : ["partial", `a member without a factor is refused (${r.status} ${code}), not walked through enrolment (#1852)`];
   } finally {
     await api("PUT", `/api/v1/orgs/${t.org.id}/auth-policy`, org, { allow_password_login: before.allow_password_login ?? true, allow_sso: before.allow_sso ?? true, mfa_policy: before.mfa_policy ?? "off" });
   }
@@ -143,7 +138,7 @@ await step("A3.4", "try it in the Playground (org admin)", async () => {
   const picked = await page.getByRole("combobox", { name: "Model" }).first().inputValue().catch(() => "?");
   const ask = async () => {
     await page.getByPlaceholder("Message…").fill("say hello");
-    await page.getByRole("button", { name: /^Send( to .+)?$/ }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     return await until(async () => {
       const text = await page.locator("main").innerText();
       if (/no route for model/i.test(text)) return "no-route";

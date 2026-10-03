@@ -138,7 +138,7 @@ open invitation, SCIM token and MFA recovery code.
 | `provider_keys`            | upstream provider credentials                |
 | `sso_providers`            | SSO client secrets                           |
 | `alert_channels`           | alert channel webhook secrets                |
-| `security_settings`        | a dashboard credential sealed before removal |
+| `security_settings`        | the dashboard's own upstream credential      |
 | `observability_connectors` | observability connector credentials          |
 | `user_totp_factors`        | TOTP second-factor shared secrets            |
 | `mcp_servers`              | MCP OAuth client secrets                     |

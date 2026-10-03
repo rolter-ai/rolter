@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, RotateCw } from "lucide-react";
+import { Check, Copy, KeyRound, Plus, RotateCw, Trash2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
-import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DocsLink } from "@/components/DocsLink";
 import {
@@ -19,25 +18,27 @@ import {
   ttlToDays,
   type CacheMode,
 } from "@/components/KeyMintFields";
-import { KeyNextStep } from "@/components/KeyNextStep";
 import { KeyProvidersField } from "@/components/KeyAttributionFields";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
-import { ListSummary, PageBody, Toolbar } from "@/components/screen";
+import { ListSummary, PageBody } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
-import { ProfileCard } from "@/components/ProfileCard";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { DeleteIconButton } from "@/components/ui/delete-icon-button";
-import { SecretRevealDialog } from "@/components/ui/secret-reveal";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tag } from "@/components/ui/tag";
 import {
-  AnalyticsUnavailableError,
   PLAYGROUND_PURPOSE,
   deleteMyKey,
   fetchMyKeys,
@@ -54,7 +55,6 @@ import {
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -125,8 +125,6 @@ export default function Account() {
 
   return (
     <PageBody>
-      {/* who you are comes before how you sign in (#2434) */}
-      <ProfileCard />
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
@@ -138,9 +136,7 @@ export default function Account() {
             on a deployment that configured no documentation host (#1164) */}
         <DocsLink page="whichKey" label={t("docs.link.whichKey")} />
       </p>
-      {/* a toolbar, not a bare flex row: the Russian button is ~250px wide, so
-          at 375px it drops under the count instead of pushing the page wide (#2352) */}
-      <Toolbar>
+      <div className="flex items-center gap-3">
         <ListSummary data={keys.data}>
           {(rows) => t("account.keys.summary", { count: rows.length })}
         </ListSummary>
@@ -158,7 +154,7 @@ export default function Account() {
           <Plus className="h-4 w-4" />
           {t("account.keys.generate")}
         </GatedButton>
-      </Toolbar>
+      </div>
 
       {/* the content below is a card grid, so the placeholder holding its
           space is one too — and it is a `role="status"` region rather than a
@@ -207,20 +203,13 @@ export default function Account() {
         />
       )}
 
-      {/* a deployment with no analytics store is a supported shape, not a
-          failed read: it is said as a status with no retry, and the keys below
-          stay as usable as they were (#2016) */}
-      {usage.error &&
-        !!keys.data?.length &&
-        (usage.error instanceof AnalyticsUnavailableError ? (
-          <AnalyticsUnavailable error={usage.error} i18nKey="account.keys.noAnalytics" />
-        ) : (
-          <LoadError
-            error={usage.error}
-            resource={t("errors.resources.yourUsage")}
-            onRetry={() => usage.refetch()}
-          />
-        ))}
+      {usage.error && !!keys.data?.length && (
+        <LoadError
+          error={usage.error}
+          resource={t("errors.resources.yourUsage")}
+          onRetry={() => usage.refetch()}
+        />
+      )}
 
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">
         {keys.data?.map((key) => (
@@ -294,21 +283,7 @@ export default function Account() {
         }}
       />
 
-      {/* the plaintext is shown once, after a mint or a rotation, and dropped
-          on close */}
-      <SecretRevealDialog
-        name="account-key-revealed"
-        open={!!minted}
-        onOpenChange={(open) => !open && setMinted(null)}
-        title={t("account.keys.revealed.title")}
-        description={t("account.keys.revealed.body")}
-        secret={minted?.key ?? ""}
-        copyLabel={t("common.copy")}
-        doneLabel={t("account.keys.revealed.done")}
-        size="lg"
-      >
-        <KeyNextStep models={minted?.models ?? []} />
-      </SecretRevealDialog>
+      <RevealedKeyDialog minted={minted} onOpenChange={(open) => !open && setMinted(null)} />
     </PageBody>
   );
 }
@@ -336,9 +311,6 @@ function KeyCard({
   // issued, so it asks first like every other destructive action (#1179)
   const [rotateOpen, setRotateOpen] = React.useState(false);
   const keyLabel = keyRow.name ?? t("account.keys.card.unnamed");
-  // the name a control carries for this card: two unnamed keys would both be
-  // "unnamed key", so the prefix tells them apart, as in the delete dialog (#1896)
-  const keyRef = keyRow.name ?? keyRow.key_prefix;
 
   return (
     <Card>
@@ -375,9 +347,6 @@ function KeyCard({
           ) : usage ? (
             <span>
               {t("account.keys.card.usage", {
-                // `count` picks the plural form, `requests` is the figure as
-                // the locale formats it
-                count: Number(usage.requests),
                 requests: format.number(Number(usage.requests)),
                 cost: format.currency(Number(usage.cost_usd)),
               })}
@@ -386,28 +355,28 @@ function KeyCard({
             <span>{t("account.keys.card.noUsage")}</span>
           )}
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {/* both controls name their card: N identical "Rotate" and "Delete"
-              buttons are a list a screen reader cannot tell apart (#1214, #1896) */}
+        <div className="flex items-center justify-end gap-2">
           <Button
             size="sm"
             variant="outline"
-            className="h-[30px]"
             disabled={rotate.isPending}
             onClick={() => {
               rotate.reset();
               setRotateOpen(true);
             }}
-            aria-label={t("account.keys.card.rotateAria", { name: keyRef })}
             title={t("account.keys.card.rotateHint")}
           >
             <RotateCw className="h-3.5 w-3.5" />
             {t("account.keys.card.rotate")}
           </Button>
-          <DeleteIconButton
-            label={t("account.keys.card.deleteAria", { name: keyRef })}
+          <Button
+            size="sm"
+            variant="destructive"
             onClick={onDelete}
-          />
+            title={t("account.keys.card.deleteHint")}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
         </div>
         <ConfirmDialog
           name="account-key-rotate"
@@ -484,14 +453,7 @@ function MintKeyDialog({
       title={t("account.keys.mint.title")}
       subtitle={t("account.keys.mint.subtitle", { project })}
       dirty={Boolean(name || models.length || providerSel.length) || cache !== "inherit"}
-      // the lead is ours and translated; the control plane's own words follow as
-      // the detail, since the server answers in English whatever the locale
-      errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
-      errorDetail={
-        mint.isError
-          ? (describeError(mint.error, t).detail ?? describeError(mint.error, t).message)
-          : undefined
-      }
+      errorMessage={mint.isError ? (mint.error as Error).message : undefined}
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}
@@ -513,5 +475,57 @@ function MintKeyDialog({
         <KeyReachSummary project={project} models={models} providers={providerSel} ttl={ttl} />
       </div>
     </EditorSheet>
+  );
+}
+
+// shows the plaintext secret exactly once after mint/rotate; discarded on close
+function RevealedKeyDialog({
+  minted,
+  onOpenChange,
+}: {
+  minted: MintedKey | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    if (minted) setCopied(false);
+  }, [minted]);
+
+  const copy = async () => {
+    if (!minted) return;
+    try {
+      await navigator.clipboard.writeText(minted.key);
+      setCopied(true);
+    } catch {
+      // clipboard unavailable — user can still select/copy the text manually
+    }
+  };
+
+  return (
+    <Dialog open={!!minted} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>{t("account.keys.revealed.title")}</DialogTitle>
+        <DialogDescription>{t("account.keys.revealed.body")}</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-2 rounded-md border border-dashed border-border bg-muted p-3">
+        <div className="flex items-center justify-between gap-2">
+          <code className="break-all text-sm">{minted?.key}</code>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copy}
+            aria-label={copied ? t("common.copied") : t("common.copy")}
+            title={copied ? t("common.copied") : t("common.copy")}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
+      </div>
+      <DialogFooter>
+        <Button onClick={() => onOpenChange(false)}>{t("account.keys.revealed.done")}</Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

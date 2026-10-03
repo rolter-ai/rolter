@@ -10,7 +10,7 @@ import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import {
   fetchRouteComplexity,
@@ -132,9 +132,12 @@ export default function ComplexityRouter() {
           title={t("pages.complexityRouter.emptyTitle")}
           description={t("pages.complexityRouter.emptyBody")}
           actions={
-            <EmptyStateLink to="/routing-rules">
+            <a
+              href="/routing-rules"
+              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
               {t("pages.complexityRouter.emptyAction")}
-            </EmptyStateLink>
+            </a>
           }
         />
       )}

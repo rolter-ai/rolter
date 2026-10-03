@@ -68,10 +68,6 @@ Returns a JSON body describing each check:
   seals nothing and decrypts nothing, so the pod cannot serve credentials.
   Reported as `not configured` (and not a failure) when the variable is unset.
 
-The probe answers anyone, so a failing check reports the fixed word
-`unavailable` rather than the driver's error, which can name the database host
-and port (#1840); the detail is in the control plane's log.
-
 Redis and ClickHouse are **deliberately not checked**. The control plane serves
 configuration without either — losing Redis costs the config-bump fan-out
 notification, losing ClickHouse costs the analytics screens — so their absence
@@ -119,10 +115,10 @@ What the pill cannot see:
 - other gateways behind the same `ROLTER_GATEWAY_URL`, and whether a gateway
   runs the current config version. Both need a fleet summary every signed-in
   caller can read (#2013).
-- an unreachable gateway _host_ is not a blind spot: the proxy's HTTP client
-  bounds the connect at 3 seconds (#2014), so a host that drops packets answers
-  the same `502` as a refused port and the pill reads down. Only connecting is
-  bounded; streaming responses stay open.
+- an unreachable gateway _host_. The proxy's HTTP client has no connect
+  timeout, so a host that drops packets hangs the request instead of answering
+  `502`, and the pill reports unknown after its own 10 second timeout rather
+  than down (#2014).
 
 ## Probe wiring
 

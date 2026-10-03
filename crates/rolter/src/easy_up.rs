@@ -358,24 +358,8 @@ pub async fn run(args: EasyUpArgs) -> anyhow::Result<()> {
     let control = rolter_control::run(control_args(&args, database_url));
     let gateway = rolter_gateway::run(gateway_args(&args, db_mode));
 
-    // both planes listen for ctrl-c and SIGTERM themselves and drain on it, so
-    // a signal ends both and the join completes once each has finished its
-    // drain. try_join! also returns as soon as either plane fails, which drops
-    // the other; a plane returning Ok on its own is the same signal, so the
-    // command never outlives its first exit
-    supervise(control, gateway).await
-}
-
-/// Drive both planes until the first error, or until both have returned.
-///
-/// The planes only return `Ok` after a shutdown signal, which each of them
-/// observes independently, so waiting for both lets a started drain (in-flight
-/// requests, realtime sessions) finish instead of aborting it.
-async fn supervise<C, G>(control: C, gateway: G) -> anyhow::Result<()>
-where
-    C: std::future::Future<Output = anyhow::Result<()>>,
-    G: std::future::Future<Output = anyhow::Result<()>>,
-{
+    // supervise both in one process; whichever exits (error or shutdown signal)
+    // brings the command down
     tokio::try_join!(control, gateway)?;
     Ok(())
 }

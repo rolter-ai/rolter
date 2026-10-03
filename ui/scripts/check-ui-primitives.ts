@@ -113,7 +113,6 @@ export type RuleId =
   | "native-dialog"
   | "hand-rolled-confirmation"
   | "shadowed-primitive"
-  | "bare-animation"
   | "duplicated-shape";
 
 export interface Violation {
@@ -163,11 +162,6 @@ const ADVICE: Record<RuleId, string> = {
     "this re-declares a component `src/components/ui/` already exports, " +
     "without importing it — a second copy of a primitive, which is how #1044 " +
     "happened. Import the shared one, or compose it under a name of its own.",
-  "bare-animation":
-    "a bare `animate-spin` / `animate-pulse` keeps moving under " +
-    "`prefers-reduced-motion`, which PRODUCT.md promises it does not (#2006). " +
-    "Write `motion-safe:animate-spin` / `motion-safe:animate-pulse`: the icon or " +
-    "dot stays on screen as a static indicator.",
   "duplicated-shape":
     "the same element and the same design-system classes, hand-written in three " +
     "or more files — a primitive that was never extracted, which is how #1658 " +
@@ -279,30 +273,13 @@ export function checkSource(
 ): { violations: Violation[]; waivers: Waiver[] } {
   const violations: Violation[] = [];
   const waivers: Waiver[] = [];
-  if (FIXTURES.test(file)) return { violations, waivers };
+  if (file.startsWith(PRIMITIVES_DIR) || FIXTURES.test(file)) {
+    return { violations, waivers };
+  }
 
   const masked = stripComments(source);
   const lines = source.split("\n");
   const maskedLines = masked.split("\n");
-  // unlike the rules below, a primitive's own file is not exempt: `StatusRow`
-  // and `DeleteIconButton` are where the motion lives
-  const bare = /(?<![:\w-])animate-(spin|pulse)\b/;
-  maskedLines.forEach((line, index) => {
-    const hit = bare.exec(line);
-    if (!hit) return;
-    const reason = waiverAbove(lines, index);
-    if (reason !== null) {
-      waivers.push({
-        file,
-        line: index + 1,
-        rule: reason ? "bare-animation" : "unknown",
-        reason,
-      });
-    } else {
-      violations.push({ file, line: index + 1, rule: "bare-animation", found: hit[0] });
-    }
-  });
-  if (file.startsWith(PRIMITIVES_DIR)) return { violations, waivers };
   const imported = importedPrimitives(source);
   // a name is only shadowed when the file does not pull the shared one in: a
   // thin wrapper that adapts `Dialog as BaseDialog` composes the primitive, it

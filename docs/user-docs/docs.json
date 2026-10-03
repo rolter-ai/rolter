@@ -80,7 +80,6 @@
               "configuration/config-export",
               "configuration/environment-variables",
               "configuration/providers",
-              "configuration/egress",
               "configuration/hot-reload",
               "configuration/feature-flags",
               "configuration/plugins",

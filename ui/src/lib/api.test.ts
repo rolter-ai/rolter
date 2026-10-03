@@ -214,29 +214,6 @@ describe("api client", () => {
       expect(url.searchParams.has("offset")).toBe(false);
     });
 
-    it("sends a request id, or a trace id, exactly as given and no window (#1861)", async () => {
-      fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-      await fetchInvocationsPage({ request_id: "3f2c9a1e-7b4d/ä&x", limit: 50 });
-      const byRequest = new URL(String(fetchMock.mock.calls[0][0]), "http://localhost");
-      expect(byRequest.searchParams.get("request_id")).toBe("3f2c9a1e-7b4d/ä&x");
-      expect(byRequest.searchParams.has("trace_id")).toBe(false);
-      expect(byRequest.searchParams.has("since")).toBe(false);
-
-      fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-      await fetchInvocationsPage({ trace_id: "0af7651916cd43dd8448eb211c80319c" });
-      const byTrace = new URL(String(fetchMock.mock.calls[1][0]), "http://localhost");
-      expect(byTrace.searchParams.get("trace_id")).toBe("0af7651916cd43dd8448eb211c80319c");
-      expect(byTrace.searchParams.has("request_id")).toBe(false);
-    });
-
-    it("leaves both ids out of an ordinary read", async () => {
-      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-      await fetchInvocationsPage({ since: "2026-07-19T00:00:00Z", request_id: "", trace_id: "" });
-      const url = String(fetchMock.mock.calls[0][0]);
-      expect(url).not.toContain("request_id");
-      expect(url).not.toContain("trace_id");
-    });
-
     it("omits the cursor for the first page", async () => {
       fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
       await fetchInvocationsPage({ limit: 50 });

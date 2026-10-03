@@ -27,15 +27,12 @@
 //!   bodies to its viewers as well. Anyone else gets the row with both bodies
 //!   blanked and `payload_withheld` set, so the dashboard can say why they are
 //!   missing instead of claiming payload capture is off.
-//! * **Provider health** — each row carries the org that owned the provider
-//!   when the gateway wrote it, and a user sees the rows of the orgs where they
-//!   may read provider health. The org is part of the match because provider
-//!   names are unique per org only: a name another org used before (deleted,
-//!   then created again here) must not bring its history along (#1908). A row
-//!   with no org — a provider from the gateway's own config file, or a row
-//!   written before the column existed — is visible only to the first group,
-//!   so on upgrade the older rows drop out of a tenant's view until they age
-//!   out of the 90-day ttl.
+//! * **Provider health** — those rows name a provider and carry no org, so a
+//!   user sees the providers of the orgs where they may read providers. The
+//!   match is by name, and names are unique per org only: a name another org
+//!   used before (deleted, then created again here) brings its history along
+//!   until the rows expire. Writing the provider's org into the rows closes
+//!   that (#1908).
 //!
 //! # Why a filter rather than a guard
 //!
@@ -81,12 +78,8 @@ pub(crate) struct AnalyticsAccess {
     /// the ranks the `analytics` and `request_payload` floors require
     read_rank: i8,
     payload_rank: i8,
-    /// orgs whose provider-health rows the caller may read
-    health_orgs: Vec<String>,
-    /// the signed-in user's own id, empty for everyone else. Only the MCP log
-    /// reads it: a user always sees the tool calls made under their own OAuth
-    /// sessions, whatever tenancy the row carries (#1831)
-    caller_id: String,
+    /// provider names whose health rows the caller may read
+    providers: Vec<String>,
 }
 
 /// The caller's rank at a request-log row: the most specific membership that
@@ -123,19 +116,6 @@ pub(crate) const ROW_VISIBLE: &str = concat!(
     " >= {read_rank:Int8}))"
 );
 
-/// Whether the caller may see an `mcp_tool_call_logs` row: the same tenancy
-/// rule as [`ROW_VISIBLE`], or the row is the caller's own. The second half is
-/// what lets an engineer read the failed call of their own OAuth session even
-/// when the gateway attributed it to no project. A row written before the
-/// table's tenancy columns were populated carries an empty org and an empty
-/// user, so it stays with the unrestricted callers (#1831).
-#[cfg(feature = "postgres")]
-pub(crate) const MCP_ROW_VISIBLE: &str = concat!(
-    "({unrestricted:UInt8} = 1 or (org_id != '' and ",
-    row_rank!(),
-    " >= {read_rank:Int8}) or ({caller_id:String} != '' and user_id = {caller_id:String}))"
-);
-
 /// Whether the caller may read the captured bodies of a visible row: the
 /// `request_payload` floor at the row's scope, or the `analytics` floor on a
 /// project that shows its bodies to viewers.
@@ -147,12 +127,9 @@ pub(crate) const PAYLOAD_VISIBLE: &str = concat!(
     " >= {read_rank:Int8} and has({viewer_payload_projects:Array(String)}, project_id)))"
 );
 
-/// Whether the caller may see a `provider_health_events` row: the row's org is
-/// one whose provider health they read. Matching the org rather than the bare
-/// provider name keeps a name another org used before out of view, and a row
-/// with no org matches nothing, so it stays with the unrestricted callers.
+/// Whether the caller may see a `provider_health_events` row.
 pub(crate) const PROVIDER_VISIBLE: &str =
-    "({unrestricted:UInt8} = 1 or (org_id != '' and has({health_org_ids:Array(String)}, org_id)))";
+    "({unrestricted:UInt8} = 1 or has({providers:Array(String)}, provider))";
 
 impl AnalyticsAccess {
     /// No filter: the admin token, a superadmin, and open mode.
@@ -197,9 +174,8 @@ impl AnalyticsAccess {
         ));
         params.push(param("read_rank", self.read_rank.to_string()));
         params.push(param("payload_rank", self.payload_rank.to_string()));
-        let health_orgs: Vec<&str> = self.health_orgs.iter().map(String::as_str).collect();
-        params.push(param("health_org_ids", string_array(&health_orgs)));
-        params.push(param("caller_id", self.caller_id.clone()));
+        let providers: Vec<&str> = self.providers.iter().map(String::as_str).collect();
+        params.push(param("providers", string_array(&providers)));
         params
     }
 }
@@ -257,70 +233,32 @@ impl FromRequestParts<ControlState> for AnalyticsAccess {
         parts: &mut Parts,
         state: &ControlState,
     ) -> Result<Self, Self::Rejection> {
-        resolve(parts, state, Reads::Analytics).await
-    }
-}
-
-/// Which capability floors the read of a table, since the request log and the
-/// MCP tool-call log are scoped the same way but named by different rows of
-/// the matrix.
-#[derive(Clone, Copy)]
-enum Reads {
-    Analytics,
-    #[cfg(feature = "postgres")]
-    McpLog,
-}
-
-#[allow(clippy::result_large_err)]
-async fn resolve(
-    parts: &mut Parts,
-    state: &ControlState,
-    reads: Reads,
-) -> Result<AnalyticsAccess, Response> {
-    // open mode: the CRUD API treats every caller as superadmin, and a
-    // rollup is no more sensitive than the rows it summarises
-    let Some(expected) = state.admin_token.as_deref() else {
-        return Ok(AnalyticsAccess::unrestricted());
-    };
-    // with a database, a session resolves exactly as it does for the CRUD
-    // API — the admin token and superadmin sessions included
-    #[cfg(feature = "postgres")]
-    if state.pool.is_some() {
-        use crate::rbac::Principal;
-        return match Principal::from_request_parts(parts, state).await {
-            Ok(Principal::Superadmin) => Ok(AnalyticsAccess::unrestricted()),
-            Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
-                .await
-                .map_err(IntoResponse::into_response),
-            Err(error) => Err(error.into_response()),
+        // open mode: the CRUD API treats every caller as superadmin, and a
+        // rollup is no more sensitive than the rows it summarises
+        let Some(expected) = state.admin_token.as_deref() else {
+            return Ok(Self::unrestricted());
         };
-    }
-    #[cfg(not(feature = "postgres"))]
-    let _ = reads;
-    // without one there are no sessions, and the admin token is the only
-    // credential that exists. the dashboard has no way to present it yet,
-    // so a store-less control plane shows these screens to curl only (#1909)
-    if presents_admin_token(parts, expected) {
-        Ok(AnalyticsAccess::unrestricted())
-    } else {
-        Err(unauthenticated())
-    }
-}
-
-/// The caller's reach over `mcp_tool_call_logs` (#1831): the tenancy rule of the
-/// request log, floored on `mcp_log:read`, plus the caller's own rows.
-#[cfg(feature = "postgres")]
-pub(crate) struct McpLogAccess(pub(crate) AnalyticsAccess);
-
-#[cfg(feature = "postgres")]
-impl FromRequestParts<ControlState> for McpLogAccess {
-    type Rejection = Response;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ControlState,
-    ) -> Result<Self, Self::Rejection> {
-        resolve(parts, state, Reads::McpLog).await.map(Self)
+        // with a database, a session resolves exactly as it does for the CRUD
+        // API — the admin token and superadmin sessions included
+        #[cfg(feature = "postgres")]
+        if state.pool.is_some() {
+            use crate::rbac::Principal;
+            return match Principal::from_request_parts(parts, state).await {
+                Ok(Principal::Superadmin) => Ok(Self::unrestricted()),
+                Ok(Principal::User(user)) => scoped::for_user(state, &user)
+                    .await
+                    .map_err(IntoResponse::into_response),
+                Err(error) => Err(error.into_response()),
+            };
+        }
+        // without one there are no sessions, and the admin token is the only
+        // credential that exists. the dashboard has no way to present it yet,
+        // so a store-less control plane shows these screens to curl only (#1909)
+        if presents_admin_token(parts, expected) {
+            Ok(Self::unrestricted())
+        } else {
+            Err(unauthenticated())
+        }
     }
 }
 
@@ -331,7 +269,9 @@ mod scoped {
     use std::collections::HashMap;
 
     use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
-    use rolter_store::postgres::repo::{AccessProfileRepo, MembershipRepo, ProjectRepo};
+    use rolter_store::postgres::repo::{
+        AccessProfileRepo, MembershipRepo, ProjectRepo, ProviderRepo,
+    };
     use uuid::Uuid;
 
     use super::{AnalyticsAccess, NO_RANK};
@@ -401,20 +341,7 @@ mod scoped {
 
     /// The pure half of [`for_user`]: memberships and grants in, reach out.
     /// DB-free so the resolution rules can be tested without a database.
-    #[cfg(test)]
     pub(super) fn from_roles(
-        memberships: &[Membership],
-        grants: &[EffectiveGrant],
-        read_rank: i8,
-        payload_rank: i8,
-    ) -> AnalyticsAccess {
-        from_roles_for("analytics", memberships, grants, read_rank, payload_rank)
-    }
-
-    /// [`from_roles`] for a table whose read floor is the `read_resource` row
-    /// of the matrix rather than `analytics`.
-    pub(super) fn from_roles_for(
-        read_resource: &str,
         memberships: &[Membership],
         grants: &[EffectiveGrant],
         read_rank: i8,
@@ -439,7 +366,7 @@ mod scoped {
             let mut rank = rank_of(&grant.base_role);
             if grant.action.as_deref() == Some(read) {
                 match grant.resource.as_deref() {
-                    Some(resource) if resource == read_resource => rank = rank.max(read_rank),
+                    Some("analytics") => rank = rank.max(read_rank),
                     Some("request_payload") => rank = rank.max(payload_rank),
                     _ => {}
                 }
@@ -462,8 +389,7 @@ mod scoped {
             viewer_payload_projects: Vec::new(),
             read_rank,
             payload_rank,
-            health_orgs: Vec::new(),
-            caller_id: String::new(),
+            providers: Vec::new(),
         }
     }
 
@@ -520,28 +446,18 @@ mod scoped {
 
     /// A signed-in, non-superadmin user's reach, read from their memberships,
     /// their custom roles and the project settings in that reach.
-    pub(super) async fn for_user(
-        state: &ControlState,
-        user: &User,
-        reads: super::Reads,
-    ) -> ApiResult<AnalyticsAccess> {
+    pub(super) async fn for_user(state: &ControlState, user: &User) -> ApiResult<AnalyticsAccess> {
         let pool = pool(state);
         let memberships = MembershipRepo(pool).list_for_user(user.id).await?;
         let grants = AccessProfileRepo(pool)
             .effective_grants_for_user(user.id)
             .await?;
-        let (resource, read_floor) = match reads {
-            super::Reads::Analytics => ("analytics", floor(cap!("analytics", Read))),
-            super::Reads::McpLog => ("mcp_log", floor(cap!("mcp_log", Read))),
-        };
-        let mut access = from_roles_for(
-            resource,
+        let mut access = from_roles(
             &memberships,
             &grants,
-            read_floor,
+            floor(cap!("analytics", Read)),
             floor(cap!("request_payload", Read)),
         );
-        access.caller_id = user.id.to_string();
         let (orgs, teams, projects) = reach(&access);
         access.viewer_payload_projects = ProjectRepo(pool)
             .viewer_payload_projects(&orgs, &teams, &projects)
@@ -551,8 +467,9 @@ mod scoped {
             .collect();
         access.viewer_payload_projects.sort();
         let health = health_orgs(&memberships, &grants, floor(cap!("provider_health", Read)));
-        // `health_orgs` returns the ids sorted and deduplicated
-        access.health_orgs = health.iter().map(Uuid::to_string).collect();
+        access.providers = ProviderRepo(pool).names_in_orgs(&health).await?;
+        access.providers.sort();
+        access.providers.dedup();
         Ok(access)
     }
 }
@@ -560,15 +477,6 @@ mod scoped {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn provider_health_matches_the_rows_org_and_never_the_bare_name() {
-        // a name another org used before must not match, and a row with no org
-        // (config file, or written before the column) matches no restricted caller
-        assert!(PROVIDER_VISIBLE.contains("org_id != ''"));
-        assert!(PROVIDER_VISIBLE.contains("has({health_org_ids:Array(String)}, org_id)"));
-        assert!(!PROVIDER_VISIBLE.contains("provider)"));
-    }
 
     #[test]
     fn an_unrestricted_caller_binds_the_flag_and_empty_sets() {
@@ -583,7 +491,7 @@ mod tests {
         assert_eq!(get("member_org_ids"), Some("[]"));
         assert_eq!(get("member_org_ranks"), Some("[]"));
         assert_eq!(get("viewer_payload_projects"), Some("[]"));
-        assert_eq!(get("health_org_ids"), Some("[]"));
+        assert_eq!(get("providers"), Some("[]"));
     }
 
     #[test]
@@ -593,14 +501,7 @@ mod tests {
             .into_iter()
             .map(|(key, _)| key.trim_start_matches("param_").to_string())
             .collect();
-        #[cfg(feature = "postgres")]
-        let mcp = [MCP_ROW_VISIBLE];
-        #[cfg(not(feature = "postgres"))]
-        let mcp: [&str; 0] = [];
-        for fragment in [ROW_VISIBLE, PAYLOAD_VISIBLE, PROVIDER_VISIBLE]
-            .into_iter()
-            .chain(mcp)
-        {
+        for fragment in [ROW_VISIBLE, PAYLOAD_VISIBLE, PROVIDER_VISIBLE] {
             let mut rest = fragment;
             while let Some(open) = rest.find('{') {
                 let close = rest[open..].find(':').expect("typed parameter") + open;

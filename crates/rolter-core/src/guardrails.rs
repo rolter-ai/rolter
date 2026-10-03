@@ -135,7 +135,7 @@ pub struct GuardrailRule {
     #[serde(default)]
     pub action: GuardAction,
     /// replacement token for `redact`; falls back to the built-in default token
-    /// (or a generic `[REDACTED]`) when omitted, empty or whitespace-only
+    /// (or a generic `[REDACTED]`) when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement: Option<String>,
     /// also scan system messages. Off by default: operator-authored system
@@ -230,11 +230,10 @@ impl CompiledRule {
             (None, Some(pattern)) => (compile(pattern).ok()?, "[REDACTED]"),
             (None, None) => return None,
         };
-        // an empty token would silently delete matches, so it means "default"
-        let token = match rule.replacement.as_deref() {
-            Some(custom) if !custom.trim().is_empty() => custom.to_string(),
-            _ => default_token.to_string(),
-        };
+        let token = rule
+            .replacement
+            .clone()
+            .unwrap_or_else(|| default_token.to_string());
         Some(Self {
             name: rule.name.trim().to_string(),
             regex,
@@ -271,12 +270,10 @@ impl RouteGuardrails {
     /// Whether `rule` applies on this route. `enable` wins a conflict, so a
     /// route that names the same rule in both is explicitly opting in.
     fn allows(&self, rule: &str) -> bool {
-        // entries are trimmed like the rule names they are matched against
-        let rule = rule.trim();
-        if self.enable.iter().any(|name| name.trim() == rule) {
+        if self.enable.iter().any(|name| name == rule) {
             return true;
         }
-        !self.disable.iter().any(|name| name.trim() == rule)
+        !self.disable.iter().any(|name| name == rule)
     }
 
     /// Names referenced here that no configured rule defines.
@@ -284,10 +281,7 @@ impl RouteGuardrails {
         self.disable
             .iter()
             .chain(self.enable.iter())
-            .filter(|name| {
-                let name = name.trim();
-                !configured.iter().any(|known| known.trim() == name)
-            })
+            .filter(|name| !configured.iter().any(|known| known == *name))
             .cloned()
             .collect()
     }
@@ -613,19 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_or_blank_replacement_uses_the_default_token() {
-        for blank in ["", "   "] {
-            let mut r = rule("email", BuiltinRule::Email, GuardAction::Redact);
-            r.replacement = Some(blank.to_string());
-            let g = compiled(vec![r]);
-            let mut budget = g.scan_budget();
-            let mut report = GuardrailReport::default();
-            let out = g.scan_segment("a@example.com", false, &mut budget, &mut report);
-            assert_eq!(out, ScanOutcome::Redacted("[REDACTED:EMAIL]".to_string()));
-        }
-    }
-
-    #[test]
     fn output_rules_run_only_at_the_output_stage() {
         let mut out = rule("email", BuiltinRule::Email, GuardAction::Redact);
         out.stage = GuardStage::PostCall;
@@ -835,31 +816,6 @@ mod tests {
             vec!["emial".to_string()]
         );
         assert!(route.unknown_rules(&["emial".to_string()]).is_empty());
-    }
-
-    #[test]
-    fn route_override_ignores_surrounding_whitespace() {
-        let route = RouteGuardrails {
-            disable: vec!["pii ".to_string()],
-            enable: vec![" card".to_string()],
-        };
-        assert!(!route.allows("pii"));
-        assert!(!route.allows(" pii "));
-        assert!(route.allows("card"));
-        assert!(route
-            .unknown_rules(&["pii ".to_string(), "card".to_string()])
-            .is_empty());
-        assert!(route.unknown_rules(&["pii".to_string()]).len() == 1);
-    }
-
-    #[test]
-    fn padded_rule_is_disabled_by_padded_override() {
-        let g = compiled(vec![rule("pii ", BuiltinRule::Email, GuardAction::Redact)]);
-        let route = RouteGuardrails {
-            disable: vec!["pii ".to_string()],
-            enable: Vec::new(),
-        };
-        assert!(!g.resolve_selection(&route).is_unrestricted());
     }
 
     #[test]

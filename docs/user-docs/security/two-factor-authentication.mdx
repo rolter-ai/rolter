@@ -216,9 +216,8 @@ In the dashboard it is the **Second factor** control on **Single sign-on →
 Sign-in policy**, beside the password and SSO switches. Choosing either
 `required_*` value confirms before it saves, and so does pulling an announced
 start date earlier. The confirmation says how many members the organization
-has, counting each person once however many roles they hold, that anyone without
-an authenticator app is asked to set one up at their next password sign-in, and
-links this page's break-glass procedure. Relaxing
+has, that anyone without an authenticator app is asked to set one up at their
+next password sign-in, and links this page's break-glass procedure. Relaxing
 the policy saves without a confirmation.
 
 A control plane with no `ROLTER_KEK` cannot seal a secret, so nobody on it can
@@ -244,13 +243,11 @@ with no `ROLTER_KEK`, which cannot seal a new secret, the sign-in is refused
 with a 403 `mfa_enrolment_required` that names the missing key instead, since
 the fix is the operator's.
 
-Accepting an invitation goes through the same decision. A new account created
-by an invitation into an org whose `required_*` policy is in force gets no
-session from the link: the screen sends the invitee to sign in with the password
-they just chose, and that sign-in is where they set up the factor. An
-invitation for an address that already has an account never signs anyone in at
-all; it adds the role, and the owner signs in with their own password and
-factor as usual.
+<Note>
+Accepting an invitation does not go through this decision yet: it issues a
+session straight away, without consulting the policy. Tracked in
+[#1935](https://github.com/rolter-ai/rolter/issues/1935).
+</Note>
 
 ### Announcing the requirement first
 

@@ -6,6 +6,7 @@
 //! assembled envelope is sent; prompt content is never logged here.
 
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::OnceLock;
 
 use rolter_core::guardrail_webhook::{
     FailureMode, GuardrailWebhookConfig, WebhookAuth, WebhookDecision, WebhookRequest,
@@ -13,8 +14,14 @@ use rolter_core::guardrail_webhook::{
 };
 use serde_json::Value;
 
-use crate::egress_client::EgressClient;
 use crate::metrics::Metrics;
+
+/// Shared client for webhook calls: connection pooling across requests, no
+/// per-call setup cost. Per-call timeouts are applied on the request builder.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// What the gateway should do after consulting the webhook.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +42,6 @@ pub enum WebhookOutcome {
 pub async fn consult_pre_call(
     config: &GuardrailWebhookConfig,
     metrics: &Metrics,
-    egress: &EgressClient,
     model: &str,
     route: &str,
     trace_id: &str,
@@ -71,7 +77,7 @@ pub async fn consult_pre_call(
         content: &payload,
     };
 
-    match call_with_retries(config, egress, &envelope).await {
+    match call_with_retries(config, &envelope).await {
         Ok(decision) => match decision {
             WebhookDecision::Allow | WebhookDecision::Annotate { .. } => WebhookOutcome::Allow,
             WebhookDecision::Block { reason } => {
@@ -102,12 +108,11 @@ pub async fn consult_pre_call(
 /// Returns `Err(())` when every attempt fails (caller applies the failure mode).
 async fn call_with_retries(
     config: &GuardrailWebhookConfig,
-    egress: &EgressClient,
     envelope: &WebhookRequest<'_>,
 ) -> Result<WebhookDecision, ()> {
     let attempts = config.max_retries.saturating_add(1);
     for _ in 0..attempts {
-        if let Some(decision) = call_once(config, egress, envelope).await {
+        if let Some(decision) = call_once(config, envelope).await {
             return Ok(decision);
         }
     }
@@ -118,13 +123,10 @@ async fn call_with_retries(
 /// non-2xx, or unreadable body) that the retry loop may re-attempt.
 async fn call_once(
     config: &GuardrailWebhookConfig,
-    egress: &EgressClient,
     envelope: &WebhookRequest<'_>,
 ) -> Option<WebhookDecision> {
-    // refused again here, not only at save: the policy may have been tightened
-    // since, and a stored row is not a standing permission to egress
-    let mut req = egress
-        .post(config.url.trim())?
+    let mut req = client()
+        .post(config.url.trim())
         .timeout(std::time::Duration::from_millis(config.timeout_ms))
         .header("X-Rolter-Trace-Id", envelope.trace_id)
         .json(envelope);
@@ -169,7 +171,6 @@ mod tests {
         let out = consult_pre_call(
             &disabled(),
             &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -192,7 +193,6 @@ mod tests {
         let out = consult_pre_call(
             &cfg,
             &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -234,7 +234,6 @@ mod tests {
         let out = consult_pre_call(
             &enabled(url),
             &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -252,7 +251,6 @@ mod tests {
         let out = consult_pre_call(
             &enabled(url),
             &metrics,
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -275,7 +273,6 @@ mod tests {
         let out = consult_pre_call(
             &enabled(url),
             &metrics,
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -304,7 +301,6 @@ mod tests {
         let out = consult_pre_call(
             &cfg,
             &Metrics::default(),
-            &crate::egress_client::testing::permissive(),
             "gpt-4",
             "route",
             "trace",
@@ -313,88 +309,5 @@ mod tests {
         )
         .await;
         assert!(matches!(out, WebhookOutcome::Block(_)));
-    }
-
-    fn fail_closed(url: String) -> GuardrailWebhookConfig {
-        GuardrailWebhookConfig {
-            enabled: true,
-            url,
-            timeout_ms: 300,
-            failure_mode: FailureMode::FailClosed,
-            ..GuardrailWebhookConfig::default()
-        }
-    }
-
-    async fn consult(cfg: &GuardrailWebhookConfig, egress: &EgressClient) -> WebhookOutcome {
-        consult_pre_call(
-            cfg,
-            &Metrics::default(),
-            egress,
-            "gpt-4",
-            "route",
-            "trace",
-            WebhookTenant::default(),
-            &json!({"messages": []}),
-        )
-        .await
-    }
-
-    /// #2383: a metadata literal is refused before any request is built, so a
-    /// fail-closed webhook blocks rather than reaching the address.
-    #[tokio::test]
-    async fn a_metadata_literal_is_refused_per_the_failure_mode() {
-        let egress = crate::egress_client::testing::permissive();
-        let out = consult(
-            &fail_closed("https://169.254.169.254/latest/meta-data/".to_string()),
-            &egress,
-        )
-        .await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
-    }
-
-    /// A hostname is not classified by the literal check, so only the
-    /// connect-time resolver can stop one that resolves to a denied address.
-    #[tokio::test]
-    async fn a_name_resolving_to_a_denied_address_is_never_connected_to() {
-        let listener = crate::egress_client::testing::Counter::start().await;
-        let egress = EgressClient::new(crate::egress_client::testing::deny_loopback());
-        let out = consult(&fail_closed(listener.url("/check")), &egress).await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
-        assert_eq!(listener.accepted(), 0);
-    }
-
-    #[tokio::test]
-    async fn the_default_policy_still_reaches_a_loopback_webhook() {
-        // the counter is only evidence if it can count
-        let listener = crate::egress_client::testing::Counter::start().await;
-        let egress = crate::egress_client::testing::permissive();
-        let _ = consult(&fail_closed(listener.url("/check")), &egress).await;
-        assert_eq!(listener.accepted(), 1);
-    }
-
-    /// A policy tightened by a hot reload applies to the next request without
-    /// rebuilding the client.
-    #[tokio::test]
-    async fn a_reload_that_tightens_the_policy_applies_to_the_next_call() {
-        let listener = crate::egress_client::testing::Counter::start().await;
-        let policy = crate::egress_client::testing::default_policy();
-        let egress = EgressClient::new(policy.clone());
-        policy.store(std::sync::Arc::new(rolter_core::EgressPolicy {
-            block_loopback: true,
-            ..rolter_core::EgressPolicy::default()
-        }));
-        let out = consult(&fail_closed(listener.url("/check")), &egress).await;
-        assert!(matches!(out, WebhookOutcome::Block(_)), "{out:?}");
-        assert_eq!(listener.accepted(), 0);
-    }
-
-    /// A request-time refusal is a call failure like any other, so the
-    /// webhook's failure mode decides: fail-open lets the request through.
-    #[tokio::test]
-    async fn a_denied_webhook_url_follows_a_fail_open_failure_mode() {
-        let egress = crate::egress_client::testing::permissive();
-        let mut cfg = fail_closed("https://169.254.169.254/latest/meta-data/".to_string());
-        cfg.failure_mode = FailureMode::FailOpen;
-        assert_eq!(consult(&cfg, &egress).await, WebhookOutcome::Allow);
     }
 }

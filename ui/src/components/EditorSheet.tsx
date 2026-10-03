@@ -38,11 +38,6 @@ export interface EditorSheetProps {
    * discard-changes confirmation on scrim/Escape/Cancel (see DiscardGuard) */
   dirty: boolean;
   errorMessage?: string;
-  /**
-   * What the control plane said, shown under `errorMessage` as its detail.
-   * The lead is the caller's translated line; this stays as the server wrote it.
-   */
-  errorDetail?: string;
   /** overrides the shared `common.cancel` label; already-translated when passed */
   cancelLabel?: string;
   saveLabel: string;
@@ -60,7 +55,6 @@ export function EditorSheet({
   subtitle,
   dirty,
   errorMessage,
-  errorDetail,
   cancelLabel,
   saveLabel,
   canSave,
@@ -105,13 +99,13 @@ export function EditorSheet({
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>{children}</SheetBody>
       <SheetFooter>
-        <SheetError message={errorMessage} detail={errorDetail} />
+        <SheetError message={errorMessage} />
         <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button disabled={!canSave || saving} onClick={save}>
-            {saving && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
             {saveLabel}
           </Button>
         </SheetActions>

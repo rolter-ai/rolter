@@ -3,51 +3,22 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import UserProvisioning from "./UserProvisioning";
 import {
-  answerSecretClosePrompt,
-  cancelConfirmation,
-  confirmation,
-  confirmDestructive,
-  expectInStatusRegion,
   expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
-  expectTableStateInFrame,
-  expectToast,
   Harness as ScreenHarness,
   json,
   openOptions,
   pickOption,
-  recording,
-  stubClipboard,
-  Toasted,
   type FetchStub,
-  type Recorder,
   type StoryRole,
 } from "./story-harness";
-import type { PublicUrl, ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
-import { formattersFor } from "@/lib/i18n/format";
-import en from "@/lib/i18n/locales/en.json";
-import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, phoneFits } from "@/lib/story-viewport";
+import type { ScimGroupMappingRow, ScimTokenRow } from "@/lib/api";
 
 const NOW = new Date("2026-07-01T10:00:00Z").toISOString();
 
 const ORG = { id: "org-1", name: "Acme", slug: "acme", created_at: NOW };
-
-/**
- * The control plane's configured public url (#2079).
- *
- * Deliberately not the story's own origin: a strip or a reveal step that fell
- * back to `window.location` would show the storybook host and fail the
- * assertion, which is the bug the server-reported base exists to prevent.
- */
-const PUBLIC_BASE = "https://rolter.acme.example";
-const PUBLIC_URL: PublicUrl = { public_url: PUBLIC_BASE, configured: true };
-const SCIM_URL = `${PUBLIC_BASE}/scim/v2`;
-// `ROLTER_PUBLIC_URL` unset: the control plane falls back to its default
-const DEFAULT_BASE = "http://localhost:4001";
-const UNSET: PublicUrl = { public_url: DEFAULT_BASE, configured: false };
 
 const token = (over: Partial<ScimTokenRow> = {}): ScimTokenRow => ({
   id: "tok-1",
@@ -118,8 +89,6 @@ function scoped(
     teams?: () => Promise<Response>;
     projects?: () => Promise<Response>;
     orgProjects?: () => Promise<Response>;
-    /** answers `GET /api/v1/public-url`, which every signed-in caller may read */
-    publicUrl?: () => Promise<Response>;
   } = {},
 ): FetchStub {
   return async (input, init) => {
@@ -128,7 +97,6 @@ function scoped(
     if (url.includes("scim-group-mappings")) return mappings(init);
     if (url.includes("scim-tokens")) return tokens(init);
     if (path === "/api/v1/orgs") return json([ORG]);
-    if (path === "/api/v1/public-url") return (chain.publicUrl ?? (async () => json(PUBLIC_URL)))();
     // the projects route also contains "/teams", so it is matched first
     const projects = /^\/api\/v1\/teams\/([^/]+)\/projects$/.exec(path);
     if (projects) return (chain.projects ?? (async () => json(PROJECTS[projects[1]] ?? [])))();
@@ -150,37 +118,12 @@ function scoped(
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({
-  fetchStub,
-  role,
-  toasted,
-}: {
-  fetchStub: FetchStub;
-  role?: StoryRole;
-  /** mount the shell's toast queue, for a story that asserts the outcome */
-  toasted?: boolean;
-}) {
+function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
-      {toasted ? (
-        <Toasted>
-          <UserProvisioning />
-        </Toasted>
-      ) : (
-        <UserProvisioning />
-      )}
+      <UserProvisioning />
     </ScreenHarness>
   );
-}
-
-/**
- * The cells of the token's table row in column order: token, status, last sync,
- * created, actions. Found by the row's name, so a story reads a column of one
- * token rather than counting cells across the table.
- */
-async function cellsOf(canvasElement: HTMLElement, name: string): Promise<HTMLElement[]> {
-  const row = await within(canvasElement).findByRole("row", { name: new RegExp(name) });
-  return within(row).getAllByRole("cell");
 }
 
 const meta = {
@@ -199,76 +142,7 @@ export const Loaded: Story = {
     await waitFor(() => expect(canvas.getByText("Okta production")).toBeVisible());
     // a token an IdP has never presented is distinguishable from a live one
     await expect(canvas.getByText("never used")).toBeVisible();
-
-    // the status reads from the catalog, and a revoked token keeps when it was
-    // revoked on the badge
-    const copy = en.pages.userProvisioning;
-    const [, live] = await cellsOf(canvasElement, "Okta production");
-    await expect(live.textContent).toBe(copy.statusActive);
-    const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
-    await expect(revoked.textContent).toBe(copy.statusRevoked);
-    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
-      "title",
-      copy.revokedAt.replace("{{when}}", formattersFor("en").dateTime(TOKENS[2].revoked_at!)),
-    );
-  },
-};
-
-/**
- * "Last sync" and "Created" were two date styles in one table: a numeric stamp
- * with the clock beside a short date. Both columns show the day now, and the
- * whole stamp is the hover (#2080).
- */
-export const DatesShareOneStyle: Story = {
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  play: async ({ canvasElement }) => {
-    const fmt = formattersFor("en");
-    const [, , lastSync, created] = await cellsOf(canvasElement, "Okta production");
-    const lastUsed = TOKENS[0].last_used_at!;
-    await expect(lastSync.textContent).toBe(fmt.date(lastUsed));
-    await expect(created.textContent).toBe(fmt.date(NOW));
-    // the same shape in both: a short date, never the clock or the numeric stamp
-    for (const cell of [lastSync, created]) {
-      await expect(cell.textContent).toMatch(/^[A-Za-z]{3,} \d{1,2}, \d{4}$/);
-    }
-    // and the clock is one hover away, on the moment itself
-    await expect(within(lastSync).getByText(fmt.date(lastUsed))).toHaveAttribute(
-      "title",
-      fmt.dateTime(lastUsed),
-    );
-    await expect(within(created).getByText(fmt.date(NOW))).toHaveAttribute(
-      "title",
-      fmt.dateTime(NOW),
-    );
-    // a token never presented has no date to style
-    const [, , never] = await cellsOf(canvasElement, "Entra staging");
-    await expect(never.textContent).toBe(en.pages.userProvisioning.neverUsed);
-  },
-};
-
-/**
- * The status badges were the English words `ACTIVE` and `REVOKED` in every
- * locale (#2080). They read from the catalog, so the Russian dashboard says so
- * in Russian.
- */
-export const ReadsInRussian: Story = {
-  globals: { locale: "ru" },
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  play: async ({ canvasElement }) => {
-    const copy = ru.pages.userProvisioning;
-    // the locale decorator switches language from an effect, after first paint
-    await waitFor(async () => {
-      const [, live] = await cellsOf(canvasElement, "Okta production");
-      await expect(live.textContent).toBe(copy.statusActive);
-    });
-    const [, revoked] = await cellsOf(canvasElement, "Okta legacy");
-    await expect(revoked.textContent).toBe(copy.statusRevoked);
-    await expect(within(revoked).getByText(copy.statusRevoked)).toHaveAttribute(
-      "title",
-      copy.revokedAt.replace("{{when}}", formattersFor("ru").dateTime(TOKENS[2].revoked_at!)),
-    );
-    // no English status anywhere on the screen, in either case
-    await expect(canvasElement.textContent).not.toMatch(/\b(active|revoked)\b/i);
+    await expect(canvas.getByText("REVOKED")).toBeVisible();
   },
 };
 
@@ -288,35 +162,6 @@ export const Empty: Story = {
   },
 };
 
-// the token table scrolls sideways inside its card on a phone, and the
-// placeholder and its button were centred on the whole table, off to one side
-// of what the reader sees (#2420)
-export const EmptyFitsThePhone: Story = {
-  ...atMobile,
-  render: () => <Harness fetchStub={scoped(async () => json([]))} />,
-  play: async ({ canvasElement }) => {
-    await expectTableStateInFrame(canvasElement, {
-      says: /No provisioning tokens yet/,
-      body: /Issue a token, paste it into your identity provider/,
-      cta: /Issue token/,
-    });
-  },
-};
-
-export const EmptyFitsThePhoneInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => <Harness fetchStub={scoped(async () => json([]))} />,
-  play: async ({ canvasElement }) => {
-    const { emptyTitle, emptyBody, emptyAction } = ru.pages.userProvisioning;
-    await expectTableStateInFrame(canvasElement, {
-      says: new RegExp(emptyTitle),
-      body: new RegExp(emptyBody.slice(0, 24)),
-      cta: new RegExp(emptyAction),
-    });
-  },
-};
-
 // a failed read is not an empty one (#2211): the table under the load error
 // used to say "No provisioning tokens yet" beside a button to issue the first,
 // and the lead to count "0 tokens". the lead keeps what it explains and drops
@@ -331,9 +176,6 @@ export const Error_: Story = {
     await expectLoadError(canvasElement, /failed to return provisioning tokens/i);
     await expect(canvas.getByText("/scim/v2/Users")).toBeVisible();
     await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
-    // the connector address is stated beside a token list that was read, not
-    // beside one that failed: a control plane with no store serves no SCIM at all
-    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
   },
 };
 
@@ -347,15 +189,6 @@ export const Forbidden: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/visible to org admins only/)).toBeVisible());
     await expect(canvas.getByRole("button", { name: /Issue token/ })).toBeDisabled();
-    // a refused read is not a list of zero: the lead keeps what it explains and
-    // states no count of tokens, and no empty table stands in for the refusal
-    // (#2211, which #2080 asked for)
-    await expect(canvas.getByText("/scim/v2/Users")).toBeVisible();
-    await expect(canvasElement.textContent).not.toMatch(/\d+ tokens?\b/);
-    await expectNoFalseEmpty(canvasElement, /No provisioning tokens yet/);
-    await expect(canvas.queryByRole("table")).toBeNull();
-    // a caller who may connect nothing is not handed the address to connect it to
-    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
   },
 };
 
@@ -388,233 +221,6 @@ export const IssueRevealsTheSecretOnce: Story = {
     await expect(sheet.getByText(/only time this token is shown/)).toBeVisible();
     // and it is copyable, because it can never be read back
     await expect(sheet.getByRole("button", { name: /Copy provisioning token/ })).toBeVisible();
-
-    // the other value the connector needs is beside it (#2079): the control
-    // plane's own address, never this page's origin, which is not the host the
-    // identity provider has to call
-    const base = await sheet.findByTestId("scim-base-url");
-    await expect(base.textContent).toBe(SCIM_URL);
-    await expect(base.textContent).not.toContain(window.location.origin);
-    await expect(sheet.getByRole("group", { name: "SCIM base URL" })).toContainElement(base);
-    await expect(
-      sheet.getByRole("button", { name: `Copy SCIM base URL: ${SCIM_URL}` }),
-    ).toBeVisible();
-    // the hint no longer hands over a placeholder host to fill in by hand
-    await expect(sheet.queryByText(/your-rolter-host/)).toBeNull();
-    // a configured public url raises no warning
-    await expect(sheet.queryByRole("note")).toBeNull();
-  },
-};
-
-const SECRET = "rolter_scim_deadbeef";
-
-/** a control plane that answers a mint with the plaintext token */
-const issuing = () =>
-  scoped(async (init) =>
-    init?.method === "POST"
-      ? json({ ...token({ id: "tok-new", name: "Okta production" }), secret: SECRET })
-      : json([]),
-  );
-
-/** Issue a token from the empty screen and return the sheet that reveals it. */
-async function issueAToken(canvasElement: HTMLElement) {
-  const canvas = within(canvasElement);
-  await userEvent.click((await canvas.findAllByRole("button", { name: /Issue token/ }))[0]);
-  const form = within(await within(document.body).findByRole("dialog"));
-  await userEvent.type(form.getByPlaceholderText("Okta production"), "Okta production");
-  await userEvent.click(form.getByRole("button", { name: /Issue token/ }));
-  await waitFor(() => expect(form.getByTestId("scim-token-secret")).toHaveTextContent(SECRET));
-  return within(await within(document.body).findByRole("dialog"));
-}
-
-/** A token that reached the clipboard closes the sheet without a question (#2217). */
-export const ACopiedTokenClosesTheSheetWithoutAsking: Story = {
-  beforeEach: stubClipboard(async () => {}),
-  render: () => <Harness fetchStub={issuing()} />,
-  play: async ({ canvasElement }) => {
-    const sheet = await issueAToken(canvasElement);
-    const copy = sheet.getByRole("button", { name: /Copy provisioning token/ });
-    await userEvent.click(copy);
-    await waitFor(() => expect(copy).toHaveAttribute("title", en.common.copied));
-    await userEvent.click(sheet.getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
-  },
-};
-
-/**
- * The token is stored as a digest, so closing the sheet over one nobody copied
- * loses it for good. Escape, the scrim, the close button and Done all ask, and
- * cancelling keeps the token and the base URL beside it (#2217).
- */
-export const AnUncopiedTokenAsksBeforeTheSheetCloses: Story = {
-  render: () => <Harness fetchStub={issuing()} />,
-  play: async ({ canvasElement }) => {
-    const sheet = await issueAToken(canvasElement);
-    const ways: [string, () => Promise<unknown>][] = [
-      ["Escape", () => userEvent.keyboard("{Escape}")],
-      ["the scrim", () => userEvent.click(within(document.body).getByTestId("sheet-scrim"))],
-      [
-        "the close button",
-        () => userEvent.click(sheet.getByRole("button", { name: en.common.close })),
-      ],
-      ["Done", () => userEvent.click(sheet.getByRole("button", { name: "Done" }))],
-    ];
-    for (const [, close] of ways) {
-      await close();
-      await expect(
-        await within(document.body).findByRole("dialog", {
-          name: en.common.secret.closeTitle,
-        }),
-      ).toHaveAccessibleDescription(en.common.secret.closeBody);
-      await answerSecretClosePrompt(false);
-      await expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent(SECRET);
-      await expect(await sheet.findByTestId("scim-base-url")).toBeVisible();
-    }
-    await userEvent.click(sheet.getByRole("button", { name: "Done" }));
-    await answerSecretClosePrompt(true);
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
-  },
-};
-
-/**
- * A plain-http dashboard has no clipboard, and the token cannot be shown again.
- * The copy says so in a line that stays, and the token and the base URL stay on
- * screen, the token selected, so the copy can be made by hand (#2327).
- */
-export const AFailedTokenCopyLeavesAMessage: Story = {
-  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
-  render: () => <Harness fetchStub={issuing()} />,
-  play: async ({ canvasElement }) => {
-    const sheet = await issueAToken(canvasElement);
-    await userEvent.click(sheet.getByRole("button", { name: /Copy provisioning token/ }));
-    await expect(await sheet.findByRole("alert")).toHaveTextContent(en.common.copyFailed);
-    await expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent(SECRET);
-    await expect(window.getSelection()?.toString()).toBe(SECRET);
-    await expect(await sheet.findByTestId("scim-base-url")).toBeVisible();
-    await expect(sheet.getByRole("button", { name: en.common.secret.select })).toBeVisible();
-  },
-};
-
-/**
- * #2079: the screen states the address an identity provider's SCIM connector is
- * pointed at, under the line that explains what the provider drives.
- *
- * It was a placeholder in the reveal step's hint and only a path in the lead, so
- * the operator worked out the public host by hand. The value is what the control
- * plane reports as its public url plus `/scim/v2`, and the story's own origin
- * is nowhere in it.
- */
-export const ShowsTheScimBaseUrl: Story = {
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByRole("group", { name: "SCIM base URL" });
-    const base = await within(group).findByTestId("scim-base-url");
-    await expect(base.textContent).toBe(SCIM_URL);
-    await expect(base.textContent).not.toContain(window.location.origin);
-    await expect(
-      within(group).getByRole("button", { name: `Copy SCIM base URL: ${SCIM_URL}` }),
-    ).toBeVisible();
-    await expect(within(group).getByText(/same for every token in this org/)).toBeVisible();
-    // a configured public url raises no warning
-    await expect(canvas.queryByRole("note")).toBeNull();
-  },
-};
-
-/**
- * #2079: with `ROLTER_PUBLIC_URL` unset the control plane's base is its default,
- * which an identity provider can only reach from the control plane's own host.
- * Both places the address appears say so, the same way the Single Sign-On screen
- * does, rather than leaving the provider's test console to say it later.
- */
-export const WarnsWhenThePublicUrlIsUnset: Story = {
-  render: () => {
-    const stub = scoped(
-      async (init) => {
-        if (init?.method === "POST") {
-          return json({
-            ...token({ id: "tok-new", name: "Okta production" }),
-            secret: "rolter_scim_deadbeef",
-          });
-        }
-        return json(TOKENS);
-      },
-      undefined,
-      { publicUrl: async () => json(UNSET) },
-    );
-    return <Harness fetchStub={stub} />;
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByRole("group", { name: "SCIM base URL" });
-    // the default address is still shown and copyable: it is what the control
-    // plane will answer on, from its own host
-    const base = await within(group).findByTestId("scim-base-url");
-    await expect(base.textContent).toBe(`${DEFAULT_BASE}/scim/v2`);
-    const notice = within(group).getByRole("note");
-    await expect(notice).toHaveTextContent("ROLTER_PUBLIC_URL is not set");
-    await expect(notice).toHaveTextContent(DEFAULT_BASE);
-    await expect(notice).toHaveTextContent(/restart the control plane/);
-
-    // and again in the reveal step, where the operator is about to paste it
-    await userEvent.click(await canvas.findByRole("button", { name: /Issue token/ }));
-    const sheet = within(await within(document.body).findByRole("dialog"));
-    await userEvent.type(sheet.getByPlaceholderText("Okta production"), "Okta production");
-    await userEvent.click(sheet.getByRole("button", { name: /Issue token/ }));
-    const revealed = await sheet.findByTestId("scim-base-url");
-    await expect(revealed.textContent).toBe(`${DEFAULT_BASE}/scim/v2`);
-    await expect(sheet.getByRole("note")).toHaveTextContent("ROLTER_PUBLIC_URL is not set");
-  },
-};
-
-/**
- * The public url is still in flight. The screen does not wait on it: the token
- * list is on screen, and the address holds its space as a labelled skeleton
- * rather than claiming a value or a failure.
- */
-export const WaitsForThePublicUrl: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(async () => json(TOKENS), undefined, {
-        publicUrl: () => new Promise<Response>(() => {}),
-      })}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Okta production")).toBeVisible());
-    await expectSkeleton(canvasElement);
-    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
-    await expect(canvas.queryByRole("note")).toBeNull();
-  },
-};
-
-/**
- * The public url could not be read. The address is not guessed from the
- * browser: the screen says what failed, offers a retry, and the address
- * appears once the retry lands.
- */
-export const PublicUrlUnreadable: Story = {
-  render: () => {
-    let reads = 0;
-    const stub = scoped(async () => json(TOKENS), undefined, {
-      publicUrl: async () =>
-        ++reads === 1
-          ? json({ error: { message: "upstream unavailable" } }, 502)
-          : json(PUBLIC_URL),
-    });
-    return <Harness fetchStub={stub} />;
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /failed to return the public URL/i);
-    await expect(canvas.queryByTestId("scim-base-url")).toBeNull();
-    // the rest of the screen is unaffected: the tokens were read
-    await expect(canvas.getByText("Okta production")).toBeVisible();
-
-    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
-    const base = await canvas.findByTestId("scim-base-url");
-    await expect(base.textContent).toBe(SCIM_URL);
   },
 };
 
@@ -655,8 +261,7 @@ export const IssueRejectedByTheServer: Story = {
 };
 
 // revoking is immediate and does not touch the accounts already provisioned —
-// the confirmation has to say that before the operator commits. the row stays
-// in the list as revoked, so the toast says revoked and not deleted (#2080)
+// the confirmation has to say that before the operator commits
 export const RevokeExplainsWhatItDoesNotDo: Story = {
   render: () => {
     revokedTokens.length = 0;
@@ -667,7 +272,7 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
       }
       return json([revokedTokens.length ? token({ revoked_at: NOW }) : token()]);
     });
-    return <Harness fetchStub={stub} toasted />;
+    return <Harness fetchStub={stub} />;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -681,16 +286,10 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
     await expect(modal.getByText(/nobody is deactivated or logged out/)).toBeVisible();
     await userEvent.click(modal.getByRole("button", { name: "Revoke" }));
     // the DELETE itself, not just the badge: the row re-renders off a fixture
-    // this story controls, so "Revoked" on screen would pass a screen that
+    // this story controls, so "REVOKED" on screen would pass a screen that
     // never sent the request (#1607)
     await waitFor(() => expect(revokedTokens).toEqual(["tok-1"]));
-    await waitFor(async () => {
-      const [, status] = await cellsOf(canvasElement, "Okta production");
-      await expect(status.textContent).toBe(en.pages.userProvisioning.statusRevoked);
-    });
-    // the toast describes what happened to the row that is still there
-    await expectToast(canvasElement, /Okta production revoked/);
-    await expect(canvas.queryByText(/deleted/i)).toBeNull();
+    await waitFor(() => expect(canvas.getByText("REVOKED")).toBeVisible());
   },
 };
 
@@ -780,94 +379,40 @@ export const GroupMappingsEmpty: Story = {
 // second fetch wrapper: the stub is already the only thing the screen talks to
 const postedMappings: unknown[] = [];
 
-// the stub of the story being played, so `play` reads what `render` was given.
-// every request is kept, which is what lets a story say a cancel sent nothing
-let sent: Recorder;
-
-const MAPPINGS_URL = "scim-group-mappings";
-
-/**
- * An org with no mappings whose create answers with the row it was given, and
- * whose every request is recorded in `sent`.
- *
- * The list stays empty: what a story asserts is the request, and the row
- * appearing is a fixture answering, not the screen.
- */
-function recordMappings(): FetchStub {
-  sent = recording(
-    scoped(
+// the scope select is why this is more than a group/role pair — a team-scoped
+// grant has to send the team id, and only the team id
+export const MapGroupPostsTheScopedRole: Story = {
+  render: () => {
+    postedMappings.length = 0;
+    const stub = scoped(
       async () => json(TOKENS),
       async (init) => {
         if (init?.method === "POST") {
-          return json(mapping({ id: "map-new", ...JSON.parse(String(init.body)) }), 201);
+          postedMappings.push(JSON.parse(String(init.body)));
+          return json(mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" }));
         }
-        return json([]);
+        return json(
+          postedMappings.length
+            ? [mapping({ id: "map-new", group_name: "sre-oncall", role: "admin" })]
+            : [],
+        );
       },
-    ),
-  );
-  return sent.stub;
-}
-
-type Posted = { group_name: string; role: string; team_id?: string; project_id?: string };
-
-/** the dialog's own paragraph of reasons, which is all that names why it was raised */
-const reasonAdmin = en.groupMappings.grant.reasonAdmin;
-const reasonOrg = en.groupMappings.grant.reasonOrg;
-
-// a new mapping starts on the least powerful role (#2078). the row used to
-// preselect `admin` at the whole organization, so typing a name and pressing
-// the button made everyone in the group an org admin. it also had no visible
-// labels and a placeholder that was the name of a mapping already in the list
-export const NewMappingStartsOnViewer: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(
-        async () => json(TOKENS),
-        async () => json(MAPPINGS),
-      )}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Role to grant")).toHaveValue("Viewer");
-    // the picker is a skeleton until the org's teams and projects answer
-    await expect(await canvas.findByLabelText("Where the role applies")).toHaveValue(
-      "Whole organization",
     );
-
-    // each control carries a label you can read, not only one a screen reader is told
-    for (const label of ["IdP group", "Where the role applies", "Role to grant"]) {
-      await expect(canvas.getByText(label, { selector: "label" })).toBeVisible();
-    }
-
-    // and the empty field cannot be taken for a filled one: the example is marked as one,
-    // and is not the name of a mapping that is listed
-    const group = canvas.getByLabelText("IdP group");
-    await expect(group).toHaveValue("");
-    const placeholder = group.getAttribute("placeholder");
-    await expect(placeholder).toBe(en.groupMappings.groupPlaceholder);
-    await expect(placeholder).toMatch(/^e\.g\. /);
-    await expect(MAPPINGS.map((m) => m.group_name)).not.toContain(placeholder);
+    return <Harness fetchStub={stub} />;
   },
-};
-
-// the scope select is why this is more than a group/role pair — a team-scoped
-// grant has to send the team id, and only the team id. a viewer on one team is
-// the narrowest grant there is, so it saves without asking
-export const MapGroupPostsTheScopedRole: Story = {
-  render: () => <Harness fetchStub={recordMappings()} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("IdP group"), "sre-oncall");
-    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
+    await pickOption(canvas.getByLabelText("Where the role applies"), "core");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
+    await waitFor(() => expect(postedMappings).toHaveLength(1));
+    await expect(postedMappings[0]).toEqual({
       group_name: "sre-oncall",
-      role: "viewer",
+      role: "admin",
       team_id: "team-1",
     });
-    // nothing came between the press and the request
-    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(canvas.getByText("sre-oncall")).toBeVisible());
   },
 };
 
@@ -895,7 +440,7 @@ export const MapGroupRejectedByTheServer: Story = {
     const canvas = within(canvasElement);
     const group = await canvas.findByLabelText("IdP group");
     await userEvent.type(group, "sre-oncall");
-    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
+    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
 
     await waitFor(() =>
@@ -904,245 +449,6 @@ export const MapGroupRejectedByTheServer: Story = {
       ).toBe(true),
     );
     await expect(group).toHaveValue("sre-oncall");
-  },
-};
-
-/**
- * Admin is asked about first (#2078), and the question names the group, the
- * role and the scope. Cancelling sends nothing and keeps what was typed;
- * confirming sends exactly the body the dialog described, and the form starts
- * over on Viewer rather than carrying the admin grant into the next mapping.
- */
-export const AdminGrantAsksFirst: Story = {
-  render: () => <Harness fetchStub={recordMappings()} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText("IdP group");
-    await userEvent.type(group, "sre-oncall");
-    await pickOption(await canvas.findByLabelText("Where the role applies"), "core");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText("Map sre-oncall to Admin?")).toBeVisible();
-    await expect(dialog.getByText(/gets Admin on core\./)).toBeVisible();
-    await expect(dialog.getByText(/applies straight away/)).toBeVisible();
-    // admin is the only reason: the scope is one team, so nothing says "whole organization"
-    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
-    await expect(dialog.queryByText(reasonOrg)).toBeNull();
-    sent.expectNotSent("POST", MAPPINGS_URL);
-
-    await cancelConfirmation();
-    sent.expectNotSent("POST", MAPPINGS_URL);
-    await expect(group).toHaveValue("sre-oncall");
-    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Admin");
-
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-    await confirmDestructive("Map sre-oncall to Admin?", "Map group");
-    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
-      group_name: "sre-oncall",
-      role: "admin",
-      team_id: "team-1",
-    });
-    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
-    await waitFor(() => expect(group).toHaveValue(""));
-    await expect(canvas.getByLabelText("Role to grant")).toHaveValue("Viewer");
-    await expect(canvas.getByLabelText("Where the role applies")).toHaveValue("Whole organization");
-  },
-};
-
-/**
- * A role across the whole organization is asked about too, however small the
- * role (#2078): the form starts there, so a viewer is the first thing an
- * operator can grant org-wide by pressing one button. The dialog says it is the
- * scope that raised it, and sends no team or project id.
- */
-export const WholeOrgGrantAsksFirst: Story = {
-  render: () => <Harness fetchStub={recordMappings()} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("IdP group"), "ops-readers");
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
-    await expect(dialog.getByText(/gets Viewer on the whole organization\./)).toBeVisible();
-    await expect(dialog.getByText(reasonOrg)).toBeVisible();
-    await expect(dialog.queryByText(reasonAdmin)).toBeNull();
-
-    await cancelConfirmation();
-    sent.expectNotSent("POST", MAPPINGS_URL);
-
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-    await confirmDestructive("Map ops-readers to Viewer?", "Map group");
-    // an org-wide grant names no scope at all, rather than an empty one
-    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
-      group_name: "ops-readers",
-      role: "viewer",
-    });
-  },
-};
-
-// the two reasons stack: admin across the whole organization is the widest grant
-// there is, and the dialog says both rather than picking one
-export const AdminOnTheWholeOrgNamesBothReasons: Story = {
-  render: () => <Harness fetchStub={recordMappings()} />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("IdP group"), "platform-admins");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-
-    const dialog = within(await confirmation());
-    await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
-    await expect(dialog.getByText(reasonAdmin)).toBeVisible();
-    await expect(dialog.getByText(reasonOrg)).toBeVisible();
-
-    await confirmDestructive("Map platform-admins to Admin?", "Map group");
-    await expect(await sent.expectSentBody<Posted>("POST", MAPPINGS_URL)).toEqual({
-      group_name: "platform-admins",
-      role: "admin",
-    });
-  },
-};
-
-// the confirmation does not close itself: a refusal stays beside the button that
-// caused it, and cancelling does not leave it standing under the next attempt
-export const MapGroupRefusedInsideTheConfirmation: Story = {
-  render: () => {
-    const stub = scoped(
-      async () => json(TOKENS),
-      async (init) => {
-        if (init?.method === "POST") {
-          return json({ error: { message: "platform-admins is already mapped" } }, 409);
-        }
-        return json([]);
-      },
-    );
-    return <Harness fetchStub={stub} />;
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText("IdP group");
-    await userEvent.type(group, "platform-admins");
-    await pickOption(canvas.getByLabelText("Role to grant"), "Admin");
-    await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
-    await confirmDestructive("Map platform-admins to Admin?", "Map group");
-
-    const dialog = within(await confirmation());
-    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/already mapped/));
-    // said once: behind the dialog the form does not repeat it
-    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
-
-    await cancelConfirmation();
-    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
-    await expect(group).toHaveValue("platform-admins");
-  },
-};
-
-// the list is read separately from the tokens, and its failure is a LoadError
-// with the retry a read has, not a line of red text or an empty list (#2078)
-export const GroupMappingsCannotLoad: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(
-        async () => json(TOKENS),
-        async () => json({ error: { message: "mappings unavailable" } }, 500),
-      )}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /failed to return group mappings/);
-    await expect(canvas.getByRole("button", { name: en.errors.load.retry })).toBeVisible();
-    // a list that could not be read is not a list of nothing
-    await expect(canvas.queryByText(/Nothing is mapped/)).toBeNull();
-    // the form is still there: writing a mapping does not need the list
-    await expect(canvas.getByLabelText("IdP group")).toBeVisible();
-  },
-};
-
-export const GroupMappingsLoading: Story = {
-  render: () => (
-    <Harness
-      fetchStub={scoped(
-        async () => json(TOKENS),
-        () => new Promise<Response>(() => {}),
-      )}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectInStatusRegion(canvasElement, "group-mappings-loading");
-    await expect(canvas.queryByText(/Nothing is mapped/)).toBeNull();
-  },
-};
-
-/**
- * The add row on a phone, in Russian (#2078). The group name shrank to three
- * characters and the role read "Администрато" because four controls shared one
- * wrapping line. Each control has its own line now, labelled, and all of them
- * are as wide as the card.
- */
-export const AddRowFitsAPhoneInRussian: Story = {
-  ...atMobile,
-  globals: { ...atMobile.globals, locale: "ru" },
-  render: () => (
-    <Harness
-      fetchStub={scoped(
-        async () => json(TOKENS),
-        async () => json(MAPPINGS),
-      )}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const copy = ru.groupMappings;
-    const canvas = within(canvasElement);
-    const group = await canvas.findByLabelText(copy.groupLabel);
-    const scope = await canvas.findByLabelText(copy.scopeLabel);
-    const role = canvas.getByLabelText(copy.roleLabel);
-    const add = canvas.getByRole("button", { name: copy.add });
-    // the row reads in Russian, and the default survives the language
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
-    await expect(canvas.getByText(copy.groupLabel, { selector: "label" })).toBeVisible();
-
-    // the name field is a field, not a sliver: it spans the card
-    await expect(group.getBoundingClientRect().width).toBeGreaterThan(240);
-    // every control sits inside the phone's width. the page is not asked, because the
-    // token table above the row scrolls sideways on its own terms
-    for (const control of [group, scope, role, add]) {
-      const box = control.getBoundingClientRect();
-      await expect(box.left).toBeGreaterThanOrEqual(0);
-      await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
-    }
-
-    // a listed mapping keeps its name too: it was squeezed out by the chips on its row
-    const listed = await canvas.findByText("platform-engineering");
-    await expect(listed.getBoundingClientRect().width).toBeGreaterThan(100);
-    await expect(listed.scrollWidth).toBeLessThanOrEqual(listed.clientWidth);
-
-    // the widest role is spelled out in full, in the control that names it
-    await pickOption(role, ru.shell.roles.admin);
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
-    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
-  },
-};
-
-/** The same two, on a desktop: the role fits its column in Russian without the phone's room. */
-export const AddRowFitsInRussian: Story = {
-  globals: { locale: "ru" },
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  play: async ({ canvasElement }) => {
-    const copy = ru.groupMappings;
-    const canvas = within(canvasElement);
-    const role = await canvas.findByLabelText(copy.roleLabel);
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.viewer));
-    await pickOption(role, ru.shell.roles.admin);
-    await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
-    await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
-    // the scope is one of the three, and is not cut either
-    const scope = await canvas.findByLabelText(copy.scopeLabel);
-    await expect(scope.scrollWidth).toBeLessThanOrEqual(scope.clientWidth);
   },
 };
 
@@ -1318,12 +624,3 @@ export const RefusedToAMember: Story = {
     await expectRefused(canvasElement, "Map group");
   },
 };
-
-// the same screen at a phone's width in both languages: Russian runs a third
-// longer than English and overflowed twice as many screens (#2004)
-const provisioningFits = phoneFits({
-  render: () => <Harness fetchStub={scoped(async () => json(TOKENS))} />,
-  ready: (canvas) => canvas.findByText("Okta production"),
-});
-export const MobileFits: Story = provisioningFits("mobile", "en");
-export const MobileFitsInRussian: Story = provisioningFits("mobile", "ru");

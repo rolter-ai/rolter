@@ -142,10 +142,6 @@ covers new part types a client SDK starts sending. Only `text`/`input_text` and
 `image_url`/`input_image` have Gemini equivalents today; route models that need
 other modalities to a provider whose dialect carries them.
 
-## Authentication errors
-
-A missing, unknown, disabled or expired virtual key all answer `401` with `type: authentication_error` and `code: invalid_api_key`, as OpenAI does (OpenAI uses the same code for a missing key, with a different message; so does rolter). Unknown, disabled and expired read alike so a caller cannot probe which happened. The realtime close sends the same code in its `error` event (#1881). Every dialect, including `/v1/messages`, gets this one envelope: rolter does not emit Anthropic's `{"type":"error"}` shape, so there is no separate Anthropic field to set.
-
 ## Model listing
 
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's

@@ -1,20 +1,23 @@
 import { describe, expect, test } from "bun:test";
 
+import { gatewayBase } from "./gateway";
 import { renderSnippet, SNIPPET_LANGS, type SnippetRequest } from "./snippets";
 
 const REQ: SnippetRequest = { model: "llama-3.1-8b", prompt: "hello there" };
-// the public base URL saved on Client Settings: the only address a snippet gets
-const SAVED = { url: "https://gateway.example.com" };
+// no public base URL saved: the dashboard's own /gw proxy
+const ORIGIN = gatewayBase(null, "https://rolter.localhost");
+// a public base URL saved on Client Settings
+const SAVED = gatewayBase("https://gateway.example.com", "https://rolter.localhost");
 
 describe("renderSnippet", () => {
   // the whole point is pasting it into an app, so the route name and the prompt
   // have to survive into every language
   test("every language carries the route and the prompt", () => {
     for (const lang of SNIPPET_LANGS) {
-      const out = renderSnippet(lang, REQ, SAVED);
+      const out = renderSnippet(lang, REQ, ORIGIN);
       expect(out).toContain("llama-3.1-8b");
       expect(out).toContain("hello there");
-      expect(out).toContain("https://gateway.example.com/v1");
+      expect(out).toContain("https://rolter.localhost/gw/v1");
     }
   });
 
@@ -22,30 +25,40 @@ describe("renderSnippet", () => {
   // virtual key would leak a working credential every time
   test("no language inlines a credential", () => {
     for (const lang of SNIPPET_LANGS) {
-      const out = renderSnippet(lang, REQ, SAVED);
+      const out = renderSnippet(lang, REQ, ORIGIN);
       expect(out).toContain("ROLTER_API_KEY");
       expect(out).not.toContain("sk-rolter-");
     }
   });
 
-  // /gw needs a dashboard session, which a client outside the browser has not
-  // got, so no snippet may point at it (#2486)
-  test("no language points an external client at the /gw proxy", () => {
+  test("each language names the base url as the dashboard proxy", () => {
+    for (const lang of SNIPPET_LANGS) {
+      expect(renderSnippet(lang, REQ, ORIGIN)).toContain("in production");
+    }
+  });
+
+  // the saved address is the gateway's own, so the snippet uses it as-is and
+  // carries no warning that it is the dashboard's port (#2218)
+  test("every language uses a saved public base url and drops the proxy note", () => {
     for (const lang of SNIPPET_LANGS) {
       const out = renderSnippet(lang, REQ, SAVED);
+      expect(out).toContain("https://gateway.example.com/v1");
       expect(out).not.toContain("/gw");
       expect(out).not.toContain("in production");
     }
   });
 
   test("curl addresses the chat endpoint under the base, not beside it", () => {
+    expect(renderSnippet("curl", REQ, ORIGIN)).toContain(
+      "curl https://rolter.localhost/gw/v1/chat/completions",
+    );
     expect(renderSnippet("curl", REQ, SAVED)).toContain(
       "curl https://gateway.example.com/v1/chat/completions",
     );
   });
 
   test("curl sends a body the gateway would accept", () => {
-    const out = renderSnippet("curl", REQ, SAVED);
+    const out = renderSnippet("curl", REQ, ORIGIN);
     const body = out.slice(out.indexOf("-d '") + 4, out.lastIndexOf("'"));
     expect(JSON.parse(body)).toEqual({
       model: "llama-3.1-8b",
@@ -55,14 +68,14 @@ describe("renderSnippet", () => {
 
   test("streaming changes the call shape, not just a flag", () => {
     const streamed = { ...REQ, stream: true };
-    expect(renderSnippet("curl", streamed, SAVED)).toContain('"stream":true');
-    expect(renderSnippet("python", streamed, SAVED)).toContain("for chunk in stream");
-    expect(renderSnippet("javascript", streamed, SAVED)).toContain("for await");
+    expect(renderSnippet("curl", streamed, ORIGIN)).toContain('"stream":true');
+    expect(renderSnippet("python", streamed, ORIGIN)).toContain("for chunk in stream");
+    expect(renderSnippet("javascript", streamed, ORIGIN)).toContain("for await");
   });
 
   test("non-streaming reads the message rather than a delta", () => {
-    expect(renderSnippet("python", REQ, SAVED)).toContain("response.choices[0].message.content");
-    expect(renderSnippet("javascript", REQ, SAVED)).toContain(
+    expect(renderSnippet("python", REQ, ORIGIN)).toContain("response.choices[0].message.content");
+    expect(renderSnippet("javascript", REQ, ORIGIN)).toContain(
       "response.choices[0].message.content",
     );
   });
@@ -75,12 +88,12 @@ describe("renderSnippet", () => {
       prompt: 'say "hi"\nthen stop',
     };
     for (const lang of SNIPPET_LANGS) {
-      const out = renderSnippet(lang, nasty, SAVED);
+      const out = renderSnippet(lang, nasty, ORIGIN);
       // the raw newline never reaches the literal; it is escaped
       expect(out).toContain("\\n");
       expect(out).toContain('\\"hi\\"');
     }
-    const curlOut = renderSnippet("curl", nasty, SAVED);
+    const curlOut = renderSnippet("curl", nasty, ORIGIN);
     const body = curlOut.slice(curlOut.indexOf("-d '") + 4, curlOut.lastIndexOf("'"));
     expect(JSON.parse(body).messages[0].content).toBe('say "hi"\nthen stop');
   });

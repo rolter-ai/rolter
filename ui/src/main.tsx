@@ -7,7 +7,6 @@ import "@/lib/fonts";
 
 import App from "@/App";
 import { AuthProvider } from "@/lib/auth";
-import { PreferencesProvider } from "@/lib/preferences";
 import { ToastProvider } from "@/lib/toast";
 import { classifyLoadError, isRetryable } from "@/lib/load-error";
 // initialises i18next as a side effect: the detected locale is applied before
@@ -43,11 +42,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <AuthProvider>
-          <PreferencesProvider>
-            <BrowserRouter>
-              <App />
-            </BrowserRouter>
-          </PreferencesProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
         </AuthProvider>
       </ToastProvider>
     </QueryClientProvider>

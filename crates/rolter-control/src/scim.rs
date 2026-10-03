@@ -30,8 +30,7 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{ScimIdentity, ScimToken, User};
 use rolter_store::postgres::repo::{
-    LockoutGuard, MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo,
-    VirtualKeyRepo,
+    MembershipRepo, MfaRepo, ScimIdentityRepo, ScimTokenRepo, SessionRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::auth::session_pepper;
@@ -371,7 +370,6 @@ async fn create_user(
             body.display_name.as_deref().unwrap_or_default(),
         )
         .await?;
-    sync_display_name(pool, user.id, &identity).await?;
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
@@ -389,23 +387,6 @@ async fn create_user(
     .await;
     let user = UserRepo(pool).get(user.id).await?;
     Ok((StatusCode::CREATED, Json(user_resource(&user, &identity))).into_response())
-}
-
-/// Copy the directory's `displayName` onto the account so the dashboard shows
-/// it, and so it is authoritative: `PATCH /api/v1/me/profile` refuses to change
-/// a name a SCIM identity owns. An IdP that sends no name leaves the stored one
-/// as it was rather than blanking a name the user set before being provisioned.
-async fn sync_display_name(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    identity: &ScimIdentity,
-) -> ScimResult<()> {
-    if let Some(name) = crate::me::sanitise_directory_name(&identity.display_name) {
-        UserRepo(pool)
-            .set_profile(user_id, Some(Some(name.as_str())), None)
-            .await?;
-    }
-    Ok(())
 }
 
 /// Grant the provisioned account its org membership if it has none there yet.
@@ -468,7 +449,6 @@ async fn replace_user(
                 .unwrap_or(&identity.display_name),
         )
         .await?;
-    sync_display_name(pool, user.id, &identity).await?;
     let mut detail = json!({"user_name": identity.user_name});
     if let Some(active) = body.active {
         detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
@@ -584,16 +564,7 @@ fn active_from_op(op: &PatchOp) -> ScimResult<bool> {
 /// the audit row.
 async fn deactivate(state: &ControlState, user_id: Uuid, deactivated: bool) -> ScimResult<i64> {
     let pool = pool(state);
-    if let LockoutGuard::WouldLockOut = UserRepo(pool).set_deactivated(user_id, deactivated).await?
-    {
-        // an IdP that disables the only superadmin would strand the deployment
-        // with nobody who can administer it (#2344)
-        return Err(ScimError::new(
-            StatusCode::CONFLICT,
-            None,
-            "this account is the last active superadmin; make another account superadmin first",
-        ));
-    }
+    UserRepo(pool).set_deactivated(user_id, deactivated).await?;
     if deactivated {
         SessionRepo(pool).delete_for_user(user_id).await?;
         MfaRepo(pool).delete_challenges_for_user(user_id).await?;
@@ -773,14 +744,8 @@ impl From<ApiError> for ScimError {
             ApiError::Unauthenticated => Self::unauthorized(),
             ApiError::Forbidden => Self::new(StatusCode::FORBIDDEN, None, "forbidden"),
             ApiError::Core(err) => err.into(),
-            ApiError::Curated(message) => {
-                Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
-            }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
-            }
-            ApiError::CodedConflict { message, .. } => {
-                Self::new(StatusCode::CONFLICT, None, message)
             }
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,

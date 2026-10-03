@@ -607,13 +607,6 @@ pub(crate) fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
 struct MeResponse {
     user: User,
     memberships: Vec<MeMembership>,
-    /// true when a SCIM directory owns `user.display_name`, so the dashboard
-    /// renders it read-only (`PATCH /api/v1/me/profile` would answer 409)
-    display_name_managed: bool,
-    /// the saved Client Settings public base URL, or null. Not a secret (it is
-    /// the address clients already dial), so every session may read it without
-    /// holding `client_settings:read`
-    gateway_base_url: Option<String>,
 }
 
 /// A membership as `/auth/me` reports it: the row as stored, plus the org and
@@ -651,20 +644,9 @@ async fn me(
             }
         })
         .collect();
-    let display_name_managed = crate::me::display_name_managed(&state, current.user.id).await?;
-    // a failed read degrades to null: the dashboard then falls back, and a
-    // settings hiccup must not lock anyone out of their own session
-    let gateway_base_url = rolter_store::postgres::repo::ClientSettingsRepo(pool(&state))
-        .get()
-        .await
-        .ok()
-        .and_then(|row| row.public_base_url)
-        .filter(|url| !url.trim().is_empty());
     Ok(Json(MeResponse {
         user: current.user,
         memberships,
-        display_name_managed,
-        gateway_base_url,
     }))
 }
 

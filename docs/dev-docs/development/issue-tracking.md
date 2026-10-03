@@ -81,6 +81,15 @@ The Release 1.0.0 description promises that everything in it blocks the
 release. Post-1.0 polish exists so that promise stays literally true — moving a
 non-blocker there is not a demotion.
 
+## Station labels
+
+Two Claude stations work the board concurrently, and `station:mac` /
+`station:rtx` say which one owns an issue or PR. The label is a lock: a
+session never starts anything carried by the other label, claims an unlabelled
+issue by labelling it before branching, and hands work over by swapping the
+label with a comment. The full protocol, including the ownership split by
+area, is the "Two build stations" section of `AGENTS.md`.
+
 ## Relations
 
 Set them where the token has permission:

@@ -185,13 +185,8 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     // can group by it. sorted + deduped for a stable listing, and filtered by
     // the same key allow-list
     let key_org = vk.as_ref().map_or("", |vk| vk.org_id.as_str());
-    let key_project = vk.as_ref().map_or("", |vk| vk.project_id.as_str());
-    // a provider or group is admitted on its org plus its optional project
-    // scope: one scoped to another project is neither addressable nor listed
-    // (#1919)
-    let admitted_scoped = |tenancy: Option<&rolter_core::Tenancy>| {
-        rolter_core::Tenancy::admits_scoped(tenancy, key_org, key_project)
-    };
+    let admitted =
+        |tenancy: Option<&rolter_core::Tenancy>| rolter_core::Tenancy::admits(tenancy, key_org);
     // another org's providers are neither addressable nor listed (#1844)
     let name_to_slug: std::collections::HashMap<&str, &str> = snap
         .providers_by_slug
@@ -199,7 +194,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         .filter(|(_, name)| {
             snap.providers
                 .get(name.as_str())
-                .is_none_or(|provider| admitted_scoped(provider.tenancy.as_ref()))
+                .is_none_or(|provider| admitted(provider.tenancy.as_ref()))
         })
         .map(|(slug, name)| (name.as_str(), slug.as_str()))
         .collect();
@@ -208,10 +203,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         std::collections::HashMap::new();
     for entry in snap.routes.values() {
         let route = &entry.route;
-        // the whole tenancy gate, not the org alone: a route narrowed to
-        // another project, or reaching a provider scoped to one, names models
-        // this key may not learn from the listing (#1919)
-        if !entry.in_tenancy_of(vk.as_ref()) {
+        if !admitted(route.tenancy.as_ref()) {
             continue;
         }
         let targets = route
@@ -264,7 +256,7 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
     let mut grouped: std::collections::BTreeSet<(String, String)> =
         std::collections::BTreeSet::new();
     for (slug, group) in &snap.groups_by_slug {
-        if !admitted_scoped(group.tenancy.as_ref()) {
+        if !admitted(group.tenancy.as_ref()) {
             continue;
         }
         for member in &group.members {
@@ -338,12 +330,8 @@ pub(crate) enum AccessDenial {
 }
 
 impl AccessDenial {
-    /// The message and machine-readable `code` this denial answers with.
-    ///
-    /// Split from [`Self::into_response`] so a realtime session that loses
-    /// access mid-stream can say the same thing in an `error` event.
-    pub(crate) fn message_and_code(self) -> (&'static str, &'static str) {
-        match self {
+    pub(crate) fn into_response(self) -> Response {
+        let (message, code) = match self {
             Self::ModelNotAllowed => ("model not allowed for this key", "model_not_allowed"),
             Self::NotVisible => ("model is not visible to this key", "model_not_allowed"),
             Self::RoutePolicy => (
@@ -362,11 +350,7 @@ impl AccessDenial {
                 "the route this response was created on is no longer configured",
                 "route_not_allowed",
             ),
-        }
-    }
-
-    pub(crate) fn into_response(self) -> Response {
-        let (message, code) = self.message_and_code();
+        };
         crate::error::ApiError::new(StatusCode::FORBIDDEN, message)
             .with_code(code)
             .with_param("model")
@@ -866,18 +850,9 @@ fn error_json(status: StatusCode, message: &str) -> Response {
     crate::error::ApiError::new(status, message).into_response()
 }
 
-/// The 401 for a missing, unknown, disabled or expired virtual key. OpenAI
-/// answers all of those with code `invalid_api_key` (only the message differs),
-/// and SDKs branch on it; the realtime close sends the same code (#1881).
-fn invalid_api_key_json(message: &str) -> Response {
-    crate::error::ApiError::new(StatusCode::UNAUTHORIZED, message)
-        .with_code("invalid_api_key")
-        .into_response()
-}
-
 /// Tenant identity forwarded to a guardrail webhook or plugin as metadata.
 /// Shared by both call sites so the envelope always carries the same shape.
-pub(crate) fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
+fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
     rolter_core::WebhookTenant {
         org: (!scope.org.is_empty()).then(|| scope.org.clone()),
         team: (!scope.team.is_empty()).then(|| scope.team.clone()),
@@ -1024,62 +999,6 @@ fn invalid_key_message(key: &str) -> String {
     }
 }
 
-/// The peppered digest of the key a request presented, the handle a live
-/// session keeps to look its key up again ([`recheck_session_access`]).
-pub(crate) fn presented_key_digest(snap: &Snapshot, headers: &HeaderMap) -> Option<String> {
-    extract_key(headers).map(|key| rolter_auth::hash_key(&snap.pepper, &key))
-}
-
-/// Why a live realtime session lost the access it was opened with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AccessRevoked {
-    pub(crate) status: StatusCode,
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-}
-
-/// Re-run the upgrade's key, model and route gates against `snap` for a
-/// session that is already open (#1881).
-///
-/// Authentication happens once, at the WebSocket upgrade, so without this a
-/// disabled, expired or deleted key would keep its session until the client
-/// left. The gates are the upgrade's own: the key lookup [`authenticate`] does,
-/// then [`authorize_model`], the route lookup and [`authorize_route`].
-pub(crate) fn recheck_session_access(
-    snap: &Snapshot,
-    digest: &str,
-    model: &str,
-) -> Result<(), AccessRevoked> {
-    let denied = |denial: AccessDenial| {
-        let (message, code) = denial.message_and_code();
-        AccessRevoked {
-            status: StatusCode::FORBIDDEN,
-            code,
-            message: message.to_string(),
-        }
-    };
-    let key = match snap.keys.get(digest) {
-        Some(key) if key.is_active(Utc::now()) => key,
-        // revoked, expired and deleted read alike, as they do at the upgrade
-        Some(_) | None => {
-            return Err(AccessRevoked {
-                status: StatusCode::UNAUTHORIZED,
-                code: "invalid_api_key",
-                message: "invalid api key".to_string(),
-            })
-        }
-    };
-    authorize_model(Some(key), model).map_err(denied)?;
-    let Some(entry) = snap.named_route_for(model, Some(key)) else {
-        return Err(AccessRevoked {
-            status: StatusCode::NOT_FOUND,
-            code: "model_not_found",
-            message: format!("no route for model '{model}'"),
-        });
-    };
-    authorize_route(Some(key), entry).map_err(denied)
-}
-
 /// Shared virtual-key auth check for every `/v1/*` handler. Returns the
 /// matched key (or `None` when no keys are configured, i.e. auth disabled).
 #[allow(clippy::result_large_err)]
@@ -1103,14 +1022,14 @@ pub(crate) fn authenticate(
         // yet), which must lock the data plane down rather than open it
         // the config file wins in either direction when it says anything:
         // it is a deliberate local override of a database the operator may
-        // not even have. otherwise the deployment mode decides. nothing in the
-        // snapshot does: the only thing a control plane could add here is a
-        // way to open a managed gateway, and that stays a decision for
-        // whoever runs the process (#2357)
-        let required = snap.require_auth.unwrap_or(state.managed_auth);
+        // not even have. otherwise the Security screen's toggle decides,
+        // falling back to what the deployment mode implies
+        let required = snap
+            .require_auth
+            .unwrap_or(snap.security.virtual_key_required || state.managed_auth);
         if required {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            return Err(invalid_api_key_json(MISSING_KEY_MESSAGE));
+            return Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE));
         }
         return Ok(None);
     }
@@ -1126,13 +1045,16 @@ pub(crate) fn authenticate(
                 // which of the two happened
                 Some(_) | None => {
                     state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-                    Err(invalid_api_key_json(&invalid_key_message(&key)))
+                    Err(error_json(
+                        StatusCode::UNAUTHORIZED,
+                        &invalid_key_message(&key),
+                    ))
                 }
             }
         }
         None => {
             state.metrics.auth_failures_total.fetch_add(1, Relaxed);
-            Err(invalid_api_key_json(MISSING_KEY_MESSAGE))
+            Err(error_json(StatusCode::UNAUTHORIZED, MISSING_KEY_MESSAGE))
         }
     }
 }
@@ -1283,7 +1205,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &pre_route_plugins,
             rolter_core::PluginStage::PreRoute,
             &state.metrics,
-            &state.side_client,
             &model,
             "", // no route resolved yet at this stage
             trace_id,
@@ -1505,7 +1426,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         match crate::guardrail_webhook::consult_pre_call(
             &snap.guardrail_webhook,
             &state.metrics,
-            &state.side_client,
             &model,
             &entry.route.model,
             trace_id,
@@ -1558,7 +1478,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         match crate::pii_sanitizer::sanitize(
             &snap.pii_sanitizer,
             &state.metrics,
-            &state.side_client,
             "request",
             &model,
             &entry.route.model,
@@ -1614,7 +1533,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             &pre_upstream_plugins,
             rolter_core::PluginStage::PreUpstream,
             &state.metrics,
-            &state.side_client,
             &model,
             &entry.route.model,
             trace_id,
@@ -1799,7 +1717,6 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         crate::plugin_dispatch::PostResponsePlugins {
             plugins: post_response_plugin_list,
             metrics: &state.metrics,
-            egress: &state.side_client,
             model: model.clone(),
             route: entry.route.model.clone(),
             trace_id: trace_id.clone(),
@@ -3764,7 +3681,6 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
         match crate::pii_sanitizer::sanitize(
             config,
             &state.metrics,
-            &state.side_client,
             "response",
             model,
             route,
@@ -3794,7 +3710,6 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
             if let Some(restored) = crate::pii_sanitizer::restore(
                 config,
                 &state.metrics,
-                &state.side_client,
                 ticket,
                 scope,
                 trace_id,
@@ -4498,26 +4413,35 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // #2357: the Security screen's "enforce virtual keys" switch only ever
-    // reached managed gateways, which fail closed anyway, so it was removed.
-    // an older control plane still sends the field; neither value may open
-    // or close anything
+    // #1162: the Security screen's "enforce virtual keys on inference" toggle
+    // was stored, rendered, and read by nothing. these four tests are the
+    // reason it cannot go back to being decorative.
     #[tokio::test]
-    async fn a_retired_snapshot_field_never_opens_a_managed_gateway() {
-        for value in [false, true] {
-            let config: GatewayConfig = serde_json::from_value(serde_json::json!({
-                "security": { "virtual_key_required": value },
-            }))
-            .expect("an older control plane's snapshot must still parse");
-            let mut state = AppState::new(&config);
-            state.managed_auth = true;
-            let resp = list_models(State(state), HeaderMap::new()).await;
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{value}");
+    async fn the_security_screen_can_close_an_unmanaged_gateway() {
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = true;
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 
-            let state = AppState::new(&config);
-            let resp = list_models(State(state), HeaderMap::new()).await;
-            assert_eq!(resp.status(), StatusCode::OK, "unmanaged, {value}");
-        }
+    #[tokio::test]
+    async fn a_config_file_still_overrides_the_security_screen_in_both_directions() {
+        // the file is a deliberate local override of a database the operator
+        // running this process may not even be able to reach
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = true;
+        config.server.require_auth = Some(false);
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mut config = GatewayConfig::default();
+        config.security.virtual_key_required = false;
+        config.server.require_auth = Some(true);
+        let state = AppState::new(&config);
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -4683,7 +4607,6 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: None,
-                ..Default::default()
             });
         let state = AppState::new(&config);
         state
@@ -4975,7 +4898,6 @@ mod tests {
         let ctx = RouteContext::default();
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(1))],
@@ -4987,7 +4909,6 @@ mod tests {
         );
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(9))],
@@ -4999,7 +4920,6 @@ mod tests {
         );
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: Vec::new(),
@@ -5047,7 +4967,6 @@ mod tests {
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(cache_aware)],
@@ -5140,7 +5059,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5194,7 +5112,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5237,7 +5154,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5283,7 +5199,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5327,7 +5242,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5385,7 +5299,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5486,7 +5399,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1]).into(),
             variant_balancers: Vec::new(),
@@ -5540,7 +5452,6 @@ mod tests {
             tenancy: None,
         };
         let entry = crate::state::RouteEntry {
-            project_scope: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5688,7 +5599,6 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: owned_by("org-a", None),
-                ..Default::default()
             });
         let snapshot = crate::state::Snapshot::build(&config, &crate::load::LoadTracker::default());
         for address in ["edge/gpt-4o", "pool/gpt-4o"] {
@@ -5740,7 +5650,6 @@ mod tests {
                     weight: 1,
                 }],
                 tenancy: owned_by("org-b", None),
-                ..Default::default()
             });
         // org-a squats org-b's addresses and the builtin with named routes
         for model in ["edge/gpt-4o", "pool/gpt-4o", fake_llm::MODEL_NAME] {

@@ -282,8 +282,6 @@ Warning has one value because the amber already clears AA as text.
 
 Charts read `--chart-1` … `--chart-8` and `--chart-other` by index, and avatar chips read
 `--avatar-1` … `--avatar-6`; both palettes live in `ui/src/index.css` with their measured ratios.
-The chart sequence is red, zinc-400, blue, green, amber, cyan, zinc-500, zinc-300; no two entries are
-closer than CIE76 ΔE 17, also under the three colour-vision deficiencies.
 
 ### Named Rules
 

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import {
   AlertTriangle,
   Eraser,
@@ -15,17 +16,22 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
+import {
+  orgScopeText,
+  OrgScopePicker,
+  OrgScopePill,
+  scopeTargetIds,
+  useOrgScope,
+  type ScopeTarget,
+} from "@/components/OrgScopePicker";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
-import { GatedSwitch } from "@/components/GatedSwitch";
-import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
-import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -37,35 +43,41 @@ import {
   deleteSsoProvider,
   fetchAuthPolicy,
   fetchMemberships,
+  fetchPublicUrl,
   fetchSsoGroupMappings,
-  ApiError,
   fetchSsoProviders,
+  ROLES,
   ssoRedirectUri,
   updateAuthPolicy,
   MFA_POLICIES,
   type MfaPolicy,
   type OrgAuthPolicy,
   type PublicUrl,
+  type SsoGroupMappingRow,
   type SsoProviderRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import {
-  distinctPeople,
-  locksOutMembers,
-  locksOutSsoMembers,
-  secretGap,
-  type SecretGap,
-} from "@/lib/sso-lockout";
-import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { errorDetail, useToast } from "@/lib/toast";
-import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
+const PUBLIC_URL_KEY = "public-url";
+
+// the roles a group mapping may grant, mirroring `parse_role` in
+// crates/rolter-control/src/sso.rs. deliberately not /api/v1/roles: that list
+// carries every role the control plane knows about, and offering one the
+// mapping endpoint refuses would build a form that can only fail on submit
+const MAPPABLE_ROLES = ROLES;
+
+// the label for a role the server sent us, falling back to the raw value so a
+// newer control plane's role is shown rather than rendered as a missing key
+function roleLabel(t: TFunction, role: string): string {
+  return t(`shell.roles.${role}`, { defaultValue: role });
+}
 
 // a labelled line inside a provider card: mono value, optionally copyable. an
 // address wraps instead of truncating, because the end of it is what tells the
@@ -107,29 +119,6 @@ function Detail({
 }
 
 /**
- * A warning with a title and the lines that explain it: the screen's one
- * callout shape, for the notice above the list and for the ones a confirmation
- * carries.
- */
-function WarningNote({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div
-      role="note"
-      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-4 py-3"
-    >
-      <AlertTriangle
-        aria-hidden
-        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
-      />
-      <div className="min-w-0 space-y-1 text-sm">
-        <p className="font-medium text-foreground">{title}</p>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/**
  * Said once above the provider list when `ROLTER_PUBLIC_URL` is unset (#2083).
  *
  * Every URL on this screen is built from the control plane's public base, and
@@ -141,79 +130,25 @@ function WarningNote({ title, children }: { title: string; children: React.React
 function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
   const { t } = useTranslation();
   return (
-    <WarningNote title={t("pages.sso.publicUrl.title")}>
-      <p className="text-muted-foreground">
-        <Trans
-          i18nKey="pages.sso.publicUrl.body"
-          values={{ url: publicUrl.public_url }}
-          components={{ code: <code className="font-mono text-xs text-foreground" /> }}
-        />
-      </p>
-    </WarningNote>
-  );
-}
-
-/**
- * The control plane's own refusal (409) of the change the card already holds
- * back (#2443), in the dashboard's words. It still arrives when another admin
- * turned the last other way in off between this screen's read and the click.
- */
-function refusal(error: unknown, t: (key: string) => string): unknown {
-  if (error instanceof ApiError && error.status === 409) {
-    return new Error(t("pages.sso.lastMethod.refused"));
-  }
-  return error;
-}
-
-/**
- * Who turning single sign-on off shuts out, and who still gets in (#2326).
- *
- * While the switch is off the callback refuses every provider of the org, and
- * an account a provider created has no password, so password sign-in being on
- * does not bring those members back. An account that holds a password, such as
- * one made from an invitation, signs in as before. The superadmin exemption
- * is from the password switch, not this one, so it is not claimed here.
- */
-function SsoOffNotice() {
-  const { t } = useTranslation();
-  return (
-    <WarningNote title={t("pages.sso.policy.ssoConfirm.notice.title")}>
-      <p className="text-muted-foreground">{t("pages.sso.policy.ssoConfirm.notice.noPassword")}</p>
-      <p className="text-muted-foreground">{t("pages.sso.policy.ssoConfirm.notice.stillIn")}</p>
-    </WarningNote>
-  );
-}
-
-/**
- * The enabled providers that carry the "No client secret" badge, named inside
- * the confirmation for turning password sign-in off (#2084).
- *
- * The control plane refuses that change when no provider is enabled, but not
- * when the only one that is cannot finish a token exchange. A provider with no
- * secret is legitimate for a public client, so the copy states the condition
- * rather than the failure.
- */
-function NoSecretNotice({ gap }: { gap: SecretGap }) {
-  const { t } = useTranslation();
-  return (
-    <WarningNote
-      title={t("pages.sso.policy.passwordConfirm.noSecret.title", { count: gap.missing.length })}
+    <div
+      role="note"
+      className="flex items-start gap-2.5 rounded-lg border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-4 py-3"
     >
-      <ul className="flex flex-col gap-0.5">
-        {gap.missing.map((provider) => (
-          <li key={provider.id} className="flex flex-wrap items-baseline gap-x-2 text-foreground">
-            <span>{provider.name}</span>
-            <code className="font-mono text-xs text-muted-foreground">{provider.slug}</code>
-          </li>
-        ))}
-      </ul>
-      <p className="text-muted-foreground">{t("pages.sso.policy.passwordConfirm.noSecret.body")}</p>
-      {gap.all && (
+      <AlertTriangle
+        aria-hidden
+        className="mt-0.5 h-4 w-4 flex-none text-[color:var(--status-warning-text)]"
+      />
+      <div className="min-w-0 space-y-1 text-sm">
+        <p className="font-medium text-foreground">{t("pages.sso.publicUrl.title")}</p>
         <p className="text-muted-foreground">
-          {t("pages.sso.policy.passwordConfirm.noSecret.all")}
+          <Trans
+            i18nKey="pages.sso.publicUrl.body"
+            values={{ url: publicUrl.public_url }}
+            components={{ code: <code className="font-mono text-xs text-foreground" /> }}
+          />
         </p>
-      )}
-    </WarningNote>
+      </div>
+    </div>
   );
 }
 
@@ -229,15 +164,11 @@ function NoSecretNotice({ gap }: { gap: SecretGap }) {
  */
 function RedirectUriRow({
   value,
-  invalid = false,
   hint,
   children,
 }: {
-  /** null until there is a valid slug to build it from */
+  /** null until there is a slug to build it from */
   value: string | null;
-  /** the slug typed is one the server refuses, so there is nothing to offer for
-   * copying: a redirect uri registered for it would never work (#2304) */
-  invalid?: boolean;
   hint: string;
   /** a note under the hint: why the value is incomplete or only a default */
   children?: React.ReactNode;
@@ -260,9 +191,7 @@ function RedirectUriRow({
           </>
         ) : (
           <span className="text-sm text-muted-foreground">
-            {invalid
-              ? t("pages.sso.create.redirectUriInvalid")
-              : t("pages.sso.create.redirectUriEmpty")}
+            {t("pages.sso.create.redirectUriEmpty")}
           </span>
         )}
       </div>
@@ -318,12 +247,6 @@ const MFA_DOCS_URL =
 const GRACE_DAYS = [7, 14, 30];
 
 /**
- * The confirmations a policy save can raise, named for the change each one
- * guards. They are asked in this order.
- */
-type Confirmation = "password" | "sso" | "mfa";
-
-/**
  * The org's announced start, when it is still ahead. A window that has passed
  * reads as no window at all — the requirement already applies — so it is not
  * offered as something to keep.
@@ -354,32 +277,13 @@ function graceDeadline(grace: string, pending: string | null): string | null {
  * can see for themselves.
  *
  * `mfa_policy` travels with them (#1078), and with it the grace window
- * (#1852). A `required_*` value sends anyone without an armed factor through
- * enrolment before they get a session, so tightening it confirms first, and
- * the confirmation says when it starts and names the way back in for a lost
- * device.
- *
- * Turning password sign-in off confirms as well (#2084): from then on every
- * member but a superadmin signs in through an identity provider. The control
- * plane refuses it with no enabled provider, but accepts it when the only one
- * has no client secret, so the confirmation names any enabled provider that
- * would fail its token exchange.
- *
- * So does turning single sign-on off (#2326), when the org has an enabled
- * provider: the callback refuses every provider while it is off, and an account
- * a provider created has no password, so those members cannot sign in at all.
- * A save that needs several confirmations asks them one after another and sends
- * one request after the last.
+ * (#1852). It is the one setting here that changes what every member meets at
+ * sign-in — a `required_*` value sends anyone without an armed factor through
+ * enrolment before they get a session — so it is the one that confirms first,
+ * and the confirmation says when it starts and names the way back in for a
+ * lost device.
  */
-function SignInPolicyCard({
-  orgId,
-  policy,
-  providers,
-}: {
-  orgId: string;
-  policy: OrgAuthPolicy;
-  providers: SsoProviderRow[];
-}) {
+function SignInPolicyCard({ orgId, policy }: { orgId: string; policy: OrgAuthPolicy }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -389,8 +293,7 @@ function SignInPolicyCard({
   const pending = pendingWindow(policy);
   const initialGrace = pending ? "keep" : "now";
   const [grace, setGrace] = React.useState(initialGrace);
-  // which confirmation is up
-  const [confirming, setConfirming] = React.useState<Confirmation | null>(null);
+  const [confirming, setConfirming] = React.useState(false);
   const fmt = useFormat();
 
   // re-seed when the server's copy moves under us — another admin, or our own
@@ -416,12 +319,6 @@ function SignInPolicyCard({
   // later binds nobody sooner, and a dialog in front of it would be the
   // click-through that teaches people to dismiss the one that matters
   const tightens = requires && (mfa !== policy.mfa_policy || pullsIn);
-  // only the switch going from on to off: a policy saved with passwords already
-  // off, for some other field, takes nobody's route away
-  const turnsPasswordOff = policy.allow_password_login && !password;
-  // likewise only the flip from on to off, and only with a provider to shut out
-  const turnsSsoOff = locksOutSsoMembers(providers, policy, { allow_sso: sso });
-  const gap = secretGap(providers);
 
   // how many accounts the tightening would bind. Best-effort: a caller who may
   // not read the org's memberships still gets the warning, just without a
@@ -444,7 +341,7 @@ function SignInPolicyCard({
         mfa_enforce_after: requires ? graceDeadline(grace, pending) : null,
       }),
     onSuccess: (next) => {
-      setConfirming(null);
+      setConfirming(false);
       queryClient.setQueryData([POLICY_KEY, orgId], next);
       void queryClient.invalidateQueries({ queryKey: [POLICY_KEY, orgId] });
       toast.push({
@@ -461,23 +358,6 @@ function SignInPolicyCard({
       });
     },
   });
-
-  // the confirmations this save raises, in the order they are asked. the
-  // password and single sign-on ones never meet, since both off is refused
-  // before the save, but nothing here depends on it
-  const steps: Confirmation[] = [];
-  if (turnsPasswordOff) steps.push("password");
-  if (turnsSsoOff) steps.push("sso");
-  if (tightens) steps.push("mfa");
-  // an answer moves on to the next confirmation, and the last one sends the
-  // request. a confirmation that only moves on runs none, which it says to
-  // `ConfirmDialog` by passing no `pending`
-  const advance = (from: Confirmation) => {
-    const next = steps[steps.indexOf(from) + 1];
-    if (next) setConfirming(next);
-    else save.mutate();
-  };
-  const sendsRequest = (step: Confirmation) => steps.indexOf(step) === steps.length - 1;
 
   const dirty =
     password !== policy.allow_password_login ||
@@ -583,54 +463,24 @@ function SignInPolicyCard({
           disabled={!dirty || bothOff || save.isPending}
           onClick={() => {
             save.reset();
-            if (steps.length > 0) setConfirming(steps[0]);
+            if (tightens) setConfirming(true);
             else save.mutate();
           }}
         >
-          {save.isPending && <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+          {save.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {t("pages.sso.policy.save")}
         </GatedButton>
       </footer>
 
       <ConfirmDialog
-        name="sso-password-off"
-        open={confirming === "password"}
-        onOpenChange={(open) => !open && setConfirming(null)}
-        title={t("pages.sso.policy.passwordConfirm.title")}
-        description={t("pages.sso.policy.passwordConfirm.body")}
-        confirmLabel={t("pages.sso.policy.passwordConfirm.confirm")}
-        pending={sendsRequest("password") ? save.isPending : undefined}
-        error={save.error}
-        onConfirm={() => advance("password")}
-      >
-        {gap.missing.length > 0 && <NoSecretNotice gap={gap} />}
-      </ConfirmDialog>
-
-      <ConfirmDialog
-        name="sso-single-sign-on-off"
-        open={confirming === "sso"}
-        onOpenChange={(open) => !open && setConfirming(null)}
-        title={t("pages.sso.policy.ssoConfirm.title")}
-        description={t("pages.sso.policy.ssoConfirm.body")}
-        confirmLabel={t("pages.sso.policy.ssoConfirm.confirm")}
-        pending={sendsRequest("sso") ? save.isPending : undefined}
-        error={save.error}
-        onConfirm={() => advance("sso")}
-      >
-        <SsoOffNotice />
-      </ConfirmDialog>
-
-      <ConfirmDialog
         name="sso-mfa-policy"
-        open={confirming === "mfa"}
-        onOpenChange={(open) => !open && setConfirming(null)}
+        open={confirming}
+        onOpenChange={(open) => !open && setConfirming(false)}
         title={t("pages.sso.policy.mfaConfirm.title")}
         description={
           members.data
             ? t("pages.sso.policy.mfaConfirm.bodyWithCount", {
-                // a person with a role on the org and another on a team is two
-                // rows, and one member
-                count: distinctPeople(members.data),
+                count: members.data.length,
               })
             : t("pages.sso.policy.mfaConfirm.body")
         }
@@ -670,42 +520,200 @@ function SignInPolicyCard({
  *
  * A mapping grants at the provider's own org by default — the create endpoint
  * reads an omitted scope that way — but it may also name one team or one
- * project inside that org (#1234). The form and the list are the shared
- * `GroupMappings`; this is the strip of the provider's card they sit in, and
- * the words that are true of this screen only: a mapping grants at each
- * member's next sign-in, and the empty list falls back to the provider's
- * default role.
+ * project inside that org (#1234). The scope select is the shared
+ * `OrgScopePicker`, so a project in a team the scope switcher does not
+ * currently have selected can be mapped without moving the switcher first. A
+ * mapping may never grant outside the provider's org, which the control plane
+ * enforces whatever this sends.
  */
-function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
+function GroupMappings({ provider }: { provider: SsoProviderRow }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  // the provider's own org, not the scope switcher's: a mapping can only ever
+  // reach inside the org that registered the provider
+  const scope = useOrgScope(provider.org_id);
+  const mappings = useQuery({
+    queryKey: [MAPPINGS_KEY, provider.id],
+    queryFn: () => fetchSsoGroupMappings(provider.id),
+    retry: false,
+  });
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: [MAPPINGS_KEY, provider.id] });
+
+  const [group, setGroup] = React.useState("");
+  const [role, setRole] = React.useState<string>(MAPPABLE_ROLES[0]);
+  // "" is the provider's own org; otherwise "team:<id>" or "project:<id>"
+  const [target, setTarget] = React.useState<ScopeTarget>("");
+
+  const create = useMutation({
+    mutationFn: () =>
+      createSsoGroupMapping(provider.id, {
+        group_name: group.trim(),
+        role,
+        ...scopeTargetIds(target),
+      }),
+    onSuccess: () => {
+      toast.push({ tone: "success", title: t("toast.created", { what: group.trim() }) });
+      setGroup("");
+      invalidate();
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: group.trim() }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteSsoGroupMapping(id),
+    onSuccess: invalidate,
+  });
+
+  // a mapping is what puts people in a role, so removing one takes access away
+  // from everyone in that group — named and confirmed first (#1179)
+  const [removeTarget, setRemoveTarget] = React.useState<SsoGroupMappingRow | null>(null);
+  const startRemove = (mapping: SsoGroupMappingRow) => {
+    remove.reset();
+    setRemoveTarget(mapping);
+  };
+
+  const rows = mappings.data ?? [];
+
   return (
-    <div className="flex flex-col gap-2.5 border-t border-[color:var(--border-subtle)] px-4 py-3.5">
+    <div className="border-t border-[color:var(--border-subtle)] px-4 py-3.5">
       <div className="flex items-center gap-1.5">
         <Users aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
         <h3 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
           {t("pages.sso.mappings.title")}
         </h3>
       </div>
-      <GroupMappings
-        kind="sso"
-        orgId={provider.org_id}
-        queryKey={[MAPPINGS_KEY, provider.id]}
-        fetchMappings={() => fetchSsoGroupMappings(provider.id)}
-        createMapping={(grant) => createSsoGroupMapping(provider.id, grant)}
-        deleteMapping={deleteSsoGroupMapping}
-        empty={
-          provider.default_role
+
+      {mappings.isLoading && <Skeleton className="mt-2.5 h-8 rounded-md" />}
+      {mappings.isError && (
+        <p className="mt-2.5 text-sm text-[color:var(--status-danger-text)]">
+          {(mappings.error as Error).message}
+        </p>
+      )}
+      {!mappings.isLoading && !mappings.isError && rows.length === 0 && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          {provider.default_role
             ? t("pages.sso.mappings.emptyWithDefault", {
                 role: roleLabel(t, provider.default_role),
               })
-            : t("pages.sso.mappings.empty")
-        }
-        grantTiming={t("pages.sso.mappings.grantTiming")}
-        removeBody={(role, scope) => t("pages.sso.mappings.removeBody", { role, scope })}
-        // every provider card carries one of these, so the label names which
-        // one: "Map group" alone is ambiguous the moment an org registers a
-        // second identity provider
-        addLabel={t("pages.sso.mappings.addNamed", { provider: provider.name })}
+            : t("pages.sso.mappings.empty")}
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1.5">
+          {rows.map((mapping) => (
+            <li
+              key={mapping.id}
+              className="flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-2.5 py-1.5"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+                {mapping.group_name}
+              </span>
+              <OrgScopePill scope={scope} value={mapping} />
+              <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
+              <RowIconButton
+                danger
+                gate="sso_group_mapping:delete"
+                control="sso-mapping-remove"
+                title={t("pages.sso.mappings.remove")}
+                aria-label={t("pages.sso.mappings.removeNamed", {
+                  group: mapping.group_name,
+                })}
+                disabled={remove.isPending}
+                onClick={() => startRemove(mapping)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </RowIconButton>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <Input
+          className="h-8 max-w-[220px] flex-1"
+          value={group}
+          onChange={(e) => setGroup(e.target.value)}
+          aria-label={t("pages.sso.mappings.groupLabel")}
+          placeholder={t("pages.sso.mappings.groupPlaceholder")}
+        />
+        <OrgScopePicker
+          orgId={provider.org_id}
+          value={target}
+          onChange={setTarget}
+          label={t("pages.sso.mappings.scopeLabel")}
+        />
+        <Combobox
+          size="sm"
+          className="w-[132px]"
+          value={role}
+          onChange={setRole}
+          aria-label={t("pages.sso.mappings.roleLabel")}
+          options={MAPPABLE_ROLES.map((r) => ({ value: r, label: roleLabel(t, r) }))}
+        />
+        <GatedButton
+          gate="sso_group_mapping:create"
+          control="sso-mapping-add"
+          size="sm"
+          variant="outline"
+          // every provider card carries one of these, so the label names which
+          // one — "Map group" alone is ambiguous the moment an org registers a
+          // second identity provider
+          aria-label={t("pages.sso.mappings.addNamed", { provider: provider.name })}
+          disabled={!group.trim() || create.isPending}
+          onClick={() => create.mutate()}
+        >
+          {create.isPending && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {t("pages.sso.mappings.add")}
+        </GatedButton>
+      </div>
+      {create.isError && (
+        <p role="alert" className="mt-2 text-sm text-[color:var(--status-danger-text)]">
+          {(create.error as Error).message}
+        </p>
+      )}
+
+      <ConfirmDialog
+        name="sso-group-mapping-remove"
+        open={!!removeTarget}
+        onOpenChange={(open) => !open && setRemoveTarget(null)}
+        title={t("pages.sso.mappings.confirm.title", {
+          group: removeTarget?.group_name,
+        })}
+        description={t("pages.sso.mappings.confirm.body", {
+          role: removeTarget ? roleLabel(t, removeTarget.role) : "",
+          // the scope is half of what is being withdrawn: "admin" and "admin on
+          // Gateway" are very different removals
+          scope: removeTarget ? orgScopeText(t, scope, removeTarget) : "",
+        })}
+        confirmLabel={t("pages.sso.mappings.confirm.confirm")}
+        pending={remove.isPending}
+        error={remove.error}
+        onConfirm={() => {
+          if (!removeTarget) return;
+          const what = removeTarget.group_name;
+          remove.mutate(removeTarget.id, {
+            onSuccess: () => {
+              setRemoveTarget(null);
+              toast.push({ tone: "success", title: t("toast.deleted", { what }) });
+            },
+            onError: (error) => {
+              toast.push({
+                tone: "error",
+                title: t("toast.deleteFailed", { what }),
+                detail: errorDetail(error),
+              });
+            },
+          });
+        }}
       />
     </div>
   );
@@ -713,7 +721,6 @@ function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
 
 function ProviderCard({
   provider,
-  lastWayIn,
   onClearSecret,
   onDelete,
   onEdit,
@@ -723,8 +730,6 @@ function ProviderCard({
   toggling,
 }: {
   provider: SsoProviderRow;
-  /** the last enabled provider while password sign-in is off (#2443) */
-  lastWayIn: boolean;
   onClearSecret: (provider: SsoProviderRow) => void;
   onDelete: (provider: SsoProviderRow) => void;
   onEdit: (provider: SsoProviderRow) => void;
@@ -734,10 +739,6 @@ function ProviderCard({
   toggling: boolean;
 }) {
   const { t } = useTranslation();
-  // the control plane refuses to disable or delete the last way in while
-  // password sign-in is off, so the card says so instead of offering it (#2443)
-  const reasonId = `sso-last-way-${provider.id}`;
-  const held = lastWayIn ? reasonId : undefined;
 
   return (
     <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
@@ -772,28 +773,17 @@ function ProviderCard({
                 })
               : t("pages.sso.providers.noDefaultRole")}
           </p>
-          {lastWayIn && (
-            <p id={reasonId} className="mt-1 text-sm text-muted-foreground">
-              {t("pages.sso.lastMethod.reason")}
-            </p>
-          )}
         </div>
         {/* taking a provider out of service is a routine act — an IdP
             migration, a broken secret — and used to require deleting it,
-            which took its group mappings with it (#1233). it is an update, the
-            same capability as the edit beside it (#2084) */}
-        <GatedSwitch
-          gate="sso_provider:update"
-          control="sso-provider-toggle"
+            which took its group mappings with it (#1233) */}
+        <Switch
           checked={provider.enabled}
-          disabled={toggling || lastWayIn}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : undefined}
-          aria-describedby={held}
+          disabled={toggling}
           onCheckedChange={(next) => onToggle(provider, next)}
           aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
         />
         <RowIconButton
-          gate="sso_provider:update"
           control="sso-provider-edit"
           title={t("pages.sso.providers.edit")}
           aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
@@ -817,7 +807,7 @@ function ProviderCard({
             onClick={() => onClearSecret(provider)}
           >
             {clearingSecret ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Eraser className="h-3.5 w-3.5" />
             )}
@@ -827,14 +817,13 @@ function ProviderCard({
           danger
           gate="sso_provider:delete"
           control="sso-provider-delete"
+          title={t("pages.sso.providers.delete")}
           aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          disabled={deleting || lastWayIn}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
-          aria-describedby={held}
+          disabled={deleting}
           onClick={() => onDelete(provider)}
         >
           {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <Trash2 className="h-3.5 w-3.5" />
           )}
@@ -875,7 +864,7 @@ function ProviderCard({
         <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
       </div>
 
-      <ProviderMappings provider={provider} />
+      <GroupMappings provider={provider} />
     </section>
   );
 }
@@ -943,11 +932,7 @@ function ProviderSheet({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const fmt = useFormat();
   const toast = useToast();
-  const slugId = React.useId();
-  const slugHintId = React.useId();
-  const slugErrorId = React.useId();
   const editing = !!provider;
   const initial = React.useMemo(() => (provider ? draftFrom(provider) : EMPTY_DRAFT), [provider]);
   const [draft, setDraft] = React.useState<Draft>(initial);
@@ -1019,40 +1004,19 @@ function ProviderSheet({
   const dirty = editing
     ? (Object.keys(draft) as (keyof Draft)[]).some((k) => draft[k] !== initial[k])
     : Object.values(draft).some((v) => v !== "");
-
-  // the slug is checked as it will be sent, which is trimmed like every other
-  // field, and never rewritten: it is registered at the identity provider, so
-  // the admin has to see exactly what will be saved. a saved provider's slug
-  // cannot change, so only a new one is checked (#2304)
-  const slug = draft.slug.trim();
-  const slugProblem = editing ? null : ssoSlugProblem(slug);
-  const slugInvalid = slugProblem === "charset" || slugProblem === "length";
-  const suggestion = slugProblem === "charset" ? suggestSsoSlug(slug) : null;
-  const slugError =
-    slugProblem === "length"
-      ? t("pages.sso.create.slugTooLong", {
-          max: fmt.number(SSO_SLUG_MAX),
-          length: fmt.number(slug.length),
-        })
-      : slugProblem === "charset"
-        ? suggestion
-          ? t("pages.sso.create.slugSuggest", { suggestion })
-          : t("pages.sso.create.slugInvalid")
-        : undefined;
-
   const canSave =
     !!draft.name.trim() &&
-    (editing || slugProblem === null) &&
+    (editing || !!draft.slug.trim()) &&
     !!draft.issuer.trim() &&
     !!draft.clientId.trim();
 
   // a saved provider carries the server's own redirect uri. a new one is
   // previewed from the typed slug on the server's public base, never the
-  // browser's origin; with the base unread, only the path is honest to show.
-  // a slug the server refuses previews nothing, so no uri is copied for it
+  // browser's origin; with the base unread, only the path is honest to show
+  const slug = draft.slug.trim();
   const redirect = provider
     ? provider.redirect_uri
-    : slug && !slugInvalid
+    : slug
       ? ssoRedirectUri(publicUrl?.public_url ?? "", slug)
       : null;
   const redirectNote =
@@ -1083,24 +1047,19 @@ function ProviderSheet({
           placeholder={t("pages.sso.create.namePlaceholder")}
         />
       </Field>
-      <Field label={t("pages.sso.create.slug")} htmlFor={slugId}>
+      <Field
+        label={t("pages.sso.create.slug")}
+        hint={editing ? t("pages.sso.edit.slugImmutable") : t("pages.sso.create.slugHint")}
+      >
         <Input
-          id={slugId}
           value={draft.slug}
           disabled={editing}
-          aria-invalid={slugInvalid || undefined}
-          aria-describedby={describedBy(slugHintId, slugInvalid && slugErrorId)}
           onChange={(e) => set({ slug: e.target.value })}
           placeholder={t("pages.sso.create.slugPlaceholder")}
         />
-        <p id={slugHintId} className="text-xs text-muted-foreground">
-          {editing ? t("pages.sso.edit.slugImmutable") : t("pages.sso.create.slugHint")}
-        </p>
-        <FieldError id={slugErrorId} error={slugError} />
       </Field>
       <RedirectUriRow
         value={redirect}
-        invalid={slugInvalid}
         hint={editing ? t("pages.sso.edit.redirectUriHint") : t("pages.sso.create.redirectUriHint")}
       >
         {redirectNote && (
@@ -1200,7 +1159,12 @@ export default function SingleSignOn() {
   // the base every URL here is built from (#2083). the cards read theirs off
   // the provider rows, so this only feeds the add sheet's preview and the
   // notice for an unset ROLTER_PUBLIC_URL, and the screen does not wait on it
-  const publicUrl = usePublicUrl();
+  const publicUrl = useQuery({
+    queryKey: [PUBLIC_URL_KEY],
+    queryFn: fetchPublicUrl,
+    retry: false,
+    staleTime: Infinity,
+  });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // the provider list is what the user is actually waiting on here
@@ -1240,7 +1204,7 @@ export default function SingleSignOn() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: provider.name }),
-        detail: errorDetail(refusal(error, t)),
+        detail: errorDetail(error),
       });
     },
   });
@@ -1280,17 +1244,6 @@ export default function SingleSignOn() {
     remove.reset();
     setDeleteTarget(provider);
   };
-  // the provider a switch was flipped off on, waiting for the confirmation.
-  // turning one back on restores a route and sends at once (#2084)
-  const [disableTarget, setDisableTarget] = React.useState<SsoProviderRow | null>(null);
-  const switchProvider = (provider: SsoProviderRow, enabled: boolean) => {
-    if (enabled) {
-      toggle.mutate({ provider, enabled });
-      return;
-    }
-    toggle.reset();
-    setDisableTarget(provider);
-  };
   const [secretTarget, setSecretTarget] = React.useState<SsoProviderRow | null>(null);
   const startClearSecret = (provider: SsoProviderRow) => {
     clearSecret.reset();
@@ -1311,10 +1264,6 @@ export default function SingleSignOn() {
   // no org means nothing to hang a provider on, and an unreadable list means
   // this principal may not manage them either
   const canManage = !!orgId && !providers.isError;
-  // against the saved policy: with it unread there is nothing to hold back
-  // from, and the server still refuses the change itself (#2443)
-  const locksOut = (target: SsoProviderRow) =>
-    !!policy.data && locksOutMembers(rows, target, policy.data);
 
   return (
     <PageBody>
@@ -1325,9 +1274,7 @@ export default function SingleSignOn() {
           onRetry={() => policy.refetch()}
         />
       )}
-      {policy.data && orgId && (
-        <SignInPolicyCard orgId={orgId} policy={policy.data} providers={rows} />
-      )}
+      {policy.data && orgId && <SignInPolicyCard orgId={orgId} policy={policy.data} />}
 
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-sm font-medium text-foreground">{t("pages.sso.providers.title")}</h2>
@@ -1385,14 +1332,13 @@ export default function SingleSignOn() {
               <ProviderCard
                 key={provider.id}
                 provider={provider}
-                lastWayIn={locksOut(provider)}
                 clearingSecret={clearSecret.isPending && clearSecret.variables?.id === provider.id}
                 deleting={remove.isPending && remove.variables === provider.id}
                 toggling={toggle.isPending && toggle.variables?.provider.id === provider.id}
                 onClearSecret={startClearSecret}
                 onDelete={startDelete}
                 onEdit={openEdit}
-                onToggle={switchProvider}
+                onToggle={(target, enabled) => toggle.mutate({ provider: target, enabled })}
               />
             ))}
           </div>
@@ -1441,31 +1387,6 @@ export default function SingleSignOn() {
         }}
       />
 
-      {/* out of service is reversible with one flip, so it confirms as a
-          default-tone action. the mutation is reset on close so a refusal for
-          one provider does not greet the next */}
-      <ConfirmDialog
-        name="sso-provider-disable"
-        open={!!disableTarget}
-        onOpenChange={(open) => {
-          if (open) return;
-          setDisableTarget(null);
-          toggle.reset();
-        }}
-        title={t("pages.sso.disable.title", { name: disableTarget?.name })}
-        description={t("pages.sso.disable.body")}
-        confirmLabel={t("pages.sso.disable.confirm")}
-        pending={toggle.isPending}
-        error={toggle.error ? refusal(toggle.error, t) : undefined}
-        onConfirm={() => {
-          if (!disableTarget) return;
-          toggle.mutate(
-            { provider: disableTarget, enabled: false },
-            { onSuccess: () => setDisableTarget(null) },
-          );
-        }}
-      />
-
       <ConfirmDialog
         name="sso-connection-delete"
         open={!!deleteTarget}
@@ -1474,7 +1395,7 @@ export default function SingleSignOn() {
         description={t("pages.sso.confirm.body")}
         confirmLabel={t("pages.sso.confirm.confirm")}
         pending={remove.isPending}
-        error={remove.error ? refusal(remove.error, t) : undefined}
+        error={remove.error}
         onConfirm={() => {
           if (!deleteTarget) return;
           const what = deleteTarget.name;
@@ -1487,7 +1408,7 @@ export default function SingleSignOn() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(refusal(error, t)),
+                detail: errorDetail(error),
               });
             },
           });

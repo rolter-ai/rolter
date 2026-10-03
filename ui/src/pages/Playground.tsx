@@ -1,6 +1,5 @@
 import { useMutation, useQuery, type UseMutationResult } from "@tanstack/react-query";
 import {
-  Check,
   GitCompare,
   ImageIcon,
   Mic,
@@ -23,7 +22,6 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
 import { Markdown } from "@/components/Markdown";
-import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,7 +41,6 @@ import {
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
-import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
   chatCompletion,
@@ -63,7 +60,6 @@ import {
   type PlaygroundKeyState,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
-import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -567,7 +563,7 @@ function SessionKeyBar({
             disabled={!projectId || mint.isPending}
             onClick={() => mint.mutate()}
           >
-            {mint.isPending && <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />}
+            {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {/* nothing to renew until rolter has minted one: a pasted key is
                 replaced, not renewed */}
             {state.key && state.minted ? t("playground.key.renew") : t("playground.key.mint")}
@@ -695,7 +691,6 @@ function ManualKeyField({ offered, onSaved }: { offered: boolean; onSaved: () =>
               aria-label={t("playground.key.label")}
             />
             <Button size="sm" variant="outline" onClick={save}>
-              {saved && <Check className="h-3.5 w-3.5" />}
               {saved ? t("playground.key.saved") : t("playground.key.save")}
             </Button>
           </div>
@@ -779,34 +774,13 @@ function GatewayButton({
   );
 }
 
-// an error arrives after an action, so it is announced the moment it appears
-function ErrorNote({ error }: { error: ErrorCopy | null }) {
+function ErrorNote({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <p
-      role="alert"
-      className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
-    >
-      {error.message}
-      {error.detail && (
-        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
-          {error.detail}
-        </span>
-      )}
+    <p className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]">
+      {error}
     </p>
   );
-}
-
-/**
- * Whether a keydown is the Enter that sends.
- *
- * Shift+Enter is left alone so a multi-line box can take a newline. The Enter
- * that confirms an IME candidate belongs to the composition, not to the send:
- * `isComposing` says so in most browsers, and Safari reports that Enter after
- * the composition has ended, with the legacy keyCode 229.
- */
-function isSendKey(e: React.KeyboardEvent): boolean {
-  return e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229;
 }
 
 /* ---------------- chat column ---------------- */
@@ -821,22 +795,17 @@ function ChatColumn({
   model,
   onModel,
   onRemove,
-  position,
+  removable,
   multimodal,
 }: {
   models: ModelOption[];
   model: string;
   onModel: (v: string) => void;
   onRemove: () => void;
-  /** 1-based place among the compared columns; `null` for the only column, which cannot be removed */
-  position: number | null;
+  removable: boolean;
   multimodal: boolean;
 }) {
   const { t } = useTranslation();
-  // what a control in this column calls the column. the model alone is not
-  // enough once two columns can hold the same one, so a compare view adds the
-  // place; a lone column is just its model
-  const who = position === null ? model : t("pages.playground.columnName", { model, n: position });
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   // rendered by default, because that is what a model reply is *for*; raw is
   // what an operator switches to when the question is what the model literally
@@ -844,24 +813,11 @@ function ChatColumn({
   const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
-  // the finished reply, for the live region: `id` makes a reply identical to
-  // the last one a new node, so it is announced again
-  const [announced, setAnnounced] = React.useState<{ id: number; text: string } | null>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
-  const composer = React.useRef<HTMLTextAreaElement>(null);
   const gate = React.useContext(SendGateContext);
-
-  // the composer grows with the draft up to its max height, then scrolls. a
-  // column under another mode tab measures 0 and is left as it was
-  React.useLayoutEffect(() => {
-    const el = composer.current;
-    if (!el || el.offsetParent === null) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
-  }, [draft]);
 
   const attach = (f: File) => {
     const reader = new FileReader();
@@ -896,20 +852,16 @@ function ChatColumn({
       setMsgs((m) =>
         m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
       );
-      setAnnounced((a) => ({
-        id: (a?.id ?? 0) + 1,
-        text: t("pages.playground.replyAnnounce", { model, reply }),
-      }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
-      setError(describeError(e, t));
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="relative flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
+    <div className="flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
       <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] p-2">
         <ModelSelect models={models} value={model} onChange={onModel} />
         {/* the last thing sent, so the snippet reproduces a call that is known
@@ -919,7 +871,6 @@ function ChatColumn({
             model,
             prompt: lastPrompt || draft || "Hello!",
           }}
-          label={t("pages.playground.copyAsCodeFor", { model: who })}
         />
         <Button
           size="icon"
@@ -932,28 +883,19 @@ function ChatColumn({
         >
           <Pilcrow className="h-3.5 w-3.5" />
         </Button>
-        {position !== null && (
+        {removable && (
           <Button
             size="icon"
             variant="ghost"
             className="h-8 w-8"
             onClick={onRemove}
-            aria-label={t("pages.playground.removeColumn", { n: position, model })}
+            aria-label={t("pages.playground.removeColumn")}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         )}
       </div>
-      {/* a reply taller than the column scrolls here, and a scroller the keyboard
-          cannot reach leaves the rest of it to a mouse: a prose reply holds no
-          focusable child to carry the focus in. a region named for its column
-          makes it one tab stop that says what it is */}
-      <div
-        tabIndex={0}
-        role="region"
-        aria-label={t("pages.playground.threadAria", { model: who })}
-        className="flex flex-1 flex-col gap-2.5 overflow-auto p-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
-      >
+      <div className="flex flex-1 flex-col gap-2.5 overflow-auto p-4">
         {msgs.length === 0 && (
           <p className="m-auto text-center text-xs text-muted-foreground">
             {/* the invitation waits for a key, rather than inviting a message
@@ -973,7 +915,7 @@ function ChatColumn({
             }
           >
             <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[color:var(--text-subtle)]">
-              {t(`pages.playground.roles.${m.role}`)}
+              {m.role}
             </span>
             {/* markdown, unless the operator asked for the characters. the
                 renderer takes a partial reply as readily as a finished one, so
@@ -994,12 +936,6 @@ function ChatColumn({
           </div>
         ))}
       </div>
-      {/* the reply is read out once it is whole, not as it arrives: the thread
-          is not the live region, so neither the message just typed nor the
-          placeholder that holds the reply's place is announced */}
-      <div aria-live="polite" aria-atomic="true" className="sr-only">
-        {announced && <p key={announced.id}>{announced.text}</p>}
-      </div>
       {(error || image) && (
         <div className="px-3 pb-1">
           {image && (
@@ -1017,7 +953,7 @@ function ChatColumn({
           <ErrorNote error={error} />
         </div>
       )}
-      <div className="flex items-end gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
+      <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] p-2.5">
         {multimodal && (
           <>
             <input
@@ -1038,33 +974,21 @@ function ChatColumn({
             </Button>
           </>
         )}
-        <Textarea
-          ref={composer}
-          rows={1}
+        <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (!isSendKey(e)) return;
-            // held back or empty, Enter still must not land a newline in the box
-            e.preventDefault();
-            void send();
-          }}
+          onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder={t("pages.playground.messagePlaceholder")}
-          aria-label={t("pages.playground.messageAria", { model })}
-          className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
+          className="h-8 flex-1 text-sm"
         />
         <GatewayButton
           size="icon"
           className="h-8 w-8"
           onClick={send}
           disabled={busy}
-          aria-label={t("pages.playground.sendTo", { model: who })}
+          aria-label={t("pages.playground.send")}
         >
-          {busy ? (
-            <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </GatewayButton>
       </div>
     </div>
@@ -1073,16 +997,7 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
-  // the account's saved Playground model (#2448) is what the column opens on,
-  // once the catalog confirms the gateway serves it; a stale name that no
-  // longer routes would only make the first message fail
-  const saved = useOptionalPreferences()?.preferences?.default_playground_model ?? null;
-  const preferredModel = saved && models.some((option) => option.id === saved) ? saved : preferred;
-  // a column's thread lives in the column, so a column needs an identity that
-  // outlasts its position: removing the first of two must not hand its thread
-  // to the one that moved up
-  const nextId = React.useRef(1);
-  const [cols, setCols] = React.useState<{ id: number; model: string }[]>([{ id: 0, model: FAKE }]);
+  const [cols, setCols] = React.useState<{ model: string }[]>([{ model: FAKE }]);
   const [multimodal, setMultimodal] = React.useState(false);
   // the list arrives after the first render, and can be replaced once — the
   // fallback first, then the gateway's own when a renewed or pasted key
@@ -1092,22 +1007,17 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   const touched = React.useRef(false);
   const auto = React.useRef(FAKE);
   React.useEffect(() => {
-    if (touched.current || !preferredModel) return;
+    if (touched.current || !preferred) return;
     const previous = auto.current;
-    auto.current = preferredModel;
-    setCols((c) =>
-      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferredModel }] : c,
-    );
-  }, [preferredModel]);
+    auto.current = preferred;
+    setCols((c) => (c.length === 1 && c[0].model === previous ? [{ model: preferred }] : c));
+  }, [preferred]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
-    setCols((c) => c.map((col, j) => (j === i ? { ...col, model: v } : col)));
+    setCols((c) => c.map((col, j) => (j === i ? { model: v } : col)));
   };
-  const add = () => {
-    const id = nextId.current++;
-    setCols((c) => [...c, { id, model: models[c.length % models.length]?.id ?? FAKE }]);
-  };
+  const add = () => setCols((c) => [...c, { model: models[c.length % models.length]?.id ?? FAKE }]);
   const remove = (i: number) => setCols((c) => c.filter((_, j) => j !== i));
 
   return (
@@ -1141,7 +1051,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
       >
         {cols.map((c, i) => (
           <div
-            key={c.id}
+            key={i}
             style={{
               minWidth: cols.length > 2 ? 340 : 0,
               flex: cols.length > 2 ? "none" : 1,
@@ -1152,7 +1062,7 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
               models={models}
               model={c.model}
               multimodal={multimodal}
-              position={compare ? i + 1 : null}
+              removable={cols.length > 1}
               onModel={(v) => setModel(i, v)}
               onRemove={() => remove(i)}
             />
@@ -1208,7 +1118,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
     t("pages.playground.samples.embeddings").split("\n"),
   );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
@@ -1219,7 +1129,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const run = async () => {
     const rows = texts.filter((t) => t.trim());
     if (rows.length < 2) {
-      setError({ message: t("pages.playground.embedNeedTwo") });
+      setError(t("pages.playground.embedNeedTwo"));
       return;
     }
     setError(null);
@@ -1235,7 +1145,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) * 100;
       setPoints(proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })));
     } catch (e) {
-      setError(describeError(e, t));
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1255,7 +1165,6 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 value={row}
                 onChange={(e) => setText(i, e.target.value)}
                 placeholder={t("pages.playground.textPlaceholder")}
-                aria-label={t("pages.playground.textRowAria", { n: i + 1 })}
                 className="h-8 text-sm"
               />
               <Button
@@ -1263,7 +1172,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 variant="ghost"
                 className="h-8 w-8"
                 onClick={() => removeField(i)}
-                aria-label={t("pages.playground.removeText", { n: i + 1 })}
+                aria-label={t("pages.playground.removeText")}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -1276,7 +1185,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           </Button>
           <GatewayButton size="sm" onClick={run} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}{" "}
@@ -1315,7 +1224,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const gen = async () => {
@@ -1324,7 +1233,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
     try {
       setImages(await generateImages(model, prompt, n, size));
     } catch (e) {
-      setError(describeError(e, t));
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1337,7 +1246,6 @@ function ImageMode({ models }: { models: ModelOption[] }) {
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          aria-label={t("pages.playground.imagePromptAria")}
           className="min-h-[120px] text-sm"
         />
         <div className="flex gap-2.5">
@@ -1364,7 +1272,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           />
           <GatewayButton size="sm" onClick={gen} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <ImageIcon className="h-3.5 w-3.5" />
             )}{" "}
@@ -1404,7 +1312,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
 }
 
 /* ---------------- audio ---------------- */
-function AudioMode({ models, active }: { models: ModelOption[]; active: boolean }) {
+function AudioMode({ models }: { models: ModelOption[] }) {
   const { t } = useTranslation();
   const [tab, setTab] = React.useState("tts");
   const [model, setModel] = React.useState(FAKE);
@@ -1412,16 +1320,9 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<ErrorCopy | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
-  const clipRef = React.useRef<HTMLAudioElement>(null);
-
-  // the panel stays mounted under another tab, where a clip that kept playing
-  // would have no control left to stop it
-  React.useEffect(() => {
-    if (!active) clipRef.current?.pause();
-  }, [active]);
 
   const speak = async () => {
     setError(null);
@@ -1429,7 +1330,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setAudioUrl(await synthesizeSpeech(model, text, voice));
     } catch (e) {
-      setError(describeError(e, t));
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1442,7 +1343,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setTranscript(await transcribe(model, f));
     } catch (e) {
-      setError(describeError(e, t));
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1465,7 +1366,6 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
             <Textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              aria-label={t("pages.playground.speechTextAria")}
               className="min-h-[100px] text-sm"
             />
             <div className="flex gap-2.5">
@@ -1485,7 +1385,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               />
               <GatewayButton size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Mic className="h-3.5 w-3.5" />
                 )}{" "}
@@ -1499,7 +1399,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               {t("pages.playground.output")}
             </p>
             {audioUrl ? (
-              <audio ref={clipRef} controls src={audioUrl} className="w-full" />
+              <audio controls src={audioUrl} className="w-full" />
             ) : (
               <p className="py-10 text-center text-sm text-muted-foreground">
                 {t("pages.playground.synthesizeEmpty")}
@@ -1525,7 +1425,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               disabled={busy}
             >
               {busy ? (
-                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Upload className="h-3.5 w-3.5" />
               )}{" "}
@@ -1616,11 +1516,6 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
           </GatewayButton>
         </span>
       </div>
-      {/* the other tabs keep their work; this one cannot, and saying so here
-          beats an operator finding an empty log after a glance elsewhere */}
-      <p className="text-xs text-[color:var(--text-subtle)]">
-        {t("pages.playground.realtimeResets")}
-      </p>
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -1659,9 +1554,8 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
               <Input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => isSendKey(e) && send()}
+                onKeyDown={(e) => e.key === "Enter" && send()}
                 placeholder={t("pages.playground.framePlaceholder")}
-                aria-label={t("pages.playground.frameAria")}
                 className="h-8 text-sm"
                 disabled={!live}
               />
@@ -1698,7 +1592,7 @@ export default function Playground() {
 
   return (
     <SendGateContext.Provider value={sendGate}>
-      <PageBody>
+      <div className="flex flex-col gap-5 p-[22px]">
         <SessionKeyBar session={session} rejected={catalog.rejected} keyless={catalog.keyless} />
         <ModelSourceNotice source={source} hidden={hidden} />
         <Tabs
@@ -1712,27 +1606,12 @@ export default function Playground() {
             { value: "realtime", label: t("pages.playground.modes.realtime") },
           ]}
         />
-        {/* chat, embeddings, image and audio stay mounted under the other tabs,
-            so a thread, a prompt, a result and a request still in flight all
-            survive a switch: an image costs money to generate, and glancing at
-            another tab must not throw it away. realtime is the exception, since
-            a mounted one would hold its WebSocket open under a tab nobody is
-            looking at: it is unmounted, which closes the socket, and starts
-            over */}
-        <div hidden={mode !== "chat"}>
-          <ChatMode models={models} preferred={preferred} />
-        </div>
-        <div hidden={mode !== "embeddings"}>
-          <EmbeddingsMode models={models} />
-        </div>
-        <div hidden={mode !== "image"}>
-          <ImageMode models={models} />
-        </div>
-        <div hidden={mode !== "audio"}>
-          <AudioMode models={models} active={mode === "audio"} />
-        </div>
+        {mode === "chat" && <ChatMode models={models} preferred={preferred} />}
+        {mode === "embeddings" && <EmbeddingsMode models={models} />}
+        {mode === "image" && <ImageMode models={models} />}
+        {mode === "audio" && <AudioMode models={models} />}
         {mode === "realtime" && <RealtimeMode models={models} />}
-      </PageBody>
+      </div>
     </SendGateContext.Provider>
   );
 }

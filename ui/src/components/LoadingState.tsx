@@ -2,7 +2,6 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { STAT_GRID } from "@/components/ui/stat-card";
 import { cn } from "@/lib/utils";
 
 // the shapes a screen shows while its query is in flight (#1180).
@@ -154,13 +153,15 @@ export function TableSkeleton({ rows = 4, className }: { rows?: number; classNam
   );
 }
 
-/**
- * the stat-card strip an analytics screen opens with, in the grid the loaded
- * strip uses (`STAT_GRID`) so the tiles keep their columns when the figures land
- */
+/** the stat-card strip an analytics screen opens with */
 export function StatGridSkeleton({ cards = 4, className }: { cards?: number; className?: string }) {
   return (
-    <LoadingRegion className={cn(STAT_GRID, className)}>
+    <LoadingRegion
+      className={cn(
+        "grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr))]",
+        className,
+      )}
+    >
       {Array.from({ length: cards }, (_, i) => (
         <Skeleton key={i} height={96} radius={10} />
       ))}

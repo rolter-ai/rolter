@@ -80,15 +80,13 @@ describe("noStore", () => {
 });
 
 // a control plane with no clickhouse_url mounts the analytics routes and
-// answers 503 from them; one too old to have them at all answers 404. A screen
-// that reads analytics states that with `AnalyticsUnavailable` and never hands
-// it to LoadError (#2016); this holds what LoadError says when one strays in,
-// which must not be the "never connected" case an error carrying no status
-// otherwise means (#1236)
-describe("an AnalyticsUnavailableError handed to LoadError", () => {
-  it("reads as the server's answer, which is what it was", () => {
+// answers 503 from them; one too old to have them at all answers 404. Both are
+// the deployment's shape, and neither is the "never connected" case that an
+// error carrying no status otherwise means (#1236)
+describe("noAnalytics", () => {
+  it("classifies the analytics fetchers' own error as its own kind", () => {
     const err = new AnalyticsUnavailableError("analytics is not configured");
-    expect(classifyLoadError(err)).toBe("server");
+    expect(classifyLoadError(err)).toBe("noAnalytics");
   });
 
   it("does not read it as an unreachable control plane", () => {
@@ -96,10 +94,15 @@ describe("an AnalyticsUnavailableError handed to LoadError", () => {
     // request never got an answer — it got one, and the answer was this
     expect(classifyLoadError(new AnalyticsUnavailableError("503"))).not.toBe("unreachable");
   });
+
+  it("offers neither a retry nor a sign-in, because neither can help", () => {
+    expect(isRetryable("noAnalytics")).toBe(false);
+    expect(needsSignIn("noAnalytics")).toBe(false);
+  });
 });
 
 // LoadError renders exactly two strings per kind and hands both the same one
-// variable. Some bodies carry {{resource}}, so a body rendered without it put
+// variable. Five bodies carry {{resource}}, so a body rendered without it put
 // the raw placeholder on screen (#1362) — and catalog parity cannot catch that,
 // because the placeholder is present in every locale and it is the call site
 // that drops it. This holds the copy to what the component can actually fill.
@@ -109,6 +112,7 @@ describe("errors.load copy", () => {
     "forbidden",
     "openMode",
     "noStore",
+    "noAnalytics",
     "unreachable",
     "server",
     "unknown",

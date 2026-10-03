@@ -8,8 +8,8 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton, StatGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
-import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { StatCard } from "@/components/ui/stat-card";
 import {
   fetchAdaptiveRoutingPolicy,
   fetchAdaptiveRoutingTelemetry,
@@ -93,6 +93,9 @@ function targetName(target: AdaptiveTargetTelemetryDto): string {
 
 // the empty state's call to action, shared by both variants so the two never
 // drift apart on screen
+const EMPTY_ACTION =
+  "text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 function AdaptiveDashboardScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -198,9 +201,9 @@ function AdaptiveDashboardScreen() {
               </>
             }
             actions={
-              <EmptyStateLink to="/adaptive-settings">
+              <a href="/adaptive-settings" className={EMPTY_ACTION}>
                 {t("pages.adaptiveDashboard.disabledAction")}
-              </EmptyStateLink>
+              </a>
             }
           />
         ) : (
@@ -212,15 +215,15 @@ function AdaptiveDashboardScreen() {
               seconds: view?.fresh_window_secs ?? 60,
             })}
             actions={
-              <EmptyStateLink to="/routing-rules">
+              <a href="/routing-rules" className={EMPTY_ACTION}>
                 {t("pages.adaptiveDashboard.emptyAction")}
-              </EmptyStateLink>
+              </a>
             }
           />
         )
       ) : (
         <>
-          <div className={STAT_GRID}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label={t("pages.adaptiveDashboard.stats.adaptiveRoutes")}
               value={fmt.number(routes.length)}

@@ -74,7 +74,7 @@ export const OpensAndDismisses: Story = {
  * failure was announced in `ModelSheet` and silent everywhere else — a
  * difference nothing on screen shows (#1658).
  */
-function FailedSave({ detail }: { detail?: string }) {
+function FailedSave() {
   return (
     <Sheet open onOpenChange={() => {}}>
       <SheetHeader title="Edit route" subtitle="gpt-4o" onClose={() => {}} />
@@ -84,7 +84,7 @@ function FailedSave({ detail }: { detail?: string }) {
         </Field>
       </SheetBody>
       <SheetFooter>
-        <SheetError message="route name already taken" detail={detail} />
+        <SheetError message="route name already taken" />
         <Button>Save</Button>
       </SheetFooter>
     </Sheet>
@@ -97,28 +97,6 @@ export const SaveFailed: Story = {
     const body = within(document.body);
     const alert = await body.findByRole("alert");
     await expect(alert).toHaveTextContent("route name already taken");
-  },
-};
-
-/**
- * The caller's translated lead, with what the control plane said under it.
- *
- * The detail is the server's own English, so it is tucked below the lead in
- * mono rather than leading, and both sit in the one live region so a screen
- * reader announces them together.
- */
-export const SaveFailedWithDetail: Story = {
-  render: () => <FailedSave detail="duplicate key value violates unique constraint" />,
-  play: async () => {
-    const alert = await within(document.body).findByRole("alert");
-    const lead = within(alert).getByText("route name already taken");
-    const detail = within(alert).getByText("duplicate key value violates unique constraint");
-    await expect(alert).toContainElement(lead);
-    await expect(alert).toContainElement(detail);
-    // the lead comes first in reading order, and only the detail is mono
-    await expect(lead.compareDocumentPosition(detail)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    await expect(getComputedStyle(detail).fontFamily).toMatch(/mono/i);
-    await expect(getComputedStyle(lead).fontFamily).not.toMatch(/mono/i);
   },
 };
 

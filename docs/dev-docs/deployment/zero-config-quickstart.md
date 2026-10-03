@@ -57,9 +57,8 @@ Two deployment secrets matter here:
   (fine on localhost; a startup warning reminds you).
 - **`ROLTER_KEK`** — key-encryption key. Provider API keys submitted over the
   API are sealed with AES-256-GCM before they reach Postgres; the KEK never
-  leaves the process environment. Set it on the control plane only: gateways
-  receive provider keys already unsealed over `/internal/snapshot` (with
-  `easy-up` both planes are one process, so one export). Without a KEK,
+  leaves the process environment. Set the same value on the control plane and
+  gateway (with `easy-up` it is one process, so one export). Without a KEK,
   requests that include an `api_key` are rejected — there is no plaintext
   fallback.
 
@@ -130,6 +129,6 @@ curl -X PUT $BASE/providers/$PROVIDER \
 - **Config file still wins** — anything declared in the bootstrap
   `rolter.toml` is a read-only "config model" (LiteLLM-style): the API
   rejects runtime mutations to it with `409`.
-- **Reads never leak secrets** — `GET /api/v1/config` (the dashboard read,
-  session required) redacts `api_key`; only the token-guarded snapshot endpoint carries
+- **Reads never leak secrets** — `GET /api/v1/config` (the dashboard read)
+  redacts `api_key`; only the token-guarded snapshot endpoint carries
   decrypted keys, because the gateway needs them to call upstreams.

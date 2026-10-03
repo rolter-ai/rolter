@@ -152,7 +152,6 @@ async fn create_plugin(
     }
     authorize(&state, &principal, scope, cap!("plugin", Create)).await?;
     let slug = validate(&body, true)?;
-    crate::crud::require_allowed_egress(&state, &body.endpoint, "plugin endpoint")?;
     let row = PluginRepo(pool(&state))
         .create(
             org_id,
@@ -207,7 +206,6 @@ async fn update_plugin(
         authorize(&state, &principal, target_scope, cap!("plugin", Update)).await?;
     }
     validate(&body, false)?;
-    crate::crud::require_allowed_egress(&state, &body.endpoint, "plugin endpoint")?;
     let row = repo
         .update(
             id,
