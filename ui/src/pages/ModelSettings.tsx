@@ -47,17 +47,25 @@ const inRange = (value: string, min: number, max: number, integer = false) => {
   return n >= min && n <= max;
 };
 
+const validModel = (value: string) => value.length <= 256;
+const validTemperature = (value: string) => inRange(value, 0, 2);
+const validTopP = (value: string) => inRange(value, 0, 1);
+const validMaxTokens = (value: string) => inRange(value, 1, 1_000_000, true);
+
 // mirrors the server's validation so a bad value is caught before the round
 // trip; the server stays the authority and its message is surfaced on reject.
 // it names a catalog key rather than carrying english copy — the screen renders
 // it, which is where `t` lives
 function validate(form: FormState): string | null {
-  if (form.defaultModel.length > 256) {
+  // every field is disabled while the defaults are off, so a bad value there
+  // could not be fixed; they are re-checked once the switch is back on (#2645)
+  if (!form.enabled) return null;
+  if (!validModel(form.defaultModel)) {
     return "pages.modelSettings.validation.defaultModel";
   }
-  if (!inRange(form.temperature, 0, 2)) return "pages.modelSettings.validation.temperature";
-  if (!inRange(form.topP, 0, 1)) return "pages.modelSettings.validation.topP";
-  if (!inRange(form.maxTokens, 1, 1_000_000, true)) {
+  if (!validTemperature(form.temperature)) return "pages.modelSettings.validation.temperature";
+  if (!validTopP(form.topP)) return "pages.modelSettings.validation.topP";
+  if (!validMaxTokens(form.maxTokens)) {
     return "pages.modelSettings.validation.maxTokens";
   }
   return null;
@@ -95,14 +103,26 @@ function ModelSettingsScreen() {
   }, [defaults.data, form]);
 
   const save = useMutation({
-    mutationFn: (f: FormState) =>
-      updateModelDefaults({
+    mutationFn: (f: FormState) => {
+      // an unusable value is only reachable with the defaults off; keep what
+      // is stored rather than sending a draft the server would refuse
+      const stored = defaults.data;
+      return updateModelDefaults({
         enabled: f.enabled,
-        default_model: blank(f.defaultModel) ? null : f.defaultModel.trim(),
-        default_temperature: parse(f.temperature),
-        default_top_p: parse(f.topP),
-        default_max_tokens: parse(f.maxTokens),
-      }),
+        default_model: !validModel(f.defaultModel)
+          ? (stored?.default_model ?? null)
+          : blank(f.defaultModel)
+            ? null
+            : f.defaultModel.trim(),
+        default_temperature: validTemperature(f.temperature)
+          ? parse(f.temperature)
+          : (stored?.default_temperature ?? null),
+        default_top_p: validTopP(f.topP) ? parse(f.topP) : (stored?.default_top_p ?? null),
+        default_max_tokens: validMaxTokens(f.maxTokens)
+          ? parse(f.maxTokens)
+          : (stored?.default_max_tokens ?? null),
+      });
+    },
     onSuccess: (dto) => {
       queryClient.setQueryData(["model-defaults"], dto);
       // the cached write alone left every other reader of this key on the
@@ -229,7 +249,7 @@ function ModelSettingsScreen() {
           hint={t("pages.modelSettings.model.defaultModelHint")}
         >
           <Input
-            className="min-w-[320px]"
+            className="sm:min-w-[320px]"
             placeholder={t("pages.modelSettings.providerDefault")}
             value={form.defaultModel}
             disabled={!form.enabled}

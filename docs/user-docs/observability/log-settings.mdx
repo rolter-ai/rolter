@@ -10,11 +10,12 @@ Request logging is governed by one deployment-wide policy, edited from **Observa
 
 ## Sampling
 
-`sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it cuts what lands in the log store on a high-volume deployment, and it cuts every figure read back out of that store by the same share.
+`sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it cuts what lands in the log store on a high-volume deployment, and it cuts the raw row count read back out of that store by the same share.
 
-The gateway decides per request, from a hash of the request id, and drops an unsampled row before it is written. The log does not record the rate a row was kept at, and nothing that reads it scales the kept rows back up. So below `1`:
+The gateway decides per request, from a hash of the request id, and drops an unsampled row before it is written. Each kept row records its weight, `sample_weight`, which is `1 / sample_rate` at the moment it was written (`4` at `0.25`; rows written unsampled, or before the column existed, weigh `1`). The analytics endpoints (`/api/v1/analytics/summary`, `timeseries`, `by-model`, `by-attribution`) multiply every count and sum by it, so below `1`:
 
-- request counts, spend and token totals on the **Dashboard**, in **LLM Logs**, on the [cost attribution](/security/cost-attribution) screens (**Business Units** and **Customers**) and in the usage panel on **Account** cover only the logged requests. At `0.25` the Dashboard shows about a quarter of the real spend;
+- request counts, spend and token totals on the **Dashboard** and the [cost attribution](/security/cost-attribution) screens (**Business Units** and **Customers**) are scaled estimates of the real traffic, not the raw logged share. At `0.25` the Dashboard still shows about the real spend, with sampling noise that shrinks as volume grows. Averages and latency percentiles are not scaled, since a uniform sample already estimates them. Changing the rate does not distort history, because each row keeps the weight it was written with;
+- the usage panel on **Account** still covers only the logged requests;
 - **LLM Logs** lists only the logged requests, and a request that was not logged has no captured payload either;
 - the `request_volume` and `spend_velocity` [alert rules](/observability/alerting) read low, while `error_rate` and `p95_latency_ms` become estimates from the sample.
 

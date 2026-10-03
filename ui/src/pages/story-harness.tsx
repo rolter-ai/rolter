@@ -8,7 +8,11 @@ import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
-import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
+import {
+  effectiveFor as effectiveFromTable,
+  matrixFixture,
+  type Membership,
+} from "@/lib/rbac-capabilities";
 import { expectInFrame, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
@@ -117,7 +121,7 @@ export function Harness({
    * un-gated case every other story asserts, because `can()` with no provider
    * above it says "unknown" and every control renders enabled.
    */
-  role?: StoryRole | RoleAt;
+  role?: StoryRole | StoryMemberships;
   children: React.ReactNode;
 }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
@@ -191,6 +195,23 @@ function GateProbe() {
 export type StoryRole = Role | "superadmin";
 
 /**
+ * A caller held by memberships rather than one org role (#2522). The stub reads
+ * `org_id`, `team_id` and `project_id` off the query string, the way the
+ * control plane does, and decides each capability at the part of that chain
+ * its scope names (#2376) — so a project admin is an admin on their project's
+ * rows and holds nothing more on an org-scoped one.
+ */
+export type StoryMemberships = Membership[];
+
+/** An admin of `projectId` who is a viewer of the story's org. */
+export function adminOfProject(projectId: string): StoryMemberships {
+  return [
+    { role: "viewer", orgId: ORG.id },
+    { role: "admin", projectId },
+  ];
+}
+
+/**
  * What the control plane would answer for a caller holding `role`, derived
  * from its own capability table (#1298).
  *
@@ -199,27 +220,12 @@ export type StoryRole = Role | "superadmin";
  * both are deployment-wide catalogs a superadmin alone writes, which let two
  * screens gate on capabilities the control plane does not define while their
  * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
- * generated copy of `CAPABILITIES` instead, and a test fails the build when
- * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ * copy of `crates/rolter-control/rbac-matrix.json` instead — the matrix the
+ * rolter-control test suite writes from `CAPABILITIES` (#1369) — and a test
+ * fails the build when that copy and the artifact disagree.
+ *
+ * A bare role is one org membership, which every row of every chain reaches.
  */
-/**
- * A caller whose role depends on the chain `rbac/effective` is asked at
- * (#2522): the stub reads `org_id`, `team_id` and `project_id` off the query
- * string, the way the control plane does, and answers for the role this
- * returns. It is how a story plays a project admin, who holds nothing at the
- * org alone.
- */
-export type RoleAt = (chain: {
-  orgId: string | null;
-  teamId: string | null;
-  projectId: string | null;
-}) => StoryRole;
-
-/** An admin of `projectId` and a viewer anywhere that membership does not reach. */
-export function adminOfProject(projectId: string): RoleAt {
-  return (chain) => (chain.projectId === projectId ? "admin" : "viewer");
-}
-
 export function effectiveFor(role: StoryRole): RbacEffective {
   return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
 }
@@ -228,21 +234,22 @@ export function effectiveFor(role: StoryRole): RbacEffective {
 export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
-export function withCapabilities(role: StoryRole | RoleAt, handler: FetchStub): FetchStub {
+export function withCapabilities(
+  role: StoryRole | StoryMemberships,
+  handler: FetchStub,
+): FetchStub {
   return async (input, init) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname;
     if (path === "/api/v1/rbac/effective") {
       const q = url.searchParams;
-      const as =
-        typeof role === "function"
-          ? role({
-              orgId: q.get("org_id"),
-              teamId: q.get("team_id"),
-              projectId: q.get("project_id"),
-            })
-          : role;
-      return json(effectiveFor(as));
+      if (typeof role === "string") return json(effectiveFor(role));
+      const chain = {
+        orgId: q.get("org_id"),
+        teamId: q.get("team_id"),
+        projectId: q.get("project_id"),
+      };
+      return json(effectiveFromTable({ memberships: role, chain }));
     }
     if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
     return handler(input, init);
@@ -1031,4 +1038,19 @@ export async function expectUxEvent(action: UiEvent["action"], target?: string):
  */
 export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
   expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
+}
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the linked and unlinked states cannot leak into each
+ * other.
+ */
+export function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
 }

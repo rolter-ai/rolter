@@ -21,6 +21,7 @@ import {
   fetchUsers,
   type AuditLogEntry,
 } from "@/lib/api";
+import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
@@ -39,58 +40,6 @@ const RANGES = [
   { id: "all", hours: null },
 ] as const;
 
-// well-known audited actions for the filter dropdown; the API filters
-// server-side so the list doesn't depend on the current page
-const ACTIONS = [
-  "provider.create",
-  "provider.update",
-  "provider.delete",
-  "route.create",
-  "route.delete",
-  "route.set_params",
-  "route.set_complexity",
-  "route.set_advanced",
-  "virtual_key.create",
-  "virtual_key.delete",
-  "user.invite",
-  "user.update",
-  "user.delete",
-  "membership.create",
-  "membership.delete",
-  "budget.create",
-  "budget.delete",
-  "security.settings.update",
-  // account events: written with no org, and shown for this org's own people
-  "auth.login",
-  "auth.sso_login",
-  "auth.logout",
-  "auth.login_failed",
-  "auth.login_throttled",
-  "auth.login_locked",
-  "auth.mfa_enabled",
-  "auth.mfa_disabled",
-  "auth.mfa_failed",
-  "auth.mfa_confirm_failed",
-  "auth.mfa_disable_failed",
-  "auth.mfa_enrolment_required",
-  "auth.mfa_recovery_code_used",
-  "auth.mfa_recovery_codes_regenerated",
-  "auth.mfa_break_glass_reset",
-] as const;
-
-const TARGET_TYPES = [
-  "provider",
-  "route",
-  "route_target",
-  "virtual_key",
-  "user",
-  "membership",
-  "rate_limit",
-  "budget",
-  "model_price",
-  "security_settings",
-] as const;
-
 // dashboard route that owns each audited resource type, for the link-out
 // column; scope-level types (org/team/project) have no dedicated page
 const TARGET_PATH: Record<string, string> = {
@@ -104,6 +53,29 @@ const TARGET_PATH: Record<string, string> = {
   budget: "/budgets",
   model_price: "/pricing-overrides",
   security_settings: "/security",
+  // identity: the screens that own each target, so an SSO or SCIM row links out
+  sso_provider: "/sso",
+  sso_group_mapping: "/sso",
+  scim_token: "/user-provisioning",
+  scim_group: "/user-provisioning",
+  scim_group_mapping: "/user-provisioning",
+  custom_role: "/rbac",
+  invitation: "/gov-users",
+  team: "/gov-teams",
+  access_profile: "/access-profiles",
+  access_profile_assignment: "/access-profiles",
+  provider_group: "/provider-groups",
+  guardrail_rule: "/guardrail-rules",
+  guardrail_provider: "/guardrail-providers",
+  mcp_server: "/mcp-catalog",
+  plugin: "/plugins",
+  prompt_template: "/prompt-repo",
+  skill: "/skills-repo",
+  feature_flags: "/feature-flags",
+  client_settings: "/client-settings",
+  logging_settings: "/logs-settings",
+  compatibility_policy: "/compatibility",
+  cluster_node: "/cluster",
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -351,13 +323,17 @@ export default function AuditLog() {
               />
             )}
             <Combobox
-              className="w-52"
+              className="w-60"
               aria-label={t("pages.auditLog.actionFilterAria")}
               value={action}
               onChange={setAction}
               options={[
                 { value: "", label: t("pages.auditLog.allActions") },
-                ...ACTIONS.map((a) => ({ value: a, label: a })),
+                ...groupedActions().map((a) => ({
+                  value: a,
+                  label: a,
+                  group: t(`pages.auditLog.actionGroups.${auditGroup(a)}`),
+                })),
               ]}
             />
             <Combobox
@@ -367,7 +343,7 @@ export default function AuditLog() {
               onChange={setTarget}
               options={[
                 { value: "", label: t("pages.auditLog.allTargets") },
-                ...TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
+                ...AUDIT_TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
               ]}
             />
             <Segmented
@@ -406,7 +382,7 @@ export default function AuditLog() {
                   actions={
                     filtersActive ? (
                       <Button variant="outline" onClick={clearFilters}>
-                        {t("common.clearSearch")}
+                        {t("common.clearFilters")}
                       </Button>
                     ) : undefined
                   }

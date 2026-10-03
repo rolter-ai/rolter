@@ -31,7 +31,7 @@ use crate::postgres::models::{
 use crate::ConfigStore;
 
 fn store_err(err: sqlx::Error) -> Error {
-    Error::Store(err.to_string())
+    repo::support::store_err(err)
 }
 
 /// Connection-pool budget for the control plane's Postgres pool.

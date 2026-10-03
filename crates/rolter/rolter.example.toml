@@ -528,6 +528,16 @@ disabled = false # revoke without deleting
 # a single consumer would serialise them
 # workers = 4
 
+# Ingress rules for the /v1/* surface. A control-plane-managed gateway takes these
+# from the dashboard's Security screen instead.
+# [security]
+# exact /v1/... paths served without authentication (no prefixes, no wildcards)
+# auth_bypass_routes = ["/v1/models"]
+# lowercase header name -> exact value every request must carry; a mismatch is
+# refused with 403 before authentication
+# [security.required_headers]
+# x-mesh-identity = "gateway"
+
 [logging]
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset

@@ -31,6 +31,21 @@ export const Default: Story = {
   },
 };
 
+/** The glyph is 14px; the trigger around it is still a 24px target (#2573). */
+export const TriggerHasA24pxHitArea: Story = {
+  render: (args) => (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      Queue capacity
+      <InfoHint {...args} />
+    </span>
+  ),
+  play: async ({ canvasElement }) => {
+    const box = within(canvasElement).getByRole("button").getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
+  },
+};
+
 /** The trigger takes an explicit name where the surrounding label has one. */
 export const NamedForItsField: Story = {
   args: { label: "About queue capacity" },

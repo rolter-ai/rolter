@@ -14,6 +14,7 @@ import {
 } from "./story-harness";
 import type { ClientSettingsDto } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
+import { phoneFits } from "@/lib/story-viewport";
 
 const RESERVED = ["authorization", "x-api-key", "host", "cookie"];
 
@@ -248,3 +249,14 @@ export const RefusedToAViewer: Story = {
     await expectForbidden(canvasElement);
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const clientFits = phoneFits({
+  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
+  ready: (canvas) => canvas.findByLabelText(en.pages.clientSettings.publicBaseUrl),
+});
+// the base-url field held a 320px floor: 63px past the edge of a 320px phone
+export const MobileFits: Story = clientFits("mobile", "en");
+export const SmallPhone: Story = clientFits("small", "en");
+export const SmallPhoneInRussian: Story = clientFits("small", "ru");

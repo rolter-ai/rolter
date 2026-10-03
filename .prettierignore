@@ -15,6 +15,11 @@ crates/*/CHANGELOG.md
 # a symlink to AGENTS.md: prettier would format the same bytes twice
 CLAUDE.md
 
+# written by the rolter-control test suite with serde_json, which owns its
+# formatting: the test compares it byte for byte (#1369), so prettier collapsing
+# a short array such as `chain_at`'s would fail cargo test
+crates/rolter-control/rbac-matrix.json
+
 # helm chart templates are go templates that happen to end in .yaml, and the
 # yaml parser cannot read `{{- if ... }}` at all
 charts/rolter/templates/

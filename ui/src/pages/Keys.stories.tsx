@@ -31,6 +31,7 @@ import {
   expectEmptyState,
   expectNoFalseEmpty,
   uxEvents,
+  withDocsBase,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -41,6 +42,7 @@ import {
   atTablet,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -893,20 +895,6 @@ export const TheAllowListOffersTheProjectsRoutes: Story = {
   },
 };
 
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
-
 /** The explainer carries a link into `security/which-key` when docs exist (#1164). */
 export const ExplainerLinksToTheDocs: Story = {
   beforeEach: withDocsBase("https://docs.example.com"),
@@ -993,3 +981,17 @@ export const DeleteIsConfirmedAndReported: Story = {
     ).toHaveLength(1);
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const keysFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withKeys(KEYS)}>
+      <Keys />
+    </Harness>
+  ),
+  ready: (canvas) => canvas.findByText("backend service"),
+});
+export const MobileInRussian: Story = keysFit("mobile", "ru");
+export const SmallPhone: Story = keysFit("small", "en");
+export const SmallPhoneInRussian: Story = keysFit("small", "ru");

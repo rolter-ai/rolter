@@ -215,6 +215,11 @@ async fn update(
         _ => true,
     };
     let clear_secret = origin_changed && secret.is_none();
+    // health describes one endpoint and credential; once either changes the
+    // recorded result is a claim about something that no longer exists, and
+    // a green card over an untried endpoint is the silent no-op the test
+    // delivery guards against. Other edits keep the history
+    let reset_health = stored != input.endpoint.trim() || secret.is_some();
     // coalesce leaves an existing secret in place when the caller does not
     // resend it on the same origin, so editing the sampling rate cannot
     // silently drop the credential the connector needs
@@ -223,6 +228,9 @@ async fn update(
          sampling_rate=$6, auth_secret_ref=$7, \
          auth_ciphertext = case when $10 then null else coalesce($8, auth_ciphertext) end, \
          auth_nonce = case when $10 then null else coalesce($9, auth_nonce) end, \
+         health_status = case when $11 then 'unknown' else health_status end, \
+         health_checked_at = case when $11 then null else health_checked_at end, \
+         health_error = case when $11 then null else health_error end, \
          updated_at=now() where id=$1 returning {}",
         columns()
     ))
@@ -236,6 +244,7 @@ async fn update(
     .bind(secret.as_ref().map(|(c, _)| c.as_slice()))
     .bind(secret.as_ref().map(|(_, n)| n.as_slice()))
     .bind(clear_secret)
+    .bind(reset_health)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| Error::Store(e.to_string()))?;
