@@ -11,8 +11,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
+import { serverFieldError } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
@@ -65,50 +67,92 @@ interface FormError {
   values?: Record<string, string>;
 }
 
-function validate(form: FormState, reserved: string[]): FormError | null {
+// every failing field is reported at once, keyed by field (#2651). an injected
+// header row contributes two fields, its name and its value, keyed by row id
+type FieldKey = string;
+type FieldErrors = Record<FieldKey, FormError>;
+
+const nameKey = (row: HeaderPair) => `injected-name-${row.id}`;
+const valueKey = (row: HeaderPair) => `injected-value-${row.id}`;
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const fieldOrder = (form: FormState): FieldKey[] => [
+  "publicBaseUrl",
+  "forwarded",
+  ...form.injected.flatMap((row) => [nameKey(row), valueKey(row)]),
+  "requestIdHeader",
+];
+
+// the wire names a 400 opens with, mapped to the field they belong to; the
+// header rules answer with the header itself, which belongs to no one field
+const WIRE_FIELDS: Record<string, FieldKey> = {
+  public_base_url: "publicBaseUrl",
+};
+
+function validate(form: FormState, reserved: string[]): FieldErrors {
+  const errors: FieldErrors = {};
   const url = form.publicBaseUrl.trim();
   if (url !== "" && !/^https?:\/\//.test(url)) {
-    return { key: "pages.clientSettings.errors.baseUrlScheme" };
+    errors.publicBaseUrl = { key: "pages.clientSettings.errors.baseUrlScheme" };
   }
   const forwarded = splitList(form.forwarded);
   for (const name of forwarded) {
     if (!HEADER_NAME.test(name)) {
-      return { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
+      errors.forwarded = { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
+      break;
     }
     if (reserved.includes(name)) {
-      return { key: "pages.clientSettings.errors.reservedHeader", values: { name } };
+      errors.forwarded = { key: "pages.clientSettings.errors.reservedHeader", values: { name } };
+      break;
     }
   }
-  if (forwarded.length > 64) return { key: "pages.clientSettings.errors.tooManyForwarded" };
+  if (!errors.forwarded && forwarded.length > 64) {
+    errors.forwarded = { key: "pages.clientSettings.errors.tooManyForwarded" };
+  }
 
   const seen = new Set<string>();
-  for (const { name, value } of form.injected) {
+  let lastNamed: HeaderPair | null = null;
+  for (const row of form.injected) {
+    const { name, value } = row;
     const lower = name.trim().toLowerCase();
     if (lower === "" && value.trim() === "") continue;
+    lastNamed = row;
     if (!HEADER_NAME.test(lower)) {
-      return { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
-    }
-    if (reserved.includes(lower)) {
-      return { key: "pages.clientSettings.errors.reservedHeader", values: { name: lower } };
-    }
-    if (seen.has(lower)) {
-      return { key: "pages.clientSettings.errors.duplicateHeader", values: { name: lower } };
+      errors[nameKey(row)] = { key: "pages.clientSettings.errors.badHeaderName", values: { name } };
+    } else if (reserved.includes(lower)) {
+      errors[nameKey(row)] = {
+        key: "pages.clientSettings.errors.reservedHeader",
+        values: { name: lower },
+      };
+    } else if (seen.has(lower)) {
+      errors[nameKey(row)] = {
+        key: "pages.clientSettings.errors.duplicateHeader",
+        values: { name: lower },
+      };
     }
     seen.add(lower);
     if (/[\u0000-\u001f\u007f]/.test(value)) {
-      return { key: "pages.clientSettings.errors.controlCharacters", values: { name: lower } };
+      errors[valueKey(row)] = {
+        key: "pages.clientSettings.errors.controlCharacters",
+        values: { name: lower },
+      };
     }
   }
-  if (seen.size > 64) return { key: "pages.clientSettings.errors.tooManyInjected" };
+  // the limit belongs to the row that crossed it
+  if (seen.size > 64 && lastNamed && !errors[nameKey(lastNamed)]) {
+    errors[nameKey(lastNamed)] = { key: "pages.clientSettings.errors.tooManyInjected" };
+  }
 
   const requestId = form.requestIdHeader.trim().toLowerCase();
   if (!HEADER_NAME.test(requestId)) {
-    return { key: "pages.clientSettings.errors.badRequestIdHeader" };
+    errors.requestIdHeader = { key: "pages.clientSettings.errors.badRequestIdHeader" };
+  } else if (reserved.includes(requestId)) {
+    errors.requestIdHeader = {
+      key: "pages.clientSettings.errors.reservedHeader",
+      values: { name: requestId },
+    };
   }
-  if (reserved.includes(requestId)) {
-    return { key: "pages.clientSettings.errors.reservedHeader", values: { name: requestId } };
-  }
-  return null;
+  return errors;
 }
 
 // deployment-wide client settings, persisted via /api/v1/client-settings
@@ -130,6 +174,13 @@ function ClientSettingsScreen() {
   useErrorState(!!settings.error, "client-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
+  const [serverErrors, setServerErrors] = React.useState<Record<FieldKey, string>>({});
+  const base = React.useId();
+  const idOf = (key: FieldKey) => {
+    if (key === "publicBaseUrl") return "client-public-base-url";
+    if (key === "requestIdHeader") return "client-request-id-header";
+    return `${base}-${key}`;
+  };
   React.useEffect(() => {
     if (settings.data && form === null) {
       setForm(fromDto(settings.data));
@@ -154,6 +205,7 @@ function ClientSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: CLIENT_SETTINGS_QUERY_KEY });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -161,6 +213,12 @@ function ClientSettingsScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(idOf(named.field))?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.clientSettings") }),
@@ -193,7 +251,36 @@ function ClientSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localError = validate(form, dto.reserved);
+  // an edit answers the server's complaint about that field
+  const edit = (key: FieldKey, patch: Partial<FormState>) => {
+    set(patch);
+    setServerErrors((e) => {
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+  };
+  const local = validate(form, dto.reserved);
+  const errorOf = (key: FieldKey): string | undefined => {
+    const found = local[key];
+    return found ? t(found.key, found.values) : serverErrors[key];
+  };
+  const invalid = fieldOrder(form).filter((key) => errorOf(key));
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2651)
+  const submit = () => {
+    if (invalid.length > 0) {
+      document.getElementById(idOf(invalid[0]))?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
+  const errorId = (key: FieldKey) => `${idOf(key)}-error`;
+  const invalidProps = (key: FieldKey) => ({
+    id: idOf(key),
+    "aria-invalid": errorOf(key) ? (true as const) : undefined,
+    "aria-describedby": describedBy(!!errorOf(key) && errorId(key)),
+  });
   // what a client would actually type, following the field as it is edited.
   // an empty field has no example: the /gw proxy needs a dashboard session, so
   // it is no address for a client (#2486)
@@ -216,13 +303,14 @@ function ClientSettingsScreen() {
             {t("pages.clientSettings.publicBaseUrl")}
           </label>
           <Input
-            id="client-public-base-url"
             className="min-w-[320px] font-mono text-xs"
             aria-label={t("pages.clientSettings.publicBaseUrl")}
+            {...invalidProps("publicBaseUrl")}
             placeholder={BASE_URL_PLACEHOLDER}
             value={form.publicBaseUrl}
-            onChange={(e) => set({ publicBaseUrl: e.target.value })}
+            onChange={(e) => edit("publicBaseUrl", { publicBaseUrl: e.target.value })}
           />
+          <FieldError id={errorId("publicBaseUrl")} error={errorOf("publicBaseUrl")} />
         </div>
         {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
       </section>
@@ -236,11 +324,13 @@ function ClientSettingsScreen() {
         </div>
         <textarea
           aria-label={t("pages.clientSettings.forwarded")}
+          {...invalidProps("forwarded")}
           className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
           placeholder={t("pages.clientSettings.forwardedPlaceholder")}
           value={form.forwarded}
-          onChange={(e) => set({ forwarded: e.target.value })}
+          onChange={(e) => edit("forwarded", { forwarded: e.target.value })}
         />
+        <FieldError id={errorId("forwarded")} error={errorOf("forwarded")} />
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <span>{t("pages.clientSettings.alwaysPropagated")}</span>
           {dto.always_propagated.map((h) => (
@@ -273,37 +363,43 @@ function ClientSettingsScreen() {
             </p>
           )}
           {form.injected.map((row, i) => (
-            <div key={row.id} className="flex items-center gap-2">
-              <Input
-                className="max-w-[220px] font-mono text-xs"
-                aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
-                placeholder="x-partner-id"
-                value={row.name}
-                onChange={(e) =>
-                  set({
-                    injected: form.injected.map((r) =>
-                      r.id === row.id ? { ...r, name: e.target.value } : r,
-                    ),
-                  })
-                }
-              />
-              <Input
-                className="flex-1 font-mono text-xs"
-                aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
-                placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
-                value={row.value}
-                onChange={(e) =>
-                  set({
-                    injected: form.injected.map((r) =>
-                      r.id === row.id ? { ...r, value: e.target.value } : r,
-                    ),
-                  })
-                }
-              />
-              <DeleteIconButton
-                label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
-                onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
-              />
+            <div key={row.id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <Input
+                  className="max-w-[220px] font-mono text-xs"
+                  aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
+                  {...invalidProps(nameKey(row))}
+                  placeholder="x-partner-id"
+                  value={row.name}
+                  onChange={(e) =>
+                    edit(nameKey(row), {
+                      injected: form.injected.map((r) =>
+                        r.id === row.id ? { ...r, name: e.target.value } : r,
+                      ),
+                    })
+                  }
+                />
+                <Input
+                  className="flex-1 font-mono text-xs"
+                  aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
+                  {...invalidProps(valueKey(row))}
+                  placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
+                  value={row.value}
+                  onChange={(e) =>
+                    edit(valueKey(row), {
+                      injected: form.injected.map((r) =>
+                        r.id === row.id ? { ...r, value: e.target.value } : r,
+                      ),
+                    })
+                  }
+                />
+                <DeleteIconButton
+                  label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
+                  onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
+                />
+              </div>
+              <FieldError id={errorId(nameKey(row))} error={errorOf(nameKey(row))} />
+              <FieldError id={errorId(valueKey(row))} error={errorOf(valueKey(row))} />
             </div>
           ))}
         </div>
@@ -330,22 +426,28 @@ function ClientSettingsScreen() {
             {t("pages.clientSettings.requestIdHeader")}
           </label>
           <Input
-            id="client-request-id-header"
             className="max-w-[240px] font-mono text-xs"
             aria-label={t("pages.clientSettings.requestIdHeader")}
+            {...invalidProps("requestIdHeader")}
             value={form.requestIdHeader}
-            onChange={(e) => set({ requestIdHeader: e.target.value })}
+            onChange={(e) => edit("requestIdHeader", { requestIdHeader: e.target.value })}
           />
+          <FieldError id={errorId("requestIdHeader")} error={errorOf("requestIdHeader")} />
         </div>
       </section>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">
-            {t(localError.key, localError.values)}
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
           </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

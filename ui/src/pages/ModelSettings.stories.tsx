@@ -115,10 +115,61 @@ export const RejectsAnOutOfRangeTemperature: Story = {
     const temperature = await canvas.findByLabelText("Temperature");
     await userEvent.clear(temperature);
     await userEvent.type(temperature, "3");
-    await waitFor(() =>
-      expect(canvas.getByText("Temperature must be between 0 and 2.")).toBeVisible(),
+    await waitFor(() => expect(temperature).toHaveAttribute("aria-invalid", "true"));
+    await expect(temperature).toHaveAccessibleDescription("Temperature must be between 0 and 2.");
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+  },
+};
+
+// every failing field is marked at once, each with its own message, and a
+// press on Save moves focus to the first one instead of doing nothing (#2651)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const topP = await canvas.findByLabelText("Top-p");
+    const maxTokens = canvas.getByLabelText("Max tokens");
+    await userEvent.clear(topP);
+    await userEvent.type(topP, "2");
+    await userEvent.clear(maxTokens);
+    await userEvent.type(maxTokens, "0");
+    await waitFor(() => {
+      expect(topP).toHaveAttribute("aria-invalid", "true");
+      expect(maxTokens).toHaveAttribute("aria-invalid", "true");
+    });
+    await expect(topP).toHaveAccessibleDescription("Top-p must be between 0 and 1.");
+    await expect(maxTokens).toHaveAccessibleDescription(
+      "Max tokens must be a whole number between 1 and 1000000.",
+    );
+    await expect(canvas.getByLabelText("Temperature")).not.toHaveAttribute("aria-invalid");
+    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expect(topP).toHaveFocus();
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "default_model must be at most 256 characters" } }, 400);
+      }
+      return json(CONFIGURED);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const model = await canvas.findByLabelText("Default model");
+    await userEvent.type(model, "x");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(model).toHaveAttribute("aria-invalid", "true"));
+    await expect(model).toHaveAccessibleDescription("default_model must be at most 256 characters");
+    await waitFor(() => expect(model).toHaveFocus());
   },
 };
 
@@ -132,12 +183,19 @@ export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Temperature")).toBeDisabled());
     await expect(canvas.getByLabelText("Temperature")).toHaveValue("3");
     await expect(canvas.queryByText("Temperature must be between 0 and 2.")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled(),
+      expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
     );
-    await expect(canvas.getByText("Temperature must be between 0 and 2.")).toBeVisible();
+    await expect(canvas.getByLabelText("Temperature")).toHaveAccessibleDescription(
+      "Temperature must be between 0 and 2.",
+    );
   },
 };
 
@@ -158,7 +216,7 @@ export const SwitchingOffKeepsTheStoredValue: Story = {
     await userEvent.type(temperature, "5");
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
     const save = canvas.getByRole("button", { name: "Save Changes" });
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await userEvent.click(save);
     const body = await switchingOff.expectSentBody<ModelDefaultsDto>("PUT", "model-defaults");
     await expect(body.enabled).toBe(false);
