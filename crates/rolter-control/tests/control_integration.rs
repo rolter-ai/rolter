@@ -18003,16 +18003,17 @@ async fn a_refused_scim_replace_leaves_the_identity_unchanged() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "Acme", "slug": "acme"}))
         .send()
         .await
@@ -18023,7 +18024,7 @@ async fn a_refused_scim_replace_leaves_the_identity_unchanged() {
     let org = org["id"].as_str().unwrap().to_string();
     let token: Value = client
         .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "idp"}))
         .send()
         .await
@@ -18189,16 +18190,17 @@ async fn a_refused_scim_create_leaves_no_identity_behind() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "Acme", "slug": "acme"}))
         .send()
         .await
@@ -18209,7 +18211,7 @@ async fn a_refused_scim_create_leaves_no_identity_behind() {
     let org = org["id"].as_str().unwrap().to_string();
     let token: Value = client
         .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "idp"}))
         .send()
         .await
@@ -18588,16 +18590,17 @@ async fn scim_cannot_deactivate_an_orgs_last_admin() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "Acme", "slug": "acme"}))
         .send()
         .await
@@ -18608,7 +18611,7 @@ async fn scim_cannot_deactivate_an_orgs_last_admin() {
     let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
     let token: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "idp"}))
         .send()
         .await
@@ -18722,7 +18725,7 @@ async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    let addr = serve_with_public_url(pool.clone(), Some(admin_token().to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -18732,7 +18735,7 @@ async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "SyncOrg", "slug": "sync-org"}))
         .send()
         .await
@@ -18745,7 +18748,7 @@ async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
     let (issuer, stub) = stub_idp::serve_stub().await;
     let provider: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({
             "name": "Stub IdP", "slug": "mixed", "issuer": issuer, "client_id": "rolter"
         }))
@@ -18761,7 +18764,7 @@ async fn sso_group_sync_keeps_an_orgs_last_admin_grant() {
             .post(format!(
                 "{base}/api/v1/sso-providers/{provider_id}/group-mappings"
             ))
-            .bearer_auth("admintok")
+            .bearer_auth(admin_token())
             .json(&json!({"group_name": group, "role": role, "org_id": org_id}))
             .send()
             .await
@@ -18813,16 +18816,17 @@ async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "GroupOrg", "slug": "group-org"}))
         .send()
         .await
@@ -18834,7 +18838,7 @@ async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
     let org_uuid: uuid::Uuid = org_id.parse().unwrap();
     let minted: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "okta"}))
         .send()
         .await
@@ -18860,7 +18864,7 @@ async fn scim_group_sync_keeps_an_orgs_last_admin_grant() {
     let ada: uuid::Uuid = scim_id.parse().unwrap();
     let res = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-group-mappings"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"group_name": "owners", "role": "admin"}))
         .send()
         .await
