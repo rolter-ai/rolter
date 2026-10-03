@@ -424,6 +424,85 @@ export const RoutelessProjectReachesTheBuiltin: Story = {
 };
 
 /**
+ * A minted key's reach is fixed when it is minted, so one minted before the
+ * project had a route stayed on `fake-llm` until the operator pressed Renew
+ * (#2608). The screen now compares the key's `models` with the project's
+ * routes each time that list is read, and mints again when they differ.
+ *
+ * The route is added after the screen opened and the list is re-read the way
+ * a returning tab re-reads it, on visibility. One mint more, not a loop, and
+ * the second key is the one the next message goes out with.
+ */
+const projectRoutes: { id: string; model: string; strategy: string }[] = [];
+const reminting = recording(
+  deployment(
+    async () =>
+      json({
+        ...minted(`sk-rolter-minted-${projectRoutes.length}`),
+        models: projectRoutes.length ? projectRoutes.map((r) => r.model) : ["fake-llm"],
+      }),
+    undefined,
+    undefined,
+    {
+      get routes() {
+        return projectRoutes;
+      },
+      gateway: () => json(GATEWAY_MODELS),
+      chat: () => completion("Hello from the new route."),
+    },
+  ),
+);
+
+export const RouteAddedRemintsTheKey: Story = {
+  beforeEach: () => {
+    projectRoutes.length = 0;
+  },
+  render: () => <Screen fetchStub={reminting.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This project has no routes yet/);
+    await expect(mintsIn(reminting.calls)).toBe(1);
+
+    projectRoutes.push(ROUTES[0]);
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+
+    // the key was swapped without a press on Renew, and the routeless line went
+    await waitFor(() => expect(mintsIn(reminting.calls)).toBe(2));
+    await waitFor(() => expect(canvas.queryByText(/This project has no routes yet/)).toBeNull());
+    await expect(canvas.getByText("Active")).toBeVisible();
+
+    // the same route set again is not a reason to mint a third time
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    await canvas.findByRole("textbox", { name: "Message to minicpm5-1b" });
+    await expect(mintsIn(reminting.calls)).toBe(2);
+
+    const composer = canvas.getByRole("textbox", { name: "Message to minicpm5-1b" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Hello from the new route.");
+  },
+};
+
+/** A key somebody pasted says nothing about the routes, so a route never replaces it. */
+const pastedCalls = recording(deployment(async () => json(minted())));
+
+export const PastedKeyIsNeverReminted: Story = {
+  render: () => <Screen role="viewer" fetchStub={pastedCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/Your role in this project cannot mint keys/);
+    await userEvent.type(canvas.getByLabelText("Virtual key"), "sk-rolter-given");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    // anchor on a read that can only follow the event, then count
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expect(mintsIn(pastedCalls.calls)).toBe(0);
+  },
+};
+
+/**
  * Minting takes `my_virtual_key:create`, which a viewer does not hold (#2061).
  * The screen asks the gate before it mints, so a viewer is never sent into a
  * refusal on arrival: the button says which role it takes, the paste field is
