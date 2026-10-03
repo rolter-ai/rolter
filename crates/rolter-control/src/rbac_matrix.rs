@@ -1816,6 +1816,31 @@ mod tests {
         comment: &'static str,
         roles: Vec<RoleView>,
         resources: Vec<ResourceView>,
+        /// the chain fields `chain_at` clears for a row of each scope the
+        /// table uses, so the dashboard's port of `allowed_for` can be pinned
+        /// to the rule without re-parsing this file (#2376)
+        chain_at: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
+    }
+
+    /// `chain_at` asked at a chain naming all three parts, once per scope the
+    /// table uses, as the parts it leaves out
+    fn chain_trims() -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+        let whole = ScopeChain {
+            org: Some(Uuid::nil()),
+            team: Some(Uuid::nil()),
+            project: Some(Uuid::nil()),
+        };
+        CAPABILITIES
+            .iter()
+            .map(|cap| {
+                let at = chain_at(cap.scope, whole);
+                let cleared = [("org", at.org), ("team", at.team), ("project", at.project)]
+                    .into_iter()
+                    .filter_map(|(field, id)| id.is_none().then_some(field))
+                    .collect();
+                (cap.scope, cleared)
+            })
+            .collect()
     }
 
     fn render_artifact() -> String {
@@ -1827,6 +1852,7 @@ mod tests {
                       src/rbac_matrix.rs (`just gen-rbac`) — do not edit by hand",
             roles,
             resources,
+            chain_at: chain_trims(),
         };
         let mut json = serde_json::to_string_pretty(&artifact).expect("the matrix serializes");
         json.push('\n');
@@ -1856,12 +1882,14 @@ mod tests {
     fn the_matrix_artifact_omits_only_the_custom_roles() {
         // the dashboard serves the artifact as `GET /api/v1/rbac/matrix` with
         // an empty `custom_roles`, so every other field the endpoint carries
-        // has to be in it
+        // has to be in it; `chain_at` is the one field it adds, for the port
+        // of `allowed_for` rather than for the matrix payload
         let endpoint = serde_json::to_value(builtin_matrix()).expect("the matrix serializes");
         let mut artifact: serde_json::Value =
             serde_json::from_str(&render_artifact()).expect("the artifact parses");
         let artifact = artifact.as_object_mut().expect("an object");
         artifact.remove("$comment");
+        artifact.remove("chain_at");
         artifact.insert("custom_roles".into(), serde_json::json!([]));
         assert_eq!(serde_json::Value::Object(artifact.clone()), endpoint);
     }

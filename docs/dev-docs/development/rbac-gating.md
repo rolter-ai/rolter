@@ -274,7 +274,7 @@ scope switch re-keys the query, so a viewer in one org does not carry a cached
 from `ui/src/lib/rbac-capabilities.json` — a copy of
 `crates/rolter-control/rbac-matrix.json`, which is `GET /api/v1/rbac/matrix`
 minus the per-tenant custom roles, rendered by the control plane itself from
-`CAPABILITIES`. `ui/src/lib/rbac-capabilities.ts` serves that copy as
+`CAPABILITIES`, plus the `chain_at` table described below. `ui/src/lib/rbac-capabilities.ts` serves that copy as
 `matrixFixture()` unchanged and derives `effectiveFor()` from it the way
 `allowed_for` does.
 
@@ -286,8 +286,10 @@ higher role). `effectiveFor()` ports both (#2376), so a team admin's stub
 answers `role: "admin"` yet lacks `team:create` and `plugin:create`, exactly as
 the server does. A bare `role="admin"` is one org membership, which reaches
 every part of every chain; pass memberships to play anyone held lower.
-`rbac-matrix-source.test.ts` also re-parses `chain_at`'s match arms and fails
-when the port's `CHAIN_TRIMS` disagrees with them.
+The artifact carries that rule too: its `chain_at` table lists, for every
+scope the matrix uses, the chain fields `chain_at` clears, written by calling
+the function rather than by reading its source. `rbac-matrix-artifact.test.ts`
+fails when the port's `chainAt` (`CHAIN_TRIMS`) clears anything else.
 
 It used to be a table typed out by hand in `story-harness.tsx`, and nothing
 compared the two. So it drifted — #1258 found it calling `model` and

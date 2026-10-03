@@ -121,8 +121,9 @@ function callerOf(holder: Holder): Caller {
 /**
  * The chain fields `chain_at` clears for a row of each scope: an org-scoped
  * guard asks at the org alone, a team-scoped one at org + team, and anything
- * else at the whole chain. `scripts/rbac-matrix-source.test.ts` pins this to
- * the match arms in `crates/rolter-control/src/rbac_matrix.rs`.
+ * else at the whole chain. `scripts/rbac-matrix-artifact.test.ts` pins this to
+ * the `chain_at` table the rolter-control test suite writes into
+ * `crates/rolter-control/rbac-matrix.json` by calling `chain_at` itself.
  */
 export const CHAIN_TRIMS: Record<string, (keyof ScopeChain)[]> = {
   org: ["teamId", "projectId"],

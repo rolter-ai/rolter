@@ -1461,5 +1461,16 @@
         }
       ]
     }
-  ]
+  ],
+  "chain_at": {
+    "deployment": [],
+    "org": [
+      "team",
+      "project"
+    ],
+    "project": [],
+    "team": [
+      "project"
+    ]
+  }
 }
