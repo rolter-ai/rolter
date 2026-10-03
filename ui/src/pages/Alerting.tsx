@@ -3,6 +3,9 @@ import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-r
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Overline } from "@/components/ui/overline";
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -81,7 +84,7 @@ import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // a state's three colours. the pill label is the -text half of the hue, because
 // a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
@@ -160,7 +163,6 @@ function AlertChannelsScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!channels.isLoading);
-  useErrorState(!!channels.error, "alert-channels");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["alert-channels"] });
 
   const toggle = useMutation({
@@ -220,6 +222,7 @@ function AlertChannelsScreen() {
           error={channels.error}
           resource={t("errors.resources.alertChannels")}
           onRetry={() => void channels.refetch()}
+          target="alert-channels"
         />
       )}
       {channels.data && channels.data.length === 0 && (
@@ -241,14 +244,11 @@ function AlertChannelsScreen() {
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
         {(channels.data ?? []).map((c) => (
-          <div
-            key={c.id}
-            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
-          >
+          <CardStack key={c.id}>
             <div className="flex items-center gap-2.5">
-              <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+              <IconFrame>
                 <Megaphone className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-sm font-semibold">{c.name}</div>
                 <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
@@ -294,7 +294,7 @@ function AlertChannelsScreen() {
                 />
               </div>
             </div>
-          </div>
+          </CardStack>
         ))}
       </div>
 
@@ -471,7 +471,6 @@ function AlertRulesScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!rules.isLoading);
-  useErrorState(!!rules.error, "alert-rules");
   const channels = useQuery({
     queryKey: ["alert-channels"],
     queryFn: fetchAlertChannels,
@@ -586,6 +585,7 @@ function AlertRulesScreen() {
           error={rules.error}
           resource={t("errors.resources.alertRules")}
           onRetry={() => void rules.refetch()}
+          target="alert-rules"
         />
       )}
       {rules.data && rules.data.length === 0 && (
@@ -794,9 +794,7 @@ function RuleStat({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </dt>
+      <Overline as="dt">{label}</Overline>
       <dd
         className={cn(
           "break-words text-xs text-[color:var(--text-secondary)]",
@@ -1132,7 +1130,6 @@ function AlertHistoryScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!history.isLoading);
-  useErrorState(!!history.error, "alert-history");
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
@@ -1196,6 +1193,7 @@ function AlertHistoryScreen() {
           error={history.error}
           resource={t("errors.resources.alertHistory")}
           onRetry={() => void history.refetch()}
+          target="alert-history"
         />
       )}
       {capped && (

@@ -3,6 +3,7 @@ import { expect, userEvent, within } from "storybook/test";
 
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
+import { Switch } from "./switch";
 import { Field } from "./field";
 import { Input } from "./input";
 import { SettingsPanel } from "./settings-panel";
@@ -35,7 +36,8 @@ export const Default: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("Sampling")).toBeVisible();
+    // the title is a real heading, so a screen reader can jump between sections
+    await expect(canvas.getByRole("heading", { level: 2, name: "Sampling" })).toBeVisible();
     // the line saying what the group is for is the reason a panel is not just a
     // bordered div, so it is asserted rather than left to the snapshot
     await expect(
@@ -49,7 +51,7 @@ export const TitleOnly: Story = {
   args: { title: "Timeouts", children: controls },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("Timeouts")).toBeVisible();
+    await expect(canvas.getByRole("heading", { name: "Timeouts" })).toBeVisible();
     // and no empty paragraph left behind where the description would have been
     await expect(canvasElement.querySelector("section p")).toBeNull();
   },
@@ -73,6 +75,15 @@ export const Dimmed: Story = {
     const canvas = within(canvasElement);
     const temperature = canvas.getByLabelText("Temperature");
     await expect(temperature).toBeDisabled();
+    // the group reads as off through the disabled fieldset, never an opacity dim
+    // (DESIGN.md "Don't dim with opacity", #2213)
+    const fieldset = canvasElement.querySelector("fieldset");
+    await expect(fieldset).toBeDisabled();
+    await expect(fieldset?.style.opacity).toBe("");
+    await expect(getComputedStyle(fieldset as Element).opacity).toBe("1");
+    await expect(getComputedStyle(canvasElement.querySelector("section") as Element).opacity).toBe(
+      "1",
+    );
     // and disabled all the way through: typing into it changes nothing, which a
     // faded div would have allowed
     await userEvent.type(temperature, "9");
@@ -91,6 +102,29 @@ export const Enabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByLabelText("Temperature")).toBeEnabled();
+  },
+};
+
+/**
+ * A switch in the header governs the group below it.
+ *
+ * It sits outside the fieldset, so a switched-off panel can be switched back on
+ * — the fieldset would have disabled it otherwise.
+ */
+export const HeaderSwitch: Story = {
+  args: {
+    title: "Queue",
+    description: "Hold requests when every upstream is busy.",
+    dimmed: true,
+    headingLevel: 3,
+    action: <Switch aria-label="Enable queue" checked={false} onCheckedChange={() => {}} />,
+    children: controls,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { level: 3, name: "Queue" })).toBeVisible();
+    await expect(canvas.getByRole("switch", { name: "Enable queue" })).toBeEnabled();
+    await expect(canvas.getByLabelText("Temperature")).toBeDisabled();
   },
 };
 

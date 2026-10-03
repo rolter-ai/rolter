@@ -1,0 +1,138 @@
+---
+title: "Verify Rolter Container Images: Signature, Provenance and SBOM"
+sidebarTitle: "Verify images"
+description: "Check that a published Rolter image was built and signed by the Rolter release workflow, and read its SBOM, with cosign and the GitHub CLI."
+---
+
+Every release image is signed by the Rolter release workflow, and each platform image carries an SBOM. You can check both before you deploy, without trusting the registry or whoever holds a push token for it.
+
+| What                  | Attached to                                          | Made by                                  | Checked with                |
+| --------------------- | ---------------------------------------------------- | ---------------------------------------- | --------------------------- |
+| Signature             | The multi-arch manifest list and each platform image | cosign, keyless (Sigstore)               | `cosign verify`             |
+| SBOM (CycloneDX)      | The `linux/amd64` and `linux/arm64` images           | syft, signed as an attestation by cosign | `cosign verify-attestation` |
+| SLSA build provenance | The multi-arch manifest list                         | GitHub artifact attestations             | `gh attestation verify`     |
+
+The signatures are keyless, so there is no Rolter public key to download. Each one carries a short-lived certificate from Sigstore's Fulcio that names the GitHub Actions workflow that signed it, and the signature is recorded in Sigstore's public transparency log. Verifying means checking that certificate names Rolter's release workflow.
+
+This covers images from the first release that includes this page. Images published before it are unsigned.
+
+## Verify an image
+
+The repository ships the check as one script, `scripts/verify-image.sh`. The release workflow runs this same script against every image right after signing it, so if a release went out, this check passed against it.
+
+You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 or later, `jq`, and either `docker` with buildx or `crane`. The provenance check also needs the [GitHub CLI](https://cli.github.com), signed in with `gh auth login` or given a `GH_TOKEN`, because it reads GitHub's attestation API.
+
+```bash
+VERSION=1.0.0
+curl -fsSLO "https://raw.githubusercontent.com/rolter-ai/rolter/v${VERSION}/scripts/verify-image.sh"
+bash verify-image.sh "ghcr.io/rolter-ai/rolter:${VERSION}"
+```
+
+A passing run ends with `verified ghcr.io/rolter-ai/rolter:1.0.0`:
+
+```text
+verifying ghcr.io/rolter-ai/rolter:1.0.0
+  signer: rolter-ai/rolter/.github/workflows/release.yml (master or a v* tag), issuer https://token.actions.githubusercontent.com
+ok: manifest list signature
+ok: linux/amd64 signature (sha256:…)
+ok: linux/amd64 cyclonedx sbom attestation
+ok: linux/arm64 signature (sha256:…)
+ok: linux/arm64 cyclonedx sbom attestation
+ok: slsa build provenance
+verified ghcr.io/rolter-ai/rolter:1.0.0
+```
+
+Any failure exits non-zero before the last line. Without the GitHub CLI, pass `--skip-provenance` to check the signatures and SBOMs only.
+
+Verify by digest rather than by tag if you deploy by digest: `bash verify-image.sh ghcr.io/rolter-ai/rolter@sha256:<digest>`. A tag can be moved later, and a digest cannot.
+
+<Note>
+  The script fetches from the tag you name, so it checks against the rules that release was published under. Read it before you run it. It is short, and every check it makes is listed below.
+</Note>
+
+## What the script checks
+
+If you would rather run the commands yourself, or write them into an admission policy, these are the values the script uses.
+
+| Field                | Value                                                                                                             |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| OIDC issuer          | `https://token.actions.githubusercontent.com`                                                                     |
+| Certificate identity | `https://github.com/rolter-ai/rolter/.github/workflows/release.yml@refs/heads/master`, or `@refs/tags/v<version>` |
+| Workflow repository  | `rolter-ai/rolter`                                                                                                |
+| SBOM predicate type  | `cyclonedx` (`https://cyclonedx.org/bom`)                                                                         |
+
+As one regular expression, which is what the script passes to cosign:
+
+```text
+^https://github\.com/rolter-ai/rolter/\.github/workflows/release\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$
+```
+
+Releases are dispatched from `master`, so the certificate of a normal release names `refs/heads/master`. A release started by pushing a `v*` tag names that tag. A signature from any other branch, workflow or repository fails the check.
+
+The signature check, for the manifest list and again for each platform image:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/rolter-ai/rolter/\.github/workflows/release\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository rolter-ai/rolter \
+  ghcr.io/rolter-ai/rolter:1.0.0
+```
+
+The build provenance check:
+
+```bash
+gh attestation verify oci://ghcr.io/rolter-ai/rolter:1.0.0 \
+  --repo rolter-ai/rolter \
+  --signer-workflow rolter-ai/rolter/.github/workflows/release.yml
+```
+
+## Read the SBOM
+
+The SBOM is attached to each platform image, not to the multi-arch tag, because each architecture is a different image. Pick the platform digest from the manifest list, then verify and extract the attestation:
+
+```bash
+IMAGE=ghcr.io/rolter-ai/rolter
+DIGEST="$(docker buildx imagetools inspect --raw "$IMAGE:1.0.0" \
+  | jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest')"
+
+cosign verify-attestation --type cyclonedx \
+  --certificate-identity-regexp '^https://github\.com/rolter-ai/rolter/\.github/workflows/release\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE@$DIGEST" \
+  | jq -rs '.[0].payload' | base64 -d | jq '.predicate' > rolter-sbom.cdx.json
+```
+
+`cosign verify-attestation` prints one signed envelope per line, and a re-run of the signing job can leave more than one, so the command keeps the first.
+
+The result is a CycloneDX JSON document you can hand to a scanner, for example `grype sbom:rolter-sbom.cdx.json` or `trivy sbom rolter-sbom.cdx.json`. The release workflow also uploads the same files as the `sbom` artifact of its run.
+
+The SBOM is two scans merged into one document:
+
+- **The image layers**: the Debian packages of the distroless base image and the files they own.
+- **The lockfiles of the release tag**: every crate in `Cargo.lock` and every package in the dashboard's `ui/bun.lock`. The Rust binaries and the dashboard bundle do not carry their own dependency lists, so an image scan alone would miss them.
+
+It lists more than the image runs, never less. `Cargo.lock` includes development and platform-specific crates, and the `bun.lock` scan includes the dashboard's build tooling. A scanner finding in a development-only package may not reach the running image.
+
+## Docker Hub
+
+When a release is also mirrored to Docker Hub, the Docker Hub copy is signed and attested separately, with the same identity. A signature stored in GHCR does not cover an image pulled from `docker.io`. Pass the Docker Hub reference to the same script:
+
+```bash
+bash verify-image.sh "docker.io/<namespace>/rolter:${VERSION}"
+```
+
+## Enforce it in Kubernetes
+
+An admission controller can refuse unsigned images using the issuer and identity above. With the [Sigstore policy-controller](https://docs.sigstore.dev/policy-controller/overview/), the `keyless` authority is:
+
+```yaml
+authorities:
+  - keyless:
+      url: https://fulcio.sigstore.dev
+      identities:
+        - issuer: https://token.actions.githubusercontent.com
+          subjectRegExp: '^https://github\.com/rolter-ai/rolter/\.github/workflows/release\.yml@refs/(heads/master|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$'
+```
+
+Kyverno's `verifyImages` rule takes the same issuer and subject. Check that your controller reads Sigstore bundles stored as OCI referrers, the format cosign 3 writes.

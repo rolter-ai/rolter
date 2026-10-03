@@ -25,7 +25,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
-import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
+import { expectUxEvent, recordUxEvents, uxEvents } from "@/pages/story-harness";
 
 /** What the gateway serves: a route, a provider pin, and a provider group. */
 const GATEWAY_MODELS = {
@@ -421,6 +421,85 @@ export const RoutelessProjectReachesTheBuiltin: Story = {
     await sendMessage(canvas, composer, "hello");
     await canvas.findByText("Lorem ipsum from the built-in.");
     await expect(chatsIn(routeless.calls).map((c) => c.model)).toEqual(["fake-llm"]);
+  },
+};
+
+/**
+ * A minted key's reach is fixed when it is minted, so one minted before the
+ * project had a route stayed on `fake-llm` until the operator pressed Renew
+ * (#2608). The screen now compares the key's `models` with the project's
+ * routes each time that list is read, and mints again when they differ.
+ *
+ * The route is added after the screen opened and the list is re-read the way
+ * a returning tab re-reads it, on visibility. One mint more, not a loop, and
+ * the second key is the one the next message goes out with.
+ */
+const projectRoutes: { id: string; model: string; strategy: string }[] = [];
+const reminting = recording(
+  deployment(
+    async () =>
+      json({
+        ...minted(`sk-rolter-minted-${projectRoutes.length}`),
+        models: projectRoutes.length ? projectRoutes.map((r) => r.model) : ["fake-llm"],
+      }),
+    undefined,
+    undefined,
+    {
+      get routes() {
+        return projectRoutes;
+      },
+      gateway: () => json(GATEWAY_MODELS),
+      chat: () => completion("Hello from the new route."),
+    },
+  ),
+);
+
+export const RouteAddedRemintsTheKey: Story = {
+  beforeEach: () => {
+    projectRoutes.length = 0;
+  },
+  render: () => <Screen fetchStub={reminting.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This project has no routes yet/);
+    await expect(mintsIn(reminting.calls)).toBe(1);
+
+    projectRoutes.push(ROUTES[0]);
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+
+    // the key was swapped without a press on Renew, and the routeless line went
+    await waitFor(() => expect(mintsIn(reminting.calls)).toBe(2));
+    await waitFor(() => expect(canvas.queryByText(/This project has no routes yet/)).toBeNull());
+    await expect(canvas.getByText("Active")).toBeVisible();
+
+    // the same route set again is not a reason to mint a third time
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    await canvas.findByRole("textbox", { name: "Message to minicpm5-1b" });
+    await expect(mintsIn(reminting.calls)).toBe(2);
+
+    const composer = canvas.getByRole("textbox", { name: "Message to minicpm5-1b" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Hello from the new route.");
+  },
+};
+
+/** A key somebody pasted says nothing about the routes, so a route never replaces it. */
+const pastedCalls = recording(deployment(async () => json(minted())));
+
+export const PastedKeyIsNeverReminted: Story = {
+  render: () => <Screen role="viewer" fetchStub={pastedCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/Your role in this project cannot mint keys/);
+    await userEvent.type(canvas.getByLabelText("Virtual key"), "sk-rolter-given");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    // anchor on a read that can only follow the event, then count
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expect(mintsIn(pastedCalls.calls)).toBe(0);
   },
 };
 
@@ -1763,5 +1842,27 @@ export const ReportsTimeToInteractive: Story = {
     const event = await expectUxEvent("time_to_interactive");
     await expect(event.screen).toBe("playground");
     await expect(typeof event.duration_ms).toBe("number");
+  },
+};
+
+/**
+ * The playground had no `useErrorState` at all, so a key that failed to mint
+ * reached the operator and never the dead-states query. The alert records its
+ * own now (#2444): one `error_state`, under the key's region.
+ */
+export const AFailedMintIsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="playground">
+      <Screen
+        fetchStub={deployment(async () => json({ error: { message: "store unavailable" } }, 500))}
+      />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /playground key/i);
+    const failed = await expectUxEvent("error_state", "playground-key");
+    await expect(failed.screen).toBe("playground");
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
   },
 };

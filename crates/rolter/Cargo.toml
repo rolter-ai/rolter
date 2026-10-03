@@ -35,6 +35,8 @@ reqwest.workspace = true
 toml.workspace = true
 # sending the signal to the spawned `easy-up` (#1963)
 libc.workspace = true
+# unit tests generate their credentials at run time rather than writing them out
+uuid.workspace = true
 
 [features]
 default = []

@@ -125,17 +125,26 @@ pub fn redact_urls_in_text(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A credential generated per call, so no test writes one out.
+    fn secret() -> String {
+        format!("pw-{}", uuid::Uuid::new_v4())
+    }
+
     #[test]
     fn user_and_password_are_masked() {
-        let out = redact_url("postgres://admin:hunter2@db.internal:5432/rolter");
+        let out = redact_url(&format!(
+            "postgres://admin:{}@db.internal:5432/rolter",
+            secret()
+        ));
         assert_eq!(out, "postgres://***@db.internal:5432/rolter");
     }
 
     #[test]
     fn a_password_only_redis_url_is_masked() {
-        let out = redact_url("redis://:hunter2@cache:6379/0");
+        let secret = secret();
+        let out = redact_url(&format!("redis://:{secret}@cache:6379/0"));
         assert_eq!(out, "redis://***@cache:6379/0");
-        assert!(!out.contains("hunter2"));
+        assert!(!out.contains(&secret));
     }
 
     #[test]
@@ -154,11 +163,26 @@ mod tests {
 
     #[test]
     fn credential_query_values_are_masked() {
-        let out = redact_url("http://ch:8123/?user=default&password=hunter2&database=logs");
-        assert!(!out.contains("hunter2"), "{out}");
-        assert!(out.contains("password=***"), "{out}");
-        assert!(out.contains("user=default"), "{out}");
-        assert!(out.contains("database=logs"), "{out}");
+        let secret = secret();
+        let out = redact_url(&format!(
+            "http://ch:8123/?user=default&password={secret}&database=logs"
+        ));
+        assert!(
+            !out.contains(&secret),
+            "the password value survived redaction"
+        );
+        assert!(
+            out.contains("password=***"),
+            "the password value was not masked"
+        );
+        assert!(
+            out.contains("user=default"),
+            "a non-secret query value was dropped"
+        );
+        assert!(
+            out.contains("database=logs"),
+            "a non-secret query value was dropped"
+        );
         let out = redact_url("https://h/x?X-Amz-Signature=abc&api_key=def");
         assert!(!out.contains("abc") && !out.contains("def"), "{out}");
     }
@@ -171,14 +195,18 @@ mod tests {
 
     #[test]
     fn an_invalid_url_never_prints_the_input() {
+        let secret = secret();
         for raw in [
-            "not a url hunter2",
-            "hunter2",
-            "redis://:hunter2@host:notaport",
-            "",
+            format!("not a url {secret}"),
+            secret.clone(),
+            format!("redis://:{secret}@host:notaport"),
+            String::new(),
         ] {
-            let out = redact_url(raw);
-            assert_eq!(out, INVALID_URL_PLACEHOLDER, "input {raw:?}");
+            let out = redact_url(&raw);
+            assert_eq!(
+                out, INVALID_URL_PLACEHOLDER,
+                "an invalid url was not replaced"
+            );
         }
     }
 

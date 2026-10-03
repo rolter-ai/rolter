@@ -12,6 +12,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { classifyLoadError, isRetryable, needsSignIn, type LoadErrorKind } from "@/lib/load-error";
 import { useOptionalAuth } from "@/lib/auth";
+import { useErrorState } from "@/lib/ux-react";
 
 const ICONS: Record<LoadErrorKind, typeof KeyRound> = {
   unauthenticated: KeyRound,
@@ -33,6 +34,11 @@ const ICONS: Record<LoadErrorKind, typeof KeyRound> = {
  *
  * An empty result is not a failure and must not reach this component: render an
  * empty state for that.
+ *
+ * It records the `error_state` UX event itself (#2444), once each time it
+ * appears, the way `EmptyState` records `empty_state`. A screen does not call
+ * `useErrorState` beside it: the placeholder on screen is the signal, so a
+ * surface that renders one cannot forget to report it.
  */
 export function LoadError({
   error,
@@ -40,12 +46,23 @@ export function LoadError({
   resource,
   /** re-runs the query; omit when the caller has no handle to retry with */
   onRetry,
+  /**
+   * stable name of the region that failed (`virtual-keys`, `request-logs`),
+   * recorded on the `error_state` UX event. required, so a new call site cannot
+   * be silently unnamed; name it like the region's `EmptyState` `uxTarget` so
+   * the two pair up in the dead-states query
+   */
+  target,
 }: {
   error: unknown;
   resource: string;
   onRetry?: () => void;
+  target: string;
 }) {
   const { t } = useTranslation();
+  // mounted only while the read is in error, so every mount is one transition
+  // into the error state. no-ops outside a UxScreenProvider (Storybook, tests)
+  useErrorState(true, target);
   const auth = useOptionalAuth();
   const kind = classifyLoadError(error);
   const Icon = ICONS[kind];

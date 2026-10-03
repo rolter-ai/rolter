@@ -33,7 +33,7 @@ import {
 import { loosenings, type Loosening, type SecurityPolicy } from "@/lib/security-loosening";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useDraft, type FieldEquality } from "@/lib/use-draft";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // every field holds one entry per line
 interface FormState {
@@ -111,7 +111,6 @@ function SecurityScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "security");
 
   const source = React.useMemo(
     () => (settings.data ? fromDto(settings.data) : undefined),
@@ -191,6 +190,7 @@ function SecurityScreen() {
           error={settings.error}
           resource={t("errors.resources.securitySettings")}
           onRetry={() => void settings.refetch()}
+          target="security"
         />
       </div>
     );

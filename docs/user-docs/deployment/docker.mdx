@@ -181,7 +181,7 @@ The team stack does not read the `rolter.toml` that `rolter init` writes. It mou
 
 ## Run the single image
 
-The published image runs `rolter easy-up` by default: the gateway, the control plane and the dashboard in one container, answering on the built-in `fake-llm` model with no config file and no database.
+The published image runs `rolter easy-up` by default: the gateway, the control plane and the dashboard in one container, answering on the built-in `fake-llm` model with no config file and no database. Release images are signed and carry an SBOM; [Verify images](/deployment/verify-images) shows how to check one before you run it.
 
 ```bash
 docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \

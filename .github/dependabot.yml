@@ -24,7 +24,8 @@ updates:
   # .github/workflows/ui-security-updates.yml raises the security PR dependabot
   # would have opened (#1148); drop that workflow once bun security updates
   # ship. a package that only arrives transitively through bun.lock raises no
-  # alert at all and goes unmonitored until #1930 audits the lockfile.
+  # alert at all; the `ui lockfile audit` job in extended.yml reads the lockfile
+  # instead (#1930).
   - package-ecosystem: bun
     directory: /ui
     schedule:
@@ -36,6 +37,15 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # `uvx` tools run in CI (zizmor, maturin) are pinned in this requirements file
+  # rather than inline, because dependabot cannot read a version out of a command
+  # line. scripts/check-tool-pins.sh keeps the commands reading it (#2185)
+  - package-ecosystem: pip
+    directory: /.github/tool-pins
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

@@ -43,3 +43,5 @@ postgres = [
 
 [dev-dependencies]
 tokio = { workspace = true }
+# unit tests generate their credentials at run time rather than writing them out
+uuid.workspace = true

@@ -14,14 +14,14 @@ edit**, and the rule that keeps it honest.
 `ci-ok` needs `[quality, codeql]` and runs on every event (`if: always()`). Its
 steps, in order:
 
-| Step                                              | Runs on                                             |
-| ------------------------------------------------- | --------------------------------------------------- |
-| checkout                                          | `pull_request`, `workflow_dispatch`, `merge_group`  |
-| _assert the gate already ran for this commit_     | `pull_request` with action `edited` (the fast path) |
-| `pr-title`                                        | `pull_request`                                      |
-| _no agent session urls (pr body)_                 | `pull_request`, `workflow_dispatch`, `merge_group`  |
-| _no agent session urls (commits, dispatch/queue)_ | `workflow_dispatch`, `merge_group`                  |
-| _assert every required check succeeded_ (verdict) | every event, under `always()`                       |
+| Step                                              | Runs on                                                                   |
+| ------------------------------------------------- | ------------------------------------------------------------------------- |
+| checkout                                          | `pull_request`, `workflow_dispatch`, `merge_group`                        |
+| _assert the gate already ran for this commit_     | `pull_request` with action `edited` and no `changes.base` (the fast path) |
+| `pr-title`                                        | `pull_request`                                                            |
+| _no agent session urls (pr body)_                 | `pull_request`, `workflow_dispatch`, `merge_group`                        |
+| _no agent session urls (commits, dispatch/queue)_ | `workflow_dispatch`, `merge_group`                                        |
+| _assert every required check succeeded_ (verdict) | every event, under `always()`                                             |
 
 The checkout takes `fetch-depth: 1` on a pull request, where only the script
 is read, and full history on a dispatch or queue run, where the commit-range
@@ -42,8 +42,8 @@ every broken rule before it exits, not just the first one:
 
 | Result                                            | Must be                                                                                                                      |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `quality`, `codeql`                               | `success`; on an `edited` run, `success` or `skipped`                                                                        |
-| _assert the gate already ran_                     | `success` on an `edited` run                                                                                                 |
+| `quality`, `codeql`                               | `success`; on a metadata-only `edited` run, `success` or `skipped`                                                           |
+| _assert the gate already ran_                     | `success` on a metadata-only `edited` run                                                                                    |
 | `pr-title`                                        | never `failure`; `success` on any `pull_request` run                                                                         |
 | _no agent session urls (pr body)_                 | `success` on every event except `push`, where it is `skipped`                                                                |
 | _no agent session urls (commits, dispatch/queue)_ | never `failure`; `success` on `workflow_dispatch` and `merge_group`                                                          |
@@ -55,7 +55,7 @@ often queueing minutes to get one (#2025). As steps they cost no extra runner,
 and a title or body edit starts one job instead of three. The price is when
 title feedback arrives. On a run a commit started (`opened`, `synchronize`,
 `reopened`), `pr-title` now runs only after `quality` and `codeql` finish,
-about eight minutes in, rather than within seconds. An `edited` run skips
+about eight minutes in, rather than within seconds. A title or body `edited` run skips
 `quality` and `codeql`, so its `pr-title` and body steps start at once and a
 title fix made after the gate is still checked within seconds.
 The action fetches the title live rather than reading it from the payload, so
@@ -73,12 +73,112 @@ trigger, the only way to re-run the title check would be to push an empty
 commit, which invalidates every review and re-runs a twenty-minute gate for a
 typo.
 
-The heavy jobs are skipped on that event (`if: github.event_name != 'pull_request'
-|| github.event.action != 'edited'` on `quality` and `codeql`, scoped to the event
-for the reason given in [the merge queue](#a-merge-group-ref-must-never-take-the-fast-path)):
-a title lives in GitHub's database, not in the tree,
-so no test result can change because of it. The tree that was gated is the same
-tree.
+The heavy jobs are skipped on a title or body edit: a title lives in GitHub's
+database, not in the tree, so no test result can change because of it. The tree
+that was gated is the same tree. That is only true of a _metadata-only_ edit,
+which is why the guard on `quality`, `codeql` and `gate-ok` reads
+`changes.base` as well as the action (see the next section). It is scoped to
+the `pull_request` event for the reason given in
+[the merge queue](#a-merge-group-ref-must-never-take-the-fast-path).
+
+## A retarget is not a metadata edit (#2031)
+
+GitHub sends `pull_request` `edited` for three different things: a title edit, a
+body edit and a **base-branch change**. Only the first two leave the gated tree
+alone. A retarget changes it twice over: the checkout `quality` builds is the
+merge of the head into the base, and `quality.yml`'s commit-range checks scan
+`base.sha..head.sha`. A gate run made against the old base says nothing about
+the new one, yet it sits on the same head sha, which is all the fast path used
+to look at.
+
+Every stacked merge hits this. When a parent merges, GitHub retargets its child
+from the parent's branch onto `master` with an `edited` event, and the fast path
+reported `ci-ok` green off the gate run made against the parent branch. #1610
+(head `eacb837c`) was retargeted at 2026-09-17T21:13:22Z; run 35275442183
+skipped the gate, went green off run 35273857488, and #1610 merged three
+minutes later without ever having been gated against `master`. #1609 (runs
+35275326391, 35273843569) and #1863 (run 36280523944) went the same way.
+
+GitHub marks a retarget in the payload: an `edited` event that changed the base
+carries `github.event.changes.base` (the old `ref` and `sha`), and one that only
+changed the title or body does not. So a metadata-only run is defined once, as
+
+```
+github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base
+```
+
+and every guard around the fast path uses exactly that expression:
+
+- `quality`, `codeql` and `gate-ok` skip on it, and on nothing else, so a
+  retarget runs the full gate against the new base and records its own
+  `gate-ok` verdict.
+- `ci-ok`'s _assert the gate already ran_ step runs on it, and on nothing else.
+- `ci-ok`'s verdict reads it through `env:` as `METADATA_ONLY` and accepts a
+  skipped `quality` or `codeql` only when it is `true`. A retarget therefore
+  needs both to succeed outright, like a run a push started.
+- The concurrency group gives only a metadata-only run a per-run group. A
+  retarget joins the shared `gate` group like any other gate run, so it
+  supersedes a gate still running against the old base rather than racing it
+  (see [Concurrency](#concurrency)).
+
+`scripts/test-assert-gate-ran.sh` checks this wiring: every `${{ }}` expression
+in `ci.yml` that mentions `edited` must also exclude `changes.base`, the three
+gate jobs must skip on exactly the metadata-only expression, and the verdict
+must branch on `METADATA_ONLY`.
+
+### A pass against an old base does not count (#2649)
+
+Running the gate on a retarget closed only half of it. The retarget's gate run
+sits on the same head sha as the one made against the old base, so a head sha
+can carry a pass and a failure for two different bases. The fast path used to
+accept any passing `gate-ok` on the sha, so this sequence went green:
+
+1. The PR is gated green against base A.
+2. It is retargeted to base B, and the gate fails against B.
+3. Somebody edits the title or body.
+4. The fast path finds the pass against A and reports `ci-ok` green.
+
+So `gate-ok` records the base it gated, and the fast path accepts only a pass
+against the base the PR targets **now**. The record is the name of `gate-ok`'s
+one step:
+
+```yaml
+- name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
+```
+
+The runner renders a step name's expression when the step starts, so the jobs
+listing the fast path already fetches for the verdict carries the base too: no
+extra API call, no extra permission, and nothing written that a fork PR's
+read-only token could not write. The fast path takes the current base from its
+own payload (`BASE_SHA: ${{ github.event.pull_request.base.sha }}`) and counts a
+run only when its `gate-ok` concluded `success` _and_ its step reads
+`gated against base <BASE_SHA>`.
+
+The run object's own `pull_requests[].base.sha` looks like the obvious source
+and is not one: the API fills `pull_requests` in from the pull request as it is
+when the run is read, not as it was when the run started. Run 37069049215 was
+started on #2587's head `8727bdb8`, and read two hours after `4712bdf2` was
+pushed it reported `pull_requests[0].head.sha` as `4712bdf2`. An old run reads
+back the current base the same way, so comparing it to the current base would
+always match. It is also empty once the PR is closed, and the listing the fast
+path uses passes `exclude_pull_requests=true`.
+
+What counts as "no pass against this base", and is red:
+
+- A pass whose step recorded a different base sha — the case above.
+- A pass that recorded `none`. A run with no pull request in its payload
+  (`workflow_dispatch`, which is how the release PR is gated, and `push`)
+  gated the head on its own, not merged into any base. An `edited` run on such
+  a PR needs a `pull_request` gate run, or a new commit.
+- A pass from a `gate-ok` without the step at all, which is every run made
+  before #2649 landed. A PR gated before then and only retitled afterwards
+  goes red, and needs a push or a re-run of its gate run followed by a re-run
+  of the `edited` run.
+- A step name that is not a full sha, such as an expression left unrendered.
+
+A gate run whose `gate-ok` has not concluded has no rendered step yet, so its
+base is unknown while it runs. The fast path waits for it as before and judges
+it by its base once it has concluded.
 
 ## Why that was a hole
 
@@ -120,9 +220,12 @@ head sha (the _assert the gate already ran for this commit_ step of
   pending, and a gate that has still not concluded at the deadline fails the
   step. See [Waiting for an in-flight gate](#waiting-for-an-in-flight-gate-2391)
   for why it waits rather than declining.
-- **No run on this sha whose `gate-ok` job succeeded** fails the step. This
-  closes the same hole in its other shape: a retitle over a gate run that
-  _failed_ also used to write a newer green `ci-ok`.
+- **No run on this sha whose `gate-ok` job succeeded against the PR's current
+  base** fails the step. This closes the same hole in its other shape: a
+  retitle over a gate run that _failed_ also used to write a newer green
+  `ci-ok`. A pass against a base the PR has since been retargeted away from
+  does not count (see
+  [A pass against an old base does not count](#a-pass-against-an-old-base-does-not-count-2649)).
 - **A `cancelled` run does not count as a pass.** It is `completed`, so it does
   not block as in-flight, but it carries no verdict — it is treated exactly like
   a missing run, which is to say the fast path stays red until a real gate run
@@ -148,10 +251,11 @@ So `ci.yml` has a `gate-ok` job that records the gate's verdict by itself:
 
 ```yaml
 gate-ok:
-  if: github.event_name != 'pull_request' || github.event.action != 'edited'
+  if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base) }}
   needs: [quality, codeql]
   steps:
-    - run: echo "quality and codeql both succeeded on this run"
+    - name: gated against base ${{ github.event.pull_request.base.sha || 'none' }}
+      run: echo "quality and codeql both succeeded on this run"
 ```
 
 It is deliberately trivial, and two things about it are load-bearing:
@@ -192,7 +296,8 @@ Details that matter if you touch this code:
   Every other path through the job takes seconds.
 - `scripts/test-assert-gate-ran.sh` runs the script against a fake `gh` and a
   fake clock: a gate that passes or fails while the edit waits, one that never
-  finishes, concurrent edits, and a flaking or malformed API. It also checks
+  finishes, concurrent edits, a pass against an old base beside a failure
+  against the current one, and a flaking or malformed API. It also checks
   the step's wiring and that the job timeout sits above the wait. It runs as the
   _ci-ok fast path against a fake gh_ step of the `static checks` job and as the
   `assert-gate-ran` prek hook.
@@ -229,11 +334,11 @@ for the rest of the gate, doing nothing but two API calls a minute.
 
 The messages it can end with:
 
-| Message                                             | Means                                                 | Action                                                                                  |
-| --------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `gate already passed for <sha>`                     | green: a run on this sha recorded a passing `gate-ok` | none                                                                                    |
-| `no ci run on <sha> recorded a passing gate-ok job` | the gate failed, was cancelled, or never ran          | push a fix; if you re-run the gate instead, re-run this `edited` run too once it passes |
-| `gate still running on <sha> after 90m`             | the gate had not concluded after the whole wait       | once it finishes, `gh run rerun <edited run id> --failed`                               |
+| Message                                             | Means                                                                          | Action                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `gate already passed for <sha> against base <base>` | green: a run on this sha recorded a passing `gate-ok` against the current base | none                                                                                    |
+| `no ci run on <sha> recorded a passing gate-ok job` | the gate failed, was cancelled, or never ran against the current base          | push a fix; if you re-run the gate instead, re-run this `edited` run too once it passes |
+| `gate still running on <sha> after 90m`             | the gate had not concluded after the whole wait                                | once it finishes, `gh run rerun <edited run id> --failed`                               |
 
 A red `ci-ok` on a head sha keeps the pull request blocked until that same run
 is re-run green, whichever run wrote it. That is why the two red rows say to
@@ -305,15 +410,16 @@ Today `merge_group` carries `action: checks_requested`, so a guard written as
 of GitHub's event vocabulary, not a rule. So every guard around the fast path is
 scoped to the event as well as the action:
 
-|                                               | guard                                                                                    |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `quality`, `codeql`, `gate-ok`                | `github.event_name != 'pull_request' \|\| github.event.action != 'edited'`               |
-| `ci-ok`'s _assert the gate already ran_ step  | `!cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited'` |
-| `ci-ok`'s verdict branch for the skipped gate | `"${EVENT_NAME}" = "pull_request"` **and** `"${EVENT_ACTION}" = "edited"`                |
+|                                               | guard                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `quality`, `codeql`, `gate-ok`                | `!(github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base)`              |
+| `ci-ok`'s _assert the gate already ran_ step  | `!cancelled() && github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base` |
+| `ci-ok`'s verdict branch for the skipped gate | `"${METADATA_ONLY}" = "true"`, where `METADATA_ONLY` is that same expression rendered through `env:`                   |
 
-These are equivalent to the old conditions on every event that exists now. The
-change is that they cannot stop being equivalent when GitHub adds an event or
-reuses an action name.
+Scoping by event cannot stop being right when GitHub adds an event or reuses an
+action name. The `changes.base` term keeps a retarget, which is an `edited`
+event on a new tree, off the fast path (see
+[A retarget is not a metadata edit](#a-retarget-is-not-a-metadata-edit-2031)).
 
 ### What runs, and what is allowed to skip
 
@@ -375,8 +481,10 @@ out with `fetch-depth: 0`, so the commit is in the clone.
 
 ### Concurrency
 
-`merge_group` runs get a per-run concurrency group, alongside `push` and
-`edited`. A cancelled run is not a passing required check, so cancelling a
+`merge_group` runs get a per-run concurrency group, alongside `push` and a
+metadata-only `edited` run. A retarget is not one of them: it runs the gate, so
+it shares the pull request's `gate` group and cancels a gate still running
+against the old base (#2031). A cancelled run is not a passing required check, so cancelling a
 merge-group run dequeues the PR it was testing _and_ everything batched behind
 it. GitHub does give each queue entry its own ref, so `github.ref` alone would
 usually be unique — but the queue re-forms that ref when an entry ahead of it

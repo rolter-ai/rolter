@@ -215,7 +215,12 @@ export function KeyModelsField({
         {loading ? (
           <ListSkeleton rows={3} />
         ) : error ? (
-          <LoadError error={error} resource={t("errors.resources.routes")} onRetry={onRetry} />
+          <LoadError
+            error={error}
+            resource={t("errors.resources.routes")}
+            onRetry={onRetry}
+            target="key-model-allowlist"
+          />
         ) : offered.length === 0 ? (
           <EmptyState
             className="rounded-md border border-dashed border-border py-6"
