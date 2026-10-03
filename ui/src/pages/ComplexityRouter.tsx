@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, CircleHelp, Plus, Trash2 } from "lucide-react";
+import { ArrowLeftRight, CircleHelp, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -10,6 +10,7 @@ import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import {
@@ -404,19 +405,12 @@ function PolicyDialog({
                 onChange={(route) => set(i, { route })}
                 options={allRoutes.map((m) => ({ value: m, label: m }))}
               />
-              <button
-                type="button"
-                title={translate("pages.complexityRouter.removeTierAria", {
-                  name: t.name || i + 1,
-                })}
-                aria-label={translate("pages.complexityRouter.removeTierAria", {
+              <DeleteIconButton
+                label={translate("pages.complexityRouter.removeTierAria", {
                   name: t.name || i + 1,
                 })}
                 onClick={() => setTiers((ts) => ts?.filter((_, j) => j !== i) ?? null)}
-                className="flex h-8 flex-none items-center rounded-[6px] border border-[color:var(--border-subtle)] px-2 text-[color:var(--status-danger-text)] transition-colors hover:bg-[color:var(--red-tint)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              />
             </div>
           ))}
           <Button
