@@ -3,6 +3,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,11 @@ interface FlagCopy {
   title: string;
   desc: string;
 }
+
+const OFF_CONSEQUENCE: Partial<Record<FeatureFlagKey, true>> = {
+  guardrails: true,
+  circuit_breaker: true,
+};
 
 const toValues = (dto: FeatureFlagsDto): FeatureFlagValues =>
   Object.fromEntries(FEATURE_FLAG_KEYS.map((key) => [key, dto[key]])) as FeatureFlagValues;
@@ -82,6 +88,8 @@ function FeatureFlagsScreen() {
     }
   }, [flags.data, form]);
 
+  const [confirming, setConfirming] = React.useState(false);
+
   const save = useMutation({
     mutationFn: (values: FeatureFlagValues) => updateFeatureFlags(values),
     onSuccess: (dto) => {
@@ -90,6 +98,7 @@ function FeatureFlagsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["feature-flags"] });
       setForm(toValues(dto));
+      setConfirming(false);
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -129,6 +138,16 @@ function FeatureFlagsScreen() {
   const reasonFor = (key: FeatureFlagKey) =>
     unavailable.find((u: UnavailableFlagDto) => u.flag === key)?.reason;
 
+  const stored = toValues(flags.data as FeatureFlagsDto);
+  const changed = FEATURE_FLAG_KEYS.filter((key) => form[key] !== stored[key]);
+  // flags whose switch-off has a consequence worth naming outright
+  const dangerous = changed.some((key) => !form[key] && key in OFF_CONSEQUENCE);
+  const closeConfirm = (open: boolean) => {
+    if (open) return;
+    setConfirming(false);
+    save.reset();
+  };
+
   const set = (key: FeatureFlagKey, value: boolean) => {
     setForm((f) => (f ? { ...f, [key]: value } : f));
   };
@@ -141,17 +160,56 @@ function FeatureFlagsScreen() {
           title={copy[key].title}
           desc={copy[key].desc}
           checked={form[key]}
-          storedOn={flags.data?.[key] ?? false}
+          storedOn={stored[key]}
+          changed={form[key] !== stored[key]}
           unavailableReason={reasonFor(key)}
           onChange={(v) => set(key, v)}
         />
       ))}
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        <Button disabled={save.isPending} onClick={() => save.mutate(form)}>
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
+        <span className="mr-auto text-xs text-[color:var(--text-subtle)]">
+          {flags.data?.updated_at
+            ? t("pages.featureFlags.lastSaved", {
+                when: new Date(flags.data.updated_at).toLocaleString(),
+              })
+            : t("pages.featureFlags.neverSaved")}
+        </span>
+        <Button disabled={changed.length === 0} onClick={() => setConfirming(true)}>
+          {t("common.saveChanges")}
         </Button>
       </div>
+
+      <ConfirmDialog
+        name="feature-flags-save"
+        open={confirming && changed.length > 0}
+        onOpenChange={closeConfirm}
+        title={t("pages.featureFlags.confirm.title")}
+        description={t("pages.featureFlags.confirm.body", { count: changed.length })}
+        confirmLabel={t("pages.featureFlags.confirm.confirm")}
+        tone={dangerous ? "danger" : "default"}
+        pending={save.isPending}
+        error={save.error}
+        onConfirm={() => save.mutate(form)}
+      >
+        <ul className="flex flex-col gap-2 text-sm">
+          {changed.map((key) => (
+            <li key={key}>
+              <span className="font-medium">{copy[key].title}</span>{" "}
+              <span className="text-muted-foreground">
+                {form[key]
+                  ? t("pages.featureFlags.confirm.on")
+                  : t("pages.featureFlags.confirm.off")}
+              </span>
+              <p className="text-xs text-muted-foreground">
+                {!form[key] && key in OFF_CONSEQUENCE
+                  ? t(`pages.featureFlags.confirm.offConsequence.${key}`)
+                  : copy[key].desc}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -165,6 +223,7 @@ function FlagCard({
   desc,
   checked,
   storedOn,
+  changed,
   unavailableReason,
   onChange,
 }: {
@@ -172,6 +231,7 @@ function FlagCard({
   desc: string;
   checked: boolean;
   storedOn: boolean;
+  changed: boolean;
   unavailableReason?: string;
   onChange: (v: boolean) => void;
 }) {
@@ -181,7 +241,14 @@ function FlagCard({
     <SettingsPanel
       title={title}
       description={desc}
-      badge={unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
+      badge={
+        (unavailable || changed) && (
+          <>
+            {unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
+            {changed && <Badge tone="info">{t("pages.featureFlags.changed")}</Badge>}
+          </>
+        )
+      }
       action={
         <Switch
           checked={checked}

@@ -4,6 +4,15 @@ import { join } from "node:path";
 
 import { DOCS_PAGES, docsBaseUrl, docsUrl, normalizeDocsBase } from "./docs";
 
+/** a heading's anchor: lowercase, punctuation dropped, spaces to hyphens */
+function headingSlug(heading: string): string {
+  return heading
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
 describe("normalizeDocsBase", () => {
   it("returns nothing for an unset or blank base", () => {
     expect(normalizeDocsBase(undefined)).toBe("");
@@ -101,6 +110,10 @@ describe("DOCS_PAGES", () => {
       expect(path.endsWith(".mdx")).toBe(false);
     }
   });
+
+  it("slugs an anchor the way Mintlify does", () => {
+    expect(headingSlug("Break-glass: a lost device")).toBe("break-glass-a-lost-device");
+  });
 });
 
 // a path that no longer exists on the documentation site is a dead link in the
@@ -121,9 +134,24 @@ describe("documentation pages the dashboard links to", () => {
   const docsJson = join(import.meta.dir, "..", "..", "..", "docs", "user-docs", "docs.json");
   const listed = collectPages(JSON.parse(readFileSync(docsJson, "utf8")));
 
+  const userDocs = join(import.meta.dir, "..", "..", "..", "docs", "user-docs");
+
   for (const [name, path] of Object.entries(DOCS_PAGES)) {
+    // an `#anchor` is not part of the nav entry: look the page up without it
+    const [page, anchor] = path.split("#");
     it(`${name} points at a page the documentation site lists`, () => {
-      expect(listed.has(path)).toBe(true);
+      expect(listed.has(page)).toBe(true);
     });
+
+    if (anchor !== undefined) {
+      it(`${name} points at a heading that exists on that page`, () => {
+        const source = readFileSync(join(userDocs, `${page}.mdx`), "utf8");
+        const slugs = source
+          .split("\n")
+          .filter((line) => /^#{2,6}\s/.test(line))
+          .map((line) => headingSlug(line.replace(/^#+\s+/, "")));
+        expect(slugs).toContain(anchor);
+      });
+    }
   }
 });
