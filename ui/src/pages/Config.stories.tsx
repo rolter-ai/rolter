@@ -6,6 +6,8 @@ import Config from "./Config";
 import {
   Harness,
   Toasted,
+  expectEmptyState,
+  expectListTable,
   expectRefused,
   expectSkeleton,
   expectToast,
@@ -53,9 +55,15 @@ function Stage({
 const CONFIG = {
   providers: [{ name: "openai-prod", kind: "openai", api_base: "https://api.openai.com/v1" }],
   routes: [
-    { model: "gpt-4o", strategy: "round_robin", targets: [{ provider: "openai-prod", weight: 1 }] },
+    {
+      model: "gpt-4o",
+      strategy: "round_robin",
+      targets: [{ provider: "openai-prod", model: "gpt-4o-2024-08-06", weight: 3 }],
+    },
+    // the endpoint strips tenancy, so a second org's route can repeat a name
+    { model: "gpt-4o", strategy: "failover", targets: [] },
   ],
-  virtual_keys: [],
+  virtual_keys: [{ key: "[redacted]", name: "ci-bot", models: ["gpt-4o"] }],
   db_virtual_keys: [{ key_hash: "", id: "k1" }],
   mcp_oauth_sessions: [],
   server: { host: "0.0.0.0", port: 4000, workers: 4 },
@@ -84,6 +92,15 @@ export const Loaded: Story = {
   // gateway-only sections (digests, redacted sessions) are not
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expectListTable(canvasElement, "Providers");
+    await expectListTable(canvasElement, "Routes");
+    await expectListTable(canvasElement, "Virtual keys (from the config file)");
+    // a target names its provider, the model it calls and a labelled weight
+    await expect(canvas.getByText("model gpt-4o-2024-08-06", { exact: false })).toBeVisible();
+    await expect(canvas.getByText("weight 3", { exact: false })).toBeVisible();
+    await expect(canvas.getByText("no targets")).toBeVisible();
+    // the key's secret is never drawn
+    await expect(canvas.queryByText("[redacted]")).toBeNull();
     await expect(await canvas.findByText("4 sections")).toBeVisible();
     await expect(canvas.getByText("server")).toBeVisible();
     await expect(canvas.getByText("3 fields")).toBeVisible();
@@ -91,7 +108,29 @@ export const Loaded: Story = {
     await expect(canvas.queryByText("mcp_oauth_sessions")).toBeNull();
 
     await userEvent.click(canvas.getByText("cache"));
-    await expect(canvas.getByText(/"ttl_secs": 300/)).toBeVisible();
+    // the block highlights through a lazy chunk that splits the JSON into token
+    // spans, so read the region's text rather than a single text node
+    const region = await canvas.findByRole("region", { name: /^cache/ });
+    await expect(region).toBeVisible();
+    await waitFor(() => expect(region).toHaveTextContent(/"ttl_secs": 300/));
+  },
+};
+
+const empty = scoped(async (input) =>
+  String(input).includes("/api/v1/config")
+    ? json({ providers: [], routes: [], virtual_keys: [], server: { port: 4000 } })
+    : json([]),
+);
+
+// a fresh install: each table says it is empty and points at where to fill it
+export const Empty: Story = {
+  render: () => <Stage fetchStub={withCapabilities("superadmin", empty)} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No providers configured/, /Go to Providers/);
+    await expectEmptyState(canvasElement, /No routes configured/, /Go to Routing Rules/);
+    await expectListTable(canvasElement, "Providers");
+    await expectListTable(canvasElement, "Routes");
+    await expect(within(canvasElement).queryByRole("table", { name: /Virtual keys/ })).toBeNull();
   },
 };
 
@@ -195,6 +234,7 @@ export const AsViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Export rolter.toml", NEEDS_SUPERADMIN);
     // reading is untouched: the tables still render for a viewer
-    await expect(within(canvasElement).getByText("openai-prod")).toBeVisible();
+    const providers = await within(canvasElement).findByRole("table", { name: "Providers" });
+    await expect(within(providers).getByText("openai-prod")).toBeVisible();
   },
 };
