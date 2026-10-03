@@ -677,8 +677,36 @@ declares, and the pull request that fixes them comes from the workflow below
 instead of from Dependabot. A package that only arrives transitively through
 `bun.lock` raises no alert at all: every transitive `ui` alert was marked
 `fixed` the moment `package-lock.json` was deleted, with no version having
-changed. Nothing monitors that class until #1930 audits the lockfile itself, and
-#1931 tracks the vulnerable transitive packages `bun audit` reports today.
+changed. The nightly `ui lockfile audit` job closes that gap by reading the
+lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931 and #2660
+track the vulnerable transitive packages it reports today.
+
+### UI lockfile audit
+
+The `ui lockfile audit` job in `.github/workflows/extended.yml` (#1930) runs
+`bun audit --json` against `ui/bun.lock` every night and on demand, through
+`ui/scripts/audit-lockfile.ts`. It is informational and never a merge gate: a new
+advisory lands on code that is already merged, and a gate would turn every
+unrelated pull request red for it. The failure reaches `report failure` like any
+other `extended.yml` job, which opens or comments on the `extended.yml: nightly
+checks failing` issue. The findings themselves are in the run: one `::error` or
+`::warning` annotation per advisory and a table in the job summary. A run
+that cannot read `bun audit` output fails rather than reading as clean.
+
+To acknowledge an advisory that is accepted rather than fixed, add a row to
+`ui/audit-accepted.json`:
+
+```json
+[{ "id": "GHSA-xxxx-xxxx-xxxx", "reason": "dev-only, never reaches the build", "issue": "#1234" }]
+```
+
+A row names the advisory, not the package, so a different advisory on the same
+package still fails. All three fields are required; the script rejects a row with
+no reason or no tracking issue. A row whose advisory is no longer reported is
+flagged as stale, so remove it. Run the audit locally with
+`cd ui && bun install --frozen-lockfile && bun scripts/audit-lockfile.ts`.
+`ui-security-updates.yml` does not list these findings under "left for a hand
+bump": that workflow plans from Dependabot alerts alone.
 
 ### UI security updates
 

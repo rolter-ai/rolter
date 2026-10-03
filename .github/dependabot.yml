@@ -24,7 +24,8 @@ updates:
   # .github/workflows/ui-security-updates.yml raises the security PR dependabot
   # would have opened (#1148); drop that workflow once bun security updates
   # ship. a package that only arrives transitively through bun.lock raises no
-  # alert at all and goes unmonitored until #1930 audits the lockfile.
+  # alert at all; the `ui lockfile audit` job in extended.yml reads the lockfile
+  # instead (#1930).
   - package-ecosystem: bun
     directory: /ui
     schedule:
