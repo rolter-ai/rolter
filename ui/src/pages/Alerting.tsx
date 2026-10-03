@@ -1233,7 +1233,11 @@ function AlertHistoryScreen() {
               <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
-              <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+              {/* the rule name is what tells two rows of one state apart, so it wraps
+                  rather than truncates (#2428) */}
+              <ListCell className="min-w-0 break-words font-mono text-xs">
+                {ruleName(n.rule_id)}
+              </ListCell>
               {/* the diagnosis of a failed delivery wraps rather than truncates:
                   `channel secret could not be unsealed; check ROLTER_KEK` cut to
                   `channel secret could not be…` names the fault and hides what to
@@ -1263,7 +1267,7 @@ function AlertHistoryScreen() {
             actions={
               filtering ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("pages.alerting.history.clearFilters")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <EmptyStateLink to="/alerting-rules">

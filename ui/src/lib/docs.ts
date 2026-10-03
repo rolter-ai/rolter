@@ -118,6 +118,8 @@ export const DOCS_PAGES = {
   virtualKeys: "concepts/virtual-keys",
   /** cache-aware strategies and the telemetry sources two of them need (#2137) */
   cacheAwareRouting: "concepts/cache-aware-routing",
+  /** the host-side reset for a member who lost their second factor (#2262) */
+  breakGlass: "security/two-factor-authentication#break-glass-a-lost-device",
 } as const;
 
 export type DocsPage = keyof typeof DOCS_PAGES;
