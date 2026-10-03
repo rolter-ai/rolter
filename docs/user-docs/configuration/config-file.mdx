@@ -136,6 +136,10 @@ A base that would double the prefix is rejected on write rather than stored. The
   An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
 </ParamField>
 
+<ParamField path="egress_proxies" type="list">
+  A pool of outbound proxy URLs that requests rotate through round-robin. When the list is empty, a legacy `egress_proxy` is used as a one-entry pool. Write an authenticated proxy as `${ENV_VAR}` so its credentials never appear in serialized configuration or database rows.
+</ParamField>
+
 <ParamField path="api_keys" type="array of tables">
   Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key — the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
 
@@ -179,7 +183,7 @@ allow_custom_api_base = true
 <ParamField path="project_scoped" type="bool" default="false">
   Keep this provider to one project. By default a provider is org-wide: every project of the organization can use it, which is how projects share fallbacks. With `project_scoped = true`, only virtual keys minted in the project can reach it, whether by a route or as `provider-slug/model`, and a key from another project gets `404 model_not_found`.
 
-A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
+A file names no projects, so the flag means "the project this file is imported into": it takes effect through `rolter-seed --import` and `rolter config export` writes it back. A gateway that loads the file directly ignores it, because the keys in a file carry no project. It logs a startup warning naming each flagged provider or group, and `rolter check` reports the same as a warning; `rolter-seed --import` never warns. The same key exists on `[[provider_groups]]`. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and the import stops with an error naming the group when it does not.
 
 In the dashboard and API, the provider's `project_id` is the same scope. See [Project-scoped providers](/concepts/providers-and-routes#project-scoped-providers).
 
@@ -199,6 +203,22 @@ In the dashboard and API, the provider's `project_id` is the same scope. See [Pr
 
 <ParamField path="ca_bundles" type="list">
   Provider-specific list of PEM CA bundle file paths. When set, overrides the global `[tls].ca_bundles` setting for tls verification against this provider.
+</ParamField>
+
+<ParamField path="kv_events" type="table">
+  vLLM ZeroMQ KV-event subscription for the `precise_cache_aware` strategy, written as `[providers.kv_events]`. Keys: `endpoint` (required, e.g. `tcp://vllm-0:5557`), `topic` (default `kv-events`), `max_blocks` (resident block identities kept, default `1000000`) and `stale_secs` (telemetry older than this is ignored, default `30`). See [cache-aware routing](/concepts/cache-aware-routing).
+</ParamField>
+
+<ParamField path="lmcache" type="table">
+  LMCache controller signal for the `lmcache_aware` strategy, written as `[providers.lmcache]`. Keys: `endpoint` (required, an HTTP URL returning `{ "occupancy": 0..1, "cache_available": bool }`), `refresh_secs` (default `2`) and `stale_secs` (default `10`). See [cache-aware routing](/concepts/cache-aware-routing).
+</ParamField>
+
+<ParamField path="role_profile" type="string">
+  How this provider handles instruction roles: `openai` keeps `developer` and `system` messages distinct, `system_only` lowers `developer` to `system`, and `anthropic` sends top-level `system` blocks. When omitted, native OpenAI keeps both roles, Anthropic uses top-level system blocks, and OpenAI-compatible providers use `system_only`.
+</ParamField>
+
+<ParamField path="model_role_profiles" type="table">
+  Per-upstream-model overrides of `role_profile`, keyed by the upstream model id, e.g. `model_role_profiles = { "my-model" = "openai" }`. Use it for a custom chat template that explicitly supports the `developer` role.
 </ParamField>
 
 ```toml
@@ -560,6 +580,36 @@ max_secs = 300
 
 ---
 
+### \[cache\]
+
+Global exact-match response-cache settings. Backed by Redis; off by default. Individual routes must also opt in or carry a virtual-key cache override.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for global response caching.
+</ParamField>
+
+<ParamField path="default_ttl_secs" default="60" type="u64">
+  Default entry time-to-live in seconds, overridable per route.
+</ParamField>
+
+<ParamField path="namespace" default="rolter:cache" type="string">
+  Redis key prefix for cache entries to isolate and flush entries easily.
+</ParamField>
+
+<ParamField path="max_entry_bytes" default="1048576" type="u64">
+  Largest response body in bytes that may be cached (defaults to 1 MiB).
+</ParamField>
+
+```toml
+[cache]
+enabled = true
+default_ttl_secs = 60
+namespace = "rolter:cache"
+max_entry_bytes = 1048576
+```
+
+---
+
 ### \[timeouts\]
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
@@ -781,6 +831,32 @@ This section is inert without a Redis URL: with no counter store there is nothin
 [usage_recording]
 queue_capacity = 10000
 workers = 4
+```
+
+---
+
+### \[security\]
+
+Ingress rules applied to every request on the `/v1/*` surface. A gateway managed by the control plane takes these from the dashboard's Security screen; a file-configured gateway reads them from this section. Both keys are optional and the section adds no rules when omitted.
+
+<ParamField path="required_headers" type="table">
+  Lowercase header name to the exact value every request must carry. A request that is missing one,
+  or carries a different value, is refused with `403` before authentication. This is an ingress
+  filter (a mesh identity header, a WAF marker), not an authorization decision. The `/healthz` and `/readyz`
+  probes are exempt.
+</ParamField>
+
+<ParamField path="auth_bypass_routes" type="array of strings">
+  Exact `/v1/...` paths served without authentication. Matching is exact: no prefixes and no
+  wildcards.
+</ParamField>
+
+```toml
+[security]
+auth_bypass_routes = ["/v1/models"]
+
+[security.required_headers]
+x-mesh-identity = "gateway"
 ```
 
 ---

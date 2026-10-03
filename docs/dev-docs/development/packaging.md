@@ -27,12 +27,12 @@ Each release publishes five wheels plus a source distribution:
 
 | artifact            | built on                                                     |
 | ------------------- | ------------------------------------------------------------ |
-| `manylinux…x86_64`  | `ubuntu-latest`, `target: x86_64`                            |
-| `manylinux…aarch64` | `ubuntu-latest`, `target: aarch64`                           |
+| `manylinux…x86_64`  | `ubuntu-24.04`, `target: x86_64`                             |
+| `manylinux…aarch64` | `ubuntu-24.04`, `target: aarch64`                            |
 | `macosx…arm64`      | `macos-latest` (Apple Silicon, native)                       |
 | `macosx…x86_64`     | `macos-latest`, cross-compiled `target: x86_64-apple-darwin` |
 | `win_amd64`         | `windows-latest`                                             |
-| `.tar.gz` (sdist)   | `ubuntu-latest`, `command: sdist`                            |
+| `.tar.gz` (sdist)   | `ubuntu-24.04`, `command: sdist`                             |
 
 The macOS x86_64 wheel is cross-compiled rather than built on an Intel runner —
 the macOS SDK carries both architectures, so it needs no extra runner. The sdist
@@ -149,7 +149,7 @@ release-plz.yml ── release-gate ──► release ──►  crates.io publi
       ▼
 release.yml
   │
-  ├─ gate ──── verify-external-checks (ci-ok + CodeQL green for the tagged sha)
+  ├─ gate ──── verify-external-checks (tagged sha on master; ci-ok + codeql (*) of its ci.yml push run)
   │
   ├─ build ─── build-wheels  (5 wheels + sdist)
   │            build-image   (per arch, pushed as untagged digests)
@@ -160,7 +160,9 @@ release.yml
   ├─ publish ─ publish-pypi    (trusted publishing, OIDC)
   │            publish-docker  (assemble tag manifests: GHCR + Docker Hub)
   │
-  └─ check ─── verify-parity  (all channels serve {version})
+  ├─ sign ──── sign-images    (cosign signature, SLSA provenance, SBOM; then verify-image.sh)
+  │
+  └─ check ─── verify-parity  (all channels serve {version}, images signed)
 ```
 
 The stages are a barrier, not decoration. Every publish job depends on _every_
@@ -248,17 +250,23 @@ check-run called `ci-ok` on a master commit: a `pull_request` run from master
 into another branch reports on master's head, and workflows fired by outsiders
 write check-runs there too. A `ci.yml` push run on a sha can only come from
 `ci.yml` at that sha, and a later push never cancels it. `release.yml`'s
-`verify-external-checks` still matches check-run names
-([below](#the-gate-is-asserted-not-re-run)); the two are separate mechanisms.
+`verify-external-checks` runs the same script on the commit its tag names
+([below](#the-gate-is-asserted-not-re-run)). Before it waits, the script also
+requires the sha to be on master: `compare/<sha>...master` must report `ahead`
+or `identical`, and anything else (`behind`, `diverged`) fails at once.
 
 The publish is bound to the gate, not to the detector. A detector that wrongly
 reports nothing pending leaves `verified` unset, which delays a release but
 never publishes one unverified. `scripts/check-release-handoff.py` asserts that
-binding, that the wait step is the bare script call, and that the script's one
-write of `verified` is its last command. `scripts/test-release-gate.sh` runs
+binding, that the wait step is the bare script call (in `release.yml` too, on
+the sha the tag resolves to and with the `codeql (*)` default), that the
+script's one write of `verified` is its last command, and that it compares the
+sha with master in the right direction. `scripts/test-release-gate.sh` runs
 both scripts against a fake `gh`, `curl`, `cargo` and clock, checking that the
-output is written exactly when the wait exits 0, as a step of `quality.yml`'s
-`static checks` job and as a prek hook.
+output is written exactly when the wait exits 0, that a commit master is
+`behind` or `diverged` of is refused before any run is read, and how the
+`REQUIRED_JOBS` patterns match, as a step of `quality.yml`'s `static checks`
+job and as a prek hook.
 
 The job waits rather than re-running `quality.yml` on the merge commit, which
 cost 27 jobs on every push while `ci.yml`'s own push run was gating the same
@@ -395,20 +403,118 @@ before it is dispatched rather than halfway through the artifact build.
 that every enabled channel actually serves the tagged version: the GitHub
 release exists, crates.io has `rolter {version}`, PyPI has it (when
 `PYPI_PUBLISH_ENABLED` is `true`), and GHCR has the manifest (when
-`DOCKER_PUBLISH_ENABLED` is `true`). A skipped or failed publish turns the run
-red instead of quietly leaving a channel behind.
+`DOCKER_PUBLISH_ENABLED` is `true`), and `sign-images` succeeded (same
+condition). A skipped or failed publish turns the run red instead of quietly
+leaving a channel behind.
+
+### Image signing, provenance and SBOM
+
+`sign-images` runs after `publish-docker` and gives every published image
+([#1080]):
+
+- **A keyless cosign signature** on the manifest list, and with `--recursive`
+  on each platform image in it. The Fulcio certificate names
+  `.github/workflows/release.yml` at the ref the run started from
+  (`refs/heads/master` on the release-plz dispatch, `refs/tags/v*` on a tag
+  push), so there is no signing key to store, rotate or leak.
+- **A SLSA build provenance attestation** on the manifest list, from
+  `actions/attest`, pushed next to the image and recorded in GitHub's
+  attestation API.
+- **A CycloneDX SBOM per platform image**, attested with
+  `cosign attest --type cyclonedx`. `scripts/image-sbom.sh` builds it: syft
+  over the image layers, merged with syft over the tagged `Cargo.lock` and
+  `ui/bun.lock`. The image scan alone finds only the distroless Debian
+  packages, since the binaries are not built with `cargo auditable` and the
+  dashboard is a bundle. The SBOMs are also uploaded as the run's `sbom`
+  artifact.
+
+It then runs `scripts/verify-image.sh` on the tag it just signed. That script
+is the command the user docs give
+([Verify images](../../user-docs/deployment/verify-images.mdx)), so a release
+cannot go out with a documented check that fails, and the docs cannot drift
+from what CI runs.
+
+Design choices worth keeping:
+
+- **It signs the digest `publish-docker` reports**, passed as a job output,
+  not whatever the tag resolves to by the time signing runs.
+- **It is its own job.** The image is already public when it starts, so a
+  Sigstore outage fails signing, not publishing, and the job can be re-run on
+  its own. `id-token: write` and `attestations: write` are granted to this job
+  only.
+- **Docker Hub is signed too** when `DOCKERHUB_IMAGE` mirrors there. The
+  manifest list has the same digest in both registries, but a signature lives
+  in the repository it was pushed to, so a GHCR signature verifies nothing
+  pulled from `docker.io`.
+- **The tools are pinned binaries, not actions.** cosign and syft are
+  downloaded from their GitHub releases and checked against a SHA-256 recorded
+  in the job's `env`. Only `actions/attest` is an action, GitHub-owned and
+  SHA-pinned. To bump cosign or syft, take the new release's checksum for the
+  `linux-amd64` asset from its checksums file, check that release's own
+  signature, and update both the version and the hash.
+- **No storage record.** `actions/attest` can also create an artifact metadata
+  storage record, which needs `artifact-metadata: write`. The attestation does
+  not, so the job sets `create-storage-record: false` and does without the
+  grant.
+
+[#1080]: https://github.com/rolter-ai/rolter/issues/1080
+
+#### When signing fails
+
+The images are public whatever happens here, so a failed `sign-images` is a
+release that is published but not yet signed, and `verify-parity` turns the run
+red until it is. Nothing needs rebuilding or republishing.
+
+1. **Read which step failed.** The job log names it, and each `cosign` call
+   already retries three times with a growing pause, so a single network blip
+   does not reach you.
+2. **Sigstore or the registry was down** (Fulcio, Rekor or the TUF CDN timing
+   out, `5xx` from `ghcr.io`, a `cosign` error naming one of them): check
+   [status.sigstore.dev](https://status.sigstore.dev) and
+   [githubstatus.com](https://www.githubstatus.com), wait for recovery, then
+   re-run the failed jobs of the same run:
+
+   ```bash
+   gh run rerun <run-id> --failed
+   ```
+
+   That re-runs `sign-images` (and `verify-parity` after it) with the digest
+   `publish-docker` reported the first time. Signing a digest twice is
+   harmless: the extra signature verifies like the first.
+
+3. **`install cosign and syft` failed on `sha256sum`**: the release asset no
+   longer matches the recorded hash. Do not update the hash to make it pass.
+   Find out why the published binary changed first, since that is exactly the
+   tampering the pin exists to catch.
+4. **Only `verify with the documented command` failed**: signing and
+   attesting worked, and the check disagrees with them. Run
+   `scripts/verify-image.sh` locally against the same tag to see the full
+   error. A re-run checks the scripts out of the run's own workflow commit, so
+   it repeats the same failure until the fix is in that commit. If the script
+   is what is wrong, fix it on master, confirm the fixed script passes against
+   the release tag locally, and record that on the release; the old run stays
+   red. A fresh `gh workflow run release.yml -f tag=v<version>` would also go
+   green, but it rebuilds the images and moves the tag to new digests, so keep
+   it for when the images themselves need signing again.
+5. **The SBOM step failed with "no cargo packages" or "no npm packages"**: a
+   lockfile moved or syft stopped reading it. Fix it before re-running; an SBOM
+   that silently lost a dependency tree would be attested as complete.
+
+There is no switch to skip signing. A release whose signing cannot be fixed
+quickly stays red, which is the point: the parity gate reporting it is how
+nobody mistakes an unsigned image for a finished release.
 
 ### Publishing gates
 
-| Gate                                    | Effect                                                                                                    |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed |
-| `release:ready` label on the release PR | `ci.yml` runs on the release PR only while it is present, so without it the PR stays `BLOCKED`            |
-| `verify-external-checks`                | `ci-ok` **and** CodeQL recorded success for the tagged commit; fail-closed                                |
-| `RELEASE_REQUIRED_CHECKS` repo variable | exact check-run names `verify-external-checks` requires (comma-separated)                                 |
-| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                           |
-| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                                                          |
-| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored                                           |
+| Gate                                    | Effect                                                                                                                            |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `release-gate` (`release-plz.yml`)      | crates.io publish, tag and GitHub release wait for `ci-ok` on the commit's `ci.yml` push run; fail-closed                         |
+| `release:ready` label on the release PR | `ci.yml` runs on the release PR only while it is present, so without it the PR stays `BLOCKED`                                    |
+| `verify-external-checks`                | tagged commit is on master, and its `ci.yml` push run's `ci-ok` and `codeql (*)` jobs succeeded; fail-closed                      |
+| `RELEASE_REQUIRED_JOBS` repo variable   | emergency override of the job names `verify-external-checks` requires (comma-separated, one `*` each); `ci-ok` is always required |
+| `PYPI_PUBLISH_ENABLED` repo variable    | must be `"true"` or the PyPI publish is skipped                                                                                   |
+| `DOCKER_PUBLISH_ENABLED` repo variable  | must be `"true"` or the image publish is skipped                                                                                  |
+| `pypi` environment                      | PyPI trusted publishing via OIDC; no long-lived token is stored                                                                   |
 
 Wheels are built with `maturin-action` but uploaded with `pypa/gh-action-pypi-publish`:
 `maturin upload` is deprecated and slated for removal ([PyO3/maturin#2334]). The
@@ -422,8 +528,8 @@ holds.
 ### The gate is asserted, not re-run
 
 `release.yml` does **not** run `quality.yml` itself. It asserts that the tagged
-commit already passed it, by requiring `ci-ok` among the check-runs recorded for
-that SHA. That is deliberate, and it is what makes the gate correct:
+commit already passed it on master, by reading that commit's `ci.yml` push run.
+That is deliberate, and it is what makes the gate correct:
 
 A local reusable workflow (`uses: ./…`) always checks out the _caller's_ ref. On
 a `workflow_dispatch` the caller ref is `master`, while `build-wheels` checks out
@@ -433,31 +539,45 @@ into `quality.yml` fixes that but makes the shared workflow check out an
 arbitrary dispatch-supplied ref in a default-branch context, whose caches
 trusted runs later restore — cache poisoning, and CodeQL flags it.
 
-Asserting settles both. Every commit on master carries a `ci-ok` check-run from
-`ci.yml`, and release-plz tags only after `release-gate` has seen `ci-ok` succeed
-on the release commit's `ci.yml` push run
-([above](#the-cratesio-publish-waits-for-the-push-run)), so a tagged commit is
-verified by construction. The assertion binds to the
-_tagged_ SHA — which re-running never did — costs no duplicate 20-minute run,
-and checks out nothing.
+Asserting settles both: it binds the gate to the _tagged_ SHA, which re-running
+never did, and costs no duplicate run. `verify-external-checks` resolves the
+tag to a commit, then runs `scripts/wait-for-ci-gate.sh`
+([above](#the-cratesio-publish-waits-for-the-push-run)) on it with
+`REQUIRED_JOBS='ci-ok,codeql (*)'`:
 
-On the release-plz path the loop normally passes on its first poll:
-`release-gate` saw `ci-ok` finish before the tag existed, and `ci-ok` needs
-every CodeQL leg. A tag dispatched by hand, or a check re-run after tagging, can
-still leave a required check pending, and that is expected, not a failure: the
-job waits up to 45 minutes for a verdict, fails immediately on a real
-non-success, and fails closed if a required check never appears.
+1. The commit must be on master: `compare/<sha>...master` is `ahead` or
+   `identical`. The `tag` input resolves any ref, so without this a tag pushed
+   on a pull request head would be judged by that pull request's own run.
+2. It waits for the newest `ci.yml` run on the sha with `event=push` and
+   `branch=master`, for up to 90 minutes.
+3. That run's `ci-ok` job, and every job matching `codeql (*)`, must have
+   concluded `success` (`actions/runs/<id>/jobs`). Each entry must match at
+   least one job, so a renamed CodeQL leg is caught by the `*` rather than
+   blocking every release, and a missing one fails closed.
+
+It used to keep the newest check-run per _name_ on the sha instead, and that
+proves little ([#2034]): any run can post a check-run called `ci-ok`, a tag on
+a pull request head carries that pull request's `ci-ok` from a `ci.yml` the
+pull request can edit, and `ci.yml`'s `pull_request` trigger has no `branches:`
+filter, so a pull request from a branch at a master sha into another base
+reports its `ci-ok` on that master sha.
+
+On the release-plz path the gate passes on its first poll: `release-gate`
+already saw `ci-ok` succeed on the same push run before the tag existed, and
+`ci-ok` needs every CodeQL leg. A tag dispatched by hand on a commit whose push
+run is still going waits for it. The job checks out only the gate script, from
+the workflow's own commit and never from `inputs.tag`, with
+`persist-credentials: false`, and holds `contents: read` and `actions: read`.
 
 [#988]: https://github.com/rolter-ai/rolter/issues/988
+[#2034]: https://github.com/rolter-ai/rolter/issues/2034
 
-`RELEASE_REQUIRED_CHECKS` holds exact check-run _names_, so it rots whenever a
-scanner is renamed or reconfigured — and since the gate is fail-closed, a stale
-name silently blocks every release instead of failing at the source. This bit
-rolter once already: the variable still named the CodeQL _default setup_ jobs
-(`Analyze (rust)`, …) after the repo moved to advanced setup (`codeql (rust)`,
-…), so no release could publish even with a working tag dispatch. If the gate
-reports "required check … not found", compare it against the check-run names
-the job log prints and update the variable.
+`RELEASE_REQUIRED_JOBS` is an emergency override for the job list and is unset
+normally. It names _job_ names of the `ci.yml` run, not check-run names, and
+cannot drop `ci-ok`, which the script always requires. If the gate reports "no
+job matching …", compare it against the job names the log prints for that run.
+The `RELEASE_REQUIRED_CHECKS` variable the old check-run loop read is no longer
+consulted; delete it if it is still set.
 
 ### Releasing a tag by hand
 

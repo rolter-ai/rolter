@@ -7,7 +7,11 @@ import i18n from "@/lib/i18n";
 // calls hit the gateway on a different port. in dev, vite proxies /gw → :4000
 // (see vite.config.ts); in prod the control plane must reverse-proxy /gw/*.
 // the gateway authenticates with a virtual key: the Playground mints a
-// short-lived one per sitting and keeps it here, in memory.
+// short-lived one per sitting and keeps it here, in memory. the control plane
+// guards /gw/* with the dashboard session, so every call carries two
+// credentials: the session as `Authorization` and the key as
+// `x-rolter-gateway-key`, which the proxy forwards as the gateway's own
+// `Authorization: Bearer <key>` (#2486).
 
 const GW_BASE = "/gw";
 
@@ -17,15 +21,20 @@ const GW_BASE = "/gw";
  * `expiresAt` is set for a key rolter minted; a key the operator pasted by
  * hand carries no expiry here, because the dashboard did not choose one and
  * guessing at it would be worse than saying nothing.
+ *
+ * `models` is the reach the control plane wrote onto a key it minted, so the
+ * screen can say when that reach is the built-in `fake-llm` alone (#2300). It
+ * is empty for a pasted key, whose reach the dashboard never saw.
  */
 export interface PlaygroundKeyState {
   key: string;
   expiresAt: string | null;
   /** rolter minted this key for this sitting, rather than a person pasting it */
   minted: boolean;
+  models: readonly string[];
 }
 
-const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false };
+const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false, models: [] };
 
 // deliberately a module variable and not `localStorage` (#944): a gateway
 // credential written to browser storage outlives the sitting that needed it and
@@ -48,14 +57,20 @@ export function getPlaygroundKey(): string {
  *
  * Passing an empty key clears it. The whole state object is replaced rather
  * than mutated so `useSyncExternalStore` sees a new reference and re-renders
- * the screen — and so a renewed key can never keep the previous expiry.
+ * the screen — and so a renewed key can never keep the previous expiry or
+ * reach.
  */
 export function setPlaygroundKey(
   key: string,
-  options: { expiresAt?: string | null; minted?: boolean } = {},
+  options: { expiresAt?: string | null; minted?: boolean; models?: readonly string[] } = {},
 ): void {
   state = key
-    ? { key, expiresAt: options.expiresAt ?? null, minted: options.minted ?? false }
+    ? {
+        key,
+        expiresAt: options.expiresAt ?? null,
+        minted: options.minted ?? false,
+        models: options.models ?? [],
+      }
     : NO_KEY;
   for (const listener of listeners) listener();
 }
@@ -68,10 +83,52 @@ export function subscribePlaygroundKey(listener: () => void): () => void {
   };
 }
 
+// gateway calls the Playground has out right now. swapping the key under one of
+// them would not change the request, but it would change what the screen says
+// about the key that request is using, so a re-mint waits for this to reach 0
+let inFlight = 0;
+const inFlightListeners = new Set<() => void>();
+
+export function getGatewayCallsInFlight(): number {
+  return inFlight;
+}
+
+export function subscribeGatewayCalls(listener: () => void): () => void {
+  inFlightListeners.add(listener);
+  return () => {
+    inFlightListeners.delete(listener);
+  };
+}
+
+async function tracked<T>(call: () => Promise<T>): Promise<T> {
+  inFlight += 1;
+  for (const listener of inFlightListeners) listener();
+  try {
+    return await call();
+  } finally {
+    inFlight -= 1;
+    for (const listener of inFlightListeners) listener();
+  }
+}
+
+// the dashboard session token api.ts attaches to every control-plane call. the
+// /gw proxy takes the same one; open mode has none, and then none is sent
+const SESSION_STORAGE_KEY = "rolter.session.token";
+
+function sessionToken(): string {
+  try {
+    return localStorage.getItem(SESSION_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function authHeaders(json = true): Record<string, string> {
   const headers: Record<string, string> = {};
+  const session = sessionToken();
+  if (session) headers.Authorization = `Bearer ${session}`;
   const key = getPlaygroundKey();
-  if (key) headers.Authorization = `Bearer ${key}`;
+  if (key) headers["x-rolter-gateway-key"] = key;
   if (json) headers["Content-Type"] = "application/json";
   return headers;
 }
@@ -225,17 +282,19 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(`${GW_BASE}/v1/chat/completions`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, messages, stream: false }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, messages, stream: false }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return body.choices?.[0]?.message?.content ?? "";
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  return body.choices?.[0]?.message?.content ?? "";
 }
 
 export async function embed(
@@ -243,15 +302,17 @@ export async function embed(
   input: string[],
   signal?: AbortSignal,
 ): Promise<number[][]> {
-  const res = await fetch(`${GW_BASE}/v1/embeddings`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, input }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/embeddings`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, input }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as { data?: { embedding: number[] }[] };
+    return (body.data ?? []).map((d) => d.embedding);
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as { data?: { embedding: number[] }[] };
-  return (body.data ?? []).map((d) => d.embedding);
 }
 
 export interface GeneratedImage {
@@ -266,19 +327,21 @@ export async function generateImages(
   size: string,
   signal?: AbortSignal,
 ): Promise<GeneratedImage[]> {
-  const res = await fetch(`${GW_BASE}/v1/images/generations`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, prompt, n, size }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/images/generations`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, prompt, n, size }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as {
+      data?: { url?: string; b64_json?: string }[];
+    };
+    return (body.data ?? []).map((d) => ({
+      url: d.b64_json ? `data:image/png;base64,${d.b64_json}` : (d.url ?? ""),
+    }));
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as {
-    data?: { url?: string; b64_json?: string }[];
-  };
-  return (body.data ?? []).map((d) => ({
-    url: d.b64_json ? `data:image/png;base64,${d.b64_json}` : (d.url ?? ""),
-  }));
 }
 
 // text → speech: returns an object URL for an <audio> element
@@ -288,68 +351,68 @@ export async function synthesizeSpeech(
   voice: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(`${GW_BASE}/v1/audio/speech`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, input, voice }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/audio/speech`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, input, voice }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   });
-  if (!res.ok) throw await gwError(res);
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
 }
 
 // speech → text: multipart upload of an audio file
 export async function transcribe(model: string, file: File, signal?: AbortSignal): Promise<string> {
-  const form = new FormData();
-  form.append("model", model);
-  form.append("file", file);
-  const res = await fetch(`${GW_BASE}/v1/audio/transcriptions`, {
-    method: "POST",
-    headers: authHeaders(false),
-    body: form,
-    signal,
+  return tracked(async () => {
+    const form = new FormData();
+    form.append("model", model);
+    form.append("file", file);
+    const res = await fetch(`${GW_BASE}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: authHeaders(false),
+      body: form,
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as { text?: string };
+    return body.text ?? "";
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as { text?: string };
-  return body.text ?? "";
 }
 
 // realtime WebSocket URL (same-origin via the /gw proxy, ws upgrade enabled).
-// the virtual key rides as a query param since browsers can't set WS headers.
+// browsers can't set WS headers, so both credentials ride as query params: the
+// virtual key as `api_key`, the dashboard session as `rolter_session`, which
+// the proxy strips before it reaches the gateway (#2486).
 export function realtimeUrl(model: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const key = getPlaygroundKey();
+  const session = sessionToken();
   const params = new URLSearchParams({ model });
   if (key) params.set("api_key", key);
+  if (session) params.set("rolter_session", session);
   return `${proto}//${location.host}${GW_BASE}/v1/realtime?${params.toString()}`;
 }
 
 /**
- * Where a client outside the browser reaches the gateway, and who said so.
+ * Where a client outside the browser reaches the gateway.
  */
 export interface GatewayBase {
   /** the gateway's root, with no trailing slash and no `/v1` — a snippet appends that */
   url: string;
-  /**
-   * `true` when `url` is the public base URL saved on Client Settings, `false`
-   * when it is the dashboard's own `/gw` proxy. The proxy answers every
-   * OpenAI-compatible call, but it is the control plane's port rather than the
-   * gateway's, so a snippet built on it says so
-   */
-  configured: boolean;
 }
 
 /**
- * The one gateway address every snippet, example and placeholder in the
- * dashboard hands out (#2218).
+ * The address every snippet, example and placeholder in the dashboard hands
+ * to an external client (#2218), or `null` when none is saved.
  *
- * The saved public base URL wins: it is the operator's statement of where
- * clients reach the gateway, behind a load balancer or on a host of its own.
- * Without one this falls back to `/gw` on the dashboard's origin, the address
- * the dashboard can prove works — never the bare origin, because the control
- * plane serves the gateway only under `/gw/*` and `/v1/…` there is a 404
- * (#2075).
+ * It is the public base URL saved on Client Settings and nothing else. The
+ * dashboard's `/gw` proxy is not a fallback any more (#2486): it requires a
+ * dashboard session, which a client outside the browser does not have, so a
+ * snippet built on it would be a 401. `null` means "no address to show", and
+ * the caller prompts for one instead of inventing it.
  *
  * A saved value is trimmed of trailing slashes and of one trailing `/v1`,
  * since the OpenAI SDKs document their base URL with the version on it and an
@@ -358,11 +421,9 @@ export interface GatewayBase {
  * Pure, so both branches are unit-testable; screens read it through
  * `useGatewayBase()`, which supplies the saved value.
  */
-export function gatewayBase(publicBaseUrl?: string | null, origin?: string): GatewayBase {
+export function gatewayBase(publicBaseUrl?: string | null): GatewayBase | null {
   const saved = (publicBaseUrl ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "");
-  if (saved) return { url: saved, configured: true };
-  const here = origin ?? (typeof location === "undefined" ? "" : location.origin);
-  return { url: `${here.replace(/\/+$/, "")}${GW_BASE}`, configured: false };
+  return saved ? { url: saved } : null;
 }
 
 /**
@@ -398,7 +459,8 @@ export class GatewayProbeError extends Error {
  *
  * Strict on purpose. A 200 has to carry the gateway's own `ok`, because an SPA
  * fallback in front of the control plane answers any path with 200 and
- * `index.html`. A 502 has to carry the proxy's `{"error":{"message":…}}`,
+ * `index.html`. A 401 is the proxy refusing the dashboard session, which says
+ * nothing about the gateway, so it is unknown too. A 502 has to carry the proxy's `{"error":{"message":…}}`,
  * because an ingress that cannot reach the *control plane* answers 502 too,
  * and calling that "gateway unreachable" would send the operator to the wrong
  * process. Anything else is unknown rather than guessed at.
@@ -426,10 +488,10 @@ const READINESS_TIMEOUT_MS = 10_000;
  * Ask the gateway, through the control plane's `/gw` proxy, whether it is
  * taking traffic (#1973).
  *
- * Every signed-in caller can make this call: the proxy takes no admin token
- * and the gateway's `/readyz` takes no key. No `Authorization` is sent — the
- * dashboard's session token is not the gateway's business, and neither is a
- * Playground key. Throws {@link GatewayProbeError} for any answer
+ * The `/gw` proxy requires a dashboard session (#2486), so the session goes as
+ * `Authorization: Bearer`; open mode has none and sends none. The gateway's
+ * `/readyz` takes no key, so no Playground key is sent, and the proxy never
+ * forwards the session. Throws {@link GatewayProbeError} for any answer
  * {@link readinessFrom} does not recognise.
  */
 export async function fetchGatewayReadiness(signal?: AbortSignal): Promise<GatewayReadiness> {
@@ -440,7 +502,12 @@ export async function fetchGatewayReadiness(signal?: AbortSignal): Promise<Gatew
   try {
     let res: Response;
     try {
-      res = await fetch(`${GW_BASE}/readyz`, { cache: "no-store", signal: controller.signal });
+      const session = sessionToken();
+      res = await fetch(`${GW_BASE}/readyz`, {
+        cache: "no-store",
+        headers: session ? { Authorization: `Bearer ${session}` } : {},
+        signal: controller.signal,
+      });
     } catch {
       throw new GatewayProbeError(0);
     }

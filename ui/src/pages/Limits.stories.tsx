@@ -5,6 +5,7 @@ import Limits from "./Limits";
 import {
   Harness,
   Toasted,
+  adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
@@ -1300,5 +1301,77 @@ export const RefusedToAMember: Story = {
     await expectRefused(canvasElement, "Add budget");
     await expectRefused(canvasElement, "Add rate limit");
     await expectRefused(canvasElement, /Edit the monthly budget/);
+  },
+};
+
+// a cap is checked at the scope it throttles, so a project admin's answer at
+// their project says nothing about the team or the org above it (#2529): the
+// project's caps are theirs, the others name the role they take
+export const ProjectAdminOnAMixOfProjectTeamAndOrgCaps: Story = {
+  render: () => (
+    <Harness
+      role={adminOfProject("project-1")}
+      fetchStub={routes([
+        ["/virtual-keys", () => KEYS],
+        [
+          "/budgets",
+          () => [
+            { ...BUDGETS[0], limit_usd: "500.00" },
+            {
+              ...BUDGETS[0],
+              id: "budget-team",
+              scope_type: "team",
+              scope_id: "team-1",
+              limit_usd: "900.00",
+            },
+            {
+              ...BUDGETS[0],
+              id: "budget-org",
+              scope_type: "org",
+              scope_id: "org-1",
+              limit_usd: "2000.00",
+            },
+          ],
+        ],
+        [
+          "/rate-limits",
+          () => [
+            { ...RATE_LIMITS[0], rpm: 600, tpm: null },
+            {
+              ...RATE_LIMITS[0],
+              id: "rl-team",
+              scope_type: "team",
+              scope_id: "team-1",
+              rpm: 700,
+              tpm: null,
+            },
+            {
+              ...RATE_LIMITS[0],
+              id: "rl-org",
+              scope_type: "org",
+              scope_id: "org-1",
+              rpm: 800,
+              tpm: null,
+            },
+          ],
+        ],
+      ])}
+    >
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, /Edit the .* budget of .*500\.00/);
+    await expectAllowed(canvasElement, /Delete the .* budget of .*500\.00/);
+    await expectRefused(canvasElement, /Edit the .* budget of .*900\.00/);
+    await expectRefused(canvasElement, /Delete the .* budget of .*900\.00/);
+    await expectRefused(canvasElement, /Edit the .* budget of .*2,000\.00/);
+    await expectRefused(canvasElement, /Delete the .* budget of .*2,000\.00/);
+    await expectAllowed(canvasElement, /Edit the 600 rpm rate limit/);
+    await expectAllowed(canvasElement, /Delete the 600 rpm rate limit/);
+    await expectRefused(canvasElement, /Edit the 700 rpm rate limit/);
+    await expectRefused(canvasElement, /Delete the 700 rpm rate limit/);
+    await expectRefused(canvasElement, /Edit the 800 rpm rate limit/);
+    await expectRefused(canvasElement, /Delete the 800 rpm rate limit/);
   },
 };

@@ -28,6 +28,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
+import { ProfileCard } from "@/components/ProfileCard";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,8 +54,9 @@ import {
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // end-user self-service panel (ROL-224): view/rotate/delete the virtual keys you
 // personally minted and see your own usage/spend. no admin role required — the
@@ -73,7 +75,6 @@ export default function Account() {
 
   useScreenReady(!keys.isLoading);
 
-  useErrorState(!!keys.error, "account");
   const usage = useQuery({
     queryKey: ["my-usage"],
     queryFn: () => fetchMyUsage(),
@@ -123,6 +124,8 @@ export default function Account() {
 
   return (
     <PageBody>
+      {/* who you are comes before how you sign in (#2434) */}
+      <ProfileCard />
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
@@ -170,6 +173,7 @@ export default function Account() {
           error={keys.error}
           resource={t("errors.resources.yourKeys")}
           onRetry={() => keys.refetch()}
+          target="own-keys"
         />
       )}
       {!keys.isLoading && !keys.error && keys.data?.length === 0 && (
@@ -211,10 +215,12 @@ export default function Account() {
         (usage.error instanceof AnalyticsUnavailableError ? (
           <AnalyticsUnavailable error={usage.error} i18nKey="account.keys.noAnalytics" />
         ) : (
+          // load-error-allow: a usage figure decorating the key list, which keeps its own own-keys pair; no list to be empty
           <LoadError
             error={usage.error}
             resource={t("errors.resources.yourUsage")}
             onRetry={() => usage.refetch()}
+            target="own-usage"
           />
         ))}
 
@@ -382,7 +388,7 @@ function KeyCard({
             <span>{t("account.keys.card.noUsage")}</span>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {/* both controls name their card: N identical "Rotate" and "Delete"
               buttons are a list a screen reader cannot tell apart (#1214, #1896) */}
           <Button
@@ -483,7 +489,11 @@ function MintKeyDialog({
       // the lead is ours and translated; the control plane's own words follow as
       // the detail, since the server answers in English whatever the locale
       errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
-      errorDetail={mint.isError ? errorDetail(mint.error) : undefined}
+      errorDetail={
+        mint.isError
+          ? (describeError(mint.error, t).detail ?? describeError(mint.error, t).message)
+          : undefined
+      }
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}

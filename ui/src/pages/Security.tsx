@@ -10,8 +10,6 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError, describedBy } from "@/components/ui/field-error";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   fetchClusterNodes,
@@ -35,14 +33,10 @@ import {
 import { loosenings, type Loosening, type SecurityPolicy } from "@/lib/security-loosening";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useDraft, type FieldEquality } from "@/lib/use-draft";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
-// the four list fields hold one entry per line
+// every field holds one entry per line
 interface FormState {
-  authEnabled: boolean;
-  credentialRef: string;
-  managedSecret: string;
-  enforceVk: boolean;
   allowedOrigins: string;
   allowedHeaders: string;
   requiredHeaders: string;
@@ -52,10 +46,6 @@ interface FormState {
 type ListKey = "allowedOrigins" | "allowedHeaders" | "requiredHeaders" | "bypassRoutes";
 
 const fromDto = (dto: SecuritySettingsDto): FormState => ({
-  authEnabled: dto.dashboard_auth_enabled,
-  credentialRef: dto.dashboard_credential_ref ?? "",
-  managedSecret: "",
-  enforceVk: dto.virtual_key_required,
   allowedOrigins: listToText(dto.allowed_origins),
   allowedHeaders: listToText(dto.allowed_headers),
   requiredHeaders: requiredHeadersToText(dto.required_headers),
@@ -66,8 +56,6 @@ const fromDto = (dto: SecuritySettingsDto): FormState => ({
 // space around a colon is not an edit, and neither is a secret of spaces
 const sameEntries = (a: string, b: string) => entriesOf(a).join("\n") === entriesOf(b).join("\n");
 const EQUALS: FieldEquality<FormState> = {
-  credentialRef: (a, b) => a.trim() === b.trim(),
-  managedSecret: (a, b) => a.trim() === b.trim(),
   allowedOrigins: sameEntries,
   allowedHeaders: sameEntries,
   requiredHeaders: (a, b) => normalizeRequiredHeaders(a) === normalizeRequiredHeaders(b),
@@ -77,8 +65,6 @@ const EQUALS: FieldEquality<FormState> = {
 // the cards of the screen, by the fields each one holds: a card is marked when
 // any of its fields changed, and the footer counts cards
 const SECTIONS: (keyof FormState)[][] = [
-  ["authEnabled", "credentialRef", "managedSecret"],
-  ["enforceVk"],
   ["allowedOrigins"],
   ["allowedHeaders"],
   ["requiredHeaders"],
@@ -86,8 +72,6 @@ const SECTIONS: (keyof FormState)[][] = [
 ];
 
 const policyOf = (form: FormState): SecurityPolicy => ({
-  virtualKeyRequired: form.enforceVk,
-  dashboardAuthEnabled: form.authEnabled,
   authBypassRoutes: entriesOf(form.bypassRoutes),
 });
 
@@ -96,14 +80,10 @@ const policyOf = (form: FormState): SecurityPolicy => ({
 function toInput(form: FormState): UpdateSecuritySettingsInput {
   const lists = parseLists(form);
   return {
-    virtual_key_required: form.enforceVk,
     allowed_origins: lists.allowedOrigins.entries,
     allowed_headers: lists.allowedHeaders.entries,
     required_headers: requiredHeadersPayload(lists.requiredHeaders.entries),
     auth_bypass_routes: lists.bypassRoutes.entries,
-    dashboard_auth_enabled: form.authEnabled,
-    dashboard_credential_ref: form.credentialRef.trim() || null,
-    ...(form.managedSecret.trim() ? { managed_dashboard_secret: form.managedSecret } : {}),
   };
 }
 
@@ -116,8 +96,7 @@ const PICKUP_POLL_MS = 4_000;
 const PICKUP_WATCH_MS = 90_000;
 
 // global gateway security policy, persisted via /api/v1/security-settings
-// (superadmin only). dashboard secret is write-only: the server seals it and
-// reports only whether one is configured.
+// (superadmin only).
 function SecurityScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -132,7 +111,6 @@ function SecurityScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "security");
 
   const source = React.useMemo(
     () => (settings.data ? fromDto(settings.data) : undefined),
@@ -212,14 +190,13 @@ function SecurityScreen() {
           error={settings.error}
           resource={t("errors.resources.securitySettings")}
           onRetry={() => void settings.refetch()}
+          target="security"
         />
       </div>
     );
   }
   if (!form || !saved || !parsed) return null;
 
-  const disabledAuth = !form.authEnabled;
-  const secretConfigured = settings.data?.dashboard_secret_configured ?? false;
   const isChanged = (keys: (keyof FormState)[]) => keys.some((key) => changed.includes(key));
   const changedCards = SECTIONS.filter(isChanged).length;
 
@@ -267,84 +244,6 @@ function SecurityScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span id="security-auth-label" className="text-sm font-medium">
-                {t("pages.security.dashboardAuth")}
-              </span>
-              <Badge tone="info">BETA</Badge>
-              {isChanged(SECTIONS[0]) && <ChangedBadge />}
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.security.dashboardAuthHint")}
-            </p>
-          </div>
-          <Switch
-            checked={form.authEnabled}
-            aria-labelledby="security-auth-label"
-            onCheckedChange={(v) => set({ authEnabled: v })}
-          />
-        </div>
-        {/* a disabled fieldset rather than a dimmed div: the inputs inside
-            already carry `disabled`, and fading a live div drags its labels and
-            hints below 4.5:1 while telling assistive tech nothing (#1181) */}
-        <fieldset
-          className="flex min-w-0 flex-col gap-1.5"
-          disabled={disabledAuth}
-          style={{ opacity: disabledAuth ? 0.55 : 1 }}
-        >
-          <label
-            htmlFor="security-credential-ref"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.security.credentialRef")}
-          </label>
-          <Input
-            id="security-credential-ref"
-            value={form.credentialRef}
-            disabled={disabledAuth}
-            placeholder="vault://secrets/rolter-dashboard"
-            onChange={(e) => set({ credentialRef: e.target.value })}
-          />
-        </fieldset>
-        <fieldset
-          className="flex min-w-0 flex-col gap-1.5"
-          disabled={disabledAuth}
-          style={{ opacity: disabledAuth ? 0.55 : 1 }}
-        >
-          <label
-            htmlFor="security-managed-secret"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.security.managedSecret")}
-          </label>
-          <Input
-            id="security-managed-secret"
-            type="password"
-            value={form.managedSecret}
-            disabled={disabledAuth}
-            placeholder={
-              secretConfigured
-                ? t("pages.security.secretConfigured")
-                : t("pages.security.secretPlaceholder")
-            }
-            onChange={(e) => set({ managedSecret: e.target.value })}
-          />
-          <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {t("pages.security.secretHint")}
-          </span>
-        </fieldset>
-      </section>
-
-      <ToggleCard
-        title={t("pages.security.enforceVk")}
-        desc={t("pages.security.enforceVkHint")}
-        checked={form.enforceVk}
-        changed={changed.includes("enforceVk")}
-        onChange={(v) => set({ enforceVk: v })}
-      />
       <ListCard
         title={t("pages.security.allowedOrigins")}
         desc={t("pages.security.allowedOriginsHint")}
@@ -416,7 +315,7 @@ function SecurityScreen() {
       >
         <ul className="flex flex-col gap-2.5">
           {confirming.items.map((item) => (
-            <LooseningRow key={item.kind === "bypassRoute" ? item.route : item.kind} item={item} />
+            <LooseningRow key={item.route} item={item} />
           ))}
         </ul>
       </ConfirmDialog>
@@ -455,45 +354,13 @@ function LooseningRow({ item }: { item: Loosening }) {
   return (
     <li className="flex flex-col gap-0.5">
       <span className="text-sm font-medium">
-        {t(`pages.security.confirm.${item.kind}.label`)}
-        {item.kind === "bypassRoute" && (
-          <>
-            {" "}
-            <code className="font-mono text-xs">{item.route}</code>
-          </>
-        )}
+        {t(`pages.security.confirm.${item.kind}.label`)}{" "}
+        <code className="font-mono text-xs">{item.route}</code>
       </span>
       <span className="text-sm text-muted-foreground">
         {t(`pages.security.confirm.${item.kind}.effect`)}
       </span>
     </li>
-  );
-}
-
-function ToggleCard({
-  title,
-  desc,
-  checked,
-  changed,
-  onChange,
-}: {
-  title: string;
-  desc: string;
-  checked: boolean;
-  changed: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{title}</span>
-          {changed && <ChangedBadge />}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-      </div>
-      <Switch checked={checked} onCheckedChange={onChange} aria-label={title} />
-    </section>
   );
 }
 

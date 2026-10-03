@@ -90,6 +90,12 @@ ui-dev:
 ui-build:
     cd ui && bun run build
 
+# rewrite crates/rolter-control/rbac-matrix.json from CAPABILITIES and copy it
+# into the dashboard's story fixtures (#1369); run after changing the rbac matrix
+gen-rbac:
+    ROLTER_TEST_UPDATE_RBAC_MATRIX=1 cargo test -p rolter-control --features postgres --lib the_checked_in_matrix_artifact
+    cd ui && bun run gen:rbac
+
 # bring up postgres, redis, clickhouse and rolter
 up:
     docker compose -f docker/docker-compose.yml up -d
@@ -281,6 +287,10 @@ dogfood:
     # its fallback stack all session (#1817). non-fatal like the rest: a stack
     # with the switch off still works, and the script says how to retry
     ./"$d"/adaptive-routing.sh on || true
+    # payload capture ships off in the `logging_settings` row, and that row
+    # replaces gateway.toml's `[logging.payload_capture]` at the first snapshot,
+    # so an unseeded stack would show an empty Logs drawer (#1911). non-fatal
+    ./"$d"/payload-capture.sh on || true
     # non-fatal: a SigNoz that already has a different account is a thing to
     # report, not a reason to tear down a working stack. but repeat it after the
     # sheet, which otherwise scrolls the failure out of view and leaves a stack
@@ -348,6 +358,10 @@ dogfood-key:
 # turn the adaptive-routing kill switch on or off (`just dogfood` turns it on)
 dogfood-adaptive state="on":
     ./integration/dogfood/adaptive-routing.sh {{state}}
+
+# turn raw payload capture on or off (`just dogfood` turns it on, #1911)
+dogfood-capture state="on":
+    ./integration/dogfood/payload-capture.sh {{state}}
 
 # seed the full 15-provider fleet instead of adding it by hand
 dogfood-seed:

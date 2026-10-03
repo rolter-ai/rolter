@@ -32,9 +32,81 @@ two of them cover most of what the dashboard does. Both take a **required**
 adding one without a name is a type error rather than a gap nobody notices until
 the data is queried.
 
+`LoadError` takes a **required** `target` for the same reason, and records
+`error_state` itself each time it appears (#2444). Until then the table above
+claimed it and the code did not: only a screen that called `useErrorState`
+beside its `LoadError` reported, so a panel that forgot the hook was silent,
+and one that pointed it at the wrong query reported the wrong thing (#2017).
+Every mount is one row, because the component is only mounted while its read is
+in error: a failure, a retry that takes the alert down for a skeleton, and a
+second failure are two incidents, and a retry that leaves the alert up is still
+one. Name the `target` after the region, the way the region's `EmptyState`
+names its `uxTarget`, so the two pair up in the dead-states query. A screen
+never calls `useErrorState` next to a `LoadError` — that is the same alert
+counted twice.
+
+Before #2444 most screens filed their failure under a name of their own
+(`virtual-key-list`, `provider-list`, `pricing`, `cluster`, `health` and the
+like) while the empty state beside it used another, so the dead-states query
+showed one list as two regions. Those alerts now carry their empty state's
+region (`virtual-keys`, `providers`, `model-prices`, `cluster-nodes`,
+`health-rollups`), and a window that spans the upgrade shows both names for the
+same list.
+
+`bun run check:load-error-targets` (`ui/scripts/check-load-error-targets.ts`,
+#2641) keeps the two names from drifting apart again, in the same `ui,
+storybook, docs` job as `check:waits`. It fails when a `LoadError` whose
+`target` is a string literal matches none of the `uxTarget` literals in the same
+file; a ternary of literals contributes every branch, on either side. Three
+cases are not read: a `target={target}` a wrapper forwards (its caller's literal
+is checked where it is written), a file with no `EmptyState` literal at all
+(a settings form, a card or a drawer has no second row to drift from), and a
+region that carries `// load-error-allow: <reason>` in the comment block above
+its `<LoadError` (`{/* … */}` where the element is a JSX child). Use the waiver
+for a region that has no empty state of its own — a usage figure beside a list
+that pairs under its own name, a field inside a dialog, fixed content — and
+write why; every run prints each waiver. Fourteen sit in the tree today.
+
+The hook is still exported for the one case the component cannot see: a read
+whose failure renders no `LoadError` at all. MCP Logs reports its summary
+(`mcp-log-summary`), which only blanks the figures, and Limits its virtual-key list
+(`limits`), which only feeds the scope picker; each says so beside the call.
+`ForbiddenScreen` is a `LoadError` too, so a screen the role gate refuses up
+front records `error_state` under `forbidden`.
+
 The screen key is not a prop. It travels through `UxScreenProvider`, mounted
 once by the app shell, so a sheet rendered outside one is silent rather than
 mislabelled.
+
+## A refresh that failed over data still on screen
+
+A list that has loaded and then fails a poll keeps its rows and says so in a
+line of its own (`RefreshFailed` on the Dashboard, the Recent card's header). No
+`LoadError` mounts, so `error_state` from the component never fires, and since
+#2444 moved the recording into `LoadError` that left the stale case invisible to
+the dead-states query (#2640).
+
+It records `error_state` as well, with the region's name and `-stale` after it:
+`dashboard-spend-stale`, `dashboard-recent-stale`. The two are told apart by the
+target alone, which is the cheaper choice over a new event kind: a kind would
+need the control-plane allowlist in `crates/rolter-control/src/ui_events.rs`, the
+ClickHouse enum and the `ui-events` docs to change together, and every existing
+dead-states query already counts `error_state` and groups by `target`. Filter
+`target LIKE '%-stale'` to separate the two, or `NOT LIKE` for the old meaning.
+
+How it differs from the `LoadError` row:
+
+- the data is still on screen, so it is a warning that figures may be old, not a
+  region that shows nothing. Do not read it as an outage
+- it is recorded by `useErrorState` beside the line, because the line is not a
+  `LoadError`; this is the one place a screen calls the hook for a region the
+  shared component cannot see
+- one row per appearance: a poll that fails again while the line is up is the
+  same appearance, and the line going away on a good poll and coming back is a
+  second one. Two cards fed by the same read each record their own row
+
+The `AStaleRefreshRecordsOneErrorStatePerAppearance` story in
+`Dashboard.stories.tsx` reads the queue.
 
 ## Names are keys, not content
 
@@ -63,10 +135,11 @@ supporting one. LLM Logs followed the model list that feeds its filter rail
 until #2017, so it reported itself ready over a skeleton and recorded nothing
 when ClickHouse failed every log read. It now calls `useScreenReady(!query.isPending)`
 on the log query, which counts an answer of any kind and not a retry parked in a
-hidden tab, and `useErrorState` on a failure of that query. The no-analytics
-deployment shape is an answer and a supported one, so it is ready and is not an
-error state. The target is `request-logs`, the region the empty state names, so
-the two rows pair up in the dead-states query. The `TheScreenIsNotReadyWhileTheLogIsOut`,
+hidden tab, and the `LoadError` for a failure of that query records the error
+state. The no-analytics deployment shape is an answer and a supported one, so
+it is ready, renders `AnalyticsUnavailable` rather than a `LoadError`, and is
+not an error state. The target is `request-logs`, the region the empty state
+names, so the two rows pair up in the dead-states query. The `TheScreenIsNotReadyWhileTheLogIsOut`,
 `AFailedLogReadIsAnErrorState`, `AFailedModelListIsNotTheLogsError` and
 `NoAnalyticsStore` stories in `Logs.stories.tsx` read the queue.
 
@@ -272,6 +345,15 @@ are set, and self-skips otherwise. CI sets both: the `nextest / doctests` job in
 docker run -d --name ux-ch -p 18123:8123 clickhouse/clickhouse-server:24-alpine
 ROLTER_TEST_CLICKHOUSE_URL=http://127.0.0.1:18123   cargo test -p rolter-control --features postgres --test ux_pipeline
 ```
+
+Every status assertion goes through `expect_status`, which on a mismatch prints
+the response body and the `ui_events` insert exceptions ClickHouse logged in
+`system.query_log` over the last five minutes — the ingest `500` body is
+deliberately generic, so the body alone never says why. "None logged" means the
+insert never reached ClickHouse and the failure was on the connection, which is
+the signature of the intermittent `500` in #1940: the control plane reused a
+pooled connection at the moment ClickHouse's 10s keep-alive timeout closed it.
+The client now retires idle connections after 2s; see [ClickHouse call timeouts](../architecture/observability.md#clickhouse-call-timeouts-1951).
 
 The test creates the `ui_events` table itself, from the shipped
 `clickhouse/008_ui_events.sql` rather than from a copy — a private copy would

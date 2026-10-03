@@ -1,12 +1,12 @@
 ---
 title: "Cost Attribution: Business Units and Customers"
 sidebarTitle: "Cost Attribution"
-description: "Roll teams up into business units and attribute spend to your own customers, without breaking the identity that historical spend was recorded against."
+description: "Attribute spend to business units through virtual keys, and to your own customers, without breaking the identity that historical spend was recorded against."
 ---
 
 Rolter attributes spend along two axes that sit beside the org/team/project hierarchy:
 
-- **Business units** roll teams up, so cost lands on the part of the organisation that incurred it.
+- **Business units** collect spend from the virtual keys assigned to them, and from customers that roll up into them, so cost lands on the part of the organisation that incurred it. Teams carry no business unit: until a key is assigned, a unit shows no spend.
 - **Customers** attribute usage to the people _you_ serve, so it can be billed on or reported per account. A customer can optionally roll up into a business unit.
 
 Both live under **Governance** in the dashboard.
@@ -165,6 +165,8 @@ For a whole-window total rather than individual requests, `by-attribution` is st
 ## API
 
 Listing needs **Viewer** on the org; creating, updating and deleting need **Admin**. Every mutation is audited.
+
+Each row in a listing carries `live_key_count`, the number of enabled, unexpired virtual keys attributed to it, so a unit or customer with no spend can be told apart from one no key points at. The dashboard says _no key assigned_ on such a card and links to **Virtual Keys**. See [Attribution listings](/api/attribution-listings).
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

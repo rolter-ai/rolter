@@ -65,11 +65,10 @@ Only the **policy** columns are selected. The dashboard credential ciphertext
 and nonce are not named by the query at all — the migration promised snapshots
 would never carry them, and a query that cannot see a column cannot leak it.
 
-| Setting                | Effect on the gateway                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------- |
-| `virtual_key_required` | an unauthenticated request is refused even where the gateway holds no keys                  |
-| `required_headers`     | a request missing any name/value pair is refused at ingress, before routing and before auth |
-| `auth_bypass_routes`   | the named paths answer without a key                                                        |
+| Setting              | Effect on the gateway                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `required_headers`   | a request missing any name/value pair is refused at ingress, before routing and before auth |
+| `auth_bypass_routes` | the named paths answer without a key                                                        |
 
 Load-bearing properties, each with a test that fails if it stops holding:
 
@@ -77,9 +76,15 @@ Load-bearing properties, each with a test that fails if it stops holding:
   which an operator writes out path by path. The default for the whole struct
   is "no extra rules", so a store that cannot be read leaves the deployment
   where it was rather than opening one that was closing.
-- **`server.require_auth` in the config file still wins, in both directions.**
-  A file is a deliberate local override by whoever runs the process, who may
-  not be the person holding the dashboard.
+- **Nothing in the snapshot decides whether a keyless gateway is open.**
+  `authenticate` reads `server.require_auth` when the gateway's own config file
+  sets it, and otherwise `AppState::managed_auth` (true when the gateway polls a
+  snapshot url): a managed gateway holding no keys refuses every request, a
+  file-configured one stays open for local development. A file is a deliberate
+  local override by whoever runs the process, who may not be the person holding
+  the dashboard, so `require_auth = false` is the only way to open a managed
+  gateway with no keys. See the next section for the switch that used to sit
+  here.
 - **Bypass matching is exact.** `/v1/models` does not open
   `/v1/models/gpt-4o`, and `validate_bypass_route` already refuses wildcards
   and non-`/v1` paths at write time. The MCP surface passes a literal `/mcp`
@@ -91,6 +96,33 @@ Load-bearing properties, each with a test that fails if it stops holding:
 - **A refusal names the header and never its value.** An operator may well have
   put a shared secret in a required header, and echoing it would hand it to the
   one caller who did not know it.
+
+### Retired settings
+
+`virtual_key_required` is **gone from the API, the snapshot and the dashboard**
+(#2357). The Security screen offered it as "Enforce Virtual Keys on Inference",
+and `authenticate` read it as `virtual_key_required || managed_auth` for a
+gateway with an empty key set. The policy reaches a gateway only through
+`/internal/snapshot`, so every gateway that received it was managed, and
+`managed_auth` already made the answer "closed": the switch never changed a
+decision. Giving it a meaning would have meant letting its off position open a
+managed gateway, which is the one direction a dashboard toggle should not be
+able to move a fleet, and every stored row already says `false`, so that
+meaning would have opened every deployment that never touched it. The pieces:
+
+- `PUT /api/v1/security-settings` ignores the field when an older client sends
+  it, and neither `GET` nor the snapshot returns it. The column stays in
+  `security_settings`, unread and unwritten, because migrations are
+  append-only.
+- `SecurityPolicyConfig` no longer has the field. A snapshot from an older
+  control plane still parses; the field is ignored and the gateway decides as
+  above (`a_retired_snapshot_field_never_opens_a_managed_gateway`,
+  `a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_it`).
+- A config file that sets `[security] virtual_key_required = true` used to
+  close a file-configured gateway. `GatewayConfig::from_toml_str` carries that
+  forward as `server.require_auth = true` unless the file sets `require_auth`
+  itself, and warns either way; `config_lint` does not also report the key as
+  silently ignored (`a_retired_virtual_key_required_still_closes_a_file_gateway`).
 
 `allow_direct_provider_keys` is **gone from the API and the dashboard.** The
 gateway has no direct-provider-key passthrough, so the column controlled
@@ -112,8 +144,8 @@ first the operator hears of it.
   keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
   `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
   rule widened on one side shows up as a red test rather than as a toast.
-- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only two edits loosen:
-  `virtual_key_required` going on to off and a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only one edit loosens:
+  a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
   and a save that only tightens goes out without a dialog (see
   [destructive actions](../development/destructive-actions.md)).
 - **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
@@ -123,12 +155,6 @@ first the operator hears of it.
   and counts the live gateways that converged. With no live gateway on record, or a failed read, it
   says pickup cannot be confirmed and when a gateway applies it (next poll, `ROLTER_SNAPSHOT_POLL_SECS`,
   5 s by default; at once with Redis pub/sub).
-
-The virtual-key switch is narrower than its label in the gateway: `authenticate` in
-`crates/rolter-gateway/src/handlers.rs` reads `virtual_key_required || managed_auth` for a gateway with
-an empty key set, and every gateway that receives the setting through a snapshot is managed, so the
-switch never changes what one of them does (#2357). The confirmation words the consequence as the
-documented one (the gateway "decides by how it was started") and claims no more.
 
 ### No shared dashboard password
 
@@ -362,6 +388,8 @@ image keeps its own default.
 
 ## What the dashboard's config view strips (#1938, #1840)
 
+A store that cannot be read is a `500` with the redacted `{"error": {"message": "internal server error"}}` body on both `GET /api/v1/config` and `GET /api/v1/config/problems` (#2248), never an empty default configuration: the dashboard shows its load error rather than a deployment with no providers.
+
 `GET /api/v1/config` answers a signed-in caller of any role (or the admin
 token, or anyone in open mode) and nobody else; see [The public route
 allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
@@ -412,18 +440,17 @@ anonymous are one list, `PUBLIC_ROUTES` in
 `crates/rolter-control/src/public_routes.rs`, each with a reason that says what
 the route reveals and why that is acceptable. Today:
 
-| Route                                                                   | Why it is open                                                                                      |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below)          |
-| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                                       |
-| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                         |
-| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                                   |
-| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                                       |
-| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                                       |
-| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                                    |
-| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes                  |
-| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`                      |
-| `GET\|POST\|PUT\|PATCH\|DELETE /gw/{path}`                              | the Playground and the status pill reach the gateway through it; the gateway checks the virtual key |
+| Route                                                                   | Why it is open                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET /healthz`, `GET /readyz`                                           | orchestrator probes; fixed status words, never a driver error, host or version (see below) |
+| `GET /openapi.json`, `GET /docs`, `GET /docs/scalar.js`                 | the schema describes this build's surface, no deployment data                              |
+| `GET /api/v1/ping`                                                      | reachability check before login; a constant                                                |
+| `GET /api/v1/auth/methods`                                              | the login screen needs it before a session exists                                          |
+| `POST /api/v1/auth/login`, `.../mfa/{verify,enroll,confirm}`            | authenticated by their own body or single-use challenge token                              |
+| `POST /api/v1/auth/logout`                                              | idempotent; with no live token it revokes and reveals nothing                              |
+| `GET /api/v1/invitations/accept/{token}` and `POST .../accept`          | the invitee has no account; the one-time token is the credential                           |
+| `GET /auth/sso/{slug}/start`, `.../callback`, `POST /auth/sso/exchange` | the sign-in flow runs before a session exists; bound by `state` and one-time codes         |
+| `GET /auth/mcp/callback`                                                | browser redirect target of the MCP consent flow, bound by a single-use `state`             |
 
 Routes with their own non-session credential (the `/internal/*` token, the
 SCIM bearer) are not on the list: anonymously they answer `401`, and the guard requires exactly that.
@@ -446,9 +473,18 @@ SCIM bearer) are not on the list: anonymously they answer `401`, and the guard r
 - `the_allowlist_is_sorted_unique_and_explained` rejects duplicates and an
   empty-looking reason.
 
-The database-backed `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller`
-in `tests/control_integration.rs` (#1820) is the same idea over real sessions
-for GETs and stays as a second layer.
+That is the one anonymous-route guard. It replaced a GET-only sweep in
+`tests/control_integration.rs` (#1820) that read `.public()` from the document
+and exempted `/gw`; the allowlist guard covers every method, needs no
+database, and `/gw` takes a session since #2463 (#2464).
+
+What stays in `tests/control_integration.rs` is the one case the guard cannot
+reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
+bearer that is present but is not the admin token is looked up as a session
+token, and that lookup needs a real database, so against the guard's
+never-connecting pool it would answer an error rather than `401`. The test
+sends every operation not marked `.public()` with a forged bearer against a
+real database and requires `401` from each.
 
 To open a route deliberately: add it to `PUBLIC_ROUTES` with a reason, and mark
 the operation `.public()` in `openapi.rs`. To close one: take `AnySession`,
@@ -459,13 +495,29 @@ can name the database host and port to anyone; it now answers `unavailable` and
 logs the detail. The `/gw` proxy's `502` body echoed the reqwest error, which
 names the gateway's internal address; it now says `gateway unreachable` and logs.
 
-**Left as is, on purpose.** `/gw/*` stays anonymous because the gateway is what
-authenticates it (and the status pill polls the gateway's `/readyz` without a
-key). That is only as safe as the gateway being no more reachable than the
-control plane's port; if a gateway is deliberately kept off the internet while
-the control plane is not, the proxy widens its exposure. Moving it behind a
-session needs a way to carry both the session and the virtual key, which is a
-design change rather than a guard.
+**The `/gw` proxy takes a session (#2463).** It used to stay anonymous on the
+argument that the gateway authenticates every call, which is only true while the
+gateway is as reachable as the control plane's port. A gateway kept private
+while the control plane is public would still answer anyone through `/gw`
+(`fake-llm`, a keyless route), so the proxy now takes `AnySession`: open mode
+and the admin token pass, and with a database a live session of any role does.
+
+The session rides in `Authorization: Bearer`, which is also where a client puts
+the virtual key, so the key has its own carrier:
+
+- the **virtual key** goes in `x-rolter-gateway-key` and is forwarded to the
+  gateway as `Authorization: Bearer <key>`;
+- the inbound `Authorization` (the session) and `Cookie` are never forwarded;
+- a browser cannot set headers on a WebSocket, so a realtime upgrade may carry
+  the session as a `rolter_session` query parameter, removed before the request
+  goes upstream. The key keeps riding as `api_key` there. A query string can end
+  up in an access log, so treat that session like any URL-borne credential;
+- the status pill's `/gw/readyz` needs no exemption: the header is only drawn
+  inside the signed-in app, so the call is made with a session.
+
+Clients that call `/gw` without the dashboard (a snippet built on the proxy
+because no gateway base URL is saved) must therefore send both credentials;
+production clients should use the gateway's own address.
 
 ## Who reads the request log (#1820)
 

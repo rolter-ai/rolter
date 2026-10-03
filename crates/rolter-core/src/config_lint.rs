@@ -111,6 +111,10 @@ pub fn unknown_keys(toml_src: &str) -> Result<Vec<UnknownKey>> {
     let mut findings = Vec::new();
 
     if let Some(table) = doc.as_table_mut() {
+        // the loader acts on this retired key and warns about it in its own
+        // words, so reporting it here as "silently at its default" would be
+        // wrong for a `true` (#2357)
+        crate::config::take_retired_virtual_key_required(table);
         for section in TIERED_SECTIONS {
             let Some(value) = table.remove(section) else {
                 continue;

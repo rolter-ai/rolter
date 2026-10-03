@@ -2,11 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import {
   fetchHealthTimeline,
   fetchMttr,
@@ -18,7 +19,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { HEALTH_SLA as SLA } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /**
  * How far back "recently" reaches: the newest hourly bucket the timeline holds
@@ -219,34 +220,124 @@ function mergeBuckets(rows: TimelineRow[]): TimelineRow[] {
   return [...byBucket.values()].sort((a, b) => a.bucket.localeCompare(b.bucket));
 }
 
-// one thin bar per time bucket: red if any failure landed in it, else green
-function Timeline({ buckets, className }: { buckets: TimelineRow[]; className?: string }) {
+/** a failing bucket never drops below this height, so one failure stays visible */
+const FAIL_MIN_HEIGHT = 55;
+/** the failure share at which a bucket's bar reaches full height */
+const FAIL_FULL_SHARE = 0.1;
+
+/** a bucket's bar height in percent: a clean bucket is short, a failing one grows with its share */
+function barHeight(b: TimelineRow): number {
+  const bad = b.errors + b.timeouts;
+  if (bad === 0) return 40;
+  const share = b.events > 0 ? bad / b.events : 1;
+  return FAIL_MIN_HEIGHT + (100 - FAIL_MIN_HEIGHT) * Math.min(1, share / FAIL_FULL_SHARE);
+}
+
+/**
+ * One thin bar per time bucket: green when clean, `--status-danger` and taller
+ * as the failure share grows. The bars are decoration for sighted users; the
+ * range and every bucket's counts are also text, for assistive tech. `detail`
+ * adds the time axis and legend, which a row's small strip has no room for.
+ */
+function Timeline({
+  buckets,
+  className,
+  detail = false,
+}: {
+  buckets: TimelineRow[];
+  className?: string;
+  detail?: boolean;
+}) {
   const { t } = useTranslation();
+  const fmt = useFormat();
   if (buckets.length === 0) {
-    return <span className="text-xs text-muted-foreground">{t("pages.health.noEvents")}</span>;
+    return <span className="text-xs text-muted-foreground">{t("pages.health.noTimeline")}</span>;
   }
+  const at = (b: TimelineRow) => fmt.dateTime(new Date(bucketStart(b.bucket)));
+  const first = at(buckets[0]);
+  const last = at(buckets[buckets.length - 1]);
+  const events = buckets.reduce((n, b) => n + b.events, 0);
+  const failures = buckets.reduce((n, b) => n + b.errors + b.timeouts, 0);
   return (
-    <div className={cn("flex items-end gap-px", className ?? "h-8")}>
-      {buckets.map((b) => {
-        const bad = b.errors + b.timeouts;
-        const down = bad > 0;
-        return (
+    <div className="flex flex-col gap-1">
+      <div
+        role="group"
+        aria-label={t("pages.health.timelineSummary", {
+          from: first,
+          to: last,
+          buckets: buckets.length,
+          events: fmt.number(events),
+          failures: fmt.number(failures),
+        })}
+        data-testid="health-timeline"
+        className={cn("flex items-end gap-px", className ?? "h-8")}
+      >
+        {buckets.map((b) => {
+          const down = b.errors + b.timeouts > 0;
+          return (
+            <div
+              key={b.bucket}
+              aria-hidden="true"
+              title={t("pages.health.bucketTitle", {
+                bucket: at(b),
+                ok: b.ok,
+                errors: b.errors,
+                timeouts: b.timeouts,
+              })}
+              data-down={down || undefined}
+              className="w-1.5 flex-1 rounded-sm"
+              style={{
+                height: `${barHeight(b)}%`,
+                backgroundColor: down
+                  ? "var(--status-danger)"
+                  : "color-mix(in srgb, var(--status-success) 70%, transparent)",
+              }}
+            />
+          );
+        })}
+        <ul className="sr-only">
+          {buckets.map((b) => (
+            <li key={b.bucket}>
+              {t("pages.health.bucketTitle", {
+                bucket: at(b),
+                ok: b.ok,
+                errors: b.errors,
+                timeouts: b.timeouts,
+              })}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {detail && (
+        <>
           <div
-            key={b.bucket}
-            title={t("pages.health.bucketTitle", {
-              bucket: b.bucket,
-              ok: b.ok,
-              errors: b.errors,
-              timeouts: b.timeouts,
-            })}
-            className={cn(
-              "w-1.5 flex-1 rounded-sm",
-              down ? "bg-destructive" : "bg-[color:var(--status-success)]/70",
-            )}
-            style={{ height: down ? "100%" : "40%" }}
-          />
-        );
-      })}
+            aria-hidden="true"
+            className="flex flex-wrap justify-between gap-x-2 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+          >
+            <span>{first}</span>
+            {buckets.length > 1 && <span className="ml-auto text-right">{last}</span>}
+          </div>
+          <div
+            aria-hidden="true"
+            className="flex flex-wrap gap-x-3 text-[0.6875rem] text-[color:var(--text-subtle)]"
+          >
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="h-1.5 w-1.5 rounded-sm"
+                style={{ background: "var(--status-success)" }}
+              />
+              {t("pages.health.legendOk")}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="h-1.5 w-1.5 rounded-sm"
+                style={{ background: "var(--status-danger)" }}
+              />
+              {t("pages.health.legendFailed")}
+            </span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -263,9 +354,7 @@ function SlaPill({ state }: { state: SlaState }) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline>{label}</Overline>
       <div className="font-mono text-sm text-[color:var(--text-secondary)]">{value}</div>
     </div>
   );
@@ -297,7 +386,11 @@ function TargetRow({
       />
       {/* the dot is the row's only state marker, so its meaning is also text */}
       <span className="sr-only">{label(state)}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">{row.target_id}</span>
+      {/* a full row of its own below sm, so the four fixed-width figures wrap
+          under the name instead of squeezing it to "gp…" (#2004) */}
+      <span className="min-w-0 flex-[1_1_100%] truncate font-mono text-xs sm:flex-1">
+        {row.target_id}
+      </span>
       <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
       <span
         className={cn(
@@ -328,7 +421,6 @@ export default function Health() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `uptime` is the query the user is actually waiting on for this screen
   useScreenReady(!uptime.isLoading);
-  useErrorState(!!uptime.error, "health");
   const mttr = useQuery({ queryKey: ["health-mttr"], queryFn: fetchMttr });
   const timeline = useQuery({
     queryKey: ["health-timeline"],
@@ -374,6 +466,7 @@ export default function Health() {
             mttr.refetch();
             timeline.refetch();
           }}
+          target="health-rollups"
         />
       )}
       {!isLoading && !error && groups.length === 0 && (
@@ -385,12 +478,7 @@ export default function Health() {
           title={t("pages.health.emptyTitle")}
           description={t("pages.health.emptyBody")}
           actions={
-            <a
-              href="/playground"
-              className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {t("pages.health.emptyAction")}
-            </a>
+            <EmptyStateLink to="/playground">{t("pages.health.emptyAction")}</EmptyStateLink>
           }
         />
       )}
@@ -468,7 +556,7 @@ export default function Health() {
                   </span>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <Timeline buckets={headBuckets} />
+                  <Timeline buckets={headBuckets} detail />
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-2.5 border-t sm:grid-cols-3 border-[color:var(--border-subtle)] pt-3">
@@ -484,9 +572,7 @@ export default function Health() {
               </div>
               {group.targets.length > 0 && (
                 <div className="border-t border-[color:var(--border-subtle)] pt-2">
-                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    {t("pages.health.targets", { count: group.targets.length })}
-                  </div>
+                  <Overline>{t("pages.health.targets", { count: group.targets.length })}</Overline>
                   <div className="divide-y divide-[color:var(--border-subtle)]">
                     {group.targets.map((row) => (
                       <TargetRow

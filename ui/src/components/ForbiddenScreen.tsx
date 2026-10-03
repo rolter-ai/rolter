@@ -23,7 +23,7 @@ export function ForbiddenScreen({
 }) {
   return (
     <PageBody>
-      <LoadError error={FORBIDDEN} resource={resource} />
+      <LoadError error={FORBIDDEN} resource={resource} target="forbidden" />
     </PageBody>
   );
 }

@@ -7,6 +7,7 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { DocsLink } from "@/components/DocsLink";
+import { ProjectScopeField, useMayWiden } from "@/components/ProjectScopeField";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -131,6 +132,8 @@ interface ProviderDraft {
   apiKey: string;
   apiKeyEnv: string;
   egressProxy: string;
+  /** the project the provider is scoped to; `""` is the whole organization */
+  projectId: string;
 }
 
 function blankDraft(): ProviderDraft {
@@ -142,6 +145,7 @@ function blankDraft(): ProviderDraft {
     apiKey: "",
     apiKeyEnv: "",
     egressProxy: "",
+    projectId: "",
   };
 }
 
@@ -154,6 +158,7 @@ function fromProvider(p: ProviderRow): ProviderDraft {
     apiKey: "",
     apiKeyEnv: p.api_key_env ?? "",
     egressProxy: p.egress_proxy ?? "",
+    projectId: p.project_id ?? "",
   };
 }
 
@@ -163,6 +168,11 @@ export interface ProviderSheetProps {
   onOpenChange: (open: boolean) => void;
   orgId: string | null;
   provider?: ProviderRow | null;
+  /**
+   * The project the dashboard is open on. Someone who may not make a provider
+   * org-wide has to name a project, and this is the one they start on (#1919).
+   */
+  defaultProjectId?: string | null;
   onDone: (created?: ProviderRow) => void;
 }
 
@@ -172,6 +182,7 @@ export function ProviderSheet({
   onOpenChange,
   orgId,
   provider,
+  defaultProjectId,
   onDone,
 }: ProviderSheetProps) {
   const [draft, setDraft] = React.useState<ProviderDraft>(() => blankDraft());
@@ -184,6 +195,14 @@ export function ProviderSheet({
   const stored = created ?? (mode === "edit" ? (provider ?? null) : null);
 
   const seededRef = React.useRef(false);
+  // a caller who may not make a provider org-wide can only scope it to a
+  // project, so the picker has no org option for them and their current
+  // project stands in until they pick another
+  const mayWiden = useMayWiden("provider", editing ? "edit" : "add");
+  const scopeValue = draft.projectId || (!stored && !mayWiden ? (defaultProjectId ?? "") : "");
+  // the server keeps `api_key_env` at org level, since it reads the control
+  // plane's own environment, so a scoped provider's is an org admin's to set
+  const envLocked = !mayWiden && scopeValue !== "";
 
   const set = (patch: Partial<ProviderDraft>) => setDraft((d) => ({ ...d, ...patch }));
 
@@ -244,6 +263,7 @@ export function ProviderSheet({
           api_key: draft.apiKey || undefined,
           api_key_env: draft.apiKeyEnv || undefined,
           egress_proxy: draft.egressProxy || undefined,
+          project_id: scopeValue || undefined,
         });
       }
       const p = stored;
@@ -253,6 +273,9 @@ export function ProviderSheet({
         api_key: draft.apiKey ? draft.apiKey : undefined,
         api_key_env: draft.apiKeyEnv !== (p.api_key_env ?? "") ? draft.apiKeyEnv : undefined,
         egress_proxy: draft.egressProxy !== (p.egress_proxy ?? "") ? draft.egressProxy : undefined,
+        // sent only when it moved: `null` is the word for org-wide again, and a
+        // project admin's unchanged edit must not carry a scope the server refuses
+        project_id: scopeValue !== (p.project_id ?? "") ? scopeValue || null : undefined,
       });
     },
     onSuccess: (row) => {
@@ -339,6 +362,8 @@ export function ProviderSheet({
     !!draft.apiBase.trim() &&
     !save.isPending &&
     (editing ? true : !!orgId) &&
+    // no org-wide option to fall back on: a project has to be named
+    (mayWiden || scopeValue !== "") &&
     // right after a create there is nothing to save until something is edited
     (created === null || dirty);
 
@@ -396,6 +421,16 @@ export function ProviderSheet({
             </div>
           </Field>
         )}
+
+        <ProjectScopeField
+          resource="provider"
+          mode={editing ? "edit" : "add"}
+          orgId={orgId}
+          id="provider-scope"
+          value={scopeValue}
+          onChange={(projectId) => set({ projectId })}
+          mayWiden={mayWiden}
+        />
 
         <Field label={t("providerSheet.fields.kind")}>
           <Combobox
@@ -464,12 +499,17 @@ export function ProviderSheet({
 
         <Field
           label={t("providerSheet.fields.providerKeyEnv")}
-          hint={t("providerSheet.fields.providerKeyEnvHint")}
+          hint={
+            envLocked
+              ? t("providerSheet.fields.providerKeyEnvScoped")
+              : t("providerSheet.fields.providerKeyEnvHint")
+          }
         >
           <Input
             value={draft.apiKeyEnv}
             onChange={(e) => set({ apiKeyEnv: e.target.value })}
             placeholder="OPENAI_API_KEY"
+            disabled={envLocked}
           />
         </Field>
 
@@ -513,7 +553,7 @@ export function ProviderSheet({
               >
                 {test.isPending ? (
                   <>
-                    <Loader2 className="size-4 animate-spin" />
+                    <Loader2 className="size-4 motion-safe:animate-spin" />
                     {t("providerSheet.testing")}
                   </>
                 ) : (

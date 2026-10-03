@@ -1319,7 +1319,13 @@ mod tests {
         #[test]
         fn supplying_a_credential_needs_the_kek() {
             for (kind, header) in [("bearer", None), ("header", Some("X-Api-Key"))] {
-                let plan = plan(kind, header, Some("s3cret"), false).expect("must be allowed");
+                let plan = plan(
+                    kind,
+                    header,
+                    Some(&format!("sec-{}", uuid::Uuid::new_v4())),
+                    false,
+                )
+                .expect("must be allowed");
                 assert!(plan.needs_kek, "{kind}");
             }
         }

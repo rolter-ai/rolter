@@ -53,7 +53,8 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Pluggable `IdentityProvider` trait (`crates/rolter-auth/src/identity.rs`)
 - [x] OAuth2/OIDC SSO (group→role mapping) (#240 — per-org providers, PKCE, `source`-tagged memberships, org login policy with superadmin break-glass)
 - [x] Invitation onboarding: one-time links, invitee-chosen password (#712)
-- [x] LDAP bind + group mapping (#241 — `crates/rolter-control/src/ldap.rs`; SCIM user and group provisioning shipped alongside it in `scim.rs` / `scim_groups.rs`)
+- [x] LDAP bind + group mapping provider (#241 — `crates/rolter-control/src/ldap.rs`; SCIM user and group provisioning shipped alongside it in `scim.rs` / `scim_groups.rs`)
+- [ ] LDAP sign-in: wire the provider to a configuration, the login route and a Governance screen (#1826; #2731 kept the provider marked as unwired until then)
 - [x] Audit log writes + UI surface (`audit_log` table and repo methods, an RBAC capability, `ui/src/pages/AuditLog.tsx`)
 - [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
@@ -116,6 +117,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] cibuildwheel/maturin-action wheels → PyPI (`uv tool install rolter`) (`build-wheels` + `publish-pypi` in `release.yml`, PEP 740 attestations; `rolter` 0.0.11 is on PyPI)
 - [x] Publish crates to crates.io (#279)
 - [x] Multi-arch images → GHCR (`build-image` in `release.yml`, amd64 + arm64)
+- [x] Signed images with build provenance and an SBOM: keyless cosign signature, SLSA provenance and a CycloneDX SBOM per platform (`sign-images` in `release.yml`, checked by `scripts/verify-image.sh`, documented in `docs/user-docs/deployment/verify-images.mdx`) (#1080)
 - [x] Helm chart / K8s manifests (`charts/rolter/`, gated by the `helm chart` steps of the `static checks` job in `quality.yml`)
 - [x] Release automation from Conventional Commits (release-plz, per-crate changelogs — see [Changelogs](AGENTS.md#changelogs))
 - [x] `cargo deny` + dependency/advisory scanning in CI (#283)

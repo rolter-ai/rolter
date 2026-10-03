@@ -1,0 +1,44 @@
+---
+title: "Provider Credential Flag"
+sidebarTitle: "Providers"
+description: "Provider rows from the control-plane API carry has_stored_key, a boolean that says whether a sealed key is stored, so a client can tell a stored key from an environment variable or no credential."
+---
+
+A provider row names where its credential comes from in `api_key_env`, but a
+sealed key is never returned, so that field alone cannot tell "a key is stored"
+from "no credential at all". Every provider the control plane returns therefore
+carries one more field:
+
+| Field            | Type    | Meaning                                                                   |
+| ---------------- | ------- | ------------------------------------------------------------------------- |
+| `has_stored_key` | boolean | `true` when a sealed key is stored for the provider, `false` when none is |
+
+The field is on `GET /api/v1/orgs/{org_id}/providers`, on the response to
+`POST /api/v1/orgs/{org_id}/providers`, and on the response to
+`PUT /api/v1/providers/{id}`.
+
+```json
+{
+  "id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+  "name": "openai-primary",
+  "kind": "openai",
+  "api_base": "https://api.openai.com",
+  "api_key_env": null,
+  "has_stored_key": true
+}
+```
+
+Reading a row as a credential source:
+
+| `has_stored_key` | `api_key_env` | Credential                         |
+| ---------------- | ------------- | ---------------------------------- |
+| `true`           | any           | a stored key, sealed under the KEK |
+| `false`          | a name        | the named environment variable     |
+| `false`          | `null`        | none                               |
+
+`has_stored_key` reports only that a row exists. It never carries the key, its
+ciphertext or its nonce, and it does not say whether the key can still be
+unsealed; **Test connection** on the [provider page](/configuration/providers)
+does. An update that omits `api_key` leaves the stored key alone and the
+response still reports it, and sending `api_key: ""` deletes the key and flips
+the field to `false`.

@@ -228,17 +228,8 @@ fn all_provider_config_fields_are_documented_in_config_file_reference() {
     let mut fields = provider_config_fields();
     assert!(!fields.is_empty(), "no ProviderConfig fields were found");
 
-    // Internal or non-direct fields in ProviderConfig:
-    // egress_proxies (advanced proxy pool list, egress_proxy is documented)
-    // kv_events, lmcache, role_profile, model_role_profiles, tenancy
-    let internal_fields = [
-        "egress_proxies",
-        "kv_events",
-        "lmcache",
-        "role_profile",
-        "model_role_profiles",
-        "tenancy",
-    ];
+    // `tenancy` is filled in by the store and never written in a config file
+    let internal_fields = ["tenancy"];
     fields.retain(|f| !internal_fields.contains(&f.as_str()));
 
     let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
@@ -298,6 +289,48 @@ fn virtual_key_config_fields() -> BTreeSet<String> {
         .filter_map(|field| field.split_once(':'))
         .map(|(name, _)| name.trim().to_string())
         .collect()
+}
+
+/// Find every field name declared in `CacheConfig` struct in `crates/rolter-core/src/config.rs`.
+fn cache_config_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct CacheConfig {")
+        .expect("config.rs declares `pub struct CacheConfig {`");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n}")
+        .expect("CacheConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_cache_config_fields_are_documented_in_config_file_reference() {
+    let fields = cache_config_fields();
+    assert!(!fields.is_empty(), "no CacheConfig fields were found");
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these CacheConfig fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
 }
 
 #[test]

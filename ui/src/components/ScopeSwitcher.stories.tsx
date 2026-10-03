@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
-import { ScopeSwitcher } from "./ScopeSwitcher";
+import { CreateProjectHost, ScopeSwitcher } from "./ScopeSwitcher";
+import { openCreateProject } from "@/lib/scope";
 import { UxScreenProvider } from "@/lib/ux-react";
 import {
   Harness,
@@ -172,6 +173,40 @@ export const CreatesATeam: Story = {
 };
 
 /**
+ * Another screen opens the project dialog through `openCreateProject()`, with no
+ * switcher mounted (#2611). That is the shell's real situation: the switcher
+ * lives in the account menu and is unmounted whenever the menu is closed, so the
+ * dialog belongs to `CreateProjectHost`, which the shell always mounts.
+ */
+export const OpensCreateProjectFromElsewhere: Story = {
+  render: () => {
+    const recorder = recording(chain());
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub}>
+        <button type="button" onClick={openCreateProject}>
+          Open from another screen
+        </button>
+        <CreateProjectHost />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the team's project list is only asked for once a team is in scope, which
+    // is what the host needs before it has anything to open
+    await calls.expectSent("GET", `/teams/${TEAM.id}/projects`);
+    await userEvent.click(canvas.getByRole("button", { name: "Open from another screen" }));
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText("New project")).toBeVisible();
+    await userEvent.type(dialog.getByLabelText("Name"), "Search");
+    await userEvent.click(dialog.getByRole("button", { name: "Create" }));
+    const body = await calls.expectSentBody("POST", `/teams/${TEAM.id}/projects`);
+    await expect(body).toEqual({ name: "Search" });
+  },
+};
+
+/**
  * Deleting names the thing first, through the shared `ConfirmDialog` (#1760):
  * the title names the org, and the body says it takes everything under it.
  */
@@ -285,5 +320,70 @@ export const ProjectSettingsAreAnAdminsToChange: Story = {
     const dialog = await confirmation();
     await within(dialog).findByRole("switch", { name: "Viewers can read captured payloads" });
     await expectRefused(dialog, "Viewers can read captured payloads", undefined, "switch");
+  },
+};
+
+// the control plane refuses to delete a project, or a team holding one, while a
+// provider or group is scoped to it, and says which (#1919). The refusal is the
+// dialog's own error, so the confirmation stays open on it
+const SCOPED_ROWS_REFUSAL = (what: string) =>
+  json(
+    {
+      error: {
+        message: `this ${what} still owns provider 'gateway-private', provider group 'gateway-fleet'; delete them or make them org-wide first, since deleting the project would otherwise widen their access or destroy them`,
+      },
+    },
+    409,
+  );
+
+export const DeleteProjectRefusedWhileItOwnsScopedRows: Story = {
+  render: () => {
+    const recorder = recording(async (input, init) => {
+      if (init?.method === "DELETE") return SCOPED_ROWS_REFUSAL("project");
+      return chain()(input, init);
+    });
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub}>
+        <ScopeSwitcher />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete project" }));
+    const dialog = within(await confirmation());
+    await userEvent.click(await dialog.findByRole("button", { name: "Delete project" }));
+    const alert = await dialog.findByRole("alert");
+    await expect(alert).toHaveTextContent(/provider 'gateway-private', provider group/);
+    await expect(alert).toHaveTextContent(/make them org-wide first/);
+    await calls.expectSent("DELETE", `/projects/${PROJECT.id}`);
+    // still there to be cancelled, not closed over the refusal
+    await expect(await confirmation()).toBeVisible();
+  },
+};
+
+export const DeleteTeamRefusedWhileItsProjectsOwnScopedRows: Story = {
+  render: () => {
+    const recorder = recording(async (input, init) => {
+      if (init?.method === "DELETE") return SCOPED_ROWS_REFUSAL("team");
+      return chain()(input, init);
+    });
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub}>
+        <ScopeSwitcher />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Delete team" }));
+    const dialog = within(await confirmation());
+    await userEvent.click(await dialog.findByRole("button", { name: "Delete team" }));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      /this team still owns provider 'gateway-private'/,
+    );
+    await calls.expectSent("DELETE", `/teams/${TEAM.id}`);
   },
 };

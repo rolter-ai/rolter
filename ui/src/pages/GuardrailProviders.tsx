@@ -42,7 +42,7 @@ import {
 } from "@/lib/guardrail-enforcement";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
 // a prefilled host saves as the endpoint when nobody edits it, and a
@@ -87,7 +87,6 @@ function GuardrailProvidersScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "guardrail-providers");
   const [editing, setEditing] = React.useState<GuardrailProviderRow | null | undefined>();
   const save = useMutation({
     mutationFn: (body: GuardrailProviderInput) =>
@@ -205,6 +204,7 @@ function GuardrailProvidersScreen() {
           error={query.error}
           resource={t("errors.resources.guardrailProviders")}
           onRetry={() => void query.refetch()}
+          target="guardrail-providers"
         />
       ) : providers.length === 0 ? (
         <GuardrailEmpty
@@ -269,7 +269,7 @@ function GuardrailProvidersScreen() {
                     disabled={remove.isPending && remove.variables === provider.id}
                   >
                     {remove.isPending && remove.variables === provider.id && (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                     )}
                     {t("common.delete")}
                   </GatedButton>

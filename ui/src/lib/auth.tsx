@@ -6,6 +6,7 @@ import {
   isOpenModeNoSession,
   setSessionExpiredHandler,
   type MeMembership,
+  type ProfileResult,
   type UserRow,
 } from "@/lib/api";
 
@@ -44,7 +45,16 @@ interface AuthState {
   user: SessionUser | null;
   /** the account's role grants, from `/auth/me`; empty until it answers */
   memberships: MeMembership[];
+  /**
+   * The saved gateway public base URL from `/auth/me`, readable by every role
+   * (#2512); `null` when none is saved or `/auth/me` has not answered
+   */
+  gatewayBaseUrl: string | null;
   status: AuthStatus;
+  /** a SCIM directory owns the display name, from `/auth/me` */
+  displayNameManaged: boolean;
+  /** fold a saved profile into the session, so the shell shows it at once */
+  applyProfile: (profile: Pick<ProfileResult, "display_name" | "bio">) => void;
   /** the previous session was rejected — the login screen says so */
   expired: boolean;
   signIn: (email: string, token?: string | null, user?: SessionUser | null) => void;
@@ -73,12 +83,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = React.useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = React.useState<SessionUser | null>(readStoredUser);
   const [memberships, setMemberships] = React.useState<MeMembership[]>([]);
+  const [gatewayBaseUrl, setGatewayBaseUrl] = React.useState<string | null>(null);
   // only a stored token is worth checking; an email-only session has nothing
   // to revalidate, so it must not sit behind a placeholder
   const [status, setStatus] = React.useState<AuthStatus>(() =>
     localStorage.getItem(TOKEN_KEY) ? "checking" : "ready",
   );
   const [expired, setExpired] = React.useState(false);
+  const [displayNameManaged, setDisplayNameManaged] = React.useState(false);
+
+  const applyProfile = React.useCallback<AuthState["applyProfile"]>((profile) => {
+    setUser((current) => {
+      if (!current) return current;
+      const next = { ...current, display_name: profile.display_name, bio: profile.bio };
+      localStorage.setItem(USER_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const clearSession = React.useCallback(() => {
     localStorage.removeItem(EMAIL_KEY);
@@ -88,6 +109,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     setMemberships([]);
+    setGatewayBaseUrl(null);
+    setDisplayNameManaged(false);
   }, []);
 
   // any request that carried the token and came back 401 means the same thing
@@ -113,6 +136,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem(EMAIL_KEY, me.user.email);
         setUser(me.user);
         setMemberships(me.memberships);
+        setGatewayBaseUrl(me.gateway_base_url ?? null);
+        setDisplayNameManaged(me.display_name_managed === true);
         setEmail(me.user.email);
       })
       .catch((err) => {
@@ -142,8 +167,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       user,
       memberships,
+      gatewayBaseUrl,
       status,
       expired,
+      displayNameManaged,
+      applyProfile,
       signIn: (e, t = null, u = null) => {
         localStorage.setItem(EMAIL_KEY, e);
         setEmail(e);
@@ -171,7 +199,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setStatus("ready");
       },
     }),
-    [email, token, user, memberships, status, expired, clearSession],
+    [
+      email,
+      token,
+      user,
+      memberships,
+      gatewayBaseUrl,
+      status,
+      expired,
+      displayNameManaged,
+      applyProfile,
+      clearSession,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

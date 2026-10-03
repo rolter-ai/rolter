@@ -133,6 +133,7 @@
             "group": "Deployment",
             "pages": [
               "deployment/docker",
+              "deployment/verify-images",
               "deployment/production",
               "deployment/cluster",
               "deployment/air-gapped",
@@ -166,8 +167,11 @@
               "api/version",
               "api/public-url",
               "api/org-projects",
+              "api/providers",
+              "api/attribution-listings",
               "api/project-settings",
               "api/budgets-and-rate-limits",
+              "api/dashboard-analytics",
               "api/control-plane-openapi"
             ]
           }

@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -55,7 +56,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 type SourceMode = "inline" | "reference";
 
@@ -146,7 +147,6 @@ export default function SkillsRepository() {
 
   useScreenReady(!skills.isLoading);
 
-  useErrorState(!!skills.error, "skills-repository");
   const selected = skills.data?.find((skill) => skill.id === selectedId);
 
   React.useEffect(() => {
@@ -332,6 +332,7 @@ export default function SkillsRepository() {
           error={skills.error}
           resource={t("errors.resources.skills")}
           onRetry={() => void skills.refetch()}
+          target="skill-list"
         />
       </div>
     );
@@ -397,6 +398,7 @@ export default function SkillsRepository() {
               error={versions.error as Error}
               resource={t("errors.resources.skillVersions")}
               onRetry={() => versions.refetch()}
+              target="skill-versions"
             />
           </main>
         ) : (
@@ -1154,6 +1156,7 @@ function CreateSkillDialog({
         <DialogDescription>{t("pages.skillsRepo.createDescription")}</DialogDescription>
       </DialogHeader>
       <form
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1165,12 +1168,14 @@ function CreateSkillDialog({
           });
         }}
       >
-        <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody>
+          <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.skillsRepo.cancel")}
@@ -1223,6 +1228,7 @@ function SkillSettingsDialog({
         <DialogDescription>{t("pages.skillsRepo.settingsDescription")}</DialogDescription>
       </DialogHeader>
       <form
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1234,12 +1240,14 @@ function SkillSettingsDialog({
           });
         }}
       >
-        <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody>
+          <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.skillsRepo.cancel")}

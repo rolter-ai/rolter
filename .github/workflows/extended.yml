@@ -6,7 +6,8 @@ name: extended
 # continue-on-error jobs, where each one took a slot from the 20-job runner pool
 # (the macOS one from the 5-slot macOS pool) for a verdict nothing read. they
 # run here nightly and on demand instead (ADR-0034, #2025). `bun pin` rides
-# along: a ten-second check that .bun-version still names the latest bun (#1922).
+# along: a ten-second check that .bun-version still names the latest bun (#1922),
+# and a lockfile audit of ui/bun.lock, which dependabot alerts cannot see (#1930).
 #
 # nothing gates on this workflow, so no job here carries continue-on-error: a
 # failure has to reach `needs.*.result` as `failure` for `report failure` to
@@ -37,7 +38,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -54,7 +55,7 @@ jobs:
   # ROLTER_DATABASE_URL). see ROL-245
   compose-smoke:
     name: compose smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,11 +70,12 @@ jobs:
   # Cargo.toml so the job follows the declaration, and cargo runs it as
   # `cargo +<msrv>`: rust-toolchain.toml pins `stable` and outranks the rustup
   # default the toolchain action sets, so a plain `cargo check` here would test
-  # stable and never the msrv. it is red until #2026 settles the declared
-  # version against a lockfile that already needs 1.88
+  # stable and never the msrv. the floor is set by our own code as well as the
+  # lockfile: 1.91 is the first release with a stable `str::floor_char_boundary`,
+  # above the 1.88 that redis, tonic, icu and time declare (#2026)
   msrv:
     name: msrv build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,7 +92,7 @@ jobs:
           fi
           echo "msrv: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -99,7 +101,12 @@ jobs:
       - name: cargo check (msrv)
         env:
           MSRV: ${{ steps.msrv.outputs.version }}
-        run: cargo +"$MSRV" check --workspace --all-features
+        run: |
+          set -euo pipefail
+          # the log names the compiler that ran, so a stable run cannot pass for the msrv
+          rustc +"$MSRV" --version
+          cargo +"$MSRV" --version
+          cargo +"$MSRV" check --workspace --all-features
 
   # ── coverage on master ──────────────────────────────────────────────────────
   # the same run as quality.yml's `coverage (informational)`, which now runs on
@@ -110,7 +117,7 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:
@@ -141,7 +148,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
           components: llvm-tools-preview
@@ -150,7 +157,7 @@ jobs:
         with:
           shared-key: coverage
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov
       - name: cargo llvm-cov
@@ -180,7 +187,7 @@ jobs:
   # reads bun.lock
   bun-pin:
     name: bun pin
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -202,6 +209,36 @@ jobs:
           fi
           echo "bun ${pinned} is the latest release" >> "${GITHUB_STEP_SUMMARY}"
 
+  # ── ui lockfile audit (#1930) ───────────────────────────────────────────────
+  # dependabot's dependency graph reads ui/package.json but not ui/bun.lock, so
+  # a vulnerable package that only arrives transitively raises no alert. this
+  # reads the lockfile itself with `bun audit` and fails on any advisory that is
+  # not fixed or listed in ui/audit-accepted.json. it is informational, never a
+  # merge gate: a new advisory lands on code that is already merged, and a gate
+  # would turn every unrelated PR red for it. `report failure` opens the tracking
+  # issue. needs no install: bun audit reads package.json and bun.lock
+  ui-audit:
+    name: ui lockfile audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .bun-version
+            ui/package.json
+            ui/bun.lock
+            ui/audit-accepted.json
+            ui/scripts/audit-lockfile.ts
+          sparse-checkout-cone-mode: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: bun audit over ui/bun.lock
+        working-directory: ui
+        run: bun scripts/audit-lockfile.ts
+
   # ── report failure: one tracking issue for the whole workflow ──────────────
   # opens an issue titled after this workflow the first time a job fails, and
   # comments on it while it stays open, so a red night is seen rather than
@@ -213,16 +250,16 @@ jobs:
   #
   # an issue this token opens raises no `issues` event, so project-automation
   # never sees it (#2201). the job therefore triages a new issue itself: the
-  # station label and milestone it can set, and a dispatch of
+  # milestone it can set, and a dispatch of
   # project-automation.yml (the one event the token may start, hence
   # `actions: write`) for the board item and its fields. both are best-effort
   # and only warn: the issue is what matters, and a renamed milestone must not
   # cost it
   report-failure:
     name: report failure
-    needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin]
+    needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin, ui-audit]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       issues: write
@@ -240,8 +277,7 @@ jobs:
           MSRV: ${{ needs.msrv.result }}
           COVERAGE: ${{ needs.coverage.result }}
           BUN_PIN: ${{ needs.bun-pin.result }}
-          # ci and infra belong to the rtx station (AGENTS.md, two build stations)
-          STATION: station:rtx
+          UI_AUDIT: ${{ needs.ui-audit.result }}
           MILESTONE: Maintenance, CI & DX
         run: |
           set -euo pipefail
@@ -255,7 +291,8 @@ jobs:
             "| compose smoke | $COMPOSE_SMOKE |" \
             "| msrv build | $MSRV |" \
             "| coverage | $COVERAGE |" \
-            "| bun pin | $BUN_PIN |")"
+            "| bun pin | $BUN_PIN |" \
+            "| ui lockfile audit | $UI_AUDIT |")"
           number="$(gh issue list --state open --label ci --limit 200 --json number,title \
             | jq -r --arg t "$title" 'map(select(.title == $t)) | .[0].number // empty')"
           if [ -n "$number" ]; then
@@ -266,8 +303,8 @@ jobs:
               --body "$(printf '%s\n\n%s\n' "$body" "Opened by the \`report failure\` job. Close it once the failing checks are fixed; the next failure opens a new one.")")"
             echo "opened $url" >> "$GITHUB_STEP_SUMMARY"
             number="${url##*/}"
-            if ! gh issue edit "$number" --add-label "$STATION" --milestone "$MILESTONE"; then
-              echo "::warning title=report failure::could not label #$number $STATION or set its milestone to $MILESTONE; set both by hand"
+            if ! gh issue edit "$number" --milestone "$MILESTONE"; then
+              echo "::warning title=report failure::could not set the milestone of #$number to $MILESTONE; set it by hand"
             fi
             if ! gh workflow run project-automation.yml --ref "$REF" \
               -f number="$number" -f area=ci -f effort=XS; then

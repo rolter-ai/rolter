@@ -11,7 +11,7 @@
 //
 // So this wrapper refuses to guess:
 //
-//   1. it picks a free port itself, or fails loudly when the one you asked for
+//   1. it picks a free port itself and locks it against concurrent runs (#2323), or fails loudly when the one you asked for
 //      is taken, rather than letting Storybook shrug and continue
 //   2. it starts `storybook dev --ci` and waits for `/index.json`
 //   3. it checks that index against the story files it was asked to run: every
@@ -22,7 +22,10 @@
 //      above compares content only and another worktree of this same project
 //      serves the same story ids under the same paths (#1693). The listening
 //      pid's working directory has to be inside this worktree's `ui/`
-//   5. only then does it run `test-storybook`, one file per invocation — the
+//   5. it opens one story of each file in a headless browser and waits for it
+//      to render, so the dev server compiles the preview and that file's module
+//      graph before any test is timed (#2637)
+//   6. only then does it run `test-storybook`, one file per invocation — the
 //      positional pattern goes through `/bin/sh`, so a pattern containing
 //      `(`, `|` or `)` dies with a shell syntax error
 //
@@ -30,9 +33,10 @@
 //   bun scripts/run-story-tests.ts src/pages/Keys.stories.tsx [more…]
 //   bun scripts/run-story-tests.ts --port 6040 src/pages/Keys.stories.tsx
 //   bun scripts/run-story-tests.ts            # every story file
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, Socket } from "node:net";
-import { readFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 const UI_DIR = join(import.meta.dir, "..");
@@ -41,6 +45,8 @@ const UI_DIR = join(import.meta.dir, "..");
 export interface IndexEntry {
   id: string;
   importPath: string;
+  /** `story` or `docs`; storybook writes it on every entry */
+  type?: string;
 }
 
 export interface StorybookIndex {
@@ -106,10 +112,106 @@ export async function portIsFree(port: number): Promise<boolean> {
   });
 }
 
-/** The first free port at or after `from`, so two worktrees never collide. */
+/** The first free port at or after `from`, unclaimed: see `claimFreePort` for the locked one. */
 export async function findFreePort(from = 6100, tries = 60): Promise<number> {
   for (let port = from; port < from + tries; port += 1) {
     if (await portIsFree(port)) return port;
+  }
+  throw new Error(`no free port in ${from}..${from + tries}`);
+}
+
+/** A port this run holds: the lock file stays until `release` is called. */
+export interface PortClaim {
+  port: number;
+  release: () => void;
+}
+
+/** Where the per-port lock files live: shared by every worktree on the machine. */
+export function defaultLockDir(): string {
+  return join(tmpdir(), "rolter-story-ports");
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists but belongs to someone else
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Claim `port` with an exclusive lock file (`open(…, "wx")`, so O_EXCL) that
+ * names this process, or null when another live run holds it (#2323).
+ *
+ * Probing for a free port and releasing the probe leaves a window of seconds
+ * before Storybook binds, in which a second run picks the same port. The lock
+ * closes it: the kernel lets exactly one `wx` open succeed. A lock whose pid is
+ * dead (a run killed with SIGKILL) is stale and is taken over.
+ */
+export function claimPort(port: number, lockDir = defaultLockDir()): PortClaim | null {
+  mkdirSync(lockDir, { recursive: true });
+  const file = join(lockDir, `${port}.lock`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const fd = openSync(file, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      let released = false;
+      return {
+        port,
+        release: () => {
+          if (released) return;
+          released = true;
+          try {
+            // only remove a lock that is still ours
+            if (readFileSync(file, "utf8").trim() === String(process.pid)) unlinkSync(file);
+          } catch {
+            // already gone
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let holder: number;
+    try {
+      holder = Number(readFileSync(file, "utf8").trim());
+    } catch {
+      continue; // released between the open and the read: try again
+    }
+    // an empty file is a claim caught between open and write; give it a beat
+    if (Number.isFinite(holder) && holder > 0 && processIsAlive(holder)) return null;
+    if (Number.isNaN(holder) || holder === 0) {
+      Bun.sleepSync(20);
+      continue;
+    }
+    try {
+      unlinkSync(file);
+    } catch {
+      // someone else cleared it first
+    }
+  }
+  return null;
+}
+
+/**
+ * The first port at or after `from` that is both unlocked by another run and
+ * free on the machine, claimed for the caller. The lock is what keeps two
+ * concurrent runs apart; the free check still skips ports other software holds.
+ */
+export async function claimFreePort(
+  from = 6100,
+  tries = 60,
+  lockDir = defaultLockDir(),
+  isFree: (port: number) => Promise<boolean> = portIsFree,
+): Promise<PortClaim> {
+  for (let port = from; port < from + tries; port += 1) {
+    const claim = claimPort(port, lockDir);
+    if (claim === null) continue;
+    if (await isFree(port)) return claim;
+    claim.release();
   }
   throw new Error(`no free port in ${from}..${from + tries}`);
 }
@@ -166,6 +268,79 @@ export function missingFrom(
     }
   }
   return problems;
+}
+
+/**
+ * The story to open for each file before the timed run, one per file that has
+ * any: the first the index lists for it. Any story of a file pulls in that
+ * file's whole module graph; a docs entry renders no story, so it is never
+ * picked.
+ */
+export function warmupStories(index: StorybookIndex, files: { path: string }[]): string[] {
+  const entries = Object.values(index.entries ?? {});
+  return files.flatMap((file) => {
+    const first = entries.find(
+      (entry) =>
+        entry.importPath.replace(/^\.\//, "") === file.path && (entry.type ?? "story") === "story",
+    );
+    return first ? [first.id] : [];
+  });
+}
+
+// as long as `waitForIndex` gives storybook to come up: a cold compile of the
+// preview is the same order of work
+const WARMUP_TIMEOUT_MS = 180_000;
+
+/**
+ * Render one story of each file once, untimed, before `test-storybook` starts
+ * the clock (#2637).
+ *
+ * `storybook dev` compiles on demand: nothing is transformed until a browser
+ * asks for it. So the first story of a run paid for the whole preview — every
+ * vendored font, the i18n catalogs, react, the screen under test and all it
+ * imports — inside its own 15 second test budget. `Screens/Users › Loaded`
+ * spends ~30s of a cold start there and timed out with nothing wrong with it.
+ * jest abandons a timed-out test but not its page: the `postVisit` axe run goes
+ * on in the same tab, so the next story's own axe run then fails with "Axe is
+ * already running". That is how `ShowsDisplayNamesBesideTheEmail`, the story
+ * straight after it, failed with nothing wrong with it either. CI
+ * never sees this, because it tests a static build. A failure here is only
+ * reported: the timed run that follows says what is wrong with a story more
+ * precisely than a warm-up can.
+ */
+async function warmUp(port: number, storyIds: string[]): Promise<void> {
+  if (storyIds.length === 0) return;
+  // the playwright the test-runner drives, so no second browser install is needed
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    for (const id of storyIds) {
+      const started = Date.now();
+      try {
+        await page.goto(
+          `http://127.0.0.1:${port}/iframe.html?id=${encodeURIComponent(id)}&viewMode=story`,
+          { waitUntil: "load", timeout: WARMUP_TIMEOUT_MS },
+        );
+        // storybook marks the body once the story's file has been imported and
+        // it starts to render, or once it has given up on it
+        await page.waitForFunction(
+          () =>
+            document.body.classList.contains("sb-show-main") ||
+            document.body.classList.contains("sb-show-errordisplay"),
+          undefined,
+          { timeout: WARMUP_TIMEOUT_MS },
+        );
+        // and the chunks the render itself pulls in, a lazily loaded locale say
+        await page.waitForLoadState("networkidle", { timeout: WARMUP_TIMEOUT_MS });
+        console.log(`[stories] warmed ${id} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+      } catch (error) {
+        console.warn(`[stories] could not warm ${id}, running it cold: ${String(error)}`);
+      }
+    }
+  } finally {
+    await browser.close();
+  }
 }
 
 /**
@@ -259,6 +434,33 @@ export function listenersOn(port: number): Listener[] | null {
   });
 }
 
+/**
+ * Stop the storybook child and resolve only once it is gone, so the port it
+ * held is free for the next run (#2661). `process.exit` straight after a
+ * SIGTERM left storybook still listening, and a back-to-back run on the same
+ * port was refused as "already in use".
+ *
+ * The child leads its own process group (`detached`), because `bunx` forks the
+ * real server and a signal to `bunx` alone would not reach it. SIGTERM goes to
+ * the group; after `graceMs` without an exit it escalates to SIGKILL, and after
+ * `killMs` more it gives up rather than hang the run.
+ */
+export async function stopChild(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "once">,
+  signal: (sig: NodeJS.Signals) => void,
+  graceMs = 5000,
+  killMs = 2000,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<boolean>((resolveP) => child.once("exit", () => resolveP(true)));
+  const within = (ms: number) =>
+    Promise.race([exited, new Promise<boolean>((r) => setTimeout(() => r(false), ms))]);
+  signal("SIGTERM");
+  if (await within(graceMs)) return;
+  signal("SIGKILL");
+  await within(killMs);
+}
+
 function storyFiles(args: string[]): string[] {
   if (args.length > 0) return args.map((arg) => relative(UI_DIR, resolve(arg)));
   const found = spawnSync("rg", ["--files", "-g", "*.stories.tsx", "src"], {
@@ -286,9 +488,18 @@ async function main() {
     process.exit(1);
   }
 
-  let port: number;
+  let claim: PortClaim;
   if (requestedPort !== undefined) {
+    const held = claimPort(requestedPort);
+    if (held === null) {
+      console.error(
+        `port ${requestedPort} is in use by another run of this script (#2323). pick another ` +
+          `port, or omit --port and let this script pick one.`,
+      );
+      process.exit(1);
+    }
     if (!(await portIsFree(requestedPort))) {
+      held.release();
       // the whole point: a taken port is an error here, not a shrug
       console.error(
         `port ${requestedPort} is already in use. storybook would not fail on this — it would ` +
@@ -297,25 +508,40 @@ async function main() {
       );
       process.exit(1);
     }
-    port = requestedPort;
+    claim = held;
   } else {
-    port = await findFreePort();
+    claim = await claimFreePort();
   }
+  const port = claim.port;
+  // held for the run's lifetime and dropped on every way out, signals included
+  process.on("exit", claim.release);
+  // SIGINT and SIGTERM stop the storybook first (below); a hangup just exits, and
+  // the exit handlers drop the lock and kill the group
+  process.on("SIGHUP", () => process.exit(129));
 
   console.log(`[stories] starting storybook on ${port}`);
   const storybook = spawn(
     "bunx",
     ["storybook", "dev", "--ci", "--quiet", "-p", String(port), "--no-open"],
-    { cwd: UI_DIR, stdio: ["ignore", "ignore", "inherit"] },
+    { cwd: UI_DIR, stdio: ["ignore", "ignore", "inherit"], detached: true },
   );
-  const stop = () => {
-    if (!storybook.killed) storybook.kill("SIGTERM");
+  const signalGroup = (sig: NodeJS.Signals) => {
+    try {
+      // a negative pid signals the whole group, bunx's forked server included
+      if (storybook.pid !== undefined) process.kill(-storybook.pid, sig);
+    } catch {
+      // already gone
+    }
   };
-  process.on("exit", stop);
-  process.on("SIGINT", () => {
-    stop();
-    process.exit(130);
-  });
+  const stop = () => stopChild(storybook, signalGroup);
+  // last resort for an exit path that did not await stop(): a sync kill
+  process.on("exit", () => signalGroup("SIGKILL"));
+  const exitAfterStop = async (code: number): Promise<never> => {
+    await stop();
+    process.exit(code);
+  };
+  process.on("SIGINT", () => void exitAfterStop(130));
+  process.on("SIGTERM", () => void exitAfterStop(143));
 
   let failed = false;
   try {
@@ -324,9 +550,10 @@ async function main() {
     if (problems.length > 0) {
       console.error(
         `[stories] the storybook on ${port} is not serving this worktree's build:\n  ` +
-          problems.join("\n  "),
+          problems.join("\n  ") +
+          `\n  (this run holds the port's lock, so the listener is not another test:stories run)`,
       );
-      process.exit(1);
+      await exitAfterStop(1);
     }
     // and who is serving it: the index above compares content, which another
     // worktree of this same project satisfies (#1693)
@@ -340,10 +567,11 @@ async function main() {
       const stranger = foreignServer(listeners, UI_DIR);
       if (stranger !== null) {
         console.error(`[stories] ${stranger}`);
-        process.exit(1);
+        await exitAfterStop(1);
       }
     }
     console.log(`[stories] index confirmed: ${files.length} file(s), this worktree's build`);
+    await warmUp(port, warmupStories(index, files));
 
     for (const file of files) {
       // one file per invocation: the positional pattern is passed through
@@ -359,7 +587,7 @@ async function main() {
       if (run.status !== 0) failed = true;
     }
   } finally {
-    stop();
+    await stop();
   }
   process.exit(failed ? 1 : 0);
 }

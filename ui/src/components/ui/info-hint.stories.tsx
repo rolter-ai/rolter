@@ -31,6 +31,21 @@ export const Default: Story = {
   },
 };
 
+/** The glyph is 14px; the trigger around it is still a 24px target (#2573). */
+export const TriggerHasA24pxHitArea: Story = {
+  render: (args) => (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      Queue capacity
+      <InfoHint {...args} />
+    </span>
+  ),
+  play: async ({ canvasElement }) => {
+    const box = within(canvasElement).getByRole("button").getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
+  },
+};
+
 /** The trigger takes an explicit name where the surrounding label has one. */
 export const NamedForItsField: Story = {
   args: { label: "About queue capacity" },
@@ -102,6 +117,43 @@ export const OpensOnFocus: Story = {
     await userEvent.tab();
     await expect(canvas.getByRole("tooltip")).toBeVisible();
     await userEvent.tab();
+    await expect(canvas.queryByRole("tooltip")).not.toBeInTheDocument();
+  },
+};
+
+/** WCAG 1.4.13 dismissible: Escape closes the note while focus stays put. */
+export const ClosesOnEscape: Story = {
+  render: (args) => (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      Queue capacity
+      <InfoHint {...args} />
+    </span>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.tab();
+    await expect(canvas.getByRole("tooltip")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect(canvas.queryByRole("tooltip")).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button")).toHaveFocus();
+  },
+};
+
+/** WCAG 1.4.13 hoverable: the pointer can move onto the note without closing it. */
+export const StaysOpenOverTheNote: Story = {
+  render: (args) => (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      Queue capacity
+      <InfoHint {...args} />
+    </span>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.hover(canvas.getByRole("button"));
+    const note = canvas.getByRole("tooltip");
+    await userEvent.hover(note);
+    await expect(canvas.getByRole("tooltip")).toBeVisible();
+    await userEvent.unhover(note);
     await expect(canvas.queryByRole("tooltip")).not.toBeInTheDocument();
   },
 };

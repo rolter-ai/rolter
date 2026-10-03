@@ -231,6 +231,7 @@ export function LabelSheet({
               error={labels.error}
               resource={t("errors.resources.labels")}
               onRetry={() => void labels.refetch()}
+              target="labels"
             />
           )}
           {!labels.isLoading && !labels.error && rows.length === 0 && (

@@ -18,7 +18,7 @@ jobs:
   # conventional commits. nothing publishes until that PR is merged.
   release-plz-pr:
     name: release-plz pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # push the release branch
       pull-requests: write # open/update the release PR
@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - name: run release-plz
@@ -100,7 +100,7 @@ jobs:
   dispatch-release-pr-ci:
     name: dispatch release pr ci
     needs: release-plz-pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: write # workflow_dispatch ci.yml; nothing else is needed
       pull-requests: read # find the open release PR and read its labels
@@ -207,7 +207,7 @@ jobs:
   # once ci-ok is green; see docs/dev-docs/development/packaging.md
   release-gate:
     name: release gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # the wait's own deadline is 90 minutes; this only catches a hung step
     timeout-minutes: 100
     permissions:
@@ -264,7 +264,7 @@ jobs:
     name: release-plz release
     needs: release-gate
     if: needs.release-gate.outputs.verified == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # push tags + create the github release
       pull-requests: write # release-plz reconciles the release PR state
@@ -276,7 +276,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - name: run release-plz
@@ -328,7 +328,7 @@ jobs:
     name: dispatch artifact release
     needs: release-plz-release
     if: needs.release-plz-release.outputs.tag != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: write # workflow_dispatch release.yml; nothing else is needed
     steps:

@@ -177,6 +177,7 @@ export default function SignInEnrolment({
           error={enrolment.error}
           resource={t("errors.resources.twoFactorSecret")}
           onRetry={() => void enrolment.refetch()}
+          target="mfa-enrolment"
         />
       )}
       {enrolment.data && (
@@ -200,7 +201,7 @@ export default function SignInEnrolment({
       >
         {confirm.isPending ? (
           <>
-            {t("auth.enrol.confirming")} <Loader2 className="h-4 w-4 animate-spin" />
+            {t("auth.enrol.confirming")} <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
           </>
         ) : (
           <>
