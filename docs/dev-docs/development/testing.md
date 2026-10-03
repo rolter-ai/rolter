@@ -762,6 +762,16 @@ actionlint has no entry for `vulnerability-alerts` yet
 `.github/actionlint.yaml` ignores that one message in that one file. Any other
 permission typo in the workflow still fails the check.
 
+CI pins actionlint to **1.7.12**: the `actionlint` step in `quality.yml` downloads that release's
+tarball and checks it against a pinned sha256 before running it, so a new release that adds or
+tightens a rule cannot turn every open PR red on its own. (`taiki-e/install-action` has no
+actionlint manifest, which is why the step fetches it by hand.) Raising the version is a
+deliberate PR that changes `ACTIONLINT_VERSION` and `ACTIONLINT_SHA256` together, takes the digest
+from the release's `actionlint_<version>_checksums.txt`, and fixes whatever the newer rules
+report; it is also the moment to drop the `vulnerability-alerts` ignore above if the new release
+knows that scope. The `prek` hook runs whichever `actionlint` is on your `PATH`, so install the
+pinned version locally when the two disagree.
+
 ### Secret scanning
 
 The two gitleaks steps of the `static checks` job run the gitleaks **CLI** from
