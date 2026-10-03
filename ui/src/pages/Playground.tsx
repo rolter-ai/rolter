@@ -43,6 +43,7 @@ import {
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
+import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
   chatCompletion,
@@ -62,6 +63,7 @@ import {
   type PlaygroundKeyState,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
+import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -565,7 +567,7 @@ function SessionKeyBar({
             disabled={!projectId || mint.isPending}
             onClick={() => mint.mutate()}
           >
-            {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {mint.isPending && <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />}
             {/* nothing to renew until rolter has minted one: a pasted key is
                 replaced, not renewed */}
             {state.key && state.minted ? t("playground.key.renew") : t("playground.key.mint")}
@@ -778,14 +780,19 @@ function GatewayButton({
 }
 
 // an error arrives after an action, so it is announced the moment it appears
-function ErrorNote({ error }: { error: string | null }) {
+function ErrorNote({ error }: { error: ErrorCopy | null }) {
   if (!error) return null;
   return (
     <p
       role="alert"
       className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
     >
-      {error}
+      {error.message}
+      {error.detail && (
+        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+          {error.detail}
+        </span>
+      )}
     </p>
   );
 }
@@ -837,7 +844,7 @@ function ChatColumn({
   const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
   // the finished reply, for the live region: `id` makes a reply identical to
@@ -895,7 +902,7 @@ function ChatColumn({
       }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1053,7 +1060,11 @@ function ChatColumn({
           disabled={busy}
           aria-label={t("pages.playground.sendTo", { model: who })}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {busy ? (
+            <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
         </GatewayButton>
       </div>
     </div>
@@ -1062,6 +1073,11 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
+  // the account's saved Playground model (#2448) is what the column opens on,
+  // once the catalog confirms the gateway serves it; a stale name that no
+  // longer routes would only make the first message fail
+  const saved = useOptionalPreferences()?.preferences?.default_playground_model ?? null;
+  const preferredModel = saved && models.some((option) => option.id === saved) ? saved : preferred;
   // a column's thread lives in the column, so a column needs an identity that
   // outlasts its position: removing the first of two must not hand its thread
   // to the one that moved up
@@ -1076,13 +1092,13 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   const touched = React.useRef(false);
   const auto = React.useRef(FAKE);
   React.useEffect(() => {
-    if (touched.current || !preferred) return;
+    if (touched.current || !preferredModel) return;
     const previous = auto.current;
-    auto.current = preferred;
+    auto.current = preferredModel;
     setCols((c) =>
-      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferred }] : c,
+      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferredModel }] : c,
     );
-  }, [preferred]);
+  }, [preferredModel]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
@@ -1192,7 +1208,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
     t("pages.playground.samples.embeddings").split("\n"),
   );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
@@ -1203,7 +1219,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const run = async () => {
     const rows = texts.filter((t) => t.trim());
     if (rows.length < 2) {
-      setError(t("pages.playground.embedNeedTwo"));
+      setError({ message: t("pages.playground.embedNeedTwo") });
       return;
     }
     setError(null);
@@ -1219,7 +1235,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) * 100;
       setPoints(proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1260,7 +1276,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           </Button>
           <GatewayButton size="sm" onClick={run} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}{" "}
@@ -1299,7 +1315,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const gen = async () => {
@@ -1308,7 +1324,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
     try {
       setImages(await generateImages(model, prompt, n, size));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1348,7 +1364,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           />
           <GatewayButton size="sm" onClick={gen} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <ImageIcon className="h-3.5 w-3.5" />
             )}{" "}
@@ -1396,7 +1412,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const clipRef = React.useRef<HTMLAudioElement>(null);
@@ -1413,7 +1429,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setAudioUrl(await synthesizeSpeech(model, text, voice));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1426,7 +1442,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setTranscript(await transcribe(model, f));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1469,7 +1485,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               />
               <GatewayButton size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                 ) : (
                   <Mic className="h-3.5 w-3.5" />
                 )}{" "}
@@ -1509,7 +1525,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               disabled={busy}
             >
               {busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
               ) : (
                 <Upload className="h-3.5 w-3.5" />
               )}{" "}

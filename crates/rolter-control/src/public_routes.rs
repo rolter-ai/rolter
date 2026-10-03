@@ -68,46 +68,6 @@ pub(crate) const PUBLIC_ROUTES: &[PublicRoute] = &[
         "the embedded script backing /docs; static",
     ),
     route(
-        "delete",
-        "/gw/{path}",
-        "the Playground reaches the gateway through this proxy because a browser cannot call it \
-         cross-origin; the gateway authenticates every call with a virtual key, so the proxy \
-         adds no access the gateway does not already give. Revisit if the gateway is ever \
-         less reachable than this port",
-    ),
-    route(
-        "get",
-        "/gw/{path}",
-        "the Playground reaches the gateway through this proxy because a browser cannot call it \
-         cross-origin; the gateway authenticates every call with a virtual key, so the proxy \
-         adds no access the gateway does not already give. Revisit if the gateway is ever \
-         less reachable than this port",
-    ),
-    route(
-        "patch",
-        "/gw/{path}",
-        "the Playground reaches the gateway through this proxy because a browser cannot call it \
-         cross-origin; the gateway authenticates every call with a virtual key, so the proxy \
-         adds no access the gateway does not already give. Revisit if the gateway is ever \
-         less reachable than this port",
-    ),
-    route(
-        "post",
-        "/gw/{path}",
-        "the Playground reaches the gateway through this proxy because a browser cannot call it \
-         cross-origin; the gateway authenticates every call with a virtual key, so the proxy \
-         adds no access the gateway does not already give. Revisit if the gateway is ever \
-         less reachable than this port",
-    ),
-    route(
-        "put",
-        "/gw/{path}",
-        "the Playground reaches the gateway through this proxy because a browser cannot call it \
-         cross-origin; the gateway authenticates every call with a virtual key, so the proxy \
-         adds no access the gateway does not already give. Revisit if the gateway is ever \
-         less reachable than this port",
-    ),
-    route(
         "get",
         "/healthz",
         "liveness probe for the orchestrator; answers a constant `ok`",

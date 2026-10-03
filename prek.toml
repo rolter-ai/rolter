@@ -222,6 +222,16 @@ language = "system"
 files = "^(\\.github/workflows/ci\\.yml|scripts/(check|test)-agent-session-urls\\.sh)$"
 pass_filenames = false
 
+# ci-ok's `edited` fast path reads other ci runs through the api, so its shell
+# only runs on an edited pull request. this runs it against a fake gh and clock
+[[repos.hooks]]
+id = "assert-gate-ran"
+name = "ci-ok fast path against a fake gh"
+entry = "bash scripts/test-assert-gate-ran.sh"
+language = "system"
+files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh)$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "project-automation"
 name = "board automation retry policy"

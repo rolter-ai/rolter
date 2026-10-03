@@ -3,24 +3,10 @@ import { describe, expect, it } from "bun:test";
 import { loosenings, type SecurityPolicy } from "@/lib/security-loosening";
 
 const CLOSED: SecurityPolicy = {
-  virtualKeyRequired: true,
-  dashboardAuthEnabled: true,
   authBypassRoutes: ["/v1/models"],
 };
 
 describe("a save that loosens", () => {
-  it("names virtual keys going from enforced to not", () => {
-    expect(loosenings(CLOSED, { ...CLOSED, virtualKeyRequired: false })).toEqual([
-      { kind: "virtualKeys" },
-    ]);
-  });
-
-  it("names the dashboard going from protected to not", () => {
-    expect(loosenings(CLOSED, { ...CLOSED, dashboardAuthEnabled: false })).toEqual([
-      { kind: "dashboardAuth" },
-    ]);
-  });
-
   it("names each bypass route that is new", () => {
     expect(
       loosenings(CLOSED, {
@@ -33,16 +19,13 @@ describe("a save that loosens", () => {
     ]);
   });
 
-  it("lists exactly what opened, in a fixed order, and nothing else", () => {
+  it("lists exactly what opened, in the order typed, and nothing else", () => {
     expect(
       loosenings(CLOSED, {
-        virtualKeyRequired: false,
-        dashboardAuthEnabled: false,
-        authBypassRoutes: ["/v1/models", "/v1/ping"],
+        authBypassRoutes: ["/v1/embeddings", "/v1/models", "/v1/ping"],
       }),
     ).toEqual([
-      { kind: "virtualKeys" },
-      { kind: "dashboardAuth" },
+      { kind: "bypassRoute", route: "/v1/embeddings" },
       { kind: "bypassRoute", route: "/v1/ping" },
     ]);
   });
@@ -59,24 +42,9 @@ describe("a save that does not loosen", () => {
     expect(loosenings(CLOSED, CLOSED)).toEqual([]);
   });
 
-  it("is silent when a switch that was already off stays off", () => {
-    const open: SecurityPolicy = {
-      virtualKeyRequired: false,
-      dashboardAuthEnabled: false,
-      authBypassRoutes: [],
-    };
+  it("is silent when an empty list stays empty", () => {
+    const open: SecurityPolicy = { authBypassRoutes: [] };
     expect(loosenings(open, open)).toEqual([]);
-  });
-
-  it("is silent when a switch goes from off to on", () => {
-    const open: SecurityPolicy = {
-      virtualKeyRequired: false,
-      dashboardAuthEnabled: false,
-      authBypassRoutes: [],
-    };
-    expect(
-      loosenings(open, { ...open, virtualKeyRequired: true, dashboardAuthEnabled: true }),
-    ).toEqual([]);
   });
 
   it("is silent when a bypass route is taken away", () => {

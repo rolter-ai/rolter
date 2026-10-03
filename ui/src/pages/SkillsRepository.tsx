@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -1154,6 +1155,7 @@ function CreateSkillDialog({
         <DialogDescription>{t("pages.skillsRepo.createDescription")}</DialogDescription>
       </DialogHeader>
       <form
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1165,12 +1167,14 @@ function CreateSkillDialog({
           });
         }}
       >
-        <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody>
+          <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.skillsRepo.cancel")}
@@ -1223,6 +1227,7 @@ function SkillSettingsDialog({
         <DialogDescription>{t("pages.skillsRepo.settingsDescription")}</DialogDescription>
       </DialogHeader>
       <form
+        className="contents"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit({
@@ -1234,12 +1239,14 @@ function SkillSettingsDialog({
           });
         }}
       >
-        <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-            {error.message}
-          </p>
-        )}
+        <DialogBody>
+          <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+              {error.message}
+            </p>
+          )}
+        </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             {t("pages.skillsRepo.cancel")}

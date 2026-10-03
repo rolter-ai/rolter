@@ -395,7 +395,6 @@ pub struct ClientSettings {
 /// they cannot reach a snapshot by accident (#1162)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecurityPolicyRow {
-    pub virtual_key_required: bool,
     pub required_headers: serde_json::Value,
     pub auth_bypass_routes: Vec<String>,
 }
@@ -892,10 +891,10 @@ pub struct AuditLogEntry {
 }
 
 /// Global control-plane security settings. The retired dashboard-password
-/// columns still exist in the table but are not part of this DTO (#2356).
+/// columns (#2356) and `virtual_key_required` (#2357) still exist in the table
+/// but are not part of this DTO.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    pub virtual_key_required: bool,
     pub allowed_origins: Vec<String>,
     pub allowed_headers: Vec<String>,
     pub required_headers: serde_json::Value,

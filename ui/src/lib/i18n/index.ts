@@ -46,6 +46,11 @@ export function detectLocale(): Locale {
   } catch {
     // private-mode / disabled storage — fall through to browser detection
   }
+  return browserLocale();
+}
+
+/** The browser's own pick among the shipped locales, ignoring any stored choice. */
+export function browserLocale(): Locale {
   const preferences =
     typeof navigator === "undefined"
       ? []
@@ -55,6 +60,43 @@ export function detectLocale(): Locale {
     if (isLocale(primary)) return primary;
   }
   return DEFAULT_LOCALE;
+}
+
+/** The locale stored in this browser, if any (the first-paint copy of the preference). */
+export function storedLocale(): Locale | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return isLocale(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget the stored locale, so the next load follows the browser again. */
+export function clearStoredLocale(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // nothing to forget when storage is unavailable
+  }
+}
+
+/**
+ * Apply the account's `language` preference. `null` (or a code this build has
+ * no catalog for) means the browser default, and the stored copy is dropped so
+ * a reload agrees.
+ */
+export async function applyLanguagePreference(language: string | null): Promise<void> {
+  if (isLocale(language)) {
+    if (language !== currentLocale() || storedLocale() !== language) await setLocale(language);
+    return;
+  }
+  clearStoredLocale();
+  const locale = browserLocale();
+  if (locale !== currentLocale()) {
+    await setLocale(locale);
+    clearStoredLocale();
+  }
 }
 
 async function ensureLoaded(locale: Locale): Promise<void> {

@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -90,7 +90,7 @@ jobs:
           fi
           echo "msrv: \`$version\`" >> "$GITHUB_STEP_SUMMARY"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -141,7 +141,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
           components: llvm-tools-preview
@@ -213,7 +213,7 @@ jobs:
   #
   # an issue this token opens raises no `issues` event, so project-automation
   # never sees it (#2201). the job therefore triages a new issue itself: the
-  # station label and milestone it can set, and a dispatch of
+  # milestone it can set, and a dispatch of
   # project-automation.yml (the one event the token may start, hence
   # `actions: write`) for the board item and its fields. both are best-effort
   # and only warn: the issue is what matters, and a renamed milestone must not
@@ -240,8 +240,6 @@ jobs:
           MSRV: ${{ needs.msrv.result }}
           COVERAGE: ${{ needs.coverage.result }}
           BUN_PIN: ${{ needs.bun-pin.result }}
-          # ci and infra belong to the rtx station (AGENTS.md, two build stations)
-          STATION: station:rtx
           MILESTONE: Maintenance, CI & DX
         run: |
           set -euo pipefail
@@ -266,8 +264,8 @@ jobs:
               --body "$(printf '%s\n\n%s\n' "$body" "Opened by the \`report failure\` job. Close it once the failing checks are fixed; the next failure opens a new one.")")"
             echo "opened $url" >> "$GITHUB_STEP_SUMMARY"
             number="${url##*/}"
-            if ! gh issue edit "$number" --add-label "$STATION" --milestone "$MILESTONE"; then
-              echo "::warning title=report failure::could not label #$number $STATION or set its milestone to $MILESTONE; set both by hand"
+            if ! gh issue edit "$number" --milestone "$MILESTONE"; then
+              echo "::warning title=report failure::could not set the milestone of #$number to $MILESTONE; set it by hand"
             fi
             if ! gh workflow run project-automation.yml --ref "$REF" \
               -f number="$number" -f area=ci -f effort=XS; then

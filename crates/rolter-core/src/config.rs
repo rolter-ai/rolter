@@ -2298,6 +2298,13 @@ impl Default for ClientConfig {
 /// Deployment-wide ingress policy, owned by the control plane's Security
 /// screen and carried to every gateway in the snapshot (#1162).
 ///
+/// There is no "enforce virtual keys" rule here (#2357). Whether a gateway
+/// holding no keys refuses a request is decided by
+/// [`ServerConfig::require_auth`] and by how the gateway was started: a
+/// managed gateway fails closed, a file-configured one stays open for local
+/// development. A dashboard switch only ever reached managed gateways, which
+/// were already closed, so it changed nothing and was removed.
+///
 /// Everything here is a *refusal* rule: each field can only make the gateway
 /// reject a request it would otherwise have served, or — for
 /// [`Self::auth_bypass_routes`] — serve a path the operator explicitly named.
@@ -2306,11 +2313,6 @@ impl Default for ClientConfig {
 /// deployment it was closing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyConfig {
-    /// refuse an unauthenticated request even where the gateway holds no keys
-    /// at all. `server.require_auth` in the config file still wins, in either
-    /// direction: a file is a deliberate local override of the database
-    #[serde(default)]
-    pub virtual_key_required: bool,
     /// lowercase header name -> exact value every request must carry. A
     /// request missing one, or carrying a different value, is refused before
     /// authentication — this is an ingress filter (a mesh identity header, a
@@ -2882,6 +2884,43 @@ fn provider_slug(p: &ProviderConfig) -> String {
         .unwrap_or_else(|| crate::slug::slugify(&p.name))
 }
 
+/// Remove the retired `security.virtual_key_required` key from a parsed
+/// document, returning its value when it was there (#2357).
+///
+/// Shared by the loader, which honours a `true` as `server.require_auth`, and
+/// by [`crate::config_lint`], which must not report the key as silently ignored
+/// when the loader did act on it.
+pub(crate) fn take_retired_virtual_key_required(doc: &mut toml::Table) -> Option<toml::Value> {
+    doc.get_mut("security")?
+        .as_table_mut()?
+        .remove("virtual_key_required")
+}
+
+/// Carry a file's retired `security.virtual_key_required` forward.
+///
+/// The key used to close a file-configured gateway that held no keys, which is
+/// exactly what `server.require_auth = true` does. Dropping it on the floor
+/// would open such a gateway on upgrade, so a `true` becomes
+/// `require_auth = true` unless the file already says otherwise there, and the
+/// operator is told to move it either way.
+fn fold_retired_virtual_key_required(server: &mut ServerConfig, value: &toml::Value) {
+    if value.as_bool() == Some(true) && server.require_auth.is_none() {
+        server.require_auth = Some(true);
+        tracing::warn!(
+            "security.virtual_key_required is retired (#2357); it is honoured as \
+             server.require_auth = true. move the setting to [server] require_auth"
+        );
+    } else {
+        // `false` was the default, and an explicit `require_auth` always won
+        // over the key, so in both cases ignoring it changes nothing
+        tracing::warn!(
+            "security.virtual_key_required is retired (#2357) and has no effect here; \
+             remove it. [server] require_auth decides whether a gateway holding no \
+             keys refuses requests"
+        );
+    }
+}
+
 /// Effective slug for a provider group.
 fn group_slug(g: &ProviderGroupConfig) -> String {
     g.slug
@@ -2928,7 +2967,13 @@ impl GatewayConfig {
                 (group_readonly, group_defaults) = split_section(v)?;
             }
         }
+        let retired_vk = doc
+            .as_table_mut()
+            .and_then(take_retired_virtual_key_required);
         let mut config: Self = doc.try_into()?;
+        if let Some(value) = retired_vk {
+            fold_retired_virtual_key_required(&mut config.server, &value);
+        }
         config.providers = provider_readonly;
         config.provider_defaults = provider_defaults;
         config.provider_groups = group_readonly;
@@ -3214,7 +3259,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &mut self.routes {
             let unknown = route.advanced.guardrails.unknown_rules(&rule_names);
@@ -3225,12 +3270,12 @@ impl GatewayConfig {
                 .advanced
                 .guardrails
                 .disable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             route
                 .advanced
                 .guardrails
                 .enable
-                .retain(|name| rule_names.contains(name));
+                .retain(|name| rule_names.iter().any(|known| known == name.trim()));
             let mut seen = std::collections::HashSet::new();
             for name in unknown.into_iter().filter(|name| seen.insert(name.clone())) {
                 warnings.push(format!(
@@ -3885,7 +3930,7 @@ impl GatewayConfig {
             .guardrails
             .rules
             .iter()
-            .map(|rule| rule.name.clone())
+            .map(|rule| rule.name.trim().to_string())
             .collect();
         for route in &self.routes {
             for unknown in route.advanced.guardrails.unknown_rules(&rule_names) {
@@ -5133,6 +5178,34 @@ mod tests {
         assert!(cfg.validate().is_ok());
     }
 
+    // #2357: the key left the security policy, but a file that set it to close
+    // a keyless gateway must not come back open after an upgrade
+    #[test]
+    fn a_retired_virtual_key_required_still_closes_a_file_gateway() {
+        let cfg =
+            GatewayConfig::from_toml_str("[security]\nvirtual_key_required = true\n").unwrap();
+        assert_eq!(cfg.server.require_auth, Some(true));
+
+        // an explicit require_auth always won over the key, and still does
+        let cfg = GatewayConfig::from_toml_str(
+            "[server]\nrequire_auth = false\n[security]\nvirtual_key_required = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.server.require_auth, Some(false));
+
+        // `false` was the default, so it leaves the deployment default alone
+        let cfg =
+            GatewayConfig::from_toml_str("[security]\nvirtual_key_required = false\n").unwrap();
+        assert_eq!(cfg.server.require_auth, None);
+    }
+
+    #[test]
+    fn the_retired_virtual_key_required_is_not_linted_as_ignored() {
+        let src =
+            "[security]\nvirtual_key_required = true\nauth_bypass_routes = [\"/v1/models\"]\n";
+        assert!(crate::config_lint::unknown_keys(src).unwrap().is_empty());
+    }
+
     #[test]
     fn parses_keyless_ollama_provider_and_rejects_v1_suffix() {
         let raw = r#"
@@ -5914,6 +5987,14 @@ mod tests {
         assert_eq!(overrides.disable, vec!["live".to_string()]);
         assert!(overrides.enable.is_empty());
         assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn a_padded_guardrail_override_matches_the_trimmed_rule_name() {
+        let mut cfg = config_with_guardrail_override(&[" live "], &[]);
+        assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+        assert!(cfg.sanitize_for_snapshot().is_empty());
+        assert_eq!(cfg.routes[0].advanced.guardrails.disable.len(), 1);
     }
 
     #[test]

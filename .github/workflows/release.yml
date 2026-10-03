@@ -34,103 +34,66 @@ jobs:
   # check out an arbitrary dispatch-supplied ref in a default-branch context —
   # cache poisoning, flagged by CodeQL, and a real one.
   #
-  # asserting instead of re-running settles both. every commit on master already
-  # carries a `ci-ok` check-run from ci.yml, and release-plz tags only after its
-  # `release-gate` job has seen `ci-ok` succeed on the ci.yml push run for the
-  # release commit, so the tagged commit is verified by construction. checking
-  # the recorded result binds the gate to the *tagged* SHA — which re-running
-  # never did — costs no duplicate 20-minute run, and checks out nothing.
+  # asserting instead of re-running settles both: it binds the gate to the
+  # *tagged* sha, which re-running never did, and costs no duplicate run.
   #
-  # release-gate reads the ci-ok *job* of the ci.yml push run on the sha
-  # (scripts/wait-for-ci-gate.sh), because any workflow can post a check-run
-  # called `ci-ok` on a master commit. the loop below still matches check-run
-  # names: a different mechanism, not a copy of that script, and moving it onto
-  # the run-bound one needs the checkout this job avoids.
+  # what is asserted is the ci.yml *push* run on that sha, not a check-run name
+  # (#2034). this job used to keep the newest check-run per name, and any run can
+  # post one called `ci-ok`: the `tag` input resolves any ref, so a tag pushed on
+  # a pull request head was judged by that pr's own run, whose ci.yml the pr can
+  # edit, and a pr from a branch at a master sha into another base reports its
+  # ci-ok on that master sha. scripts/wait-for-ci-gate.sh, the same script
+  # release-plz.yml's `release-gate` runs, first requires the sha to be on master
+  # (`compare/<sha>...master` is ahead or identical), then waits for the newest
+  # ci.yml push run on it and requires its `ci-ok` job and every `codeql (*)`
+  # leg to have succeeded. on the release-plz path it passes on its first poll,
+  # since release-gate already saw that run go green before the tag existed.
   #
-  # these are exact check-run *names*, so they rot when a scanner is renamed or
-  # reconfigured — and because the job is fail-closed, a stale name blocks every
-  # release rather than failing loudly at the source. that is the second half of
-  # #903: the default below used to read `CodeQL,GitGuardian Security Checks`
-  # and the repo variable `Analyze (rust),…`, both of which are default-setup
-  # names that stopped existing when CodeQL moved to advanced setup. no release
-  # could have published even once the tag dispatch was fixed. the default now
-  # tracks the advanced-setup names, and a missing check prints the names that
-  # *do* exist so the fix is obvious from the log.
+  # the checkout is the workflow's own commit (github.sha), never `inputs.tag`:
+  # it reads one script and runs it, so it trusts nothing this workflow file
+  # does not already trust. the job names in RELEASE_REQUIRED_JOBS are job names
+  # of that run, and `*` keeps a renamed codeql leg from blocking every release
+  # the way the old exact check-run names did (#903)
   verify-external-checks:
     name: assert external checks green
     runs-on: ubuntu-latest
+    # the wait's own deadline is 90 minutes; this only catches a hung step
+    timeout-minutes: 100
     permissions:
-      checks: read
-      contents: read
+      contents: read # check out the gate script and resolve the tag
+      actions: read # list ci.yml runs on the tagged sha and read their jobs
     steps:
-      - name: assert required check-runs succeeded
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/wait-for-ci-gate.sh
+          sparse-checkout-cone-mode: false
+      - name: resolve the release tag to a commit
+        id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REF: ${{ inputs.tag || github.sha }}
-          REQUIRED: ${{ vars.RELEASE_REQUIRED_CHECKS || 'ci-ok,codeql (rust),codeql (actions-js-python)' }}
         run: |
           set -euo pipefail
-          # resolve the ref (tag on dispatch, sha on push) to a commit sha
-          SHA="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
-          IFS=',' read -ra names <<< "$REQUIRED"
-
-          # a release-plz dispatch normally passes on the first poll: its
-          # release-gate saw ci-ok finish on the commit before tagging it, and
-          # ci-ok needs every codeql leg. a tag dispatched by hand, or a check
-          # re-run after tagging, can still leave a required check *pending*,
-          # which is expected rather than a failure. wait for a verdict; only a
-          # real non-success, or the timeout, is fatal.
-          deadline=$(( $(date -u +%s) + 45 * 60 ))
-          while :; do
-            # "<timestamp>\t<name>\t<status>\t<conclusion>" per check-run. the
-            # timestamp is completed_at, falling back to started_at while a run
-            # has not finished, so an in-flight re-run still sorts above the
-            # attempt it replaces
-            all="$(gh api "repos/$REPO/commits/$SHA/check-runs" --paginate \
-              -q '.check_runs[]
-                  | [(.completed_at // .started_at // ""), .name, .status, (.conclusion // "")]
-                  | @tsv')"
-            # a sha can carry several check-runs under one name — a re-run, or
-            # the duplicate `ci-ok` of #1328 — and `grep -F -m1` used to take
-            # whichever the api listed first, so the gate could be decided by a
-            # stale verdict. group by name, newest first, and keep one row per
-            # name. sort and awk both drain their input, so nothing here closes
-            # a pipe early the way `| head -1` does (#1306)
-            runs="$(printf '%s\n' "$all" \
-              | LC_ALL=C sort -t$'\t' -k2,2 -k1,1r \
-              | awk -F'\t' 'NF && !seen[$2]++')"
-            fail=0; pending=""
-            for name in "${names[@]}"; do
-              name="$(echo "$name" | sed 's/^ *//;s/ *$//')"
-              [ -z "$name" ] && continue
-              # exact match on the name field; a substring grep would let
-              # "ci-ok" be answered by a check called "extra ci-ok"
-              line="$(awk -F'\t' -v want="$name" '$2 == want { print; exit }' <<< "$runs")"
-              if [ -z "$line" ]; then
-                pending="$pending $name(absent)"; continue
-              fi
-              status="$(echo "$line" | cut -f3)"; conclusion="$(echo "$line" | cut -f4)"
-              if [ "$status" != "completed" ]; then
-                pending="$pending $name($status)"; continue
-              fi
-              if [ "$conclusion" != "success" ]; then
-                echo "::error::required check '$name' concluded '$conclusion' for $SHA (need success)"; fail=1
-              fi
-            done
-            [ "$fail" -ne 0 ] && { echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"; exit 1; }
-            [ -z "$pending" ] && break
-            if [ "$(date -u +%s)" -ge "$deadline" ]; then
-              echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
-              echo "::error::still waiting on:$pending after 45m (fail-closed). if a scanner was renamed or reconfigured, update the RELEASE_REQUIRED_CHECKS repo variable to match the check-run names listed above"
-              exit 1
-            fi
-            echo "waiting on:$pending"
-            sleep 30
-          done
-
-          echo "newest check-run per name for $SHA (completed_at/started_at, name, status, conclusion):"; echo "$runs"
-          echo "all required checks succeeded for $SHA"
+          # the tag on a dispatch, the sha on a tag push. the gate script
+          # refuses anything that is not a full sha, so an empty answer fails
+          # there rather than here
+          sha="$(gh api "repos/$REPO/commits/$REF" -q '.sha')"
+          echo "release ref $REF is commit $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: wait for ci-ok and codeql on the tagged commit's ci.yml push run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          # ci-ok is always required whatever this says; the variable is an
+          # emergency override for the rest. no job name may contain a comma
+          REQUIRED_JOBS: ${{ vars.RELEASE_REQUIRED_JOBS || 'ci-ok,codeql (*)' }}
+        # the bare call, so the step's exit status is the gate's
+        # (check-release-handoff.py holds it to that)
+        run: bash scripts/wait-for-ci-gate.sh
 
   # ── build maturin wheels ────────────────────────────────────────────────────
   build-wheels:
