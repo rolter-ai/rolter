@@ -7,12 +7,14 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import {
   fetchCompatibilityPolicy,
   updateCompatibilityPolicy,
   type CompatibilityPolicyDto,
 } from "@/lib/api";
+import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -35,16 +37,29 @@ const DATED_RELEASE = /^\d{4}-\d{2}-\d{2}$/;
 // trip; the server stays the authority and its message is surfaced on reject.
 // it names a catalog key rather than carrying english copy — the screen renders
 // it, which is where `t` lives
-function validate(form: FormState): string | null {
+// every failing field is reported at once, in form order, keyed by field (#2096)
+type FieldErrors = Partial<Record<keyof FormState, string>>;
+
+function validate(form: FormState): FieldErrors {
+  const errors: FieldErrors = {};
   if (!DATED_RELEASE.test(form.anthropicVersion.trim())) {
-    return "pages.compatibility.validation.anthropicVersion";
+    errors.anthropicVersion = "pages.compatibility.validation.anthropicVersion";
   }
   const tokens = Number(form.defaultMaxTokens);
   if (!Number.isInteger(tokens) || tokens < 1 || tokens > 1_000_000) {
-    return "pages.compatibility.validation.defaultMaxTokens";
+    errors.defaultMaxTokens = "pages.compatibility.validation.defaultMaxTokens";
   }
-  return null;
+  return errors;
 }
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const FIELD_ORDER: (keyof FormState)[] = ["anthropicVersion", "defaultMaxTokens"];
+
+// the wire names a 400 opens with, mapped to the field they belong to
+const WIRE_FIELDS: Record<string, keyof FormState> = {
+  anthropic_version: "anthropicVersion",
+  default_max_tokens: "defaultMaxTokens",
+};
 
 // cross-dialect compatibility policy, persisted via /api/v1/compatibility-policy
 // (superadmin only). these are the values applied when a request is translated
@@ -70,6 +85,14 @@ function CompatibilityScreen() {
     }
   }, [policy.data, form]);
 
+  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
+  const versionId = React.useId();
+  const tokensId = React.useId();
+  const ids: Record<keyof FormState, string> = {
+    anthropicVersion: versionId,
+    defaultMaxTokens: tokensId,
+  };
+
   const save = useMutation({
     mutationFn: (f: FormState) =>
       updateCompatibilityPolicy({
@@ -82,6 +105,7 @@ function CompatibilityScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["compatibility-policy"] });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -89,6 +113,12 @@ function CompatibilityScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(ids[named.field])?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.compatibilitySettings") }),
@@ -120,9 +150,32 @@ function CompatibilityScreen() {
 
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
+    // an edit answers the server's complaint about that field
+    setServerErrors((e) => {
+      const next = { ...e };
+      for (const key of Object.keys(patch) as (keyof FormState)[]) delete next[key];
+      return next;
+    });
   };
-  const localErrorKey = validate(form);
-  const localError = localErrorKey ? t(localErrorKey) : null;
+  const local = validate(form);
+  const errors: Record<keyof FormState, string | undefined> = {
+    anthropicVersion: local.anthropicVersion
+      ? t(local.anthropicVersion)
+      : serverErrors.anthropicVersion,
+    defaultMaxTokens: local.defaultMaxTokens
+      ? t(local.defaultMaxTokens)
+      : serverErrors.defaultMaxTokens,
+  };
+  const invalid = FIELD_ORDER.filter((key) => errors[key]);
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2096)
+  const submit = () => {
+    if (invalid.length > 0) {
+      document.getElementById(ids[invalid[0]])?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
   // the server owns this list, so the screen warns without knowing which
   // fields need a restart
   const restartRequired = policy.data?.restart_required ?? [];
@@ -141,11 +194,15 @@ function CompatibilityScreen() {
         </div>
         <Input
           className="max-w-[200px] font-mono text-xs"
+          id={versionId}
           aria-label={t("pages.compatibility.version.aria")}
+          aria-invalid={errors.anthropicVersion ? true : undefined}
+          aria-describedby={describedBy(!!errors.anthropicVersion && `${versionId}-error`)}
           placeholder="2023-06-01"
           value={form.anthropicVersion}
           onChange={(e) => set({ anthropicVersion: e.target.value })}
         />
+        <FieldError id={`${versionId}-error`} error={errors.anthropicVersion} />
       </section>
 
       <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
@@ -161,10 +218,14 @@ function CompatibilityScreen() {
         <Input
           className="max-w-[200px]"
           inputMode="numeric"
+          id={tokensId}
           aria-label={t("pages.compatibility.maxTokens.aria")}
+          aria-invalid={errors.defaultMaxTokens ? true : undefined}
+          aria-describedby={describedBy(!!errors.defaultMaxTokens && `${tokensId}-error`)}
           value={form.defaultMaxTokens}
           onChange={(e) => set({ defaultMaxTokens: e.target.value })}
         />
+        <FieldError id={`${tokensId}-error`} error={errors.defaultMaxTokens} />
       </section>
 
       {restartRequired.length > 0 && (
@@ -181,10 +242,17 @@ function CompatibilityScreen() {
       )}
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
+          </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

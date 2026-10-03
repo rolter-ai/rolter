@@ -132,8 +132,9 @@ proxy core store auth control ui docs infra ci deps release e2e`. Dashboard
 - **Never** put a Claude session or remote-connection URL in a commit message,
   a PR body, or anywhere else.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).
-- Open the PR as a draft, mark it ready once `ci-ok` is green. Do not merge and
-  never pass `--delete-branch`.
+- Open the PR ready for review, not as a draft (a draft reports `BLOCKED` however
+  green its checks are), and keep owning it until `ci-ok` is green. Do not merge
+  and never pass `--delete-branch`.
 - Ship the `docs/user-docs/` update in the same PR when behaviour changes, including
   the `docs/user-docs/docs.json` nav line — an unlisted page is invisible.
 - File a GitHub issue for anything out of scope and add it to the board:

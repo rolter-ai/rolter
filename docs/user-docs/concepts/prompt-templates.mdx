@@ -15,7 +15,7 @@ Add one or more decorators:
 - **Position** places the message before or after the caller's original messages.
 - **Content** accepts declared variables in `{{ variable_name }}` form.
 
-Variable names start with a letter or underscore and contain only letters, digits, and underscores. A variable is either required or has a default value, never both. Use the live preview's sample values to inspect the rendered messages; samples remain in the browser and are not saved.
+Variable names start with a letter or underscore and contain only letters, digits, and underscores. A variable is either required or optional. The caller must send a required variable on every request the template applies to, even when no decorator uses it yet. An optional variable may have a default value; when the caller leaves it out, a placeholder renders the default, or nothing at all if there is none. A variable cannot be both required and defaulted. Use the live preview's sample values to inspect the rendered messages; samples remain in the browser and are not saved.
 
 ## Assign scopes
 
@@ -41,9 +41,9 @@ Callers pass variable values in a `rolter_template_vars` object in the request b
 }
 ```
 
-A placeholder takes the caller's value first and the variable's default second. The gateway refuses the request with HTTP 400 and the code `invalid_prompt_template` when:
+A placeholder takes the caller's value first and the variable's default second; an optional variable with no default renders as an empty string. The gateway refuses the request with HTTP 400 and the code `invalid_prompt_template` when:
 
-- a decorator uses a variable that the request does not send and that has no default;
+- the request does not send a variable the template declares required;
 - the request sends a variable that no template applied to it declares;
 - `rolter_template_vars` is not an object of strings, a value is longer than 4 KiB, or a rendered decorator is longer than 16 KiB.
 

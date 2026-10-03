@@ -39,7 +39,7 @@ A `redact` rule replaces each match with its **Replacement token**. Leave the fi
 
 A new rule starts with the field empty, and the empty field shows the default for the selected detector. Changing the detector or the source updates a token you have not edited; a token you typed is kept. `annotate` and `block` rules never rewrite traffic, so the dialog saves them with no replacement and their cards say the content is not rewritten. A redact rule's card names the token it writes, the default included.
 
-Over the API, omit `replacement` or send `null` to get the default token.
+Over the API, omit `replacement` or send `null` (or an empty string) to get the default token.
 
 ### What the Rules screen reports
 

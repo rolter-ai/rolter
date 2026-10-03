@@ -1,17 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } from "lucide-react";
+import { Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } from "lucide-react";
 import * as React from "react";
-import { Trans, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton, LoadingRegion, PanelSkeleton } from "@/components/LoadingState";
+import { CardGridSkeleton, PanelSkeleton } from "@/components/LoadingState";
+import { PublicUrlValue } from "@/components/PublicUrlValue";
 import {
   ListSummary,
   PageBody,
@@ -32,9 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
-import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import { SwitchRow } from "@/components/ui/switch-row";
 import {
   collectorConfigUrl,
@@ -50,7 +48,6 @@ import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
 import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
-import { usePublicUrl } from "@/lib/use-public-url";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
@@ -90,66 +87,25 @@ const asInput = (c: ConnectorRow) => ({
  * the address for the operator's own tooling and says so; the document below it
  * is what goes into the collector's config file.
  *
- * The address is the control plane's public base, read from the control plane
- * (the query the Single Sign-On and User Provisioning screens share), never
- * `window.location`: the dashboard may be open under a different name than the
- * one a script calls. Pending holds the space and a failed read says so with a
- * retry rather than a URL that might be wrong. Unset, the base is the control
- * plane's default, which only a caller on its own host can reach: still shown
- * and copyable, with that said under it.
+ * The address is the control plane's public base, never `window.location`:
+ * the dashboard may be open under a different name than the one a script
+ * calls. Pending, failed and an unset `ROLTER_PUBLIC_URL` are
+ * `PublicUrlValue`'s to say, the same way the User Provisioning screen says
+ * them.
  *
  * It mounts only while the dialog is open, so the read happens when somebody
  * asks for the document and not on every visit to the screen.
  */
 function CollectorEndpoint() {
   const { t } = useTranslation();
-  const publicUrl = usePublicUrl();
-  const labelId = React.useId();
-  const value = publicUrl.data ? collectorConfigUrl(publicUrl.data.public_url) : null;
   return (
-    <div role="group" aria-labelledby={labelId} className="flex min-w-0 flex-col gap-1.5">
-      <FieldLabel id={labelId} label={t("pages.connectors.collectorConfig.endpoint")} />
-      {publicUrl.isError ? (
-        // load-error-allow: one URL field inside a dialog; nothing to be empty
-        <LoadError
-          error={publicUrl.error}
-          resource={t("errors.resources.publicUrl")}
-          onRetry={() => void publicUrl.refetch()}
-          target="public-url"
-        />
-      ) : value ? (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] py-1.5 pl-3 pr-1.5">
-          <code
-            data-testid="collector-config-url"
-            className="min-w-0 break-all font-mono text-sm text-foreground"
-          >
-            {value}
-          </code>
-          <CopyButton value={value} label={t("pages.connectors.collectorConfig.copyEndpoint")} />
-        </div>
-      ) : (
-        <LoadingRegion className="w-full">
-          <Skeleton height={46} radius={6} />
-        </LoadingRegion>
-      )}
-      <p className="text-xs text-muted-foreground">
-        {t("pages.connectors.collectorConfig.endpointHint")}
-      </p>
-      {publicUrl.data?.configured === false && (
-        <p
-          role="note"
-          className="flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]"
-        >
-          <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
-          <span>
-            <Trans
-              i18nKey="pages.connectors.collectorConfig.urlUnset"
-              components={{ code: <code className="font-mono" /> }}
-            />
-          </span>
-        </p>
-      )}
-    </div>
+    <PublicUrlValue
+      address={collectorConfigUrl}
+      label={t("pages.connectors.collectorConfig.endpoint")}
+      copyLabel={t("pages.connectors.collectorConfig.copyEndpoint")}
+      hint={t("pages.connectors.collectorConfig.endpointHint")}
+      testId="collector-config-url"
+    />
   );
 }
 
@@ -675,17 +631,10 @@ function ConnectorSheet({
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       if (existing) {
-        // a save keeps the health the last test recorded, and after a new
-        // endpoint or secret that describes the old one
-        const retest =
-          !!existing.health_checked_at &&
-          (endpoint.trim() !== existing.endpoint || !!secret.trim());
         toast.push({
           tone: "success",
           title: t("toast.saved"),
-          detail: retest
-            ? t("pages.connectors.savedRetest", { name })
-            : t("toast.savedDetail", { what: name }),
+          detail: t("toast.savedDetail", { what: name }),
         });
       } else {
         // one that was left off says so and what to do next, or nothing ever
@@ -734,8 +683,8 @@ function ConnectorSheet({
     : !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100" || startNow);
 
   // what happens to the stored secret on save, said beside the field that
-  // decides it. the control plane keeps it when the endpoint moves, so the
-  // hint says where it would go rather than promising it is dropped
+  // decides it. the control plane drops it when the endpoint moves to another
+  // origin unless a new one is typed
   const secretHint = !existing
     ? undefined
     : !existing.auth_secret_configured
