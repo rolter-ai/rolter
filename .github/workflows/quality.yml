@@ -912,7 +912,7 @@ jobs:
       - name: ruff (scripts)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx ruff@0.15.0 check scripts
+        run: uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff check scripts
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and

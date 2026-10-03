@@ -203,7 +203,7 @@ pass_filenames = false
 [[repos.hooks]]
 id = "ruff"
 name = "ruff (scripts)"
-entry = "uvx ruff@0.15.0 check scripts"
+entry = "bash -c 'uvx --from \"$(bash scripts/tool-pin.sh ruff)\" ruff check scripts'"
 language = "system"
 files = "^(scripts/.*\\.py|ruff\\.toml)$"
 pass_filenames = false
