@@ -1303,6 +1303,7 @@ function ServerDialog({
             {t("common.cancel")}
           </Button>
           <Button disabled={!valid || pending} onClick={submit}>
+            {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
             {pending
               ? t("common.saving")
               : initial
@@ -1413,7 +1414,7 @@ export function McpLibrary() {
                   onClick={() => install.mutate(item)}
                 >
                   {install.isPending && install.variables?.slug === item.slug && (
-                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
                   )}
                   {item.installed ? t("pages.mcpLibrary.installed") : t("pages.mcpLibrary.install")}
                 </Button>
@@ -1540,12 +1541,8 @@ export function ToolGroups() {
                   control="tool-group-delete"
                   variant="ghost"
                   aria-label={t("pages.mcpCatalog.groups.deleteAria", { name: group.name })}
-                  disabled={remove.isPending && remove.variables === group.id}
                   onClick={() => startDelete(group)}
                 >
-                  {remove.isPending && remove.variables === group.id && (
-                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
-                  )}
                   {t("common.delete")}
                 </GatedButton>
                 <GatedButton
@@ -1697,6 +1694,7 @@ function ToolGroupDialog({
             })
           }
         >
+          {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("common.saving") : t("pages.tool-groups.dialog.save")}
         </Button>
       </DialogFooter>
@@ -1877,6 +1875,9 @@ function McpSettingsForm({
       )}
       <div className="flex justify-end">
         <Button disabled={save.isPending} onClick={() => save.mutate()}>
+          {save.isPending && (
+            <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+          )}
           {save.isPending ? t("common.saving") : t("pages.mcpSettings.save")}
         </Button>
       </div>
