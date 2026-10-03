@@ -7,7 +7,6 @@ import {
   Pencil,
   Plus,
   ShieldCheck,
-  Trash2,
   Users,
 } from "lucide-react";
 import * as React from "react";
@@ -25,6 +24,7 @@ import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen"
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
 import { CopyableValue } from "@/components/ui/copyable-value";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
@@ -793,22 +793,16 @@ function ProviderCard({
             )}
           </RowIconButton>
         )}
-        <RowIconButton
-          danger
+        <DeleteIconButton
           gate="sso_provider:delete"
           control="sso-provider-delete"
-          aria-label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          disabled={deleting || lastWayIn}
+          label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
           title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
+          pending={deleting}
+          disabled={lastWayIn}
           aria-describedby={held}
           onClick={() => onDelete(provider)}
-        >
-          {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
-          ) : (
-            <Trash2 className="h-3.5 w-3.5" />
-          )}
-        </RowIconButton>
+        />
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
