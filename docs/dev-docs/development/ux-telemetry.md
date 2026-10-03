@@ -53,6 +53,20 @@ region (`virtual-keys`, `providers`, `model-prices`, `cluster-nodes`,
 `health-rollups`), and a window that spans the upgrade shows both names for the
 same list.
 
+`bun run check:load-error-targets` (`ui/scripts/check-load-error-targets.ts`,
+#2641) keeps the two names from drifting apart again, in the same `ui,
+storybook, docs` job as `check:waits`. It fails when a `LoadError` whose
+`target` is a string literal matches none of the `uxTarget` literals in the same
+file; a ternary of literals contributes every branch, on either side. Three
+cases are not read: a `target={target}` a wrapper forwards (its caller's literal
+is checked where it is written), a file with no `EmptyState` literal at all
+(a settings form, a card or a drawer has no second row to drift from), and a
+region that carries `// load-error-allow: <reason>` in the comment block above
+its `<LoadError` (`{/* … */}` where the element is a JSX child). Use the waiver
+for a region that has no empty state of its own — a usage figure beside a list
+that pairs under its own name, a field inside a dialog, fixed content — and
+write why; every run prints each waiver. Fourteen sit in the tree today.
+
 The hook is still exported for the one case the component cannot see: a read
 whose failure renders no `LoadError` at all. MCP Logs reports its summary
 (`mcp-log-summary`), which only blanks the figures, and Limits its virtual-key list

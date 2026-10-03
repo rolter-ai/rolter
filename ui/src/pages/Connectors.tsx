@@ -110,6 +110,7 @@ function CollectorEndpoint() {
     <div role="group" aria-labelledby={labelId} className="flex min-w-0 flex-col gap-1.5">
       <FieldLabel id={labelId} label={t("pages.connectors.collectorConfig.endpoint")} />
       {publicUrl.isError ? (
+        // load-error-allow: one URL field inside a dialog; nothing to be empty
         <LoadError
           error={publicUrl.error}
           resource={t("errors.resources.publicUrl")}

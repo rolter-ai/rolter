@@ -122,6 +122,7 @@ function ScimBaseUrl({ hint, className }: { hint?: string; className?: string })
     <div role="group" aria-labelledby={labelId} className="flex min-w-0 flex-col gap-1.5">
       <FieldLabel id={labelId} label={t("pages.userProvisioning.baseUrl.label")} />
       {publicUrl.isError ? (
+        // load-error-allow: one URL field in the SCIM setup; nothing to be empty
         <LoadError
           error={publicUrl.error}
           resource={t("errors.resources.publicUrl")}

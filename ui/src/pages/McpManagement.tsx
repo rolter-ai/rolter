@@ -1369,6 +1369,7 @@ export function McpLibrary() {
       {query.isLoading ? (
         <CardGridSkeleton cards={4} height={190} min={300} />
       ) : query.error ? (
+        // load-error-allow: the curated catalog ships with the control plane and is never empty
         <LoadError
           error={query.error}
           resource={t("errors.resources.mcpLibrary")}
@@ -1736,6 +1737,7 @@ export function McpSettings() {
   if (query.error)
     return (
       <PageBody>
+        {/* load-error-allow: a settings form, not a list */}
         <LoadError
           error={query.error}
           resource={t("errors.resources.mcpSettings")}

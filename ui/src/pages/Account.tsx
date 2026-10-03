@@ -214,6 +214,7 @@ export default function Account() {
         (usage.error instanceof AnalyticsUnavailableError ? (
           <AnalyticsUnavailable error={usage.error} i18nKey="account.keys.noAnalytics" />
         ) : (
+          // load-error-allow: a usage figure decorating the key list, which keeps its own own-keys pair; no list to be empty
           <LoadError
             error={usage.error}
             resource={t("errors.resources.yourUsage")}

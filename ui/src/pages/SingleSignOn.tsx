@@ -1318,6 +1318,7 @@ export default function SingleSignOn() {
   return (
     <PageBody>
       {policy.isError && (
+        // load-error-allow: the sign-in policy is a single record, not a list; the providers list pairs as sso-providers
         <LoadError
           error={policy.error}
           resource={t("errors.resources.signInPolicy")}
