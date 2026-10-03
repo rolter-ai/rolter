@@ -34,6 +34,7 @@ import {
   expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -2617,3 +2618,17 @@ export const AKeyCanBePickedByName: Story = {
     await expect(picker).toHaveValue("");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const logsFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  ready: (canvas, locale) => canvas.findByText(formattersFor(locale).timeMs(ROWS[0].ts)),
+});
+// the feed's pager sat 47px past the edge at 320px, in English
+export const SmallPhone: Story = logsFit("small", "en");
+export const SmallPhoneInRussian: Story = logsFit("small", "ru");

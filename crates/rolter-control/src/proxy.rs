@@ -30,6 +30,7 @@ use axum::routing::any;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::time::Duration;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message as UpstreamMessage},
@@ -312,9 +313,62 @@ fn to_client(message: UpstreamMessage) -> Message {
     }
 }
 
+/// How long the proxy waits for the gateway's TCP handshake. Only connecting is
+/// bounded: SSE streams and realtime sessions stay open as long as they like.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The client behind `/gw`. A refused port already answers `502` at once; the
+/// connect timeout gives a host that drops packets the same answer instead of
+/// a hang of minutes. No total timeout, since responses stream.
+pub(crate) fn gateway_client() -> reqwest::Client {
+    build_gateway_client(CONNECT_TIMEOUT)
+}
+
+fn build_gateway_client(connect_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .build()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{take_query_param, ws_url};
+    use super::{build_gateway_client, take_query_param, ws_url};
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn a_connect_that_never_completes_fails_within_the_timeout() {
+        // a listener that never accepts, with its backlog filled, drops further
+        // SYNs the way a blackholed host does
+        let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+        socket
+            .bind("127.0.0.1:0".parse().expect("addr"))
+            .expect("bind");
+        let listener = socket.listen(1).expect("listen");
+        let addr = listener.local_addr().expect("local addr");
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            if let Ok(Ok(stream)) = tokio::time::timeout(
+                Duration::from_millis(200),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            {
+                held.push(stream);
+            }
+        }
+
+        let client = build_gateway_client(Duration::from_millis(300));
+        let started = Instant::now();
+        let error = client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .expect_err("a dead host must not answer");
+        assert!(error.is_connect() || error.is_timeout(), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(held);
+    }
 
     #[test]
     fn lifts_the_session_out_of_a_query() {

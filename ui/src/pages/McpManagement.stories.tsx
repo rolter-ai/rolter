@@ -35,6 +35,7 @@ import { AuthProvider } from "@/lib/auth";
 import { CONSENT_CHANNEL, type ConsentAnnouncement } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
 import { UxScreenProvider } from "@/lib/ux-react";
+import { phoneFits } from "@/lib/story-viewport";
 
 const ORG = { id: "org-1", name: "Acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
 const TEAM = { id: "team-1", org_id: ORG.id, name: "Platform", created_at: ORG.created_at };
@@ -1539,3 +1540,16 @@ export const ToolGroupsGatedForMember: Story = {
     await expectRefused(canvasElement, "Configure tool group Triage");
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const catalogFits = phoneFits({
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <McpCatalog />
+    </Harness>
+  ),
+  ready: (canvas) => canvas.findByText("GitHub"),
+});
+export const CatalogMobile: Story = catalogFits("mobile", "en");
+export const CatalogMobileInRussian: Story = catalogFits("mobile", "ru");

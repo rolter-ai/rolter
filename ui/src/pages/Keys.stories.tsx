@@ -41,6 +41,7 @@ import {
   atTablet,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -993,3 +994,17 @@ export const DeleteIsConfirmedAndReported: Story = {
     ).toHaveLength(1);
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const keysFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withKeys(KEYS)}>
+      <Keys />
+    </Harness>
+  ),
+  ready: (canvas) => canvas.findByText("backend service"),
+});
+export const MobileInRussian: Story = keysFit("mobile", "ru");
+export const SmallPhone: Story = keysFit("small", "en");
+export const SmallPhoneInRussian: Story = keysFit("small", "ru");
