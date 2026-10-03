@@ -555,11 +555,12 @@ link. `rust lint` holds fmt, clippy (default features and `postgres`),
 `cargo doc` with warnings as errors, `cargo hack` over each feature and the
 cross-crate feature combination. None of them invokes the linker, so the job
 skips the wild linker. `rust build` holds the publish verify build
-(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, and
-last the three advisory `semver-checks` steps. Until #2025 these were six jobs:
+(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, the
+[published-port image smoke](#published-port-image-smoke), and last the three
+advisory `semver-checks` steps. Until #2025 these were six jobs:
 `fmt / clippy`, `feature matrix`, `cargo doc (warnings = errors)`,
 `package (publish verify)`, `gateway smoke (fake-llm)` and
-`semver-checks (advisory)`.
+`semver-checks (advisory)`; the image smoke was a seventh until #2037.
 
 They follow the rules of the static checks job above: every check step runs
 under `!cancelled()` and is guarded on the setup it reads, and a `report` step
@@ -1611,22 +1612,70 @@ gh workflow run ui-e2e.yml --ref <branch>
 
 ### Published-port image smoke
 
-The `image-smoke` job builds the single image from `docker/Dockerfile` and runs
-it the way the quickstart does: default command (`rolter easy-up`), ports
-published with `-p`, curled from the host. It checks three states: with no
-`ROLTER_ADMIN_TOKEN` and no `ROLTER_ALLOW_OPEN_MODE` the container exits with the
-refusal; acknowledged open, the gateway answers `fake-llm` and the control plane
-serves the dashboard; closed by a throwaway token, `/internal/snapshot` is 401
-without it and 200 with it. A bind on the container's loopback passes every
-check made from inside the container and answers nothing through a published
-port, which is how #1891 shipped. Run it locally against any tag:
+The image smoke runs the single image the way the quickstart does: default
+command (`rolter easy-up`), ports published with `-p`, curled from the host. It
+checks three states: with no `ROLTER_ADMIN_TOKEN` and no
+`ROLTER_ALLOW_OPEN_MODE` the container exits with the refusal; acknowledged
+open, the gateway answers `fake-llm` and the control plane serves the dashboard;
+closed by a throwaway token, `/internal/snapshot` is 401 without it and 200 with
+it. It also checks that both `rolter-control` and `rolter easy-up` accept
+`--database-url`, so an image built without the `postgres` feature fails. A bind
+on the container's loopback passes every check made from inside the container
+and answers nothing through a published port, which is how #1891 shipped.
+
+On every `quality.yml` call it runs as steps of the `rust build` job, against
+the `runtime-prebuilt` target of `docker/Dockerfile` (#2037). That target and
+the published `runtime` target share one `runtime-base` stage, which holds the
+base image and its `nonroot` user, the working directory, the bundled
+`/app/rolter.toml`, the environment (`ROLTER_UI_DIR=/app/ui/dist` among it), the
+exposed ports and the default command. Apart from the base, described below,
+only the source of the three binaries and of `/app/ui/dist` differs: `runtime` compiles them in its builder stages,
+while `runtime-prebuilt` copies them from two named build contexts,
+`rolter-bin` and `rolter-ui`. The job fills those with a dev-profile
+`cargo build --workspace --features postgres`, the features the Dockerfile
+builds with, on its warm Rust cache, stripped into a directory of their own, and
+a `vite build` of the dashboard. It used to be a job of its own that built
+`runtime`, a cold release build of about five minutes on every call for a smoke
+that takes seconds; the prebuilt path adds an estimated two to three minutes to
+`rust build` once the cache is warm, and frees one runner per call.
+
+The trade is that a pull request no longer builds the Dockerfile's builder
+stages. A change that breaks them (a workspace member the `COPY` lines miss, a
+`bun.lock` the image cannot install) surfaces in `extended.yml`'s nightly
+compose smoke, which builds `runtime`, and in `release.yml`, which builds it
+for each architecture and runs this same script against each pushed digest in
+its `smoke image` job before anything is published. Build `runtime` locally
+when you touch those stages.
+
+Run it locally either way:
 
 ```bash
+# the published target, compiled in docker (a cold release build)
 docker build -f docker/Dockerfile --target runtime -t rolter:dev .
+bash docker/smoke/image-smoke.sh rolter:dev
+
+# what CI runs: binaries and dashboard built on the host
+cargo build --workspace --features postgres
+(cd ui && bun install --frozen-lockfile && bun run build)
+docker build -f docker/Dockerfile --target runtime-prebuilt \
+  --build-arg RUNTIME_DISTRO=debian13 \
+  --build-context rolter-bin=target/debug \
+  --build-context rolter-ui=ui/dist -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
+The one other difference is the base. The prebuilt binaries have to run on the
+image's glibc, and a Rust build on Ubuntu 24.04, the CI runner, compiles aws-lc
+against glibc 2.39 headers that redirect `strtol` and `sscanf` to
+`__isoc23_*` symbols from glibc 2.38. Debian 12's glibc is 2.36, so those
+binaries do not start on the published base. The Dockerfile therefore names
+both distroless releases as stages, `distroless-debian12` and
+`distroless-debian13`, and `runtime-base` builds on
+`distroless-${RUNTIME_DISTRO}`, which defaults to `debian12`. CI and the local
+command above pass `RUNTIME_DISTRO=debian13` (glibc 2.41). Both are the same
+distroless `nonroot` image, uid 65532, so the user the smoke runs as does not
+change; the debian12 base itself is smoked by `release.yml`. Bump the two
+digests together.
+
 It needs no secrets and no compose stack, so unlike the compose smoke it runs
-on every push and is blocking. The release workflow's `smoke image` job runs the
-same script against each architecture's pushed digest before anything is
-published.
+on every push and is blocking.
