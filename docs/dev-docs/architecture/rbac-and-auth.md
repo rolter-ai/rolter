@@ -560,10 +560,15 @@ stays superadmin-only. It goes through `UserRepo::set_profile`, which names only
 `display_name` and `bio`, so the `users` trigger from `0075` (which fires on
 `deactivated_at` and `is_superadmin`) does not bump `config_version`. Who owns
 the display name is decided by `scim_identities`: SCIM writes `displayName` into
-`users.display_name` on create and replace, so an account with such a row is
-`display_name_managed` and the route answers `409` for a change to it. OIDC's
-`preferred_username` and LDAP's name attribute are read at sign-in but never
-persisted, so those accounts edit their name freely. The audit row
+`users.display_name` on create, replace and patch (last sync wins when two orgs
+provision the same account, see [SCIM provisioning](scim-provisioning.md)), so
+an account with such a row is `display_name_managed` and the route answers
+`409` for a change to it. OIDC's `preferred_username` is only a default: the
+first sign-in of an account with no name writes it through
+`UserRepo::default_display_name` (`where display_name is null`, so it never
+replaces a name), and the account stays unmanaged and edits it freely. LDAP's
+name attribute is read into `Identity` but the LDAP provider is not yet wired
+into a sign-in route, so nothing persists it today. The audit row
 `user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes

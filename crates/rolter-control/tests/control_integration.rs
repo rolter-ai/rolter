@@ -19406,3 +19406,267 @@ async fn a_scim_resource_echoes_the_raw_display_name_the_account_stores_it_sanit
         .unwrap();
     assert_eq!(me["user"]["display_name"], "Ada Lovelace");
 }
+
+/// Mint a SCIM token for a fresh org and return the org id and the secret.
+async fn scim_org_with_token(client: &reqwest::Client, base: &str, slug: &str) -> (String, String) {
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": slug, "slug": slug}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let minted: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "okta"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (org_id, minted["secret"].as_str().unwrap().to_string())
+}
+
+/// #2435: a SCIM `PATCH` carrying `displayName` renames the account the way
+/// `POST` and `PUT` do, sanitised the same way, and a request that also
+/// deactivates is all-or-nothing: a refused deactivation writes no name.
+#[tokio::test]
+async fn scim_patch_syncs_display_name_and_a_refused_deactivation_writes_nothing() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (_org_id, secret) = scim_org_with_token(&client, &base, "patch-name-org").await;
+
+    let created: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&secret)
+        .json(&json!({
+            "userName": "hopper@example.com",
+            "displayName": "Grace Hopper",
+            "emails": [{"value": "hopper@example.com", "primary": true}],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = created["id"].as_str().unwrap().to_string();
+    let stored_name = || async {
+        sqlx::query_scalar::<_, Option<String>>("select display_name from users where id = $1")
+            .bind(scim_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let patch = |ops: Value| {
+        let client = client.clone();
+        let url = format!("{base}/scim/v2/Users/{scim_id}");
+        let secret = secret.clone();
+        async move {
+            client
+                .patch(url)
+                .bearer_auth(secret)
+                .json(&json!({
+                    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                    "Operations": ops,
+                }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // the path form, sanitised like POST and PUT
+    let res = patch(json!([
+        {"op": "replace", "path": "displayName", "value": "  Rear\u{7} Admiral Hopper "}
+    ]))
+    .await;
+    assert_eq!(res.status(), 200);
+    // the SCIM resource echoes what the IdP sent; the account gets the clean one
+    assert_eq!(stored_name().await.as_deref(), Some("Rear Admiral Hopper"));
+
+    // the pathless object form
+    let res = patch(json!([
+        {"op": "replace", "value": {"displayName": "Grace B. Hopper"}}
+    ]))
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(stored_name().await.as_deref(), Some("Grace B. Hopper"));
+    let fetched: Value = client
+        .get(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&secret)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched["displayName"], "Grace B. Hopper");
+
+    // an unsupported attribute alongside a supported one still errors, and
+    // nothing of the request is applied
+    let res = patch(json!([
+        {"op": "replace", "path": "displayName", "value": "Applied Anyway"},
+        {"op": "replace", "path": "nickName", "value": "Amazing"},
+    ]))
+    .await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(stored_name().await.as_deref(), Some("Grace B. Hopper"));
+
+    // the only active superadmin cannot be deactivated, so a patch that also
+    // renames them must leave the name alone
+    sqlx::query("update users set is_superadmin = true where id = $1")
+        .bind(scim_id.parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = patch(json!([
+        {"op": "replace", "path": "displayName", "value": "Renamed In Passing"},
+        {"op": "replace", "path": "active", "value": false},
+    ]))
+    .await;
+    assert_eq!(res.status(), 409);
+    assert_eq!(stored_name().await.as_deref(), Some("Grace B. Hopper"));
+}
+
+/// #2435: the first OIDC sign-in gives an account with no name the IdP's, as a
+/// default the user still owns. A name already on the account is never
+/// replaced, and a later sign-in never reverts the user's own edit.
+#[tokio::test]
+async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some(admin_token().to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "SsoNameOrg", "slug": "sso-name-org"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let created = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "name": "Stub IdP", "slug": "names", "issuer": issuer,
+            "client_id": "rolter", "client_secret": "s3cret",
+            "default_role": "member"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(created.status().is_success());
+
+    let sign_in = |email: &'static str, name: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let issuer = issuer.clone();
+        let stub = stub.clone();
+        async move {
+            let start = client
+                .get(format!("{base}/auth/sso/names/start"))
+                .send()
+                .await
+                .unwrap();
+            let location = start
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let state = url_param(&location, "state");
+            let nonce = url_param(&location, "nonce");
+            let mut claims = stub_idp::claims(&issuer, "rolter", &nonce, json!([]));
+            claims["email"] = json!(email);
+            claims["preferred_username"] = json!(name);
+            *stub.next_claims.lock().unwrap() = claims;
+            let body: Value = client
+                .get(format!(
+                    "{base}/auth/sso/names/callback?code=abc&state={state}"
+                ))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            body["token"].as_str().unwrap().to_string()
+        }
+    };
+    let me = |token: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .get(format!("{base}/api/v1/auth/me"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+
+    // a new account takes the IdP's name, unmanaged
+    let token = sign_in("ada@example.com", "Ada Lovelace").await;
+    let seen = me(token.clone()).await;
+    assert_eq!(seen["user"]["display_name"], "Ada Lovelace");
+    assert_eq!(seen["display_name_managed"], false);
+
+    // the user can still change it, and the next sign-in leaves their edit be
+    let renamed = client
+        .patch(format!("{base}/api/v1/me/profile"))
+        .bearer_auth(&token)
+        .json(&json!({"display_name": "Countess Ada"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), 200);
+    let token = sign_in("ada@example.com", "Augusta Ada King").await;
+    assert_eq!(me(token).await["user"]["display_name"], "Countess Ada");
+
+    // an existing account that already has a name keeps it
+    let named = seed_user(&pool, "grace@example.com", false).await;
+    sqlx::query("update users set display_name = 'Grace Hopper' where id = $1")
+        .bind(named)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = sign_in("grace@example.com", "grace").await;
+    assert_eq!(me(token).await["user"]["display_name"], "Grace Hopper");
+
+    // an existing account with no name adopts the IdP's, sanitised
+    seed_user(&pool, "linus@example.com", false).await;
+    let token = sign_in("linus@example.com", " Linus\u{7} T ").await;
+    assert_eq!(me(token).await["user"]["display_name"], "Linus T");
+}
