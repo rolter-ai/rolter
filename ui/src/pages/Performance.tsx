@@ -7,6 +7,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
@@ -17,6 +18,7 @@ import {
   type BackpressurePolicy,
   type RuntimePolicyDto,
 } from "@/lib/api";
+import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -66,35 +68,73 @@ const validBlockMs = (value: string) => inRange(value, 0, 120_000);
 // trip; the server stays the authority and its message is surfaced on reject.
 // it names a catalog key rather than carrying english copy — the screen renders
 // it, which is where `t` lives
-function validate(form: FormState): string | null {
+// every failing field is reported at once, keyed by field (#2651)
+type FieldKey = Exclude<keyof FormState, "queueEnabled" | "queueBackpressure">;
+type FieldErrors = Partial<Record<FieldKey, string>>;
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const FIELD_ORDER: FieldKey[] = [
+  "retryMaxRetries",
+  "retryBaseMs",
+  "retryMaxMs",
+  "timeoutConnectS",
+  "timeoutRequestS",
+  "queueCapacity",
+  "queueWorkers",
+  "queueBlockMs",
+];
+
+// the wire names a 400 opens with, mapped to the field they belong to
+const WIRE_FIELDS: Record<string, FieldKey> = {
+  retry_max_retries: "retryMaxRetries",
+  retry_base_ms: "retryBaseMs",
+  retry_max_ms: "retryMaxMs",
+  timeout_connect_s: "timeoutConnectS",
+  timeout_request_s: "timeoutRequestS",
+  queue_capacity: "queueCapacity",
+  queue_workers: "queueWorkers",
+  queue_block_ms: "queueBlockMs",
+};
+
+// the queue fields are disabled while the queue is off, and the block timeout
+// while the policy is not `block`, so a bad value there could not be fixed;
+// each is re-checked once its control is enabled again (#2645)
+const fieldDisabled = (form: FormState, key: FieldKey) => {
+  if (key === "queueCapacity" || key === "queueWorkers") return !form.queueEnabled;
+  if (key === "queueBlockMs") return !form.queueEnabled || form.queueBackpressure !== "block";
+  return false;
+};
+
+function validate(form: FormState): FieldErrors {
   const key = "pages.performance.validation.";
-  if (!inRange(form.retryMaxRetries, 0, 10)) return `${key}maxRetries`;
-  if (!inRange(form.retryBaseMs, 0, 60_000)) return `${key}retryBase`;
-  if (!inRange(form.retryMaxMs, 0, 600_000)) return `${key}retryCap`;
-  if (Number(form.retryMaxMs) < Number(form.retryBaseMs)) {
-    return `${key}retryCapBelowBase`;
+  const errors: FieldErrors = {};
+  if (!inRange(form.retryMaxRetries, 0, 10)) errors.retryMaxRetries = `${key}maxRetries`;
+  const baseOk = inRange(form.retryBaseMs, 0, 60_000);
+  if (!baseOk) errors.retryBaseMs = `${key}retryBase`;
+  if (!inRange(form.retryMaxMs, 0, 600_000)) {
+    errors.retryMaxMs = `${key}retryCap`;
+  } else if (baseOk && Number(form.retryMaxMs) < Number(form.retryBaseMs)) {
+    errors.retryMaxMs = `${key}retryCapBelowBase`;
   }
-  if (!inRange(form.timeoutConnectS, 0, 300)) return `${key}connectTimeout`;
+  if (!inRange(form.timeoutConnectS, 0, 300)) errors.timeoutConnectS = `${key}connectTimeout`;
   if (!inRange(form.timeoutRequestS, 0, 3_600)) {
-    return `${key}requestTimeout`;
+    errors.timeoutRequestS = `${key}requestTimeout`;
   }
-  // the queue fields are disabled while the queue is off, and the block
-  // timeout while the policy is not `block`, so a bad value there could not be
-  // fixed; each is re-checked once its control is enabled again (#2645)
-  if (!form.queueEnabled) return null;
-  if (!validCapacity(form.queueCapacity)) {
-    return `${key}queueCapacity`;
+  if (!fieldDisabled(form, "queueCapacity") && !validCapacity(form.queueCapacity)) {
+    errors.queueCapacity = `${key}queueCapacity`;
   }
-  if (!validWorkers(form.queueWorkers)) return `${key}queueWorkers`;
-  if (form.queueBackpressure !== "block") return null;
-  if (!validBlockMs(form.queueBlockMs)) {
-    return `${key}blockTimeout`;
+  if (!fieldDisabled(form, "queueWorkers") && !validWorkers(form.queueWorkers)) {
+    errors.queueWorkers = `${key}queueWorkers`;
   }
-  // blocking with a zero timeout would park callers forever
-  if (Number(form.queueBlockMs) === 0) {
-    return `${key}blockNeedsTimeout`;
+  if (!fieldDisabled(form, "queueBlockMs")) {
+    if (!validBlockMs(form.queueBlockMs)) {
+      errors.queueBlockMs = `${key}blockTimeout`;
+    } else if (Number(form.queueBlockMs) === 0) {
+      // blocking with a zero timeout would park callers forever
+      errors.queueBlockMs = `${key}blockNeedsTimeout`;
+    }
   }
-  return null;
+  return errors;
 }
 
 // global runtime policy, persisted via /api/v1/runtime-policy (superadmin only).
@@ -115,6 +155,9 @@ function PerformanceScreen() {
   useScreenReady(!policy.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
+  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
+  const base = React.useId();
+  const idOf = (key: FieldKey) => `${base}-${key}`;
   React.useEffect(() => {
     if (policy.data && form === null) {
       setForm(fromDto(policy.data));
@@ -152,6 +195,7 @@ function PerformanceScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["runtime-policy"] });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -159,6 +203,12 @@ function PerformanceScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(idOf(named.field))?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.performanceSettings") }),
@@ -191,8 +241,40 @@ function PerformanceScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localErrorKey = validate(form);
-  const localError = localErrorKey ? t(localErrorKey) : null;
+  const local = validate(form);
+  const errors = Object.fromEntries(
+    FIELD_ORDER.map((key) => {
+      const localKey = local[key];
+      // a disabled field cannot be fixed, so no complaint about it holds Save
+      const error = fieldDisabled(form, key)
+        ? undefined
+        : localKey
+          ? t(localKey)
+          : serverErrors[key];
+      return [key, error];
+    }),
+  ) as Record<FieldKey, string | undefined>;
+  const invalid = FIELD_ORDER.filter((key) => errors[key]);
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2651)
+  const submit = () => {
+    if (invalid.length > 0) {
+      document.getElementById(idOf(invalid[0]))?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
+  // the props every number field shares: its id, its value, its error, and an
+  // edit that answers the server's complaint about that field
+  const numberField = (key: FieldKey) => ({
+    id: idOf(key),
+    value: form[key],
+    error: errors[key],
+    onChange: (v: string) => {
+      set({ [key]: v });
+      setServerErrors((e) => ({ ...e, [key]: undefined }));
+    },
+  });
   const queue = form.queueEnabled;
 
   return (
@@ -203,18 +285,15 @@ function PerformanceScreen() {
       >
         <NumberField
           label={t("pages.performance.retries.maxRetries")}
-          value={form.retryMaxRetries}
-          onChange={(v) => set({ retryMaxRetries: v })}
+          {...numberField("retryMaxRetries")}
         />
         <NumberField
           label={t("pages.performance.retries.baseBackoff")}
-          value={form.retryBaseMs}
-          onChange={(v) => set({ retryBaseMs: v })}
+          {...numberField("retryBaseMs")}
         />
         <NumberField
           label={t("pages.performance.retries.backoffCap")}
-          value={form.retryMaxMs}
-          onChange={(v) => set({ retryMaxMs: v })}
+          {...numberField("retryMaxMs")}
         />
       </SettingsPanel>
 
@@ -224,13 +303,11 @@ function PerformanceScreen() {
       >
         <NumberField
           label={t("pages.performance.timeouts.connect")}
-          value={form.timeoutConnectS}
-          onChange={(v) => set({ timeoutConnectS: v })}
+          {...numberField("timeoutConnectS")}
         />
         <NumberField
           label={t("pages.performance.timeouts.request")}
-          value={form.timeoutRequestS}
-          onChange={(v) => set({ timeoutRequestS: v })}
+          {...numberField("timeoutRequestS")}
         />
       </SettingsPanel>
 
@@ -248,15 +325,13 @@ function PerformanceScreen() {
       >
         <NumberField
           label={t("pages.performance.queue.capacity")}
-          value={form.queueCapacity}
+          {...numberField("queueCapacity")}
           disabled={!queue}
-          onChange={(v) => set({ queueCapacity: v })}
         />
         <NumberField
           label={t("pages.performance.queue.workers")}
-          value={form.queueWorkers}
+          {...numberField("queueWorkers")}
           disabled={!queue}
-          onChange={(v) => set({ queueWorkers: v })}
         />
         <div className="flex min-w-[200px] flex-col gap-1.5">
           <label
@@ -279,17 +354,23 @@ function PerformanceScreen() {
         </div>
         <NumberField
           label={t("pages.performance.queue.blockTimeout")}
-          value={form.queueBlockMs}
+          {...numberField("queueBlockMs")}
           disabled={!queue || form.queueBackpressure !== "block"}
-          onChange={(v) => set({ queueBlockMs: v })}
         />
       </SettingsPanel>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
+          </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
@@ -298,17 +379,21 @@ function PerformanceScreen() {
 }
 
 function NumberField({
+  id,
   label,
   value,
+  error,
   disabled = false,
   onChange,
 }: {
+  id: string;
   label: string;
   value: string;
+  error?: string;
   disabled?: boolean;
   onChange: (v: string) => void;
 }) {
-  const id = React.useId();
+  const errorId = `${id}-error`;
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className="text-xs font-medium text-[color:var(--text-secondary)]">
@@ -318,10 +403,13 @@ function NumberField({
         id={id}
         className="max-w-[160px]"
         inputMode="numeric"
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy(!!error && errorId)}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       />
+      <FieldError id={errorId} error={error} />
     </div>
   );
 }

@@ -99,10 +99,14 @@ export const RejectsAnAllZeroBlend: Story = {
       await userEvent.clear(field);
       await userEvent.type(field, "0");
     }
-    await waitFor(() =>
-      expect(canvas.getByText(/At least one weight must be positive/)).toBeVisible(),
+    // the blend has no single culprit, so the message sits on the first weight
+    const latency = canvas.getByLabelText("Latency weight");
+    await waitFor(() => expect(latency).toHaveAttribute("aria-invalid", "true"));
+    await expect(latency).toHaveAccessibleDescription(/At least one weight must be positive/);
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
   },
 };
 
@@ -115,9 +119,58 @@ export const RejectsAnOutOfRangeExplorationRatio: Story = {
     const ratio = await canvas.findByLabelText("Exploration ratio");
     await userEvent.clear(ratio);
     await userEvent.type(ratio, "0.9");
-    await waitFor(() =>
-      expect(canvas.getByText("Exploration ratio must be between 0 and 0.5.")).toBeVisible(),
+    await waitFor(() => expect(ratio).toHaveAttribute("aria-invalid", "true"));
+    await expect(ratio).toHaveAccessibleDescription("Exploration ratio must be between 0 and 0.5.");
+  },
+};
+
+// every failing field is marked at once, each with its own message, and a
+// press on Save moves focus to the first one instead of doing nothing (#2651)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cost = await canvas.findByLabelText("Cost weight");
+    const samples = canvas.getByLabelText("Warm-up samples");
+    await userEvent.clear(cost);
+    await userEvent.type(cost, "-1");
+    await userEvent.clear(samples);
+    await userEvent.type(samples, "1.5");
+    await waitFor(() => {
+      expect(cost).toHaveAttribute("aria-invalid", "true");
+      expect(samples).toHaveAttribute("aria-invalid", "true");
+    });
+    await expect(cost).toHaveAccessibleDescription(/Each weight must be between 0 and/);
+    await expect(samples).toHaveAccessibleDescription(
+      /Warm-up samples must be a whole number between 0 and/,
     );
+    await expect(canvas.getByLabelText("Latency weight")).not.toHaveAttribute("aria-invalid");
+    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expect(cost).toHaveFocus();
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "exploration_ratio must be between 0 and 0.5" } }, 400);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const ratio = await canvas.findByLabelText("Exploration ratio");
+    await userEvent.clear(ratio);
+    await userEvent.type(ratio, "0.1");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(ratio).toHaveAttribute("aria-invalid", "true"));
+    await expect(ratio).toHaveAccessibleDescription("exploration_ratio must be between 0 and 0.5");
+    await waitFor(() => expect(ratio).toHaveFocus());
   },
 };
 

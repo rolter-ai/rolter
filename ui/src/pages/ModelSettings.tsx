@@ -18,6 +18,7 @@ import {
   updateModelDefaults,
   type ModelDefaultsDto,
 } from "@/lib/api";
+import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -62,19 +63,37 @@ const validMaxTokens = (value: string) => inRange(value, 1, 1_000_000, true);
 // trip; the server stays the authority and its message is surfaced on reject.
 // it names a catalog key rather than carrying english copy — the screen renders
 // it, which is where `t` lives
-function validate(form: FormState): string | null {
+// every failing field is reported at once, keyed by field (#2651)
+type FieldKey = Exclude<keyof FormState, "enabled">;
+type FieldErrors = Partial<Record<FieldKey, string>>;
+
+// the order the fields sit in, so focus lands on the first one that is wrong
+const FIELD_ORDER: FieldKey[] = ["temperature", "topP", "maxTokens", "defaultModel"];
+
+// the wire names a 400 opens with, mapped to the field they belong to
+const WIRE_FIELDS: Record<string, FieldKey> = {
+  default_model: "defaultModel",
+  default_temperature: "temperature",
+  default_top_p: "topP",
+  default_max_tokens: "maxTokens",
+};
+
+function validate(form: FormState): FieldErrors {
+  const errors: FieldErrors = {};
   // every field is disabled while the defaults are off, so a bad value there
   // could not be fixed; they are re-checked once the switch is back on (#2645)
-  if (!form.enabled) return null;
+  if (!form.enabled) return errors;
   if (!validModel(form.defaultModel)) {
-    return "pages.modelSettings.validation.defaultModel";
+    errors.defaultModel = "pages.modelSettings.validation.defaultModel";
   }
-  if (!validTemperature(form.temperature)) return "pages.modelSettings.validation.temperature";
-  if (!validTopP(form.topP)) return "pages.modelSettings.validation.topP";
+  if (!validTemperature(form.temperature)) {
+    errors.temperature = "pages.modelSettings.validation.temperature";
+  }
+  if (!validTopP(form.topP)) errors.topP = "pages.modelSettings.validation.topP";
   if (!validMaxTokens(form.maxTokens)) {
-    return "pages.modelSettings.validation.maxTokens";
+    errors.maxTokens = "pages.modelSettings.validation.maxTokens";
   }
-  return null;
+  return errors;
 }
 
 const hasAnyDefault = (form: FormState) =>
@@ -109,6 +128,14 @@ function ModelSettingsScreen() {
   useScreenReady(!defaults.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
+  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
+  const base = React.useId();
+  const ids: Record<FieldKey, string> = {
+    temperature: `${base}-temperature`,
+    topP: `${base}-top-p`,
+    maxTokens: `${base}-max-tokens`,
+    defaultModel: `${base}-model`,
+  };
   React.useEffect(() => {
     if (defaults.data && form === null) {
       setForm(fromDto(defaults.data));
@@ -142,6 +169,7 @@ function ModelSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["model-defaults"] });
       setForm(fromDto(dto));
+      setServerErrors({});
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -149,6 +177,12 @@ function ModelSettingsScreen() {
       });
     },
     onError: (error) => {
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(ids[named.field])?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.modelSettings") }),
@@ -181,8 +215,32 @@ function ModelSettingsScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const localErrorKey = validate(form);
-  const localError = localErrorKey ? t(localErrorKey) : null;
+  // an edit answers the server's complaint about that field
+  const edit = (key: FieldKey, value: string) => {
+    set({ [key]: value });
+    setServerErrors((e) => ({ ...e, [key]: undefined }));
+  };
+  const local = validate(form);
+  const errorFor = (key: FieldKey) => {
+    // a disabled field cannot be fixed, so no complaint about it holds Save
+    if (!form.enabled) return undefined;
+    const localKey = local[key];
+    return localKey ? t(localKey) : serverErrors[key];
+  };
+  const errors = Object.fromEntries(FIELD_ORDER.map((key) => [key, errorFor(key)])) as Record<
+    FieldKey,
+    string | undefined
+  >;
+  const invalid = FIELD_ORDER.filter((key) => errors[key]);
+  // Save stays pressable while the form is invalid so a press can say why: it
+  // moves focus to the first field at fault rather than doing nothing (#2651)
+  const submit = () => {
+    if (invalid.length > 0) {
+      document.getElementById(ids[invalid[0]])?.focus();
+      return;
+    }
+    save.mutate(form);
+  };
   const active = form.enabled && hasAnyDefault(form);
 
   return (
@@ -215,34 +273,42 @@ function ModelSettingsScreen() {
         description={t("pages.modelSettings.sampling.desc")}
         dimmed={!form.enabled}
       >
-        <Field label={t("pages.modelSettings.sampling.temperature")} hint="0 – 2">
+        <Field
+          label={t("pages.modelSettings.sampling.temperature")}
+          hint="0 – 2"
+          error={errors.temperature}
+        >
           <Input
+            id={ids.temperature}
             className="max-w-[160px]"
             placeholder={t("pages.modelSettings.providerDefault")}
             value={form.temperature}
             disabled={!form.enabled}
-            onChange={(e) => set({ temperature: e.target.value })}
+            onChange={(e) => edit("temperature", e.target.value)}
           />
         </Field>
-        <Field label={t("pages.modelSettings.sampling.topP")} hint="0 – 1">
+        <Field label={t("pages.modelSettings.sampling.topP")} hint="0 – 1" error={errors.topP}>
           <Input
+            id={ids.topP}
             className="max-w-[160px]"
             placeholder={t("pages.modelSettings.providerDefault")}
             value={form.topP}
             disabled={!form.enabled}
-            onChange={(e) => set({ topP: e.target.value })}
+            onChange={(e) => edit("topP", e.target.value)}
           />
         </Field>
         <Field
           label={t("pages.modelSettings.sampling.maxTokens")}
           hint={t("pages.modelSettings.sampling.maxTokensHint")}
+          error={errors.maxTokens}
         >
           <Input
+            id={ids.maxTokens}
             className="max-w-[160px]"
             placeholder={t("pages.modelSettings.providerDefault")}
             value={form.maxTokens}
             disabled={!form.enabled}
-            onChange={(e) => set({ maxTokens: e.target.value })}
+            onChange={(e) => edit("maxTokens", e.target.value)}
           />
         </Field>
       </SettingsPanel>
@@ -259,8 +325,10 @@ function ModelSettingsScreen() {
               ? t("pages.modelSettings.model.modelsUnavailable")
               : t("pages.modelSettings.model.defaultModelHint")
           }
+          error={errors.defaultModel}
         >
           <Combobox
+            id={ids.defaultModel}
             className="sm:min-w-[320px]"
             options={modelOptions}
             allowCustom
@@ -268,7 +336,7 @@ function ModelSettingsScreen() {
             placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}
             disabled={!form.enabled}
-            onChange={(v) => set({ defaultModel: v })}
+            onChange={(v) => edit("defaultModel", v)}
           />
         </Field>
       </SettingsPanel>
@@ -281,10 +349,17 @@ function ModelSettingsScreen() {
       </p>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {localError && (
-          <span className="text-xs text-[color:var(--status-danger-text)]">{localError}</span>
+        {invalid.length > 0 && (
+          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
+            {t("common.fieldsNeedAttention", { count: invalid.length })}
+          </span>
         )}
-        <Button disabled={save.isPending || localError !== null} onClick={() => save.mutate(form)}>
+        <Button
+          disabled={save.isPending}
+          aria-disabled={invalid.length > 0 || undefined}
+          className={invalid.length > 0 ? "opacity-50" : undefined}
+          onClick={submit}
+        >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>

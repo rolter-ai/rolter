@@ -160,10 +160,14 @@ export const RejectsAReservedHeader: Story = {
     const canvas = within(canvasElement);
     const forwarded = await canvas.findByLabelText("Forwarded request headers");
     await userEvent.type(forwarded, "authorization");
-    await waitFor(() =>
-      expect(canvas.getByText("'authorization' is managed by the gateway.")).toBeVisible(),
+    await waitFor(() => expect(forwarded).toHaveAttribute("aria-invalid", "true"));
+    await expect(forwarded).toHaveAccessibleDescription(
+      "'authorization' is managed by the gateway.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -173,9 +177,62 @@ export const RejectsANonHttpBaseUrl: Story = {
     const canvas = within(canvasElement);
     const url = await canvas.findByLabelText("Public base URL");
     await userEvent.type(url, "gateway.example.com");
-    await waitFor(() =>
-      expect(canvas.getByText("Base URL must start with http:// or https://.")).toBeVisible(),
+    await waitFor(() => expect(url).toHaveAttribute("aria-invalid", "true"));
+    await expect(url).toHaveAccessibleDescription("Base URL must start with http:// or https://.");
+  },
+};
+
+// every failing field is marked at once, each with its own message, and a
+// press on Save moves focus to the first one instead of doing nothing (#2651)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Add header" }));
+    const name = canvas.getByLabelText("Injected header name 1");
+    const requestId = canvas.getByLabelText("Request ID header");
+    await userEvent.type(name, "bad header");
+    await userEvent.clear(requestId);
+    await userEvent.type(requestId, "x request");
+    await waitFor(() => {
+      expect(name).toHaveAttribute("aria-invalid", "true");
+      expect(requestId).toHaveAttribute("aria-invalid", "true");
+    });
+    await expect(name).toHaveAccessibleDescription("'bad header' is not a valid header name.");
+    await expect(requestId).toHaveAccessibleDescription(
+      "Request ID header is not a valid header name.",
     );
+    await expect(canvas.getByLabelText("Injected header value 1")).not.toHaveAttribute(
+      "aria-invalid",
+    );
+    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expect(name).toHaveFocus();
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "public_base_url must be at most 2048 characters" } }, 400);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const url = await canvas.findByLabelText("Public base URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://gateway.example.com");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(url).toHaveAttribute("aria-invalid", "true"));
+    await expect(url).toHaveAccessibleDescription(
+      "public_base_url must be at most 2048 characters",
+    );
+    await waitFor(() => expect(url).toHaveFocus());
   },
 };
 
