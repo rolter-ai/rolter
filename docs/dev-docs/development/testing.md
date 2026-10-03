@@ -1463,6 +1463,18 @@ This is also the app's own shape. `ui/src/main.tsx` makes the root strict long
 before anyone opens a sheet, so a story built this way runs the same lifecycle a
 browser on `bun run dev` does.
 
+It only runs on React's development build. The double-invoke is
+development-only, so the production build mounts every effect once, `StrictMode`
+or not. `storybook build` bundles the production build by default. That is why
+`ui/.storybook/main.ts` sets `features.developmentModeForBuild`, so the static
+build that `bun run build-storybook` writes and the `ui, storybook, docs` job
+tests carries the same React that `storybook dev` and `bun run dev` serve. With
+the flag off, every `StrictModeHost` story fails `expectDoubleInvoked()` in CI
+and still passes under `bun run test:stories`. Before #1887 added the probe,
+the `StrictMode*` stories in `EditorSheet.stories.tsx` passed in CI with no
+double-invoke ever running. The static build is a test fixture and is published
+nowhere, so nothing ships the development build.
+
 Two more habits keep such a story from passing for the wrong reason:
 
 - **Anchor an absence on something that happened.** "No `form_abandon`" is also
