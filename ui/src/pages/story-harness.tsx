@@ -17,6 +17,7 @@ import { expectInFrame, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
+import { STRICT_MOUNT_LABEL, doubleInvokeFailure, strictProbeCounts } from "./story-strict";
 
 // Shared fetch-stub harness for screen stories (#879).
 //
@@ -220,8 +221,9 @@ export function adminOfProject(projectId: string): StoryMemberships {
  * both are deployment-wide catalogs a superadmin alone writes, which let two
  * screens gate on capabilities the control plane does not define while their
  * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
- * generated copy of `CAPABILITIES` instead, and a test fails the build when
- * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ * copy of `crates/rolter-control/rbac-matrix.json` instead — the matrix the
+ * rolter-control test suite writes from `CAPABILITIES` (#1369) — and a test
+ * fails the build when that copy and the artifact disagree.
  *
  * A bare role is one org membership, which every row of every chain reaches.
  */
@@ -1037,6 +1039,29 @@ export async function expectUxEvent(action: UiEvent["action"], target?: string):
  */
 export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
   expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
+}
+
+/**
+ * Wait until the probe beside a `StrictModeHost` subject has seen StrictMode's
+ * simulated unmount and remount: two mounts and one cleanup. A story whose
+ * StrictMode doubled nothing fails here, with the reason, instead of going
+ * green against a lifecycle that never ran (#1887).
+ */
+export async function expectDoubleInvoked(): Promise<void> {
+  await waitFor(() => {
+    const failure = doubleInvokeFailure(strictProbeCounts());
+    if (failure !== null) throw new Error(failure);
+  });
+}
+
+/**
+ * Mount a `StrictModeHost`'s subject in a later commit and prove the
+ * double-invoke ran on it. Everything the play function does after this runs
+ * against a subject that has already been mounted, unmounted and remounted.
+ */
+export async function mountStrictly(label = STRICT_MOUNT_LABEL): Promise<void> {
+  await userEvent.click(within(document.body).getByRole("button", { name: label }));
+  await expectDoubleInvoked();
 }
 
 /**

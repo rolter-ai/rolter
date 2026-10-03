@@ -61,26 +61,28 @@ A provisioned account is deliberately minimal:
 - Deactivating or deprovisioning the deployment's **last active superadmin** is refused with `409`, the same as from the dashboard, so an IdP sync cannot leave nobody able to administer the deployment. Make another account superadmin first.
 - Deactivating or deprovisioning an account that holds an organization's **last active admin** grant is refused with a SCIM `409` too, for every organization the account administers, not only the one the token belongs to. The provisioning token cannot repair an organization afterwards the way a superadmin can, so the IdP is told and retries. Grant `admin` to another person first.
 
-- Its **display name** comes from the IdP. SCIM `displayName` is copied onto the account on every create and replace, and the account cannot change it from the dashboard or `PATCH /api/v1/me/profile` (the API answers `409`); `GET /api/v1/auth/me` reports `display_name_managed: true`. An IdP that sends no `displayName` leaves the stored name as it was. The account's **bio** stays its own. A `PUT` with `active: false` that is refused because the account is the last active superadmin (`409`) applies none of its other changes, so the account keeps its `userName`, `externalId` and display name.
+- Its **display name** comes from the IdP. SCIM `displayName` is copied onto the account on every create and replace, and the account cannot change it from the dashboard or `PATCH /api/v1/me/profile` (the API answers `409`); `GET /api/v1/auth/me` reports `display_name_managed: true`. An IdP that sends no `displayName` leaves the stored name as it was. The account's **bio** stays its own. A `PUT` with `active: false` that is refused because the account is the last active superadmin (`409`) applies none of its other changes, so the account keeps its `userName`, `externalId` and display name. The account stores the name with surrounding whitespace and control characters removed and cut to 80 characters, while the SCIM resource returns `displayName` exactly as your IdP sent it, so the IdP's reconciliation sees its own value and does not push it again on every sync.
+
+- A `PATCH` carrying `displayName` renames the account the same way, and if two organizations provision the same account the most recent sync from either decides the name.
 
 Every provisioning action is written to the [audit log](/observability/logs-and-cost) with the token id as the actor, since the change was made by a machine and not by a person.
 
 ## Supported operations
 
-| Operation            | Endpoint                      | Notes                                                                                                                                          |
-| -------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| List / search users  | `GET /scim/v2/Users`          | Supports the `userName eq "value"` filter that IdPs use for reconciliation; other filters are rejected explicitly rather than silently ignored |
-| Create user          | `POST /scim/v2/Users`         | Idempotent — a replayed create returns a `uniqueness` conflict instead of a second account                                                     |
-| Read user            | `GET /scim/v2/Users/{id}`     |                                                                                                                                                |
-| Replace user         | `PUT /scim/v2/Users/{id}`     |                                                                                                                                                |
-| Patch user           | `PATCH /scim/v2/Users/{id}`   | The `active` attribute, in both the `path: "active"` and bare-value shapes IdPs send                                                           |
-| Deprovision          | `DELETE /scim/v2/Users/{id}`  | Deactivates and unmaps; the account row survives, and its group-granted roles go with the identity                                             |
-| List / search groups | `GET /scim/v2/Groups`         | Supports the `displayName eq "value"` filter                                                                                                   |
-| Create group         | `POST /scim/v2/Groups`        | Idempotent — a replayed create returns a `uniqueness` conflict                                                                                 |
-| Read group           | `GET /scim/v2/Groups/{id}`    |                                                                                                                                                |
-| Replace group        | `PUT /scim/v2/Groups/{id}`    | Replaces the member list wholesale                                                                                                             |
-| Patch group          | `PATCH /scim/v2/Groups/{id}`  | Member add / remove / replace in every shape IdPs send, plus `displayName` and `externalId`                                                    |
-| Delete group         | `DELETE /scim/v2/Groups/{id}` | Removes the group and everything it granted                                                                                                    |
+| Operation            | Endpoint                      | Notes                                                                                                                                                                                        |
+| -------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List / search users  | `GET /scim/v2/Users`          | Supports the `userName eq "value"` filter that IdPs use for reconciliation; other filters are rejected explicitly rather than silently ignored                                               |
+| Create user          | `POST /scim/v2/Users`         | Idempotent — a replayed create returns a `uniqueness` conflict instead of a second account                                                                                                   |
+| Read user            | `GET /scim/v2/Users/{id}`     |                                                                                                                                                                                              |
+| Replace user         | `PUT /scim/v2/Users/{id}`     |                                                                                                                                                                                              |
+| Patch user           | `PATCH /scim/v2/Users/{id}`   | The `active` and `displayName` attributes, in both the path and bare-value shapes IdPs send; any other attribute is rejected. A patch that deactivates and renames is applied all-or-nothing |
+| Deprovision          | `DELETE /scim/v2/Users/{id}`  | Deactivates and unmaps; the account row survives, and its group-granted roles go with the identity                                                                                           |
+| List / search groups | `GET /scim/v2/Groups`         | Supports the `displayName eq "value"` filter                                                                                                                                                 |
+| Create group         | `POST /scim/v2/Groups`        | Idempotent — a replayed create returns a `uniqueness` conflict                                                                                                                               |
+| Read group           | `GET /scim/v2/Groups/{id}`    |                                                                                                                                                                                              |
+| Replace group        | `PUT /scim/v2/Groups/{id}`    | Replaces the member list wholesale                                                                                                                                                           |
+| Patch group          | `PATCH /scim/v2/Groups/{id}`  | Member add / remove / replace in every shape IdPs send, plus `displayName` and `externalId`                                                                                                  |
+| Delete group         | `DELETE /scim/v2/Groups/{id}` | Removes the group and everything it granted                                                                                                                                                  |
 
 ## Map groups to teams
 
@@ -118,7 +120,7 @@ Every group change recomputes the affected people's provisioning-granted roles f
 - Removing someone from a group revokes exactly what that group gave them, right away.
 - A role **you** granted by hand — in the dashboard, through the API, or through an invitation — is never touched by a sync. Manual and provisioned grants coexist.
 - Deleting a group, or deprovisioning a user, withdraws the roles involved in the same request.
-- The one exception is an organization's **last active admin** grant: a sync that would withdraw it keeps it, still answers success, and records `membership.last_admin_kept` in the audit log. The next sync that touches that person withdraws it once someone else holds `admin` on the organization.
+- The one exception is an organization's **last active admin** grant: a sync that would withdraw it keeps it, still answers success, and records `membership.last_admin_kept` in the audit log. The next sync that touches that person withdraws it once someone else holds `admin` on the organization. Deleting a group mapping from the dashboard or the API follows the same rule for an org admin, but a **superadmin** deleting the mapping withdraws even the last admin grant, exactly as a superadmin revoking it directly would.
 
 <Warning>
 Because a mapping is a way to grant a role, creating or deleting one requires the **admin** role on the org — the same bar as granting a role directly.

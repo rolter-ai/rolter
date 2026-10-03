@@ -109,3 +109,32 @@ refused, the provider is left in place, and the message names each route and
 group that uses it, as in
 `provider 'openai' is used by route 'gpt-4o', provider group 'llama-fleet'; remove it from them before deleting it`.
 Operations that can refuse this way list the `409` in the schema.
+
+### Stable error codes
+
+`message` is English text for the person reading it and may change between
+releases. `code` is part of the API and is never renamed, so branch on it — the
+dashboard uses it to show the refusal in the reader's language. The status code
+of each refusal is unchanged; the code only adds to it.
+
+| Code              | Status | When                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name_taken`      | `409`  | Another record already holds the name, slug, email or key: a provider, group or route name taken in the deployment, a user email, a label key on the same subject, a saved view name. Any other write that hits a uniqueness rule (two organizations with one slug, or a write that lost a race with another one) answers the same way, with a generic message. |
+| `invalid_field`   | `400`  | One field of the request is refused: empty, not numeric, a malformed slug or email, an unknown role, control characters, or a `project_id` / `customer_id` outside the organization. The body also carries `field`, the path of the field (`slug`, `metadata.team`, `tags[2]`).                                                                                 |
+| `referenced`      | `409`  | A delete refused while other records still depend on the one being removed, such as a project or team that still owns a project-scoped provider or provider group. Move or delete those first.                                                                                                                                                                  |
+| `scope_mismatch`  | `409`  | A route or provider group would use a provider scoped to a different project, or an org-wide provider would be scoped to one project while routes of other projects use it. Use org-wide providers, or ones scoped to the same project.                                                                                                                         |
+| `last_org_admin`  | `409`  | Revoking the organization's last admin grant. See [RBAC](/security/rbac).                                                                                                                                                                                                                                                                                       |
+| `last_superadmin` | `409`  | Demoting, deactivating or deleting the last active superadmin. See [RBAC](/security/rbac).                                                                                                                                                                                                                                                                      |
+
+```json
+{
+  "error": {
+    "message": "slug must match ^[a-z0-9][a-z0-9-]{0,62}$ (…)",
+    "code": "invalid_field",
+    "field": "slug"
+  }
+}
+```
+
+Many validation refusals still carry no `code` yet; treat a `400` or `409`
+without one by its status and `message`.

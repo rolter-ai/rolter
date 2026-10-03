@@ -14,7 +14,7 @@ mod labels;
 mod mcp;
 mod mfa;
 mod saved_views;
-mod support;
+pub(super) mod support;
 
 pub use guardrails::*;
 pub use labels::*;
@@ -2597,6 +2597,22 @@ impl ProviderKeyRepo<'_> {
         Ok(())
     }
 
+    /// Which of `provider_ids` have a stored credential, in one query so a
+    /// listing never asks per row. Reads only the key column, never the
+    /// ciphertext or nonce.
+    pub async fn stored_among(
+        &self,
+        provider_ids: &[Uuid],
+    ) -> Result<std::collections::HashSet<Uuid>> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select provider_id from provider_keys where provider_id = any($1)")
+                .bind(provider_ids)
+                .fetch_all(self.0)
+                .await
+                .map_err(store_err)?;
+        Ok(ids.into_iter().collect())
+    }
+
     /// Whether a credential is stored for `provider_id`.
     pub async fn exists(&self, provider_id: Uuid) -> Result<bool> {
         sqlx::query_scalar("select exists(select 1 from provider_keys where provider_id = $1)")
@@ -3672,6 +3688,22 @@ impl UserRepo<'_> {
         .await
         .map_err(store_err)?
         .ok_or_else(|| Error::NotFound(format!("user {id}")))
+    }
+
+    /// give an account that has no display name the one its identity provider
+    /// asserted. The `is null` guard is in the statement so a name set between
+    /// the caller's read and this write is never overwritten. Returns whether
+    /// a name was written.
+    pub async fn default_display_name(&self, id: Uuid, display_name: &str) -> Result<bool> {
+        let res = sqlx::query(
+            "update users set display_name = $2 where id = $1 and display_name is null",
+        )
+        .bind(id)
+        .bind(display_name)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// delete the account, refused when it is the last active superadmin

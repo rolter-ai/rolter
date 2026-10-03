@@ -90,6 +90,11 @@ export const Empty: Story = {
       "https://gateway.example.com",
     );
     await expect(canvas.getByText(en.pages.clientSettings.baseUrlHint)).toBeVisible();
+    for (const key of ["baseUrl", "forwarded", "injected", "correlation"] as const) {
+      await expect(
+        canvas.getByRole("heading", { level: 2, name: en.pages.clientSettings[key] }),
+      ).toBeVisible();
+    }
   },
 };
 

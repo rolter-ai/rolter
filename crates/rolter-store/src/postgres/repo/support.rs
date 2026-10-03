@@ -12,9 +12,16 @@ use sqlx::{Executor, FromRow, Postgres};
 
 use rolter_core::{Error, Result};
 
-/// Map a `sqlx` failure onto the store's error type.
-pub(super) fn store_err(err: sqlx::Error) -> Error {
-    Error::Store(err.to_string())
+/// Map a `sqlx` failure onto the store's error type: a unique violation onto
+/// [`Error::AlreadyExists`], anything else onto [`Error::Store`].
+pub(in crate::postgres) fn store_err(err: sqlx::Error) -> Error {
+    // a unique violation is the caller's mistake (or a lost race with another
+    // writer), not a store failure, so it keeps its own variant and the api can
+    // answer it with a 409 rather than a 500 (#2567)
+    match err.as_database_error() {
+        Some(db) if db.is_unique_violation() => Error::AlreadyExists(db.message().to_string()),
+        _ => Error::Store(err.to_string()),
+    }
 }
 
 /// Run a single-row query that is expected to match, reporting

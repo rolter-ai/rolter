@@ -25,7 +25,7 @@ import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-voca
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 25;
 
@@ -156,8 +156,6 @@ export default function AuditLog() {
 
   useScreenReady(!page.isLoading);
 
-  useErrorState(!!page.error, "audit-log");
-
   const [total, setTotal] = React.useState<number | null>(null);
 
   // reset to the first page whenever the filter set changes
@@ -277,6 +275,7 @@ export default function AuditLog() {
           error={page.error}
           resource={t("errors.resources.auditLog")}
           onRetry={() => page.refetch()}
+          target="audit-log"
         />
       )}
       {!deployment && !scope.isLoading && !scope.errorKey && !scope.orgId && (

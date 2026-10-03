@@ -13,13 +13,14 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { serverFieldError } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
 import { KEY_ENV } from "@/lib/snippets";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // injected headers are edited as an ordered list rather than an object so a
 // half-typed name does not collide with an existing key while it is being typed
@@ -172,7 +173,6 @@ function ClientSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
-  useErrorState(!!settings.error, "client-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const [serverErrors, setServerErrors] = React.useState<Record<FieldKey, string>>({});
@@ -242,6 +242,7 @@ function ClientSettingsScreen() {
           error={settings.error}
           resource={t("errors.resources.clientSettings")}
           onRetry={() => void settings.refetch()}
+          target="client-settings"
         />
       </div>
     );
@@ -289,153 +290,151 @@ function ClientSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.baseUrl")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.baseUrlHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.baseUrl")}
+        description={t("pages.clientSettings.baseUrlHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="client-public-base-url"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
+              {t("pages.clientSettings.publicBaseUrl")}
+            </label>
+            <Input
+              className="sm:min-w-[320px] font-mono text-xs"
+              aria-label={t("pages.clientSettings.publicBaseUrl")}
+              {...invalidProps("publicBaseUrl")}
+              placeholder={BASE_URL_PLACEHOLDER}
+              value={form.publicBaseUrl}
+              onChange={(e) => edit("publicBaseUrl", { publicBaseUrl: e.target.value })}
+            />
+            <FieldError id={errorId("publicBaseUrl")} error={errorOf("publicBaseUrl")} />
+          </div>
+          {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
         </div>
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="client-public-base-url"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.clientSettings.publicBaseUrl")}
-          </label>
-          <Input
-            className="sm:min-w-[320px] font-mono text-xs"
-            aria-label={t("pages.clientSettings.publicBaseUrl")}
-            {...invalidProps("publicBaseUrl")}
-            placeholder={BASE_URL_PLACEHOLDER}
-            value={form.publicBaseUrl}
-            onChange={(e) => edit("publicBaseUrl", { publicBaseUrl: e.target.value })}
-          />
-          <FieldError id={errorId("publicBaseUrl")} error={errorOf("publicBaseUrl")} />
-        </div>
-        {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.forwarded")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.forwardedHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.forwarded")}
+        description={t("pages.clientSettings.forwardedHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-1.5">
+            <textarea
+              aria-label={t("pages.clientSettings.forwarded")}
+              {...invalidProps("forwarded")}
+              className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
+              placeholder={t("pages.clientSettings.forwardedPlaceholder")}
+              value={form.forwarded}
+              onChange={(e) => edit("forwarded", { forwarded: e.target.value })}
+            />
+            <FieldError id={errorId("forwarded")} error={errorOf("forwarded")} />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{t("pages.clientSettings.alwaysPropagated")}</span>
+            {dto.always_propagated.map((h) => (
+              <Badge key={h} tone="info" className="font-mono">
+                {h}
+              </Badge>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{t("pages.clientSettings.neverForwarded")}</span>
+            {dto.reserved.map((h) => (
+              <Badge key={h} tone="neutral" className="font-mono">
+                {h}
+              </Badge>
+            ))}
+          </div>
         </div>
-        <textarea
-          aria-label={t("pages.clientSettings.forwarded")}
-          {...invalidProps("forwarded")}
-          className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
-          placeholder={t("pages.clientSettings.forwardedPlaceholder")}
-          value={form.forwarded}
-          onChange={(e) => edit("forwarded", { forwarded: e.target.value })}
-        />
-        <FieldError id={errorId("forwarded")} error={errorOf("forwarded")} />
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>{t("pages.clientSettings.alwaysPropagated")}</span>
-          {dto.always_propagated.map((h) => (
-            <Badge key={h} tone="info" className="font-mono">
-              {h}
-            </Badge>
-          ))}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <span>{t("pages.clientSettings.neverForwarded")}</span>
-          {dto.reserved.map((h) => (
-            <Badge key={h} tone="neutral" className="font-mono">
-              {h}
-            </Badge>
-          ))}
-        </div>
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.injected")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.injectedHint")}
-          </p>
-        </div>
-        <div className="flex flex-col gap-2">
-          {form.injected.length === 0 && (
-            <p className="text-xs text-[color:var(--text-subtle)]">
-              {t("pages.clientSettings.injectedNone")}
-            </p>
-          )}
-          {form.injected.map((row, i) => (
-            <div key={row.id} className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <Input
-                  className="max-w-[220px] font-mono text-xs"
-                  aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
-                  {...invalidProps(nameKey(row))}
-                  placeholder="x-partner-id"
-                  value={row.name}
-                  onChange={(e) =>
-                    edit(nameKey(row), {
-                      injected: form.injected.map((r) =>
-                        r.id === row.id ? { ...r, name: e.target.value } : r,
-                      ),
-                    })
-                  }
-                />
-                <Input
-                  className="flex-1 font-mono text-xs"
-                  aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
-                  {...invalidProps(valueKey(row))}
-                  placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
-                  value={row.value}
-                  onChange={(e) =>
-                    edit(valueKey(row), {
-                      injected: form.injected.map((r) =>
-                        r.id === row.id ? { ...r, value: e.target.value } : r,
-                      ),
-                    })
-                  }
-                />
-                <DeleteIconButton
-                  label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
-                  onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
-                />
+      <SettingsPanel
+        title={t("pages.clientSettings.injected")}
+        description={t("pages.clientSettings.injectedHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-2">
+            {form.injected.length === 0 && (
+              <p className="text-xs text-[color:var(--text-subtle)]">
+                {t("pages.clientSettings.injectedNone")}
+              </p>
+            )}
+            {form.injected.map((row, i) => (
+              <div key={row.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <Input
+                    className="max-w-[220px] font-mono text-xs"
+                    aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
+                    {...invalidProps(nameKey(row))}
+                    placeholder="x-partner-id"
+                    value={row.name}
+                    onChange={(e) =>
+                      edit(nameKey(row), {
+                        injected: form.injected.map((r) =>
+                          r.id === row.id ? { ...r, name: e.target.value } : r,
+                        ),
+                      })
+                    }
+                  />
+                  <Input
+                    className="flex-1 font-mono text-xs"
+                    aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
+                    {...invalidProps(valueKey(row))}
+                    placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
+                    value={row.value}
+                    onChange={(e) =>
+                      edit(valueKey(row), {
+                        injected: form.injected.map((r) =>
+                          r.id === row.id ? { ...r, value: e.target.value } : r,
+                        ),
+                      })
+                    }
+                  />
+                  <DeleteIconButton
+                    label={t("pages.clientSettings.injectedRemove", { index: i + 1 })}
+                    onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
+                  />
+                </div>
+                <FieldError id={errorId(nameKey(row))} error={errorOf(nameKey(row))} />
+                <FieldError id={errorId(valueKey(row))} error={errorOf(valueKey(row))} />
               </div>
-              <FieldError id={errorId(nameKey(row))} error={errorOf(nameKey(row))} />
-              <FieldError id={errorId(valueKey(row))} error={errorOf(valueKey(row))} />
-            </div>
-          ))}
+            ))}
+          </div>
+          <div>
+            <Button variant="outline" onClick={() => set({ injected: [...form.injected, pair()] })}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              {t("pages.clientSettings.addHeader")}
+            </Button>
+          </div>
         </div>
-        <div>
-          <Button variant="outline" onClick={() => set({ injected: [...form.injected, pair()] })}>
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            {t("pages.clientSettings.addHeader")}
-          </Button>
-        </div>
-      </section>
+      </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div>
-          <span className="text-sm font-medium">{t("pages.clientSettings.correlation")}</span>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.clientSettings.correlationHint")}
-          </p>
+      <SettingsPanel
+        title={t("pages.clientSettings.correlation")}
+        description={t("pages.clientSettings.correlationHint")}
+      >
+        <div className="flex w-full flex-col gap-3.5">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="client-request-id-header"
+              className="text-xs font-medium text-[color:var(--text-secondary)]"
+            >
+              {t("pages.clientSettings.requestIdHeader")}
+            </label>
+            <Input
+              className="max-w-[240px] font-mono text-xs"
+              aria-label={t("pages.clientSettings.requestIdHeader")}
+              {...invalidProps("requestIdHeader")}
+              value={form.requestIdHeader}
+              onChange={(e) => edit("requestIdHeader", { requestIdHeader: e.target.value })}
+            />
+            <FieldError id={errorId("requestIdHeader")} error={errorOf("requestIdHeader")} />
+          </div>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="client-request-id-header"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.clientSettings.requestIdHeader")}
-          </label>
-          <Input
-            className="max-w-[240px] font-mono text-xs"
-            aria-label={t("pages.clientSettings.requestIdHeader")}
-            {...invalidProps("requestIdHeader")}
-            value={form.requestIdHeader}
-            onChange={(e) => edit("requestIdHeader", { requestIdHeader: e.target.value })}
-          />
-          <FieldError id={errorId("requestIdHeader")} error={errorOf("requestIdHeader")} />
-        </div>
-      </section>
+      </SettingsPanel>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {invalid.length > 0 && (

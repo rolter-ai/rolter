@@ -334,7 +334,7 @@ curl -X PATCH "$ROLTER_URL/api/v1/me/profile" \
 - `display_name` is 1 to 80 characters and `bio` up to 500, after surrounding whitespace is trimmed. Control characters are refused (a bio may contain line breaks) and so is a value that is only whitespace.
 - An omitted field is left alone; `null` or `""` clears it.
 - `GET /api/v1/auth/me` returns both fields on `user`, and the users list returns them for admins.
-- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC or LDAP keep an editable name, because Rolter does not store the name those providers send.
+- An account provisioned over [SCIM](/security/user-provisioning) has its display name owned by the identity provider: changing it answers `409`, and `display_name_managed` on `/api/v1/auth/me` is `true`. The bio is still editable. Accounts signing in over OIDC keep an editable name.
 - Each change is written to the audit log as `user.profile.update`, listing the field names that changed but never the bio text.
 
 ## Your own preferences
@@ -374,9 +374,9 @@ curl -X POST "$ROLTER_URL/api/v1/me/saved-views" \
 ```
 
 - `surface` is `llm_logs` or `dashboard` and cannot be changed afterwards. A name is 1 to 80 characters, is trimmed, and is unique per surface ignoring case (`409` otherwise). You may keep 50 presets per surface (`409` beyond that).
-- `filters` is an object whose keys are allow-listed per surface and mirror the query parameters the screen sends; an unknown key or a value of the wrong type is refused with `400`. **LLM Logs**: `window`, `status` (`all`, `error` or `success`), `model`, `key` (a virtual key id), `business_unit` and `customer` (lists of ids). **Dashboard**: `window` and `bucket` (`hour`, `day`, `week` or `month`). `window` is one of `24h`, `7d`, `30d`, `mtd` or `last-month`: a rolling window's name, not timestamps, so a saved "last 7 days" always means the seven days before you open it.
+- `filters` is an object whose keys are allow-listed per surface and mirror the query parameters the screen sends; an unknown key or a value of the wrong type is refused with `400`. **LLM Logs**: `window`, `status` (`all`, `error` or `success`), `model`, `key` (a virtual key id), `business_unit` and `customer` (lists of ids). **Dashboard**: `window`, `bucket` (`hour`, `day`, `week` or `month`), and the same `model`, `key`, `business_unit` and `customer` as LLM Logs, which the [Dashboard's analytics reads](/api/dashboard-analytics) apply. `window` is one of `24h`, `7d`, `30d`, `mtd` or `last-month`: a rolling window's name, not timestamps, so a saved "last 7 days" always means the seven days before you open it.
 - A preset never widens access: it only remembers parameters, and the analytics routes still scope every row to what you can read.
-- A preset can name a virtual key, business unit or customer you can no longer read, because your membership was removed or the row was deleted. Reads return the preset as stored in `filters`, the same set without those entries in `effective_filters`, and `unavailable`, a list of `{"filter": "key" | "business_unit" | "customer", "id": ...}` naming what was dropped, so a screen applies the rest and says what it left out. Models and windows are never unavailable. Whether you can still read a key, unit or customer is decided by the same rule as the listings of those resources.
+- A preset can name a virtual key, business unit or customer you can no longer read, because your membership was removed or the row was deleted. Reads return the preset as stored in `filters`, the same set without those entries in `effective_filters`, and `unavailable`, a list of `{"filter": "key" | "business_unit" | "customer", "id": ...}` naming what was dropped, on either surface, so a screen applies the rest and says what it left out. Models and windows are never unavailable. Whether you can still read a key, unit or customer is decided by the same rule as the listings of those resources.
 - Each create, update and delete is written to the audit log as `user.saved_view.create`, `user.saved_view.update` or `user.saved_view.delete` with the preset's id, surface and name, never the filter values.
 
 ### Self-service endpoints do not work in open mode
@@ -411,10 +411,10 @@ When evaluating budgets and rate limits, Rolter walks the scope chain from org d
 
 ## User accounts
 
-Rolter v1 ships with **local user accounts** secured with username and password. You create and manage accounts through the control plane dashboard or API.
+Rolter ships with **local user accounts** secured with email and password. You create and manage accounts through the control plane dashboard or API.
 
-**OAuth2 / OIDC SSO** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is on the roadmap and will be available in a future release.
+**OAuth2 / OIDC single sign-on** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is available today, and **SCIM** provisions and deprovisions accounts from the same providers. See [Single sign-on](/security/single-sign-on) and [User provisioning](/security/user-provisioning). A first SSO sign-in gives an account that has no display name the one your identity provider sends; the user can still change it.
 
 <Info>
-  If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
+  LDAP and SAML sign-in are not available. Rolter contains the beginnings of an LDAP directory provider, but no configuration, sign-in route or dashboard screen reaches it, so a directory user cannot sign in through it today. If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
 </Info>

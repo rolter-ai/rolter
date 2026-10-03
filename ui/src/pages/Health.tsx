@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
@@ -18,7 +19,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { HEALTH_SLA as SLA } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /**
  * How far back "recently" reaches: the newest hourly bucket the timeline holds
@@ -353,9 +354,7 @@ function SlaPill({ state }: { state: SlaState }) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </div>
+      <Overline>{label}</Overline>
       <div className="font-mono text-sm text-[color:var(--text-secondary)]">{value}</div>
     </div>
   );
@@ -422,7 +421,6 @@ export default function Health() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `uptime` is the query the user is actually waiting on for this screen
   useScreenReady(!uptime.isLoading);
-  useErrorState(!!uptime.error, "health");
   const mttr = useQuery({ queryKey: ["health-mttr"], queryFn: fetchMttr });
   const timeline = useQuery({
     queryKey: ["health-timeline"],
@@ -468,6 +466,7 @@ export default function Health() {
             mttr.refetch();
             timeline.refetch();
           }}
+          target="health-rollups"
         />
       )}
       {!isLoading && !error && groups.length === 0 && (
@@ -573,9 +572,7 @@ export default function Health() {
               </div>
               {group.targets.length > 0 && (
                 <div className="border-t border-[color:var(--border-subtle)] pt-2">
-                  <div className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-                    {t("pages.health.targets", { count: group.targets.length })}
-                  </div>
+                  <Overline>{t("pages.health.targets", { count: group.targets.length })}</Overline>
                   <div className="divide-y divide-[color:var(--border-subtle)]">
                     {group.targets.map((row) => (
                       <TargetRow

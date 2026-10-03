@@ -8,6 +8,7 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
   fetchFeatureFlags,
@@ -20,7 +21,7 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FlagCopy {
   title: string;
@@ -80,7 +81,6 @@ function FeatureFlagsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `flags` is the query the user is actually waiting on for this screen
   useScreenReady(!flags.isLoading);
-  useErrorState(!!flags.error, "feature-flags");
 
   const [form, setForm] = React.useState<FeatureFlagValues | null>(null);
   React.useEffect(() => {
@@ -129,6 +129,7 @@ function FeatureFlagsScreen() {
           error={flags.error}
           resource={t("errors.resources.featureFlags")}
           onRetry={() => void flags.refetch()}
+          target="feature-flags"
         />
       </div>
     );
@@ -239,32 +240,37 @@ function FlagCard({
   const { t } = useTranslation();
   const unavailable = unavailableReason !== undefined;
   return (
-    <section className="flex items-start gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{title}</span>
-          {unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
-          {changed && <Badge tone="info">{t("pages.featureFlags.changed")}</Badge>}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{desc}</p>
-        {unavailable && (
-          <p className="mt-1.5 text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {unavailableReason}
-          </p>
-        )}
-        {unavailable && storedOn && (
-          <p className="mt-1.5 text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {t("pages.featureFlags.stillOn")}
-          </p>
-        )}
-      </div>
-      <Switch
-        checked={checked}
-        disabled={unavailable && !storedOn}
-        aria-label={title}
-        onCheckedChange={onChange}
-      />
-    </section>
+    <SettingsPanel
+      title={title}
+      description={desc}
+      badge={
+        (unavailable || changed) && (
+          <>
+            {unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
+            {changed && <Badge tone="info">{t("pages.featureFlags.changed")}</Badge>}
+          </>
+        )
+      }
+      action={
+        <Switch
+          checked={checked}
+          disabled={unavailable && !storedOn}
+          aria-label={title}
+          onCheckedChange={onChange}
+        />
+      }
+    >
+      {unavailable && (
+        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+          {unavailableReason}
+        </p>
+      )}
+      {unavailable && storedOn && (
+        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+          {t("pages.featureFlags.stillOn")}
+        </p>
+      )}
+    </SettingsPanel>
   );
 }
 

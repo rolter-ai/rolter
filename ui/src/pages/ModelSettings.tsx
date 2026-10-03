@@ -8,13 +8,19 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
+import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
-import { fetchModelDefaults, updateModelDefaults, type ModelDefaultsDto } from "@/lib/api";
+import {
+  fetchModelDefaults,
+  fetchModels,
+  updateModelDefaults,
+  type ModelDefaultsDto,
+} from "@/lib/api";
 import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // every field is optional, so the form keeps raw strings and an empty string
 // means "leave this to the provider" rather than "send zero"
@@ -109,10 +115,17 @@ function ModelSettingsScreen() {
     retry: false,
   });
 
+  // the routes the gateway serves, for the default-model picker; a failure
+  // here must not block the other settings, so it degrades to typing
+  const models = useQuery({ queryKey: ["models"], queryFn: fetchModels });
+  const modelOptions = React.useMemo(
+    () => (models.data ?? []).map((m) => ({ value: m.model, label: m.model })),
+    [models.data],
+  );
+
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `defaults` is the query the user is actually waiting on for this screen
   useScreenReady(!defaults.isLoading);
-  useErrorState(!!defaults.error, "model-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
@@ -192,6 +205,7 @@ function ModelSettingsScreen() {
           error={defaults.error}
           resource={t("errors.resources.modelSettings")}
           onRetry={() => void defaults.refetch()}
+          target="model-settings"
         />
       </div>
     );
@@ -231,34 +245,28 @@ function ModelSettingsScreen() {
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">{t("pages.modelSettings.applyDefaults")}</span>
-              <Badge
-                tone={active ? "success" : "neutral"}
-                className="font-mono text-[10px] uppercase"
-              >
-                {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
-              </Badge>
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.modelSettings.applyDefaultsDesc")}
-            </p>
-          </div>
+      <SettingsPanel
+        title={t("pages.modelSettings.applyDefaults")}
+        description={t("pages.modelSettings.applyDefaultsDesc")}
+        badge={
+          <Badge tone={active ? "success" : "neutral"} className="font-mono text-[10px] uppercase">
+            {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
+          </Badge>
+        }
+        action={
           <Switch
             checked={form.enabled}
             aria-label={t("pages.modelSettings.applyDefaults")}
             onCheckedChange={(v) => set({ enabled: v })}
           />
-        </div>
+        }
+      >
         {form.enabled && !hasAnyDefault(form) && (
           <p className="text-xs text-[color:var(--text-subtle)]">
             {t("pages.modelSettings.noDefaults")}
           </p>
         )}
-      </section>
+      </SettingsPanel>
 
       <SettingsPanel
         title={t("pages.modelSettings.sampling.title")}
@@ -312,16 +320,23 @@ function ModelSettingsScreen() {
       >
         <Field
           label={t("pages.modelSettings.model.defaultModel")}
-          hint={t("pages.modelSettings.model.defaultModelHint")}
+          hint={
+            models.isError
+              ? t("pages.modelSettings.model.modelsUnavailable")
+              : t("pages.modelSettings.model.defaultModelHint")
+          }
           error={errors.defaultModel}
         >
-          <Input
+          <Combobox
             id={ids.defaultModel}
             className="sm:min-w-[320px]"
-            placeholder={t("pages.modelSettings.providerDefault")}
+            options={modelOptions}
+            allowCustom
+            clearable
+            placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}
             disabled={!form.enabled}
-            onChange={(e) => edit("defaultModel", e.target.value)}
+            onChange={(v) => edit("defaultModel", v)}
           />
         </Field>
       </SettingsPanel>

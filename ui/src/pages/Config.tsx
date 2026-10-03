@@ -27,7 +27,7 @@ import {
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import type { ReadState } from "@/lib/read-state";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // effective config: structured read-only provider / route tables. feature flags
 // used to render here from a mock; they are persisted and hot-reloaded now, so
@@ -40,7 +40,6 @@ export default function Config() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `config` is the query the user is actually waiting on for this screen
   useScreenReady(!config.isLoading);
-  useErrorState(!!config.error, "config");
 
   const cfg = config.data;
   const summary = cfg
@@ -76,10 +75,12 @@ export default function Config() {
         </div>
 
         {config.isError && (
+          // load-error-allow: one read feeds both tables (config-providers, config-routes); neither owns it
           <LoadError
             error={config.error}
             resource={t("errors.resources.config")}
             onRetry={() => config.refetch()}
+            target="config"
           />
         )}
         {config.isLoading && <TableSkeleton rows={6} />}

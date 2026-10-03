@@ -1,0 +1,49 @@
+---
+title: "Reading the Dashboard's Analytics over the API"
+sidebarTitle: "Dashboard analytics"
+description: "Read the spend, usage and per-model figures the Dashboard shows, over any time window and narrowed to one model, virtual key, business unit or customer."
+---
+
+The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse. They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
+
+| Method | Path                           | What it returns                                                                         |
+| ------ | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced traffic, errors and average latency |
+| `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                               |
+| `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, errors and p50/p95 latency per model, costliest first           |
+
+Each answers `{"data": [...]}`, the rows straight from ClickHouse.
+
+## Query parameters
+
+Every parameter is optional. A filter you leave out, or send empty, applies no filter.
+
+| Parameter       | Applies to   | Meaning                                                                       |
+| --------------- | ------------ | ----------------------------------------------------------------------------- |
+| `since`         | all three    | inclusive lower bound of the window; defaults to 7 days ago                   |
+| `until`         | all three    | exclusive upper bound of the window; defaults to now                          |
+| `bucket`        | `timeseries` | `hour`, `day` (the default), `week` or `month`                                |
+| `model`         | all three    | one exact model name                                                          |
+| `key`           | all three    | one exact virtual key id                                                      |
+| `business_unit` | all three    | comma-separated business unit ids; a row attributed to any of them is counted |
+| `customer`      | all three    | comma-separated customer ids; a row attributed to any of them is counted      |
+
+`since` and `until` take the [time window](/observability/logs-and-cost#time-windows) forms, and anything else is a `400` with `code: "invalid_time_bound"`. A `bucket` outside the list is a `400` too.
+
+The four filters are the ones `GET /api/v1/analytics/invocations` takes, with the same shapes and the same meaning, so a filter counts the same requests on the Dashboard as it lists on **LLM Logs**. Filters combine: `model=gpt-4o&customer=…` counts only that customer's `gpt-4o` traffic. An id nothing was attributed to matches nothing, so a filter only ever narrows.
+
+```bash
+# one customer's spend this month, by day
+curl -H "Authorization: Bearer $SESSION_TOKEN" \
+  "$ROLTER_URL/api/v1/analytics/timeseries?since=2026-10-01T00:00:00Z&bucket=day&customer=7c1e4f0a-2b3d-4e5f-8a9b-0c1d2e3f4a5b"
+
+# a team's errors this week, per model, across two business units
+curl -H "Authorization: Bearer $SESSION_TOKEN" \
+  "$ROLTER_URL/api/v1/analytics/by-model?business_unit=0b9f3c1e-6f1a-4a7e-9a52-0f7d6c1a2b3c,5a2d7e9f-1c3b-4d6e-8f0a-2b4c6d8e0f1a"
+```
+
+## What you can read
+
+The filters narrow what your roles already reach and never widen it. Every read is limited to the request log of the orgs, teams and projects you hold a role in, before any filter applies, so naming another tenant's key, unit or customer counts nothing rather than their traffic. See [Who sees which request logs](/security/rbac#who-sees-which-request-logs) for how roles map to rows.
+
+A **saved view** on the `dashboard` surface can hold these four filters beside `window` and `bucket`; see [Saved views](/security/rbac#saved-views).

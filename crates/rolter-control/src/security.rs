@@ -197,7 +197,7 @@ mod tests {
             "allowed_origins": [],
             "dashboard_auth_enabled": true,
             "dashboard_credential_ref": "X",
-            "managed_dashboard_secret": "hunter2",
+            "managed_dashboard_secret": uuid::Uuid::new_v4().to_string(),
         }))
         .expect("old clients must still parse");
         assert!(validate_settings(&body).is_ok());

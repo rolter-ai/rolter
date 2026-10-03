@@ -116,12 +116,15 @@ const failedEmpty = (q: UseQueryResult<unknown>) =>
 function CardRead<T>({
   read,
   resource,
+  target,
   skeleton,
   failed,
   children,
 }: {
   read: UseQueryResult<T>;
   resource: string;
+  /** the card's region on the `error_state` UX event its `LoadError` records */
+  target: string;
   skeleton: React.ReactNode;
   failed?: React.ReactNode;
   children: (data: T) => React.ReactNode;
@@ -132,7 +135,12 @@ function CardRead<T>({
     if (!read.isError) return null;
     return (
       failed ?? (
-        <LoadError error={read.error} resource={resource} onRetry={() => void read.refetch()} />
+        <LoadError
+          error={read.error}
+          resource={resource}
+          onRetry={() => void read.refetch()}
+          target={target}
+        />
       )
     );
   }
@@ -143,15 +151,22 @@ function CardRead<T>({
 // since blanking a dashboard that had loaded on every blip would tell the
 // reader less than the stale numbers do, and this line says they may be old.
 // plain text rather than a live region: it is rewritten by every failed poll,
-// and five of them announcing once a minute would be noise
+// and five of them announcing once a minute would be noise. it records an
+// `error_state` under `target`, once each time it appears (#2640): a LoadError
+// is not on screen, so nothing else would say this data is going stale
 function RefreshFailed({
   read,
+  target,
 }: {
   read: Pick<UseQueryResult<unknown>, "isError" | "data" | "errorUpdatedAt">;
+  /** the card's region on the UX event, suffixed `-stale` to tell it from a `LoadError` */
+  target: string;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  if (!read.isError || read.data === undefined) return null;
+  const stale = read.isError && read.data !== undefined;
+  useErrorState(stale, target);
+  if (!stale) return null;
   return (
     <p className="mt-2 text-xs text-[color:var(--status-danger-text)]">
       {t("pages.dashboard.feed.refreshFailedRetrying", { time: fmt.time(read.errorUpdatedAt) })}
@@ -224,13 +239,9 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // one that answered, makes it a partial failure, where each failed card holds
   // its own alert
   const outage = reads.every(failedEmpty);
-  // one signal per error placeholder on screen: the screen-level alert while
-  // there is one, else the card that shows it
-  useErrorState(outage, "dashboard-analytics");
-  useErrorState(!outage && failedEmpty(summary), "dashboard");
-  useErrorState(!outage && failedEmpty(series), "dashboard-spend");
-  useErrorState(!outage && failedEmpty(byModel), "dashboard-traffic");
-  useErrorState(!outage && failedEmpty(recent), "dashboard-recent");
+  // one `error_state` per error placeholder on screen, which each `LoadError`
+  // records itself: the screen-level alert while there is one, else the card
+  // that shows it (#2444)
 
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
@@ -239,6 +250,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // it is one panel for the screen, not one per card
   const unavailable =
     reads.find((q) => q.data === undefined && isUnavailable(q.error))?.error ?? null;
+
+  // the Recent card says its refresh failed in its header, not in a line of its
+  // own, and that is the same appearance (#2640). it is said only while the
+  // cards are drawn, as the other lines are
+  useErrorState(
+    !unavailable && !outage && recent.isError && recent.data !== undefined,
+    "dashboard-recent-stale",
+  );
 
   if (unavailable || outage) {
     return (
@@ -257,6 +276,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             error={summary.error}
             resource={t("errors.resources.analytics")}
             onRetry={() => reads.forEach((q) => void q.refetch())}
+            target="dashboard-analytics"
           />
         )}
       </PageBody>
@@ -299,6 +319,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <CardRead
           read={summary}
           resource={t("errors.resources.dashboardFigures")}
+          target="dashboard"
           // `Skeleton` is `aria-hidden`, so the four bare ones this used to
           // render were a loading state no screen reader could hear (#1605)
           skeleton={<StatGridSkeleton cards={4} />}
@@ -351,7 +372,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             );
           }}
         </CardRead>
-        <RefreshFailed read={summary} />
+        <RefreshFailed read={summary} target="dashboard-stale" />
       </div>
 
       <IncompleteSpendNotice
@@ -374,6 +395,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={series}
               resource={t("errors.resources.dashboardSpend")}
+              target="dashboard-spend"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={220} />
@@ -413,7 +435,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={series} />
+            <RefreshFailed read={series} target="dashboard-spend-stale" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-traffic">
@@ -428,6 +450,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardTrafficShare")}
+              target="dashboard-traffic"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={180} />
@@ -457,7 +480,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} />
+            <RefreshFailed read={byModel} target="dashboard-traffic-stale" />
           </CardContent>
         </Card>
       </div>
@@ -474,6 +497,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
+              target="dashboard-by-model"
               skeleton={<BarsSkeleton />}
               // the traffic share reads this endpoint and holds the alert with its
               // retry, so this card says where the failure is and adds none
@@ -519,7 +543,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} />
+            <RefreshFailed read={byModel} target="dashboard-by-model-stale" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-recent">
@@ -538,6 +562,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={recent}
               resource={t("errors.resources.dashboardRecent")}
+              target="dashboard-recent"
               skeleton={<ListSkeleton rows={4} />}
             >
               {(rows) =>

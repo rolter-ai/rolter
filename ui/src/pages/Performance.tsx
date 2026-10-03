@@ -20,7 +20,7 @@ import {
 } from "@/lib/api";
 import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
   retryMaxRetries: string;
@@ -153,7 +153,6 @@ function PerformanceScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `policy` is the query the user is actually waiting on for this screen
   useScreenReady(!policy.isLoading);
-  useErrorState(!!policy.error, "performance");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
@@ -232,6 +231,7 @@ function PerformanceScreen() {
           error={policy.error}
           resource={t("errors.resources.performanceSettings")}
           onRetry={() => void policy.refetch()}
+          target="performance"
         />
       </div>
     );
@@ -311,64 +311,53 @@ function PerformanceScreen() {
         />
       </SettingsPanel>
 
-      <section className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-        <div className="flex items-start gap-4">
-          <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium">{t("pages.performance.queue.title")}</span>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.performance.queue.desc")}
-            </p>
-          </div>
+      <SettingsPanel
+        title={t("pages.performance.queue.title")}
+        description={t("pages.performance.queue.desc")}
+        dimmed={!queue}
+        action={
           <Switch
             checked={form.queueEnabled}
             aria-label={t("pages.performance.queue.toggleAria")}
             onCheckedChange={(v) => set({ queueEnabled: v })}
           />
-        </div>
-        {/* a disabled fieldset rather than a dimmed div: every control inside
-            already carries `disabled`, and fading a live div drags its labels and
-            hints below 4.5:1 while telling assistive tech nothing (#1181) */}
-        <fieldset
-          className="flex min-w-0 flex-wrap gap-4"
+        }
+      >
+        <NumberField
+          label={t("pages.performance.queue.capacity")}
+          {...numberField("queueCapacity")}
           disabled={!queue}
-          style={{ opacity: queue ? 1 : 0.55 }}
-        >
-          <NumberField
-            label={t("pages.performance.queue.capacity")}
-            {...numberField("queueCapacity")}
+        />
+        <NumberField
+          label={t("pages.performance.queue.workers")}
+          {...numberField("queueWorkers")}
+          disabled={!queue}
+        />
+        <div className="flex min-w-[200px] flex-col gap-1.5">
+          <label
+            htmlFor="perf-queue-backpressure"
+            className="text-xs font-medium text-[color:var(--text-secondary)]"
+          >
+            {t("pages.performance.queue.whenFull")}
+          </label>
+          <Combobox
+            id="perf-queue-backpressure"
+            value={form.queueBackpressure}
             disabled={!queue}
+            aria-label={t("pages.performance.queue.whenFull")}
+            onChange={(picked) => set({ queueBackpressure: picked as BackpressurePolicy })}
+            options={BACKPRESSURE_POLICIES.map((p) => ({ value: p, label: p }))}
           />
-          <NumberField
-            label={t("pages.performance.queue.workers")}
-            {...numberField("queueWorkers")}
-            disabled={!queue}
-          />
-          <div className="flex min-w-[200px] flex-col gap-1.5">
-            <label
-              htmlFor="perf-queue-backpressure"
-              className="text-xs font-medium text-[color:var(--text-secondary)]"
-            >
-              {t("pages.performance.queue.whenFull")}
-            </label>
-            <Combobox
-              id="perf-queue-backpressure"
-              value={form.queueBackpressure}
-              disabled={!queue}
-              aria-label={t("pages.performance.queue.whenFull")}
-              onChange={(picked) => set({ queueBackpressure: picked as BackpressurePolicy })}
-              options={BACKPRESSURE_POLICIES.map((p) => ({ value: p, label: p }))}
-            />
-            <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-              {t(BACKPRESSURE_COPY[form.queueBackpressure])}
-            </span>
-          </div>
-          <NumberField
-            label={t("pages.performance.queue.blockTimeout")}
-            {...numberField("queueBlockMs")}
-            disabled={!queue || form.queueBackpressure !== "block"}
-          />
-        </fieldset>
-      </section>
+          <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
+            {t(BACKPRESSURE_COPY[form.queueBackpressure])}
+          </span>
+        </div>
+        <NumberField
+          label={t("pages.performance.queue.blockTimeout")}
+          {...numberField("queueBlockMs")}
+          disabled={!queue || form.queueBackpressure !== "block"}
+        />
+      </SettingsPanel>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {invalid.length > 0 && (
