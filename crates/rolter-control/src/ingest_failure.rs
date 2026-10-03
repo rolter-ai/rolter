@@ -281,6 +281,7 @@ mod tests {
 
     #[test]
     fn the_log_keeps_the_url_but_not_its_password() {
+        let password = uuid::Uuid::new_v4().to_string();
         let warns = Warns::default();
         let subscriber = tracing_subscriber::registry().with(warns.clone());
         tracing::subscriber::with_default(subscriber, || {
@@ -290,12 +291,12 @@ mod tests {
                 1,
                 Stream::McpLogs,
                 Reason::Insert,
-                "error sending request for url (http://rolter:s3cret@ch:8123/?query=INSERT)",
+                &format!("error sending request for url (http://rolter:{password}@ch:8123/?query=INSERT)"),
             );
         });
         let seen = warns.0.lock().clone();
         assert_eq!(seen.len(), 1);
-        assert!(!seen[0].contains("s3cret"), "{}", seen[0]);
+        assert!(!seen[0].contains(&password), "{}", seen[0]);
         assert!(seen[0].contains("http://***@ch:8123/"), "{}", seen[0]);
     }
 
@@ -310,10 +311,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_500_body_quotes_nothing_the_store_said() {
+        let password = uuid::Uuid::new_v4().to_string();
         let upstream = anyhow::anyhow!(
             "clickhouse UX event insert failed (404 Not Found): Code: 60. DB::Exception: \
              Table default.ui_events does not exist. (UNKNOWN_TABLE) \
-             url http://rolter:s3cret@clickhouse.internal:8123/?query=INSERT%20INTO%20ui_events"
+             url http://rolter:{password}@clickhouse.internal:8123/?query=INSERT%20INTO%20ui_events"
         );
         let (status, body) = body_of(insert_failed(
             &ControlHistograms::default(),
@@ -332,7 +334,7 @@ mod tests {
             "UNKNOWN_TABLE",
             "INSERT",
             "http",
-            "s3cret",
+            password.as_str(),
             "404",
         ] {
             assert!(!body.contains(leak), "the body leaks {leak:?}: {body}");
