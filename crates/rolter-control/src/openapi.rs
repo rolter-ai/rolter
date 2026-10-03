@@ -128,6 +128,9 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a provider delete answers while something still references it
+const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
+
 /// the `409` revoking an org's last admin grant answers (#2311)
 const LAST_ORG_ADMIN_409: &str =
     "error.code `last_org_admin`: the revoke would leave the org without an admin; a superadmin is exempt";
@@ -151,8 +154,8 @@ struct Op {
     /// what a `303 See Other` from this operation points at, for an endpoint
     /// a browser lands on and is sent onwards from
     see_other: Option<&'static str>,
-    /// when this operation can answer `409` with a stable `error.code`, what
-    /// that refusal means
+    /// when this operation can answer `409`, what that refusal means, naming
+    /// the stable `error.code` where it carries one
     conflict: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
@@ -792,7 +795,7 @@ fn operations() -> Vec<Op> {
                 "listBusinessUnits",
                 "List business units",
             )
-            .ok(Payload::List("BusinessUnit")),
+            .ok(Payload::List("BusinessUnitListing")),
             Op::post(
                 "/api/v1/orgs/{org_id}/business-units",
                 "createBusinessUnit",
@@ -817,7 +820,7 @@ fn operations() -> Vec<Op> {
                 "listCustomers",
                 "List customers",
             )
-            .ok(Payload::List("Customer")),
+            .ok(Payload::List("CustomerListing")),
             Op::post(
                 "/api/v1/orgs/{org_id}/customers",
                 "createCustomer",
@@ -999,7 +1002,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/providers/{id}",
                 "deleteProvider",
                 "Delete an upstream provider",
-            ),
+            )
+            .conflict(PROVIDER_IN_USE_409),
             Op::post(
                 "/api/v1/providers/{id}/test",
                 "testProvider",
@@ -2044,7 +2048,13 @@ fn operations() -> Vec<Op> {
                 "startSsoLogin",
                 "Begin an SSO login",
             )
-            .public(),
+            .public()
+            .see_other(
+                "the identity provider's authorization endpoint. While the provider's org has \
+                 single sign-on turned off, a browser (`Accept: text/html`) is sent to the \
+                 dashboard's `/login` screen with `sso_error=sso_disabled&sso=` instead, and any \
+                 other caller gets a `403` with `error.code` `sso_disabled`",
+            ),
             Op::get(
                 "/auth/sso/{slug}/callback",
                 "ssoCallback",
@@ -2464,6 +2474,23 @@ fn tenancy_schemas(p: &Prim) -> Value {
                 "created_at": timestamp
             }
         },
+        "BusinessUnitListing": {
+            "description": "A business unit as the org-wide listing returns it, with the count of live virtual keys attributed to it, computed in the same query.",
+            "allOf": [
+                {"$ref": "#/components/schemas/BusinessUnit"},
+                {
+                    "type": "object",
+                    "required": ["live_key_count"],
+                    "properties": {
+                        "live_key_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "virtual keys attributed to this business unit that are live: not disabled and not past their expiry. Zero on a card with no spend means no key could have produced any"
+                        }
+                    }
+                }
+            ]
+        },
         "CreateBusinessUnit": {
             "type": "object",
             "required": ["name"],
@@ -2493,6 +2520,23 @@ fn tenancy_schemas(p: &Prim) -> Value {
                 "retired_at": nullable_timestamp,
                 "created_at": timestamp
             }
+        },
+        "CustomerListing": {
+            "description": "A customer as the org-wide listing returns it, with the count of live virtual keys attributed to it, computed in the same query.",
+            "allOf": [
+                {"$ref": "#/components/schemas/Customer"},
+                {
+                    "type": "object",
+                    "required": ["live_key_count"],
+                    "properties": {
+                        "live_key_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "virtual keys attributed to this customer that are live: not disabled and not past their expiry. Zero on a card with no spend means no key could have produced any"
+                        }
+                    }
+                }
+            ]
         },
         "CreateCustomer": {
             "type": "object",
@@ -3316,6 +3360,36 @@ mod tests {
         assert_eq!(doc["paths"]["/healthz"]["get"]["security"], json!([]));
     }
 
+    /// #2581: the business-unit and customer listings carry a live key count
+    /// beside each row, and the create and update answers do not claim one.
+    #[test]
+    fn attribution_listings_document_their_live_key_count() {
+        let doc = document();
+        for (path, listing, row) in [
+            (
+                "/api/v1/orgs/{org_id}/business-units",
+                "BusinessUnitListing",
+                "BusinessUnit",
+            ),
+            (
+                "/api/v1/orgs/{org_id}/customers",
+                "CustomerListing",
+                "Customer",
+            ),
+        ] {
+            let items = &doc["paths"][path]["get"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["items"]["$ref"];
+            assert_eq!(items, &json!(format!("#/components/schemas/{listing}")));
+            let schema = &doc["components"]["schemas"][listing]["allOf"];
+            assert_eq!(schema[0]["$ref"], format!("#/components/schemas/{row}"));
+            assert_eq!(schema[1]["required"], json!(["live_key_count"]));
+            assert_eq!(schema[1]["properties"]["live_key_count"]["type"], "integer");
+            let created = &doc["paths"][path]["post"]["responses"]["200"]["content"]
+                ["application/json"]["schema"]["$ref"];
+            assert_eq!(created, &json!(format!("#/components/schemas/{row}")));
+        }
+    }
+
     /// #2166: a browser landing on the MCP consent callback is sent to the
     /// dashboard, and the reference says so beside the JSON answer it keeps.
     #[test]
@@ -3327,11 +3401,17 @@ mod tests {
         assert!(responses["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("reason=")));
-        // the SSO callback is the only other one (#2297)
+        // the SSO callback is another (#2297)
         let sso = &doc["paths"]["/auth/sso/{slug}/callback"]["get"]["responses"];
         assert!(sso["303"]["description"]
             .as_str()
             .is_some_and(|d| d.contains("sso_code=") && d.contains("sso_error=")));
+        // the start of an sso login redirects too, and names the refusal it
+        // can end in (#2339)
+        let start = &doc["paths"]["/auth/sso/{slug}/start"]["get"]["responses"];
+        assert!(start["303"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("sso_disabled")));
         // and nothing else grew one
         let redirects = doc["paths"]
             .as_object()
@@ -3340,7 +3420,7 @@ mod tests {
             .flat_map(|item| item.as_object().expect("path item").values())
             .filter(|op| op["responses"]["303"].is_object())
             .count();
-        assert_eq!(redirects, 2);
+        assert_eq!(redirects, 3);
     }
 
     #[test]

@@ -102,6 +102,14 @@ Errors use the shape every rolter surface renders:
 }
 ```
 
+A write the current state does not allow answers `409` with a message that says
+what to change first. Deleting a provider that a route target or a provider
+group member still references is one: `DELETE /api/v1/providers/{id}` is
+refused, the provider is left in place, and the message names each route and
+group that uses it, as in
+`provider 'openai' is used by route 'gpt-4o', provider group 'llama-fleet'; remove it from them before deleting it`.
+Operations that can refuse this way list the `409` in the schema.
+
 ## Analytics read errors
 
 The reads that query ClickHouse — `/api/v1/analytics/*`, `/api/v1/health/*`,

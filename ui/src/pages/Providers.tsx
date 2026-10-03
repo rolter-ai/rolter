@@ -17,6 +17,7 @@ import {
   ListEmptyRow,
   ListHeader,
   ListLoadingRow,
+  STICKY_ACTIONS,
   ListRow,
   ListTable,
   PageBody,
@@ -331,7 +332,7 @@ export default function Providers() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <ListActionsHeader />
+          <ListActionsHeader className={STICKY_ACTIONS.header} />
         </ListHeader>
         <ListLoadingRow read={providers}>
           <ListSkeleton rows={4} className="p-3" />
@@ -364,7 +365,7 @@ export default function Providers() {
             <ListCell className="grid">
               <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />
             </ListCell>
-            <ListCell className="flex items-center justify-end gap-1.5">
+            <ListCell className={`flex items-center justify-end gap-1.5 ${STICKY_ACTIONS.cell}`}>
               <RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
                 <GatedButton
                   gate="provider:update"
@@ -414,7 +415,7 @@ export default function Providers() {
                     setLabelFilter("");
                   }}
                 >
-                  {t("common.clearSearch")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <GatedButton

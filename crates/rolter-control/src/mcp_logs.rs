@@ -2,7 +2,9 @@
 //!
 //! The eventual MCP proxy submits one normalized event after each tool call.
 //! This module deliberately owns no MCP transport: it stays useful for stdio,
-//! SSE, streamable HTTP and WebSocket implementations alike.
+//! SSE, streamable HTTP and WebSocket implementations alike. The gateway proxies
+//! only SSE and streamable HTTP; a `websocket` event can come only from an
+//! external producer, and is accepted so such rows stay valid.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

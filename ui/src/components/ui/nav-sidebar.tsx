@@ -457,7 +457,7 @@ export function NavSidebar({
           onDoubleClick={() => commitWidth(NAV_DEFAULT_WIDTH)}
           onKeyDown={onHandleKeyDown}
           className={cn(
-            "absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize focus-visible:outline-none",
+            "absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none focus-visible:outline-none",
             // a 2px thread on the border line, painted only when the splitter
             // is grabbed or focused so the idle rail stays quiet
             "after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:bg-[color:var(--red-folk)] after:opacity-0 after:transition-opacity after:content-['']",

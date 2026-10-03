@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../clickhouse/001_logs.sql).
+PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../../crates/rolter-store/migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../../clickhouse/001_logs.sql).
 
 ## Tenancy
 
@@ -46,7 +46,7 @@ The RBAC tables are split on exactly this question. `access_profile_policies`, `
 
 `users.display_name` (1 to 80 characters) and `users.bio` (up to 500) are an optional self-service profile (`0079`, #1823), bounded by check constraints as well as by the API. The data plane never reads them and no trigger watches them: the `users` trigger fires only on `deactivated_at` and `is_superadmin`, and a profile write (`UserRepo::set_profile`) touches neither.
 
-`user_preferences` (`0080`, #1824) holds one `jsonb` object per user (`user_id` primary key, `on delete cascade`), written by `PUT /api/v1/me/preferences`. It is a table of its own rather than a column on `users` so the row the auth path reads on every request stays lean, and `prefs` is schemaless (an object, enforced by a check) because the API validates every key and a new preference then needs no migration. The data plane never reads it, so it has no `bump_config_version()` trigger. `effective_default_scope` is computed per `GET` from the caller's live memberships and custom roles (`ScopeFilter`), never stored.
+`user_preferences` (`0080`, #1824) holds one `jsonb` object per user (`user_id` primary key, `on delete cascade`), written by `PUT /api/v1/me/preferences`. It is a table of its own rather than a column on `users` so the row the auth path reads on every request stays lean, and `prefs` is schemaless (an object, enforced by a check) because the API validates every key and a new preference then needs no migration. The data plane never reads it, so it has no `bump_config_version()` trigger. `effective_default_scope` is computed per `GET` from the caller's live memberships and custom roles (`ScopeFilter`), never stored. That computation is a known cost, not yet optimised: it issues a query per stored id and per scope on every `GET` rather than one batched lookup, which is fine at dashboard load rates and is the place to look if `GET /api/v1/me/preferences` ever shows up in profiles (#2449). `chart_time_zone` is validated against the IANA database through `chrono-tz` (default features off) so an unknown zone such as `Foo/Bar` is refused at write time, and the `LANGUAGES` list in `me.rs` is guarded by a test that compares it with the catalogs in `ui/src/lib/i18n/locales/`, so adding a locale without the code (or the reverse) fails CI.
 
 `saved_views` (`0081`, #1825) holds a user's named filter presets for the LLM Logs and Dashboard screens: `user_id` (`on delete cascade`), `surface` (`llm_logs` or `dashboard`, a check), `name` (trimmed, 1 to 80), `filters` (a `jsonb` object, a check), unique on `(user_id, surface, lower(name))`. It is a table of its own rather than a key inside `user_preferences.prefs` because that document is replaced whole by every `PUT` (a stale tab would clobber the list), and a name cannot be unique, counted for the 50-per-surface cap or indexed inside it. The API allow-lists the keys of `filters` per surface, so the column holds no arbitrary params. Every `SavedViewRepo` query is keyed by `user_id`, so another account's preset is indistinguishable from a missing one. The data plane never reads it, so it has no `bump_config_version()` trigger. `unavailable` and `effective_filters` are computed per read through `ScopeFilter` and never stored.
 
@@ -74,6 +74,17 @@ Two of them landed with the Settings screens (#564):
 - `client_settings` — the base URL the dashboard advertises (advisory; the gateway never reads it), the allowlist of inbound client headers forwarded to the upstream provider, the static headers the gateway injects on every upstream request, and the request-id header. Trace-context headers propagate independently of the allowlist, and injected header values are treated as credential material: they reach the gateway through the snapshot but never the audit log, which records only the names.
 - `model_defaults` — an `enabled` kill switch plus optional `default_model`, `default_temperature`, `default_top_p` and `default_max_tokens`. Defaults only ever fill a key the request omitted, so the table can be populated without changing the meaning of any request that was already explicit. `default_temperature` and `default_top_p` are `double precision`, not `real`: an `f32` default serializes into JSON as `0.800000011920929` and that is what would reach the provider.
 
+## Single sign-on
+
+The OIDC tables (`0047_sso_providers.sql`, `0077_sso_exchange_codes.sql`, #240) are read only by the control plane: sign-in ends in an ordinary `sessions` row and the memberships it grants, which is what the gateway consumes. None of the four carries a `bump_config_version()` trigger, and none may grow one. See [sso.md](sso.md).
+
+- `sso_providers` — one identity provider per row, owned by an org (`on delete cascade`). `slug` is the `/auth/sso/{slug}/start` path segment, unique per org and bounded by the `sso_providers_slug_charset` check. The client secret is sealed with the deployment KEK into `secret_ciphertext` + `secret_nonce` (both null or both set), and is listed in `SEALED_COLUMNS`. `group_claim` names the id-token claim carrying groups, and a null `default_role` refuses a user in no mapped group.
+- `sso_group_mappings` — an IdP group name granting a role at an org, team or project scope of one provider, with the same most-specific-non-null-id convention as `memberships`. Grants they produce are tagged `source = 'sso'` on the membership, so a later sign-in reconciles them without touching `manual` rows.
+- `sso_login_states` — one row per in-flight login: the CSRF `state` (primary key), the PKCE verifier, the nonce and the redirect uri. The callback deletes the row it uses, and a state older than ten minutes is refused even if it is still there.
+- `sso_exchange_codes` — the one-time code that hands a browser sign-in to the dashboard, stored as its SHA-256 with the user, provider, granted roles and a sixty-second `expires_at`. Redemption deletes it.
+
+A login abandoned at the identity provider never comes back to delete its state, and a code whose browser never loads the dashboard is never redeemed, so neither table can rely on use to stay small (#2414). The control plane runs a sweep every five minutes (`sso::start_state_sweeper`) that deletes expired rows from both through `SsoRepo::sweep_login_states` and `SsoRepo::sweep_exchange_codes`. Each statement removes at most `SSO_SWEEP_BATCH` (1000) rows, oldest first, with `for update skip locked` so concurrent replicas split a backlog instead of queueing on it, and a pass stops after ten batches per table and leaves the rest to the next tick. Every callback and every redemption also runs one batch first. The `created_at` and `expires_at` indexes from the original migrations serve both where clauses, so the sweep took no migration.
+
 ## Data written _by_ the data plane
 
 Most tables flow control plane → gateway. Two flow the other way, written from the channel the gateway already holds and never read back by it:
@@ -87,7 +98,7 @@ Neither carries a `bump_config_version()` trigger, and neither may grow one: the
 
 PostgreSQL holds configuration; ClickHouse holds the high-volume append-only
 streams, all partitioned by day with a 90-day TTL and written in batches off the
-hot path. Schema lives in [`clickhouse/`](../../clickhouse/), applied by the
+hot path. Schema lives in [`clickhouse/`](../../../clickhouse/), applied by the
 container's init directory:
 
 - `request_logs` — one row per proxied request, with cost and token counts.
@@ -108,6 +119,10 @@ A request's log row and its payload row also share a `log_id` (UUID, minted by
 the gateway, empty on rows older than `012_request_log_key.sql`). It is the join
 key between them; `request_id` is the caller's `x-request-id` and is not unique.
 `request_payloads` additionally carries the row's `org_id` and `project_id`.
+Because the table is ordered by `(request_id, ts)`, `014_request_payloads_log_id_index.sql`
+adds a `bloom_filter` data-skipping index on `log_id` so the lookup skips granules instead of
+scanning its time window. Only parts written after it carry the index; the 7 day ttl ages out the
+rest, so it is not materialized over old parts.
 
 - `ui_events` — dashboard UX events (#805): screen views and time-to-interactive,
   navigation and back-outs, form submit/abandon and which validation rules fire,
