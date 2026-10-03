@@ -17,13 +17,18 @@ export const KNOWN_ERROR_CODES = [
   "invalid_credentials",
   "invalid_cursor",
   "invalid_exchange_code",
+  "invalid_field",
   "invalid_query",
   "invalid_time_bound",
+  "last_org_admin",
   "last_superadmin",
   "mfa_enrolment_required",
+  "name_taken",
   "no_such_endpoint",
   "open_mode_no_session",
   "password_login_disabled",
+  "referenced",
+  "scope_mismatch",
   "too_many_attempts",
   "unauthenticated",
 ] as const;
@@ -37,6 +42,11 @@ export interface ErrorCopy {
 
 const known = new Set<string>(KNOWN_ERROR_CODES);
 
+// codes whose translated line cannot say which input was wrong, so the server's
+// words stay underneath as detail: an `invalid_field` message names the field
+// and the rule it broke (#2567)
+const keepsDetail = new Set<string>(["invalid_field"]);
+
 /**
  * The inline copy for a failure: a translated line, plus the raw server message
  * as `detail` when the code and the status were both unknown to the dashboard.
@@ -49,7 +59,11 @@ export function describeError(error: unknown, t: TFunction): ErrorCopy {
     return { message: t("errors.api.generic"), detail: error.message || undefined };
   }
   if (!(error instanceof ApiError)) return { message: t("errors.api.unreachable") };
-  if (error.code && known.has(error.code)) return { message: t(`errors.api.codes.${error.code}`) };
+  if (error.code && known.has(error.code)) {
+    const message = t(`errors.api.codes.${error.code}`);
+    if (keepsDetail.has(error.code)) return { message, detail: error.message || undefined };
+    return { message };
+  }
   if (error.status === 401) return { message: t("errors.api.unauthorized") };
   if (error.status === 403) return { message: t("errors.api.forbidden") };
   if (error.status === 429) return { message: t("errors.api.rateLimited") };

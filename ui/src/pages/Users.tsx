@@ -79,7 +79,15 @@ import { useOptionalAuth } from "@/lib/auth";
 import { useCan, useCapabilities } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { classifyLoadError } from "@/lib/load-error";
-import { afterRevoke, grantScope, higherRole, membershipScope, sameScope } from "@/lib/role-grants";
+import {
+  LAST_ORG_ADMIN,
+  afterRevoke,
+  grantScope,
+  higherRole,
+  isLastOrgAdmin,
+  membershipScope,
+  sameScope,
+} from "@/lib/role-grants";
 import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -154,6 +162,15 @@ export default function Users() {
     }
     return map;
   }, [memberships.data]);
+
+  // the org's last admin grant, which the control plane refuses to revoke for
+  // anyone but a superadmin, who is not offered the warning
+  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
+  const isLastAdmin = (grant: MembershipRow) =>
+    !callerIsSuperadmin &&
+    users.data !== undefined &&
+    memberships.data !== undefined &&
+    isLastOrgAdmin(grant, memberships.data, users.data);
 
   // giving access back is the one account change that needs no question: it
   // undoes a deactivation and a misfire is one click to reverse. the other
@@ -322,6 +339,7 @@ export default function Users() {
                   grants={grants}
                   read={memberships}
                   orgScope={orgScope}
+                  isLastAdmin={isLastAdmin}
                   onChange={(grant) => setChangeTarget({ grant, user })}
                   onRevoke={(grant) => setRevokeTarget({ grant, user })}
                 />
@@ -1256,6 +1274,7 @@ function RoleGrants({
   grants,
   read,
   orgScope,
+  isLastAdmin,
   onChange,
   onRevoke,
 }: {
@@ -1263,6 +1282,8 @@ function RoleGrants({
   grants: MembershipRow[];
   read: { data?: MembershipRow[]; isError: boolean };
   orgScope: OrgScope;
+  /** the grant the control plane would refuse to revoke, so neither action is offered */
+  isLastAdmin: (grant: MembershipRow) => boolean;
   onChange: (grant: MembershipRow) => void;
   onRevoke: (grant: MembershipRow) => void;
 }) {
@@ -1289,6 +1310,7 @@ function RoleGrants({
           scope: scopePhrase(t, orgScope, grant),
           email: user.email,
         };
+        const last = isLastAdmin(grant);
         const fromIdp = grant.source === "sso" || grant.source === "scim";
         return (
           <li key={grant.id} className="flex min-w-0 items-center gap-1.5">
@@ -1310,7 +1332,10 @@ function RoleGrants({
             <RowIconButton
               gate="membership:create"
               control="user-role-change"
-              title={t("pages.users.changeRole", names)}
+              disabled={last}
+              title={
+                last ? t("pages.users.lastAdminHint", names) : t("pages.users.changeRole", names)
+              }
               aria-label={t("pages.users.changeRole", names)}
               onClick={() => onChange(grant)}
             >
@@ -1322,7 +1347,10 @@ function RoleGrants({
               className="hover:border-[color:var(--status-danger)] hover:text-[color:var(--status-danger-text)]"
               gate="membership:delete"
               control="user-role-revoke"
-              title={t("pages.users.revokeRole", names)}
+              disabled={last}
+              title={
+                last ? t("pages.users.lastAdminHint", names) : t("pages.users.revokeRole", names)
+              }
               aria-label={t("pages.users.revokeRole", names)}
               onClick={() => onRevoke(grant)}
             >
@@ -1382,6 +1410,10 @@ function RevokeRoleDialog({
         return "revoked" as const;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return "gone" as const;
+        // the control plane's reason, said in the dashboard's language
+        if (error instanceof ApiError && error.code === LAST_ORG_ADMIN) {
+          throw new Error(t("pages.users.confirm.lastAdminRefused"));
+        }
         throw error;
       }
     },
@@ -1469,8 +1501,10 @@ function RevokeRoleDialog({
  * message is the control plane's own, so the dialog can print it verbatim.
  */
 class RevokeAfterGrantFailed extends Error {
+  readonly code?: string;
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
+    this.code = cause instanceof ApiError ? cause.code : undefined;
     this.name = "RevokeAfterGrantFailed";
   }
 }
@@ -1555,6 +1589,12 @@ function ChangeRoleDialog({
     },
   });
 
+  // the last-admin refusal is said in the dashboard's language, not verbatim
+  const changeError =
+    change.error instanceof RevokeAfterGrantFailed && change.error.code === LAST_ORG_ADMIN
+      ? new Error(t("pages.users.confirm.lastAdminRefused"))
+      : change.error;
+
   const clear = () => {
     setRole("");
     setGranted(null);
@@ -1616,7 +1656,7 @@ function ChangeRoleDialog({
       }
       tone="default"
       pending={change.isPending}
-      error={change.error}
+      error={changeError}
       confirmDisabled={!granted && !role}
       onConfirm={confirm}
     >

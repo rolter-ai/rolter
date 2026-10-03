@@ -351,3 +351,16 @@ leads with `error.message`: pass the thrown value through `describeError` in
 returns the server's words as `detail`, to be shown below a generic translated
 line. A new code the control plane starts sending is added to `KNOWN_ERROR_CODES`
 and to `errors.api.codes` in every catalog.
+
+On the control plane, a refusal earns a code by going through the helpers in
+`crates/rolter-control/src/crud.rs` rather than a bare `Error::Config` or
+`ApiError::Conflict`: `invalid_field(field, message)` for a 400 about one field
+(the body then carries `field` too), `name_taken(message)` for a taken name, and
+`ApiError::CodedConflict` with `REFERENCED` or `SCOPE_MISMATCH` for the other
+409s. A unique violation the store reports is `Error::AlreadyExists`, which the
+API renders as `409 name_taken` with a generic message, so a write that loses a
+race, or hits a constraint nobody checked first, never surfaces as a 500
+(#2567). Status codes do not change when a code is added. The codes are listed
+in `docs/user-docs/api/control-plane-openapi.mdx`. `invalid_field` is the one
+known code whose server message `describeError` keeps as `detail`, because the
+translated line cannot say which field was wrong.

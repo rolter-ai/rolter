@@ -8,10 +8,16 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
+import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
-import { fetchModelDefaults, updateModelDefaults, type ModelDefaultsDto } from "@/lib/api";
+import {
+  fetchModelDefaults,
+  fetchModels,
+  updateModelDefaults,
+  type ModelDefaultsDto,
+} from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -89,6 +95,14 @@ function ModelSettingsScreen() {
     queryFn: fetchModelDefaults,
     retry: false,
   });
+
+  // the routes the gateway serves, for the default-model picker; a failure
+  // here must not block the other settings, so it degrades to typing
+  const models = useQuery({ queryKey: ["models"], queryFn: fetchModels });
+  const modelOptions = React.useMemo(
+    () => (models.data ?? []).map((m) => ({ value: m.model, label: m.model })),
+    [models.data],
+  );
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `defaults` is the query the user is actually waiting on for this screen
@@ -246,14 +260,21 @@ function ModelSettingsScreen() {
       >
         <Field
           label={t("pages.modelSettings.model.defaultModel")}
-          hint={t("pages.modelSettings.model.defaultModelHint")}
+          hint={
+            models.isError
+              ? t("pages.modelSettings.model.modelsUnavailable")
+              : t("pages.modelSettings.model.defaultModelHint")
+          }
         >
-          <Input
+          <Combobox
             className="sm:min-w-[320px]"
-            placeholder={t("pages.modelSettings.providerDefault")}
+            options={modelOptions}
+            allowCustom
+            clearable
+            placeholder={t("pages.modelSettings.model.placeholder")}
             value={form.defaultModel}
             disabled={!form.enabled}
-            onChange={(e) => set({ defaultModel: e.target.value })}
+            onChange={(v) => set({ defaultModel: v })}
           />
         </Field>
       </SettingsPanel>

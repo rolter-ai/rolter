@@ -83,6 +83,34 @@ export function subscribePlaygroundKey(listener: () => void): () => void {
   };
 }
 
+// gateway calls the Playground has out right now. swapping the key under one of
+// them would not change the request, but it would change what the screen says
+// about the key that request is using, so a re-mint waits for this to reach 0
+let inFlight = 0;
+const inFlightListeners = new Set<() => void>();
+
+export function getGatewayCallsInFlight(): number {
+  return inFlight;
+}
+
+export function subscribeGatewayCalls(listener: () => void): () => void {
+  inFlightListeners.add(listener);
+  return () => {
+    inFlightListeners.delete(listener);
+  };
+}
+
+async function tracked<T>(call: () => Promise<T>): Promise<T> {
+  inFlight += 1;
+  for (const listener of inFlightListeners) listener();
+  try {
+    return await call();
+  } finally {
+    inFlight -= 1;
+    for (const listener of inFlightListeners) listener();
+  }
+}
+
 // the dashboard session token api.ts attaches to every control-plane call. the
 // /gw proxy takes the same one; open mode has none, and then none is sent
 const SESSION_STORAGE_KEY = "rolter.session.token";
@@ -254,17 +282,19 @@ export async function chatCompletion(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(`${GW_BASE}/v1/chat/completions`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, messages, stream: false }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, messages, stream: false }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    return body.choices?.[0]?.message?.content ?? "";
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  return body.choices?.[0]?.message?.content ?? "";
 }
 
 export async function embed(
@@ -272,15 +302,17 @@ export async function embed(
   input: string[],
   signal?: AbortSignal,
 ): Promise<number[][]> {
-  const res = await fetch(`${GW_BASE}/v1/embeddings`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, input }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/embeddings`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, input }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as { data?: { embedding: number[] }[] };
+    return (body.data ?? []).map((d) => d.embedding);
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as { data?: { embedding: number[] }[] };
-  return (body.data ?? []).map((d) => d.embedding);
 }
 
 export interface GeneratedImage {
@@ -295,19 +327,21 @@ export async function generateImages(
   size: string,
   signal?: AbortSignal,
 ): Promise<GeneratedImage[]> {
-  const res = await fetch(`${GW_BASE}/v1/images/generations`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, prompt, n, size }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/images/generations`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, prompt, n, size }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as {
+      data?: { url?: string; b64_json?: string }[];
+    };
+    return (body.data ?? []).map((d) => ({
+      url: d.b64_json ? `data:image/png;base64,${d.b64_json}` : (d.url ?? ""),
+    }));
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as {
-    data?: { url?: string; b64_json?: string }[];
-  };
-  return (body.data ?? []).map((d) => ({
-    url: d.b64_json ? `data:image/png;base64,${d.b64_json}` : (d.url ?? ""),
-  }));
 }
 
 // text → speech: returns an object URL for an <audio> element
@@ -317,31 +351,35 @@ export async function synthesizeSpeech(
   voice: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(`${GW_BASE}/v1/audio/speech`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ model, input, voice }),
-    signal,
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/audio/speech`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ model, input, voice }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   });
-  if (!res.ok) throw await gwError(res);
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
 }
 
 // speech → text: multipart upload of an audio file
 export async function transcribe(model: string, file: File, signal?: AbortSignal): Promise<string> {
-  const form = new FormData();
-  form.append("model", model);
-  form.append("file", file);
-  const res = await fetch(`${GW_BASE}/v1/audio/transcriptions`, {
-    method: "POST",
-    headers: authHeaders(false),
-    body: form,
-    signal,
+  return tracked(async () => {
+    const form = new FormData();
+    form.append("model", model);
+    form.append("file", file);
+    const res = await fetch(`${GW_BASE}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers: authHeaders(false),
+      body: form,
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as { text?: string };
+    return body.text ?? "";
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as { text?: string };
-  return body.text ?? "";
 }
 
 // realtime WebSocket URL (same-origin via the /gw proxy, ws upgrade enabled).

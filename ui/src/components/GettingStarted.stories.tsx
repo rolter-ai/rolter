@@ -238,11 +238,51 @@ export const LoadFailed: Story = {
     expectLoadError(canvasElement, new RegExp(en.errors.resources.gettingStarted)),
 };
 
-/** no project in scope, so there is nothing whose real state could be reflected */
+/**
+ * No project exists at all, so step 1 has nothing to run in and nothing to
+ * pick (#2609): the card says why and where a project comes from, rather than
+ * asking for a selection from an empty list.
+ */
 export const NoProjectSelected: Story = {
   render: () => render(noProject),
-  play: async ({ canvasElement }) =>
-    expectEmptyState(canvasElement, new RegExp(en.pages.gettingStarted.noScopeTitle)),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, new RegExp(en.pages.gettingStarted.noProjectTitle));
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(en.pages.gettingStarted.noProjectBody)).toBeInTheDocument();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectDenied)).toBeNull();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noScopeBody)).toBeNull();
+  },
+};
+
+// a caller who holds a setup step but not the project one
+const noProjectNoCreate: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/rbac/effective") {
+    const member = effectiveFor("member");
+    return json({ ...member, allowed: [...member.allowed, "route:create"] });
+  }
+  if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
+  return noProject(input, init);
+};
+
+/** without the project-create capability the card names the role instead */
+export const NoProjectAndCannotCreateOne: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={noProjectNoCreate}>
+        <CapabilityProvider>
+          <GettingStarted />
+        </CapabilityProvider>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(en.pages.gettingStarted.noProjectDenied)).toBeInTheDocument(),
+    );
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectBody)).toBeNull();
+  },
 };
 
 /**

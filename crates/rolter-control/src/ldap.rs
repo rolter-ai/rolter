@@ -1,9 +1,18 @@
 //! LDAP bind + group mapping (#241).
 //!
-//! The third [`IdentityProvider`] after local password login and OIDC SSO. It
-//! resolves a [`Credential::Password`] by binding to a directory as that user,
-//! reading their attributes, and mapping their directory groups onto rolter
-//! roles.
+//! **Not shipped: nothing signs a user in through this provider.** No
+//! configuration key, environment variable, route or dashboard screen
+//! constructs [`LdapIdentityProvider`], and `POST /api/v1/auth/login` resolves
+//! only local accounts. The module is kept, compiled and tested because its
+//! policy (two-phase bind, filter escaping, least-privilege group mapping,
+//! error normalization) is what wiring it will reuse; that work is tracked in
+//! #1826, and #2731 recorded the decision not to ship it before then. Until it
+//! lands, do not document LDAP sign-in as available.
+//!
+//! It is the intended third [`IdentityProvider`] after local password login
+//! and OIDC SSO. It resolves a [`Credential::Password`] by binding to a
+//! directory as that user, reading their attributes, and mapping their
+//! directory groups onto rolter roles.
 //!
 //! ## Two-phase bind
 //!
@@ -401,7 +410,7 @@ mod tests {
     fn password() -> Credential {
         Credential::Password {
             email: "ada".into(),
-            password: "correct horse".into(),
+            password: format!("pw-{}", uuid::Uuid::new_v4()),
         }
     }
 
