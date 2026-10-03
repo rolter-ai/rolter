@@ -49,7 +49,7 @@ import {
   type TimeWindow,
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /** one dimension's spend over a window, with the span it was read over */
 interface WindowSpend {
@@ -316,6 +316,7 @@ function SpendStrip({
         error={error}
         resource={t("errors.resources.attributionSpend")}
         onRetry={onRetry}
+        target="attribution-spend"
       />
     );
   }
@@ -591,6 +592,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           resource={
             kind === "unit" ? t("errors.resources.businessUnits") : t("errors.resources.customers")
           }
+          target="cost-attribution"
           onRetry={onRetry}
         />
       </PageBody>
@@ -818,7 +820,6 @@ export function BusinessUnits() {
 
   useScreenReady(!units.isLoading);
 
-  useErrorState(!!units.error, "business-units");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["business-units", orgId] });
 
   const create = useMutation({
@@ -950,7 +951,6 @@ export function Customers() {
 
   useScreenReady(!customers.isLoading);
 
-  useErrorState(!!customers.error, "customers");
   // needed for the assignment dropdown and to name the unit on each card
   const units = useQuery({
     queryKey: ["business-units", orgId],

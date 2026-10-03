@@ -109,6 +109,7 @@ export function TwoFactorPanel() {
             error={status.error}
             resource={t("errors.resources.twoFactor")}
             onRetry={() => void status.refetch()}
+            target="mfa"
           />
         )}
 
@@ -296,6 +297,7 @@ function EnrolDialog({
             error={enrolment.error}
             resource={t("errors.resources.twoFactorSecret")}
             onRetry={() => void enrolment.refetch()}
+            target="mfa-enrolment"
           />
         )}
         {enrolment.data && (

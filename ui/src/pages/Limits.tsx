@@ -113,6 +113,8 @@ export default function Limits() {
 
   useScreenReady(!virtualKeys.isLoading);
 
+  // the key list has no `LoadError` of its own to record a failure, so it is
+  // reported here; budgets and rate limits record theirs (#2444)
   useErrorState(!!virtualKeys.error, "limits");
 
   const budgets = useQuery({
@@ -299,6 +301,7 @@ export default function Limits() {
             error={budgets.error}
             resource={t("errors.resources.budgets")}
             onRetry={() => budgets.refetch()}
+            target="budgets"
           />
         )}
         {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
@@ -368,6 +371,7 @@ export default function Limits() {
             error={rateLimits.error}
             resource={t("errors.resources.rateLimits")}
             onRetry={() => rateLimits.refetch()}
+            target="rate-limits"
           />
         )}
         {!rateLimits.isLoading && scopeId && rateLimits.data?.length === 0 && (

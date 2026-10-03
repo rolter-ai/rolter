@@ -180,6 +180,13 @@ GROUP BY screen, region
 ORDER BY error_impressions DESC, empty_impressions DESC;
 ```
 
+Both columns come from the dashboard's shared placeholders: every empty state
+records `empty_state` and every load-failure alert records `error_state`, each
+time it appears, under the screen it is on. `region` is the part of the screen
+that came back empty or failed, and an empty state and the alert for the same
+list carry the same region, so one row reads both. A screen that shows several
+alerts at once records one row for each.
+
 Sustained `error_impressions` on one screen is a bug report nobody filed. High
 `empty_impressions` on a screen that should have data usually means a scope or
 permission problem, not an authoring one.
@@ -298,10 +305,10 @@ misread as good news.
    `telemetry ingest failed` warning in the control-plane log at most once a
    minute, naming the store's own error.
 
-2. **Is a screen missing on purpose?** `screen_view`, `navigate`, `back_out` and
-   `empty_state` are wired centrally and cover every screen.
-   `time_to_interactive` and `error_state` are per-screen. A screen absent from
-   those is un-instrumented, not fast.
+2. **Is a screen missing on purpose?** `screen_view`, `navigate`, `back_out`,
+   `empty_state` and `error_state` are wired centrally and cover every screen.
+   `time_to_interactive` is per-screen. A screen absent from it is
+   un-instrumented, not fast.
 
 3. **Compare like with like.** `app_version` is on every row. After a deploy,
    filter to one version before concluding a screen got slower:

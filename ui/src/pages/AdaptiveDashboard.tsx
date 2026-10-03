@@ -19,7 +19,7 @@ import {
   type AdaptiveTargetTelemetryDto,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // scores and weights are read against each other, so they keep three decimals
 const DECIMAL: Intl.NumberFormatOptions = { maximumFractionDigits: 3 };
@@ -115,7 +115,6 @@ function AdaptiveDashboardScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `telemetry` is the query the user is actually waiting on for this screen
   useScreenReady(!telemetry.isLoading);
-  useErrorState(!!telemetry.error, "adaptive-dashboard");
 
   if (telemetry.isLoading) {
     return (
@@ -133,6 +132,7 @@ function AdaptiveDashboardScreen() {
           error={telemetry.error}
           resource={t("errors.resources.adaptiveTelemetry")}
           onRetry={() => void telemetry.refetch()}
+          target="adaptive-routes"
         />
       </PageBody>
     );

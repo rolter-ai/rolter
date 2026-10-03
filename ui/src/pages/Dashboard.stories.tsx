@@ -12,11 +12,14 @@ import {
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
+  uxEvents,
   type FetchStub,
   type Recorder,
   type StoryRole,
@@ -26,6 +29,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const fmt = formattersFor("en");
 
@@ -1364,5 +1368,80 @@ export const ASavedViewChangesTheWindow: Story = {
       "/api/v1/me/saved-views",
     );
     await expect(body).toEqual({ surface: "dashboard", name: "Mine", filters: { window: "7d" } });
+  },
+};
+
+/** `render`, under the screen key the app shell supplies, for a story reading the UX stream */
+const renderOnScreen = (stub: FetchStub) => (
+  <UxScreenProvider screen="dashboard">{render(stub)}</UxScreenProvider>
+);
+
+/** the regions of every `error_state` recorded so far, in order */
+const errorRegions = () =>
+  uxEvents()
+    .filter((e) => e.action === "error_state")
+    .map((e) => e.target);
+
+/**
+ * The error states come from the alerts on screen, which record their own
+ * (#2444): three failed cards are three rows, one per card under its own
+ * region, and the card that loaded adds none. No screen-level row is recorded
+ * for what is not an outage.
+ */
+export const EachFailedCardRecordsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(mostDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-recent"),
+      /failed to return recent requests/i,
+    );
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(3));
+    const figures = await expectUxEvent("error_state", "dashboard");
+    await expect(figures.screen).toBe("dashboard");
+    await waitFor(() =>
+      expect([...errorRegions()].sort()).toEqual([
+        "dashboard",
+        "dashboard-recent",
+        "dashboard-spend",
+      ]),
+    );
+  },
+};
+
+/**
+ * The traffic share and the by-model bars read one endpoint and show one alert,
+ * so its failure is one row, under the card that holds the alert.
+ */
+export const TheSharedReadRecordsOneErrorState: Story = {
+  beforeEach: () => {
+    modelsDown = true;
+    return recordUxEvents();
+  },
+  render: () => renderOnScreen(byModelDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-traffic"),
+      /failed to return the traffic share/i,
+    );
+    await expectUxEvent("error_state", "dashboard-traffic");
+    await expect(errorRegions()).toEqual(["dashboard-traffic"]);
+  },
+};
+
+/**
+ * Every read failing is one alert for the screen, and one screen-level row for
+ * it, `dashboard-analytics`, however long the alert stays up.
+ */
+export const AnOutageRecordsOneScreenLevelErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(failing.stub),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    const outage = await expectUxEvent("error_state", "dashboard-analytics");
+    await expect(outage.screen).toBe("dashboard");
+    await expect(errorRegions().filter((r) => r === "dashboard-analytics")).toHaveLength(1);
   },
 };

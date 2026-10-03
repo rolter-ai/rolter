@@ -32,6 +32,34 @@ two of them cover most of what the dashboard does. Both take a **required**
 adding one without a name is a type error rather than a gap nobody notices until
 the data is queried.
 
+`LoadError` takes a **required** `target` for the same reason, and records
+`error_state` itself each time it appears (#2444). Until then the table above
+claimed it and the code did not: only a screen that called `useErrorState`
+beside its `LoadError` reported, so a panel that forgot the hook was silent,
+and one that pointed it at the wrong query reported the wrong thing (#2017).
+Every mount is one row, because the component is only mounted while its read is
+in error: a failure, a retry that takes the alert down for a skeleton, and a
+second failure are two incidents, and a retry that leaves the alert up is still
+one. Name the `target` after the region, the way the region's `EmptyState`
+names its `uxTarget`, so the two pair up in the dead-states query. A screen
+never calls `useErrorState` next to a `LoadError` — that is the same alert
+counted twice.
+
+Before #2444 most screens filed their failure under a name of their own
+(`virtual-key-list`, `provider-list`, `pricing`, `cluster`, `health` and the
+like) while the empty state beside it used another, so the dead-states query
+showed one list as two regions. Those alerts now carry their empty state's
+region (`virtual-keys`, `providers`, `model-prices`, `cluster-nodes`,
+`health-rollups`), and a window that spans the upgrade shows both names for the
+same list.
+
+The hook is still exported for the one case the component cannot see: a read
+whose failure renders no `LoadError` at all. MCP Logs reports its summary
+(`mcp-log-summary`), which only blanks the figures, and Limits its virtual-key list
+(`limits`), which only feeds the scope picker; each says so beside the call.
+`ForbiddenScreen` is a `LoadError` too, so a screen the role gate refuses up
+front records `error_state` under `forbidden`.
+
 The screen key is not a prop. It travels through `UxScreenProvider`, mounted
 once by the app shell, so a sheet rendered outside one is silent rather than
 mislabelled.
@@ -63,10 +91,11 @@ supporting one. LLM Logs followed the model list that feeds its filter rail
 until #2017, so it reported itself ready over a skeleton and recorded nothing
 when ClickHouse failed every log read. It now calls `useScreenReady(!query.isPending)`
 on the log query, which counts an answer of any kind and not a retry parked in a
-hidden tab, and `useErrorState` on a failure of that query. The no-analytics
-deployment shape is an answer and a supported one, so it is ready and is not an
-error state. The target is `request-logs`, the region the empty state names, so
-the two rows pair up in the dead-states query. The `TheScreenIsNotReadyWhileTheLogIsOut`,
+hidden tab, and the `LoadError` for a failure of that query records the error
+state. The no-analytics deployment shape is an answer and a supported one, so
+it is ready, renders `AnalyticsUnavailable` rather than a `LoadError`, and is
+not an error state. The target is `request-logs`, the region the empty state
+names, so the two rows pair up in the dead-states query. The `TheScreenIsNotReadyWhileTheLogIsOut`,
 `AFailedLogReadIsAnErrorState`, `AFailedModelListIsNotTheLogsError` and
 `NoAnalyticsStore` stories in `Logs.stories.tsx` read the queue.
 
