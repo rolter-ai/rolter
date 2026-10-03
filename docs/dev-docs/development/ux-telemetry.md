@@ -273,6 +273,15 @@ docker run -d --name ux-ch -p 18123:8123 clickhouse/clickhouse-server:24-alpine
 ROLTER_TEST_CLICKHOUSE_URL=http://127.0.0.1:18123   cargo test -p rolter-control --features postgres --test ux_pipeline
 ```
 
+Every status assertion goes through `expect_status`, which on a mismatch prints
+the response body and the `ui_events` insert exceptions ClickHouse logged in
+`system.query_log` over the last five minutes — the ingest `500` body is
+deliberately generic, so the body alone never says why. "None logged" means the
+insert never reached ClickHouse and the failure was on the connection, which is
+the signature of the intermittent `500` in #1940: the control plane reused a
+pooled connection at the moment ClickHouse's 10s keep-alive timeout closed it.
+The client now retires idle connections after 2s; see [ClickHouse call timeouts](../architecture/observability.md#clickhouse-call-timeouts-1951).
+
 The test creates the `ui_events` table itself, from the shipped
 `clickhouse/008_ui_events.sql` rather than from a copy — a private copy would
 let the table under test drift away from the one a deployment gets, which is the

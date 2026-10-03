@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { ScopeSwitcher } from "./ScopeSwitcher";
+import { openCreateProject } from "@/lib/scope";
 import { UxScreenProvider } from "@/lib/ux-react";
 import {
   Harness,
@@ -168,6 +169,34 @@ export const CreatesATeam: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Create" }));
     const body = await calls.expectSentBody("POST", `/orgs/${ORG.id}/teams`);
     await expect(body).toEqual({ name: "Research" });
+  },
+};
+
+/** Another screen opens the project dialog through `openCreateProject()`. */
+export const OpensCreateProjectFromElsewhere: Story = {
+  render: () => {
+    const recorder = recording(chain());
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub}>
+        <button type="button" onClick={openCreateProject}>
+          Open from another screen
+        </button>
+        <ScopeSwitcher />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("combobox", { name: "Team" });
+    await waitFor(() => expect(canvas.getByLabelText("Team")).toHaveValue(TEAM.name));
+    await userEvent.click(canvas.getByRole("button", { name: "Open from another screen" }));
+    const dialog = within(await confirmation());
+    await expect(dialog.getByText("New project")).toBeVisible();
+    await userEvent.type(dialog.getByLabelText("Name"), "Search");
+    await userEvent.click(dialog.getByRole("button", { name: "Create" }));
+    const body = await calls.expectSentBody("POST", `/teams/${TEAM.id}/projects`);
+    await expect(body).toEqual({ name: "Search" });
   },
 };
 

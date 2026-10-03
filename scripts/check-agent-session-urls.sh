@@ -73,6 +73,26 @@ open_pulls_file() {
   api_get "repos/${repo}/pulls?state=open&per_page=100" "the open pull requests for ${repo}"
 }
 
+# prints what a mode checked, so a green log says which body or range it read
+# rather than only that the step succeeded (#2186). skipped when an earlier
+# check in this run already failed, so a summary never sits beside a verdict it
+# contradicts; the ::error:: lines carry the failure.
+report() {
+  if [ "$fail" -eq 0 ]; then
+    echo "checked: $*"
+  fi
+}
+
+# checks every commit message in RANGE and reports the range and the count
+check_range() {
+  local range="$1" label="$2" count=0 sha
+  while IFS= read -r sha; do
+    check_text "commit $sha" "$(git log -1 --format=%B "$sha")"
+    count=$((count + 1))
+  done < <(git rev-list "$range")
+  report "${label}${range}, ${count} commit message(s) scanned"
+}
+
 check_text() {
   local label="$1" text="$2"
   local hits
@@ -115,12 +135,11 @@ while [ "$#" -gt 0 ]; do
       fi
       body="$(jq -r '.body // ""' "$pull")"
       check_text "pr body for #${number}" "$body"
+      report "the body of ${repo}#${number} (read live), ${#body} character(s) scanned"
       shift 3
       ;;
     --commit-range)
-      while IFS= read -r sha; do
-        check_text "commit $sha" "$(git log -1 --format=%B "$sha")"
-      done < <(git rev-list "$2")
+      check_range "$2" "commit range "
       shift 2
       ;;
     # check the body of the open pr whose head is REF. used by the dispatched
@@ -138,6 +157,8 @@ while [ "$#" -gt 0 ]; do
       else
         body="$(jq -r --arg ref "$ref" '[.[] | select(.head.ref == $ref)] | .[0].body // ""' "$pulls")"
         check_text "pr body for ${ref}" "$body"
+        number="$(jq -r --arg ref "$ref" '[.[] | select(.head.ref == $ref)] | .[0].number' "$pulls")"
+        report "the body of ${repo}#${number} (head ref ${ref}), ${#body} character(s) scanned"
       fi
       shift 3
       ;;
@@ -173,9 +194,7 @@ while [ "$#" -gt 0 ]; do
           echo "::error::${base}..${head} is not fully present in this clone; check out with fetch-depth 0 before checking commit messages" >&2
           exit 1
         fi
-        while IFS= read -r sha; do
-          check_text "commit $sha" "$(git log -1 --format=%B "$sha")"
-        done < <(git rev-list "${base}..${head}")
+        check_range "${base}..${head}" "commit range for ${ref} (${repo}), "
       fi
       shift 3
       ;;
@@ -205,6 +224,7 @@ while [ "$#" -gt 0 ]; do
       fi
       body="$(jq -r --argjson n "$number" '[.[] | select(.number == $n)] | .[0].body // ""' "$pulls")"
       check_text "pr body for #${number} (merge queue)" "$body"
+      report "the body of ${repo}#${number} (merge-queue ref ${ref}), ${#body} character(s) scanned"
       shift 3
       ;;
     *)

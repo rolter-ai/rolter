@@ -208,7 +208,8 @@ fn api_error_message(err: ApiError) -> String {
         },
         ApiError::Curated(msg)
         | ApiError::Conflict(msg)
-        | ApiError::CodedConflict { message: msg, .. } => msg,
+        | ApiError::CodedConflict { message: msg, .. }
+        | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
         ApiError::TooManyAttempts(remaining) => {
@@ -384,14 +385,42 @@ pub(crate) fn random_token() -> String {
 }
 
 /// Begin a login: record the state and redirect to the provider.
+///
+/// A provider whose org has single sign-on turned off is refused here, before
+/// the member is sent to the identity provider, with the same `sso_disabled`
+/// refusal the callback gives (#2339): a browser is sent back to the login
+/// screen, any other caller gets the `403`.
 async fn start_login(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> ApiResult<Response> {
     let provider = SsoRepo(pool(&state))
         .find_provider_by_slug(&slug)
         .await?
         .ok_or_else(|| invalid(format!("no enabled sso provider '{slug}'")))?;
+    if !OrgAuthPolicyRepo(pool(&state))
+        .get(provider.org_id)
+        .await?
+        .allow_sso
+    {
+        let failure = CallbackFailure {
+            reason: SsoFailure::SsoDisabled,
+            slug: Some(provider.slug),
+            error: sso_disabled(),
+        };
+        tracing::info!(
+            reason = failure.reason.code(),
+            slug = ?failure.slug,
+            "sso sign-in refused before the identity provider"
+        );
+        let response = if crate::mcp_oauth_flow::prefers_html(&headers) {
+            Redirect::to(&refusal_url(public_base_url(&state), &failure)).into_response()
+        } else {
+            failure.error.into_response()
+        };
+        return Ok(([(header::VARY, "accept")], response).into_response());
+    }
     let discovery = discover(&state.egress, &provider.issuer).await?;
     let (verifier, challenge) = pkce_pair();
     let csrf_state = random_token();
@@ -565,6 +594,15 @@ struct CallbackFailure {
     reason: SsoFailure,
     slug: Option<String>,
     error: ApiError,
+}
+
+/// The refusal for a provider whose org has single sign-on turned off, at the
+/// start of a login and at its callback alike.
+fn sso_disabled() -> ApiError {
+    ApiError::CodedForbidden {
+        code: SsoFailure::SsoDisabled.code(),
+        message: "single sign-on is turned off for this provider's organization".to_string(),
+    }
 }
 
 /// `map_err` for one step of [`complete_login`].
@@ -836,7 +874,7 @@ async fn complete_login(
     {
         // the org turned sso off; refuse without deleting the provider so it
         // can be switched back on
-        return Err(failed(SsoDisabled, named)(ApiError::Forbidden));
+        return Err(failed(SsoDisabled, named)(sso_disabled()));
     }
     let discovery = discover(&state.egress, &provider.issuer)
         .await
@@ -1044,7 +1082,9 @@ type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
 /// an operator granted by hand — through the admin API or an invitation —
 /// carries `source = 'manual'` and survives untouched, so the two enrolment
 /// paths can be used side by side. Removing a user from an IdP group does
-/// revoke the role that group granted, on their next login.
+/// revoke the role that group granted, on their next login — except an org's
+/// last active admin grant, which is kept and audited rather than failing the
+/// sign-in (#2558).
 async fn apply_mappings(
     state: &ControlState,
     provider: &SsoProvider,
@@ -1080,15 +1120,19 @@ async fn reconcile_grants(
         .filter(|m| m.user_id == user_id)
         .collect();
 
+    let mut granted = Vec::new();
     for stale in existing
         .iter()
         .filter(|m| m.source == "sso")
         .filter(|m| !wanted.iter().any(|w| grant_matches(m, w)))
     {
-        repo.delete(stale.id).await?;
+        // the org's last admin grant outlives the group change rather than
+        // failing the sign-in; it stays in force, so it is reported (#2558)
+        if crate::crud::revoke_idp_grant(state, stale).await? {
+            granted.push(stale.role.clone());
+        }
     }
 
-    let mut granted = Vec::new();
     for want in wanted {
         granted.push(want.3.clone());
         if existing.iter().any(|m| grant_matches(m, want)) {
@@ -1569,6 +1613,66 @@ async fn sqlx_mapping(state: &ControlState, id: Uuid) -> ApiResult<SsoGroupMappi
             "sso group mapping {id}"
         )))
     })
+}
+
+/// How often the background sweep clears abandoned SSO state.
+const STATE_SWEEP_SECS: u64 = 300;
+/// Batches one sweep pass deletes per table before yielding to the next tick,
+/// so a vast backlog drains over several passes instead of in one long burst.
+const STATE_SWEEP_MAX_BATCHES: usize = 10;
+
+/// Spawn the sweep that deletes expired login states and exchange codes
+/// (#2414). Both are otherwise removed only when the same flow comes back to
+/// use them, and a login abandoned at the identity provider never does.
+pub(crate) fn start_state_sweeper(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(STATE_SWEEP_SECS));
+        loop {
+            interval.tick().await;
+            sweep_expired_state(&pool).await;
+        }
+    });
+}
+
+/// One sweep pass over both tables, each in bounded batches. Failures are
+/// logged and swallowed: the next tick tries again, and the rows are inert
+/// until then because every read path checks expiry itself.
+async fn sweep_expired_state(pool: &sqlx::PgPool) {
+    let repo = SsoRepo(pool);
+    let batch = rolter_store::postgres::repo::SSO_SWEEP_BATCH;
+    let mut states = 0;
+    let mut codes = 0;
+    for _ in 0..STATE_SWEEP_MAX_BATCHES {
+        match repo.sweep_login_states(LOGIN_STATE_TTL_SECS, batch).await {
+            Ok(n) => {
+                states += n;
+                if n < batch as u64 {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not sweep expired sso login states");
+                break;
+            }
+        }
+    }
+    for _ in 0..STATE_SWEEP_MAX_BATCHES {
+        match repo.sweep_exchange_codes(batch).await {
+            Ok(n) => {
+                codes += n;
+                if n < batch as u64 {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "could not sweep expired sso exchange codes");
+                break;
+            }
+        }
+    }
+    if states + codes > 0 {
+        tracing::debug!(states, codes, "swept expired sso state");
+    }
 }
 
 #[cfg(test)]

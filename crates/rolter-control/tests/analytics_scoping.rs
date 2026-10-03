@@ -16,6 +16,9 @@
 //! `ROLTER_TEST_CLICKHOUSE_URL`; unset either and the tests self-skip.
 #![cfg(feature = "postgres")]
 
+#[path = "common/clickhouse_ddl.rs"]
+mod clickhouse_ddl;
+
 use std::net::SocketAddr;
 
 use rolter_store::postgres::test_database;
@@ -49,49 +52,8 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply every shipped ClickHouse migration. All of them are idempotent — the
-/// same property `ux-capture.sh apply-schema` relies on — so a shared server
-/// that already has the tables is left as it was.
 async fn ensure_schema(client: &reqwest::Client, base: &str) {
-    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .expect("read the clickhouse migration directory")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            (path.extension()? == "sql").then_some(path)
-        })
-        .collect();
-    files.sort();
-    for path in files {
-        let ddl = std::fs::read_to_string(&path).expect("read shipped DDL");
-        // comments go first, exactly as `ux-capture.sh apply-schema` strips them:
-        // several hold a `;` of their own. then one statement per request, since
-        // the HTTP interface refuses more than one
-        let stripped: String = ddl
-            .lines()
-            .map(|line| line.split("--").next().unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for statement in stripped
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-            .map(str::to_string)
-        {
-            let response = client
-                .post(format!("{base}/"))
-                .body(statement)
-                .send()
-                .await
-                .expect("reach clickhouse");
-            assert!(
-                response.status().is_success(),
-                "{}: {}",
-                path.display(),
-                response.text().await.unwrap_or_default()
-            );
-        }
-    }
+    clickhouse_ddl::apply_schema(client, base).await;
 }
 
 async fn insert_rows(client: &reqwest::Client, base: &str, table: &str, rows: &[Value]) {
@@ -1039,4 +1001,64 @@ async fn requests_sharing_an_id_and_a_millisecond_keep_their_own_bodies() {
         invocation_rows(&http, addr, &victim_member, &ids).await,
         vec![(shared.clone(), victim.clone(), "victim-body".into(), false)]
     );
+}
+
+/// Request-log sampling at 50 % (#2239): two kept rows weigh two requests
+/// each, so counts and sums double while latency percentiles do not.
+#[tokio::test]
+async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    // a model name no other test writes, so a shared server cannot skew it
+    let model = format!("sampled-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let rows: Vec<Value> = [(200, 100), (500, 300)]
+        .iter()
+        .enumerate()
+        .map(|(i, (status, latency))| {
+            json!({
+                "ts": ts, "request_id": format!("sampled-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": status, "latency_ms": latency,
+                "total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6,
+                "cost_usd": 0.5, "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/by-model"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model"] == model.as_str())
+        .expect("the sampled model has a row");
+    assert_eq!(row["requests"].as_f64(), Some(4.0));
+    assert_eq!(row["tokens"].as_f64(), Some(40.0));
+    assert_eq!(row["cost_usd"].as_f64(), Some(2.0));
+    assert_eq!(row["errors"].as_f64(), Some(2.0));
+    // a percentile of a uniform sample is already an estimate: never scaled
+    let p50 = row["p50_latency_ms"].as_f64().unwrap();
+    assert!((100.0..=300.0).contains(&p50), "{p50}");
 }

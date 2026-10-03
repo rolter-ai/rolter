@@ -5,6 +5,7 @@ import * as React from "react";
 import { GatedButton } from "./GatedButton";
 import {
   expectAllowed,
+  expectRefused,
   expectNoUxEvent,
   expectUxEvent,
   Harness,
@@ -196,5 +197,47 @@ export const AllowedRecordsNothing: Story = {
     await expectAllowed(canvasElement, "Add provider");
     await userEvent.click(within(canvasElement).getByRole("button"));
     expectNoUxEvent("refused_click");
+  },
+};
+
+/**
+ * #2005: a disabled button takes no focus, so a reason held only in its `title`
+ * reached the mouse and nothing else. The refused control is wrapped in a
+ * focusable group named by the button and described by the reason, as text.
+ */
+export const RefusedReasonIsReachableByKeyboard: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="viewer">
+      <GatedButton gate="provider:create" control="provider-new">
+        Add provider
+      </GatedButton>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByRole("group", { name: "Add provider" });
+    await userEvent.tab();
+    await expect(group).toHaveFocus();
+    await expect(group).toHaveAccessibleDescription("Requires the Admin role");
+    await expect(canvas.getByText("Requires the Admin role")).toBeInTheDocument();
+    // the control itself stays a real disabled button
+    await expectRefused(canvasElement, "Add provider");
+  },
+};
+
+export const AllowedAddsNoStopToTheTabOrder: Story = {
+  render: () => (
+    <Harness fetchStub={stub} role="admin">
+      <GatedButton gate="provider:create" control="provider-new">
+        Add provider
+      </GatedButton>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Add provider");
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("group")).not.toBeInTheDocument();
+    await userEvent.tab();
+    await expect(canvas.getByRole("button", { name: "Add provider" })).toHaveFocus();
   },
 };
