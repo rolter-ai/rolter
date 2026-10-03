@@ -24,11 +24,19 @@
     "check:waits": "bun scripts/check-story-waits.ts",
     "gen:rbac": "bun scripts/gen-rbac-capabilities.ts"
   },
-  "//overrides": "@storybook/test-runner pulls its own playwright, which asks for a browser revision `playwright install` (resolved from @playwright/test) never downloads. pin both to one version so a single install step serves both. see #737 uuid is pinned to the patched 11.1.1 because @storybook/test-runner reaches it through jest-junit and istanbul-lib-processinfo, which both still ask for ^8.3.2 (dependabot alert #8).",
+  "//overrides": "@storybook/test-runner pulls its own playwright, which asks for a browser revision `playwright install` (resolved from @playwright/test) never downloads. pin both to one version so a single install step serves both. see #737 uuid is pinned to the patched 11.1.1 because @storybook/test-runner reaches it through jest-junit and istanbul-lib-processinfo, which both still ask for ^8.3.2 (dependabot alert #8). The rest answer bun audit advisories on transitive dev tooling (#1931), each held within the range its parent asks for: browserslist GHSA-73wf-gq98-2v4g and GHSA-c83g-rgw3-j3cx, baseline-browser-mapping GHSA-w5vr-8v7q-w6rv (both via @storybook/test-runner and react-docgen's @babel/core), valibot GHSA-5qjj-4xww-7phc (@storybook/addon-mcp), joi GHSA-6w3j-5fw6-r9vr, GHSA-gg4h-3hg2-grpc and GHSA-6h2x-m376-mqjq, and axios GHSA-m8m8-qj5v-23w3 (wait-on under the test runner), js-yaml GHSA-2883-xcg3-v3hh (nyc, a 3.x range), postcss GHSA-fxqj-rqcc-2cmp (the copy @tailwindcss/postcss nests), nanoid GHSA-2v37-7h3g-55p8 (postcss). Drop each once its parent ships the fix itself.",
   "overrides": {
     "playwright": "1.62.0",
     "playwright-core": "1.62.0",
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "browserslist": "^4.29.3",
+    "baseline-browser-mapping": "^2.11.27",
+    "valibot": "^1.5.0",
+    "joi": "^17.13.6",
+    "axios": "^1.20.0",
+    "postcss": "^8.5.28",
+    "nanoid": "^3.3.18",
+    "js-yaml": "^3.15.2"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
