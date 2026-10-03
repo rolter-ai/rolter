@@ -37,7 +37,7 @@ def targets(text):
             if stripped.startswith(fence):
                 fence = None
             continue
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             fence = stripped[:3]
             continue
         line = CODE_SPAN.sub("", line)
