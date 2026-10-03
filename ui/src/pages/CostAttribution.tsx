@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, WalletCards } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -364,12 +365,36 @@ function SpendStrip({
               })
             : undefined
         }
+        hint={
+          unattributed > 0 ? (
+            <Trans
+              i18nKey="pages.costAttribution.spendUnattributedHint"
+              components={[
+                <Link
+                  key="keys"
+                  to="/virtual-keys"
+                  className="underline underline-offset-2 hover:text-foreground"
+                />,
+              ]}
+            />
+          ) : undefined
+        }
       />
     </div>
   );
 }
 
-function SpendFigure({ label, value, note }: { label: string; value: string; note?: string }) {
+function SpendFigure({
+  label,
+  value,
+  note,
+  hint,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  hint?: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
@@ -377,6 +402,7 @@ function SpendFigure({ label, value, note }: { label: string; value: string; not
       </span>
       <span className="font-mono text-lg leading-none text-foreground">{value}</span>
       {note && <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{note}</span>}
+      {hint && <span className="max-w-64 text-[0.6875rem] text-muted-foreground">{hint}</span>}
     </div>
   );
 }
@@ -735,7 +761,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   );
 }
 
-// business units: roll teams up into cost-attributed units (#539, #563)
+// business units: cost-attributed units that keys and customers are assigned to (#539, #563)
 export function BusinessUnits() {
   const { t } = useTranslation();
   const toast = useToast();

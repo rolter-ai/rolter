@@ -816,8 +816,8 @@ export function deleteTeam(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// cost attribution: business units roll teams up, customers attribute spend to
-// the org's own customers. both are retired rather than deleted once they have
+// cost attribution: spend reaches a business unit or customer through the virtual keys assigned to it;
+// customers can also roll up into a unit. both are retired rather than deleted once they have
 // history, so `retired_at` is part of the row, not a separate lookup
 
 export interface BusinessUnitRow {
