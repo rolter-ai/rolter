@@ -773,6 +773,32 @@ workers = 4
 
 ---
 
+### \[security\]
+
+Ingress rules applied to every request on the `/v1/*` surface. A gateway managed by the control plane takes these from the dashboard's Security screen; a file-configured gateway reads them from this section. Both keys are optional and the section adds no rules when omitted.
+
+<ParamField path="required_headers" type="table">
+  Lowercase header name to the exact value every request must carry. A request that is missing one,
+  or carries a different value, is refused with `403` before authentication. This is an ingress
+  filter (a mesh identity header, a WAF marker), not an authorization decision. The `/healthz` and `/readyz`
+  probes are exempt.
+</ParamField>
+
+<ParamField path="auth_bypass_routes" type="array of strings">
+  Exact `/v1/...` paths served without authentication. Matching is exact: no prefixes and no
+  wildcards.
+</ParamField>
+
+```toml
+[security]
+auth_bypass_routes = ["/v1/models"]
+
+[security.required_headers]
+x-mesh-identity = "gateway"
+```
+
+---
+
 ### \[logging\]
 
 Request and cost logs are written asynchronously in batches, off the hot request path. Logging is disabled entirely when `clickhouse_url` is unset. When the internal queue fills, records are dropped and counted rather than blocking request processing.

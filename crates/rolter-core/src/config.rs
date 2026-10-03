@@ -112,7 +112,9 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub client: ClientConfig,
     /// deployment-wide ingress policy owned by the control plane's Security
-    /// screen (#1162); empty for a file-configured gateway
+    /// screen (#1162). A file-configured gateway may set the same two keys
+    /// under `[security]` (`required_headers`, `auth_bypass_routes`) and both
+    /// are enforced; absent, the policy is empty and adds no rules
     #[serde(default)]
     pub security: SecurityPolicyConfig,
     /// inference parameters filled in when a client omits them
