@@ -168,7 +168,7 @@ export function annotations(result: Result): string[] {
 
 function runAudit(cwd: string): AuditReport {
   // bun audit exits 1 when it finds anything, so the exit code says nothing
-  // about whether the audit itself worked; an unparseable stdout does
+  // about whether the audit itself worked; an unparsable stdout does
   const out = Bun.spawnSync(["bun", "audit", "--json"], { cwd, stdout: "pipe", stderr: "pipe" });
   const text = out.stdout.toString();
   try {
