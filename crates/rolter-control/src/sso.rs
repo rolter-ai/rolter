@@ -199,7 +199,13 @@ fn invalid(message: impl Into<String>) -> ApiError {
 /// module's HTTP handlers.
 fn api_error_message(err: ApiError) -> String {
     match err {
-        ApiError::Core(e) => e.to_string(),
+        ApiError::Core(e) => match &e {
+            rolter_core::Error::NotFound(_) | rolter_core::Error::Config(_) => e.to_string(),
+            _ => {
+                tracing::error!(error = %e, "sso error occurred");
+                crate::crud::INTERNAL_ERROR.to_string()
+            }
+        },
         ApiError::Curated(msg)
         | ApiError::Conflict(msg)
         | ApiError::CodedConflict { message: msg, .. }
@@ -2024,5 +2030,22 @@ mod tests {
         )
         .await;
         assert_eq!(listener.accepted(), 1);
+    }
+
+    #[test]
+    fn api_error_message_redacts_store_errors() {
+        let store_err = ApiError::Core(rolter_core::Error::Store(
+            "postgres://user:secret_pass@internal.db:5432/db".into(),
+        ));
+        let message = api_error_message(store_err);
+        assert_eq!(message, crate::crud::INTERNAL_ERROR);
+        assert!(!message.contains("secret_pass"));
+        assert!(!message.contains("internal.db"));
+
+        let config_err = ApiError::Core(rolter_core::Error::Config("invalid client_id".into()));
+        assert_eq!(
+            api_error_message(config_err),
+            "config error: invalid client_id"
+        );
     }
 }
