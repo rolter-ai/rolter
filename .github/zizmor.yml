@@ -1,0 +1,4 @@
+rules:
+  # actionlint rejects the `$/` self-repository syntax (no ref), so `./` stays
+  self-repository:
+    disable: true

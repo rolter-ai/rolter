@@ -145,8 +145,9 @@ test("a missing single event does not condemn the whole page", async ({ page }) 
   await expect(page.getByText("read_file")).toBeVisible();
 
   await page.getByText("read_file").click();
-  // the drawer reports the failure; the table behind it is still there
-  await expect(page.getByText(/event not found/)).toBeVisible();
+  // the drawer reports the missing event (#2514 replaced the raw server
+  // message with its own panel); the table behind it is still there
+  await expect(page.getByText(t("pages.mcpLogs.notFoundTitle"))).toBeVisible();
   await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
   await expect(page.getByText("read_file")).toBeVisible();
 });

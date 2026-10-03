@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../clickhouse/001_logs.sql).
+PostgreSQL is the source of truth. The initial schema lives in [`migrations/0001_init.sql`](../../../crates/rolter-store/migrations/0001_init.sql); ClickHouse log schema in [`clickhouse/001_logs.sql`](../../../clickhouse/001_logs.sql).
 
 ## Tenancy
 
@@ -46,7 +46,7 @@ The RBAC tables are split on exactly this question. `access_profile_policies`, `
 
 `users.display_name` (1 to 80 characters) and `users.bio` (up to 500) are an optional self-service profile (`0079`, #1823), bounded by check constraints as well as by the API. The data plane never reads them and no trigger watches them: the `users` trigger fires only on `deactivated_at` and `is_superadmin`, and a profile write (`UserRepo::set_profile`) touches neither.
 
-`user_preferences` (`0080`, #1824) holds one `jsonb` object per user (`user_id` primary key, `on delete cascade`), written by `PUT /api/v1/me/preferences`. It is a table of its own rather than a column on `users` so the row the auth path reads on every request stays lean, and `prefs` is schemaless (an object, enforced by a check) because the API validates every key and a new preference then needs no migration. The data plane never reads it, so it has no `bump_config_version()` trigger. `effective_default_scope` is computed per `GET` from the caller's live memberships and custom roles (`ScopeFilter`), never stored.
+`user_preferences` (`0080`, #1824) holds one `jsonb` object per user (`user_id` primary key, `on delete cascade`), written by `PUT /api/v1/me/preferences`. It is a table of its own rather than a column on `users` so the row the auth path reads on every request stays lean, and `prefs` is schemaless (an object, enforced by a check) because the API validates every key and a new preference then needs no migration. The data plane never reads it, so it has no `bump_config_version()` trigger. `effective_default_scope` is computed per `GET` from the caller's live memberships and custom roles (`ScopeFilter`), never stored. That computation is a known cost, not yet optimised: it issues a query per stored id and per scope on every `GET` rather than one batched lookup, which is fine at dashboard load rates and is the place to look if `GET /api/v1/me/preferences` ever shows up in profiles (#2449). `chart_time_zone` is validated against the IANA database through `chrono-tz` (default features off) so an unknown zone such as `Foo/Bar` is refused at write time, and the `LANGUAGES` list in `me.rs` is guarded by a test that compares it with the catalogs in `ui/src/lib/i18n/locales/`, so adding a locale without the code (or the reverse) fails CI.
 
 `saved_views` (`0081`, #1825) holds a user's named filter presets for the LLM Logs and Dashboard screens: `user_id` (`on delete cascade`), `surface` (`llm_logs` or `dashboard`, a check), `name` (trimmed, 1 to 80), `filters` (a `jsonb` object, a check), unique on `(user_id, surface, lower(name))`. It is a table of its own rather than a key inside `user_preferences.prefs` because that document is replaced whole by every `PUT` (a stale tab would clobber the list), and a name cannot be unique, counted for the 50-per-surface cap or indexed inside it. The API allow-lists the keys of `filters` per surface, so the column holds no arbitrary params. Every `SavedViewRepo` query is keyed by `user_id`, so another account's preset is indistinguishable from a missing one. The data plane never reads it, so it has no `bump_config_version()` trigger. `unavailable` and `effective_filters` are computed per read through `ScopeFilter` and never stored.
 
@@ -87,7 +87,7 @@ Neither carries a `bump_config_version()` trigger, and neither may grow one: the
 
 PostgreSQL holds configuration; ClickHouse holds the high-volume append-only
 streams, all partitioned by day with a 90-day TTL and written in batches off the
-hot path. Schema lives in [`clickhouse/`](../../clickhouse/), applied by the
+hot path. Schema lives in [`clickhouse/`](../../../clickhouse/), applied by the
 container's init directory:
 
 - `request_logs` — one row per proxied request, with cost and token counts.

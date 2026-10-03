@@ -2,8 +2,8 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
+import { CopyableText } from "@/components/ui/copyable-value";
 import {
   Dialog,
   DialogDescription,
@@ -30,7 +30,8 @@ import { cn } from "@/lib/utils";
 // - `SecretRevealDialog`: a dialog made of the two, with a slot for the next step
 
 /**
- * The value, selectable in one gesture, beside a button that copies it.
+ * The value, selectable in one gesture, beside a button that copies it: the
+ * box is `CopyableText`'s, which a value that can be copied again shares.
  *
  * A failed copy stays on screen as a line under the value that says the copy
  * did not work and offers to select it (#2327); a tooltip and an icon that
@@ -95,33 +96,24 @@ export function SecretValue({
       className={cn("flex min-w-0 flex-col gap-1.5", className)}
     >
       {label && <FieldLabel id={labelId} label={label} />}
-      <div className="flex items-start justify-between gap-2 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] py-1.5 pl-3 pr-1.5">
-        {/* mono and wrapping rather than truncated: a key is checked by its
-            end. `select-all` makes one click take the whole value */}
-        <code
-          ref={code}
-          data-testid={testId}
-          className="min-w-0 select-all break-all py-1 font-mono text-sm text-foreground"
-        >
-          {value}
-        </code>
-        <CopyButton
-          value={value}
-          label={copyLabel}
-          persistFailure
-          onStateChange={(state) => {
-            if (state === "copied") {
-              setOutcome(null);
-              copied.current();
-            } else if (state === "failed") {
-              setOutcome("failed");
-              selectValue();
-            } else {
-              setOutcome((current) => (current === "failed" ? null : current));
-            }
-          }}
-        />
-      </div>
+      <CopyableText
+        ref={code}
+        value={value}
+        copyLabel={copyLabel}
+        testId={testId}
+        persistFailure
+        onCopyStateChange={(state) => {
+          if (state === "copied") {
+            setOutcome(null);
+            copied.current();
+          } else if (state === "failed") {
+            setOutcome("failed");
+            selectValue();
+          } else {
+            setOutcome((current) => (current === "failed" ? null : current));
+          }
+        }}
+      />
       {outcome === "failed" && (
         <div
           role="alert"
