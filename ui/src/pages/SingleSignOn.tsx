@@ -14,7 +14,6 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { CopyButton } from "@/components/CopyButton";
 import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
@@ -24,7 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
-import { CopyableValue } from "@/components/ui/copyable-value";
+import { CopyableText, CopyableValue } from "@/components/ui/copyable-value";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -64,28 +63,27 @@ import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
-import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
 
-// a labelled line inside a provider card: mono value, optionally copyable. an
-// address wraps instead of truncating, because the end of it is what tells the
-// redirect uri from the login url; `note` says what the value is for
+// a labelled line inside a provider card: mono value, optionally copyable. a
+// copyable address is `CopyableText` and wraps, because the end of it is what
+// tells the redirect uri from the login url. every other value is one truncated
+// line, so a long issuer or scope list does not stretch the card; `note` says
+// what the value is for
 function Detail({
   label,
   value,
   copyLabel,
   note,
-  wrap = false,
 }: {
   label: string;
   value: string;
   copyLabel?: string;
   note?: string;
-  wrap?: boolean;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-2">
@@ -93,19 +91,23 @@ function Detail({
         {label}
       </span>
       <div className="min-w-0 flex-1">
-        <span
-          className={cn(
-            "block font-mono text-xs leading-4 text-[color:var(--text-secondary)]",
-            wrap ? "break-all" : "truncate",
-          )}
-        >
-          {value}
-        </span>
+        {copyLabel ? (
+          <CopyableText
+            variant="inline"
+            value={value}
+            copyLabel={copyLabel}
+            className="text-xs leading-4"
+          />
+        ) : (
+          <span
+            title={value}
+            className="block truncate font-mono text-xs leading-4 text-[color:var(--text-secondary)]"
+          >
+            {value}
+          </span>
+        )}
         {note && <span className="mt-0.5 block text-xs text-muted-foreground">{note}</span>}
       </div>
-      {/* centred on the value's first line, so a copyable row keeps the same
-          rhythm as the rows around it */}
-      {copyLabel && <CopyButton value={value} label={copyLabel} className="-my-2" />}
     </div>
   );
 }
@@ -148,7 +150,7 @@ function PublicUrlNotice({ publicUrl }: { publicUrl: PublicUrl }) {
     <WarningNote title={t("pages.sso.publicUrl.title")}>
       <p className="text-muted-foreground">
         <Trans
-          i18nKey="pages.sso.publicUrl.body"
+          i18nKey="common.publicUrl.unset"
           values={{ url: publicUrl.public_url }}
           components={{ code: <code className="font-mono text-xs text-foreground" /> }}
         />
@@ -827,14 +829,12 @@ function ProviderCard({
           value={provider.redirect_uri}
           copyLabel={t("pages.sso.providers.copyRedirectUri")}
           note={t("pages.sso.providers.redirectUriNote")}
-          wrap
         />
         <Detail
           label={t("pages.sso.providers.startUrl")}
           value={provider.login_url}
           copyLabel={t("pages.sso.providers.copyStartUrl")}
           note={t("pages.sso.providers.startUrlNote")}
-          wrap
         />
         <Detail label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
         <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
@@ -1024,7 +1024,7 @@ function ProviderSheet({
     !provider && publicUrlFailed
       ? "pages.sso.create.redirectUriUnknown"
       : publicUrl?.configured === false
-        ? "pages.sso.create.redirectUriDefault"
+        ? "common.publicUrl.unset"
         : null;
 
   return (
