@@ -1475,7 +1475,7 @@
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
         "secretReplaceHint": "Saving replaces the stored secret with this one.",
-        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new endpoint's secret to keep it authenticated.",
         "start": "Start sending as soon as it is created",
         "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
         "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."

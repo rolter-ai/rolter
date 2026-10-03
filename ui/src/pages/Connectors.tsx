@@ -724,8 +724,8 @@ function ConnectorSheet({
     : !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100" || startNow);
 
   // what happens to the stored secret on save, said beside the field that
-  // decides it. the control plane keeps it when the endpoint moves, so the
-  // hint says where it would go rather than promising it is dropped
+  // decides it. the control plane drops it when the endpoint moves to another
+  // origin unless a new one is typed
   const secretHint = !existing
     ? undefined
     : !existing.auth_secret_configured
