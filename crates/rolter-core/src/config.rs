@@ -557,6 +557,12 @@ fn default_metrics_path() -> String {
 /// by a test in `rolter-control`. `stdio` is deliberately absent: it names a
 /// local subprocess, which a hosted control plane cannot dial and the gateway's
 /// HTTP proxy path has never served.
+///
+/// `websocket` is accepted although the gateway has no proxy path for it: it
+/// stays valid for registry rows already stored under the check constraints and
+/// for external producers posting tool-call events, so dropping it would orphan
+/// stored data (#2432). The `/mcp/{server}` proxy rejects it with
+/// `mcp_transport_unsupported`, so the gateway itself never writes such a row.
 pub const MCP_TRANSPORTS: &[&str] = &["sse", "streamable_http", "websocket"];
 
 /// Gateway request paths reserved by the built-in routes; the metrics path must
