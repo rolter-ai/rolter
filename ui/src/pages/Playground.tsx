@@ -67,6 +67,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
+import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -313,22 +314,6 @@ function usePlaygroundKeyState(): PlaygroundKeyState {
 }
 
 /**
- * The current time, re-read every `intervalMs`.
- *
- * A minted key is good for half an hour, so "expires in 29 min" has to count
- * down on its own — a countdown that only moves when something else re-renders
- * is how a key reads as live several minutes after it stopped working.
- */
-function useNow(intervalMs = 15_000): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
-/**
  * Whether a minted key has run out, flipped by a timer at the instant it does.
  *
  * Kept apart from `useNow` so the screen as a whole re-renders once, at the
@@ -571,7 +556,8 @@ function SessionKeyBar({
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const now = useNow();
+  // a minted key is good for half an hour, so "expires in 29 min" has to count down on its own
+  const now = useNow(15_000);
   const can = useCan();
   const { state, expired, mint, pending, projectId } = session;
   const message = keyMessage(session, { rejected, keyless });

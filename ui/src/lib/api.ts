@@ -816,8 +816,8 @@ export function deleteTeam(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// cost attribution: business units roll teams up, customers attribute spend to
-// the org's own customers. both are retired rather than deleted once they have
+// cost attribution: spend reaches a business unit or customer through the virtual keys assigned to it;
+// customers can also roll up into a unit. both are retired rather than deleted once they have
 // history, so `retired_at` is part of the row, not a separate lookup
 
 export interface BusinessUnitRow {
@@ -827,6 +827,13 @@ export interface BusinessUnitRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /**
+   * Virtual keys attributed to this unit that are live: not disabled and not
+   * past their expiry (#2581). Only the org-wide listing carries it; a create
+   * or update answer, or a control plane older than the field, leaves it out,
+   * so absent means "not known" rather than zero.
+   */
+  live_key_count?: number;
 }
 
 export interface CustomerRow {
@@ -837,6 +844,8 @@ export interface CustomerRow {
   slug: string;
   retired_at: string | null;
   created_at: string;
+  /** live virtual keys attributed to this customer; see `BusinessUnitRow` */
+  live_key_count?: number;
 }
 
 // ---------------------------------------------------------------------------

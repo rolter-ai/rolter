@@ -207,6 +207,10 @@ impl BatchWriter {
         let mut stopping = false;
         loop {
             tokio::select! {
+                // stop first: with a backlog both arms are ready and an
+                // unbiased pick keeps taking from an open queue, so a send
+                // racing the drain would be written instead of counted dropped
+                biased;
                 // shutdown: closing the receiver keeps what is queued readable
                 // and then yields `None`, so the arm below flushes it all
                 _ = stop.cancelled(), if !stopping => {

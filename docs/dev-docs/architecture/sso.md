@@ -261,7 +261,7 @@ the one place its query key and options are written, so they share one request.
 
 Unit and Postgres-gated integration tests drive a stub IdP in-process, which
 covers rolter's own logic. Interoperability is a separate question, so the
-[e2e harness](../../integration/e2e/README.md) runs the same flows against a
+[e2e harness](../../../integration/e2e/README.md) runs the same flows against a
 real Keycloak — genuine discovery document, real JWKS, real login form, real
 `/`-prefixed realm groups:
 

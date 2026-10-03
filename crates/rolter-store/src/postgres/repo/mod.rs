@@ -32,13 +32,14 @@ use rolter_core::{Error, Result};
 use super::models::{
     AccessProfile, AccessProfileAssignment, AccessProfilePolicy, AccessProfileRole,
     AdaptiveRoutingPolicy, AdaptiveRoutingTelemetry, AuditLogEntry, Budget, BusinessUnit,
-    ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole, CustomRoleGrant, Customer,
-    EffectiveGrant, FeatureFlags, Invitation, LoggingSettings, Membership, MfaPolicyBinding,
-    ModelDefaults, ModelPrice, Org, OrgAuthPolicy, OrgProject, OwnedVirtualKey, PluginInstance,
-    Project, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup,
-    ProviderGroupMember, RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping,
-    ScimIdentity, ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode,
-    SsoGroupMapping, SsoLoginState, SsoProvider, Team, User, VirtualKey,
+    BusinessUnitListing, ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole,
+    CustomRoleGrant, Customer, CustomerListing, EffectiveGrant, FeatureFlags, Invitation,
+    LoggingSettings, Membership, MfaPolicyBinding, ModelDefaults, ModelPrice, Org, OrgAuthPolicy,
+    OrgProject, OwnedVirtualKey, PluginInstance, Project, PromptTemplate, PromptTemplateScope,
+    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
+    RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity, ScimToken,
+    SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode, SsoGroupMapping,
+    SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
@@ -534,6 +535,32 @@ impl BusinessUnitRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The org's business units with the count of live virtual keys
+    /// attributed to each, in one query: a grouped count joined onto the
+    /// units rather than one count per unit.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<BusinessUnitListing>> {
+        sqlx::query_as(
+            "select bu.id, bu.org_id, bu.name, bu.slug, bu.retired_at, bu.created_at,
+                    coalesce(k.live_key_count, 0) as live_key_count
+             from business_units bu
+             left join (
+                 select vk.business_unit_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join business_units owner on owner.id = vk.business_unit_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.business_unit_id
+             ) k on k.business_unit_id = bu.id
+             where bu.org_id = $1
+             order by bu.name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<BusinessUnit> {
         sqlx::query_as(
             "select id, org_id, name, slug, retired_at, created_at
@@ -606,6 +633,32 @@ impl CustomerRepo<'_> {
         sqlx::query_as(
             "select id, org_id, business_unit_id, name, slug, retired_at, created_at
              from customers where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The org's customers with the count of live virtual keys attributed to
+    /// each, in one query: a grouped count joined onto the customers rather
+    /// than one count per customer.
+    pub async fn list_with_key_counts(&self, org_id: Uuid) -> Result<Vec<CustomerListing>> {
+        sqlx::query_as(
+            "select c.id, c.org_id, c.business_unit_id, c.name, c.slug, c.retired_at,
+                    c.created_at, coalesce(k.live_key_count, 0) as live_key_count
+             from customers c
+             left join (
+                 select vk.customer_id, count(*) as live_key_count
+                 from virtual_keys vk
+                 join customers owner on owner.id = vk.customer_id
+                 where owner.org_id = $1
+                   and not vk.disabled
+                   and (vk.expires_at is null or vk.expires_at > now())
+                 group by vk.customer_id
+             ) k on k.customer_id = c.id
+             where c.org_id = $1
+             order by c.name",
         )
         .bind(org_id)
         .fetch_all(self.0)
@@ -1246,6 +1299,18 @@ impl SkillRepo<'_> {
     }
 }
 
+/// What [`ProviderRepo::delete`] did with a provider that exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum ProviderDeletion {
+    /// The provider is gone.
+    Deleted,
+    /// The provider was left in place because something still uses it. Each
+    /// entry names one referrer for the refusal, as `route '<model>'` or
+    /// `provider group '<slug>'`, routes first.
+    InUse(Vec<String>),
+}
+
 /// Upstream providers, scoped to an org.
 pub struct ProviderRepo<'a>(pub &'a PgPool);
 
@@ -1488,16 +1553,67 @@ impl ProviderRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("provider {id}")))
     }
 
-    pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from providers where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
+    /// Delete provider `id` unless a route target or a provider-group member
+    /// still references it (#2438).
+    ///
+    /// Both references are `on delete restrict`, so the database would refuse
+    /// anyway, but only with a foreign-key error that names nothing the caller
+    /// can act on. The check and the delete share one transaction that holds
+    /// the provider row `for update`: inserting a target or a member takes a
+    /// `for key share` lock on the provider it references, which conflicts
+    /// with that, so no reference can land between the check and the delete.
+    pub async fn delete(&self, id: Uuid) -> Result<ProviderDeletion> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let found: Option<Uuid> =
+            sqlx::query_scalar("select id from providers where id = $1 for update")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(store_err)?;
+        if found.is_none() {
             return Err(Error::NotFound(format!("provider {id}")));
         }
-        Ok(())
+        let routes: Vec<String> = sqlx::query_scalar(
+            "select distinct r.model from route_targets rt
+             join routes r on r.id = rt.route_id
+             where rt.provider_id = $1
+             order by r.model",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let groups: Vec<String> = sqlx::query_scalar(
+            "select g.slug from provider_group_members m
+             join provider_groups g on g.id = m.group_id
+             where m.provider_id = $1
+             order by g.slug",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if !routes.is_empty() || !groups.is_empty() {
+            // nothing was written, so dropping the transaction just releases the lock
+            return Ok(ProviderDeletion::InUse(
+                routes
+                    .into_iter()
+                    .map(|model| format!("route '{model}'"))
+                    .chain(
+                        groups
+                            .into_iter()
+                            .map(|slug| format!("provider group '{slug}'")),
+                    )
+                    .collect(),
+            ));
+        }
+        sqlx::query("delete from providers where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(ProviderDeletion::Deleted)
     }
 }
 
@@ -1511,6 +1627,18 @@ pub enum LockoutGuard<T> {
     /// (password sign-in is off and no enabled sso provider would remain), or
     /// no active superadmin account
     WouldLockOut,
+}
+
+/// Outcome of [`UserRepo::set_deactivated_guarding_org_admins`]: the
+/// deactivation went through, or it is refused because the account is the last
+/// active superadmin (#2344) or holds the last active org-scoped `admin` grant
+/// of the named org (#2558).
+#[derive(Debug, Clone)]
+pub enum DeactivationGuard {
+    Done(User),
+    LastSuperadmin,
+    /// the org the account is the last active admin of
+    LastOrgAdmin(Uuid),
 }
 
 /// Serialise every write that decides whether an org keeps a sign-in method.
@@ -3404,6 +3532,75 @@ impl UserRepo<'_> {
             .await
     }
 
+    /// flip the deactivation flag like [`Self::set_deactivated`], and also
+    /// refuse to deactivate an account that holds an org's last org-scoped
+    /// `admin` grant among active accounts (#2558).
+    ///
+    /// Used where the caller is not a superadmin who could repair the org
+    /// afterwards: SCIM deprovisioning and `active: false`. The account is
+    /// global, so every org it administers is checked, not only the one the
+    /// caller is scoped to. Each org is counted under the same per-org advisory
+    /// lock `MembershipRepo::delete_guarded` takes, in ascending org order so
+    /// two deactivations cannot deadlock, all in the update's transaction: a
+    /// concurrent revoke or deactivation of the org's other admin waits and
+    /// then counts this one.
+    pub async fn set_deactivated_guarding_org_admins(
+        &self,
+        id: Uuid,
+        deactivated: bool,
+    ) -> Result<DeactivationGuard> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if deactivated {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(DeactivationGuard::LastSuperadmin);
+            }
+            let orgs: Vec<Uuid> = sqlx::query_scalar(
+                "select distinct m.org_id from memberships m join users u on u.id = m.user_id
+                 where m.user_id = $1 and m.role = 'admin' and m.org_id is not null
+                   and u.deactivated_at is null
+                 order by m.org_id",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            for org in orgs {
+                lock_org_admins(&mut tx, org).await?;
+                let others: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.user_id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if !others {
+                    return Ok(DeactivationGuard::LastOrgAdmin(org));
+                }
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
+            "update users set
+                 deactivated_at = case when $2 then coalesce(deactivated_at, now()) else null end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
+        )
+        .bind(id)
+        .bind(deactivated)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(DeactivationGuard::Done(user))
+    }
+
     /// set the self-service profile. each `Some(x)` replaces the column with `x`
     /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
     /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
@@ -3465,6 +3662,20 @@ impl UserRepo<'_> {
 /// first one's commit. Writes that only grow the set never take it.
 async fn lock_superadmins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query("select pg_advisory_xact_lock(hashtextextended('superadmins', 0))")
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Serialise every write that can shrink the set of active admins of `org`
+/// (#2311, #2558): a revoked org-scoped `admin` grant, or a deactivated account
+/// holding one. Like [`lock_superadmins`], one advisory lock per org held to
+/// the end of the transaction, so the second of two concurrent writers counts
+/// the first one's commit.
+async fn lock_org_admins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, org: Uuid) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))")
+        .bind(org)
         .execute(&mut **tx)
         .await
         .map_err(store_err)?;
@@ -3654,13 +3865,7 @@ impl MembershipRepo<'_> {
             .map_err(store_err)?
             .flatten();
             if let Some(org) = org {
-                sqlx::query(
-                    "select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))",
-                )
-                .bind(org)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_err)?;
+                lock_org_admins(&mut tx, org).await?;
                 // read again under the lock: a concurrent revoke may have
                 // committed while this one waited
                 let last: bool = sqlx::query_scalar(

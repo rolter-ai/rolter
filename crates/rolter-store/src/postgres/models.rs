@@ -68,6 +68,33 @@ pub struct Customer {
     pub created_at: DateTime<Utc>,
 }
 
+/// A business unit as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it.
+///
+/// A unit that shows no spend may simply have no key pointing at it, and the
+/// dashboard cannot tell those apart from the row alone (#2581). The count
+/// rides along with the row, flattened beside its columns, so the listing
+/// answers it in the same query rather than one request per unit. A key is
+/// live while it is neither disabled nor past its `expires_at`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BusinessUnitListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub unit: BusinessUnit,
+    pub live_key_count: i64,
+}
+
+/// A customer as its org-wide listing returns it, with the number of live
+/// virtual keys attributed to it. See [`BusinessUnitListing`] for why the
+/// count is part of the listing and what counts as live.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct CustomerListing {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub customer: Customer,
+    pub live_key_count: i64,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct PromptTemplate {
     pub id: Uuid,
