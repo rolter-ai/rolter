@@ -99,14 +99,23 @@ export const BlockNeedsATimeout: Story = {
     // the block timeout only applies to block mode, so it starts disabled
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
     await pickOption(mode, "block");
-    await waitFor(() =>
-      expect(canvas.getByText("Block backpressure needs a non-zero block timeout.")).toBeVisible(),
+    const block = canvas.getByLabelText("Block timeout (ms)");
+    await waitFor(() => expect(block).toHaveAttribute("aria-invalid", "true"));
+    await expect(block).toHaveAccessibleDescription(
+      "Block backpressure needs a non-zero block timeout.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     // giving it a timeout clears the block
     await userEvent.clear(canvas.getByLabelText("Block timeout (ms)"));
     await userEvent.type(canvas.getByLabelText("Block timeout (ms)"), "500");
-    await waitFor(() => expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled());
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+        "aria-disabled",
+      ),
+    );
   },
 };
 
@@ -121,12 +130,20 @@ export const QueueOffIgnoresAnOutOfRangeCapacity: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByLabelText("Capacity")).toBeDisabled());
     await expect(canvas.queryByText(/Queue capacity must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByLabelText("Capacity")).not.toHaveAttribute("aria-invalid");
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled(),
+      expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      ),
     );
-    await expect(canvas.getByText(/Queue capacity must be/)).toBeVisible();
+    await expect(canvas.getByLabelText("Capacity")).toHaveAccessibleDescription(
+      /Queue capacity must be/,
+    );
   },
 };
 
@@ -139,10 +156,19 @@ export const BlockTimeoutIgnoredOutsideBlockMode: Story = {
     const mode = await canvas.findByLabelText("When the queue is full");
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
     await expect(canvas.queryByText(/Block timeout must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     await pickOption(mode, "block");
-    await waitFor(() => expect(canvas.getByText(/Block timeout must be/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await waitFor(() =>
+      expect(canvas.getByLabelText("Block timeout (ms)")).toHaveAccessibleDescription(
+        /Block timeout must be/,
+      ),
+    );
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -161,7 +187,7 @@ export const SwitchingTheQueueOffKeepsTheStoredValue: Story = {
     await userEvent.type(capacity, "0");
     await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
     const save = canvas.getByRole("button", { name: "Save Changes" });
-    await expect(save).toBeEnabled();
+    await expect(save).not.toHaveAttribute("aria-disabled");
     await userEvent.click(save);
     const body = await switchingOff.expectSentBody<RuntimePolicyDto>("PUT", "runtime-policy");
     await expect(body.queue_enabled).toBe(false);
@@ -177,10 +203,61 @@ export const RetryCapCannotBeBelowBase: Story = {
     const cap = await canvas.findByLabelText("Backoff cap (ms)");
     await userEvent.clear(cap);
     await userEvent.type(cap, "10");
-    await waitFor(() =>
-      expect(canvas.getByText("Retry cap cannot be lower than the retry base.")).toBeVisible(),
+    await waitFor(() => expect(cap).toHaveAttribute("aria-invalid", "true"));
+    await expect(cap).toHaveAccessibleDescription("Retry cap cannot be lower than the retry base.");
+    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+  },
+};
+
+// every failing field is marked at once, each with its own message, and a
+// press on Save moves focus to the first one instead of doing nothing (#2651)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const retries = await canvas.findByLabelText("Max retries");
+    const workers = canvas.getByLabelText("Workers");
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "11");
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "0");
+    await waitFor(() => {
+      expect(retries).toHaveAttribute("aria-invalid", "true");
+      expect(workers).toHaveAttribute("aria-invalid", "true");
+    });
+    await expect(retries).toHaveAccessibleDescription("Max retries must be between 0 and 10.");
+    await expect(workers).toHaveAccessibleDescription("Queue workers must be between 1 and 2048.");
+    await expect(canvas.getByText("2 fields need attention")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await expect(retries).toHaveFocus();
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: { message: "timeout_request_s must be between 0 and 3600" } }, 400);
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const request = await canvas.findByLabelText("Request (s)");
+    await userEvent.clear(request);
+    await userEvent.type(request, "60");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(request).toHaveAttribute("aria-invalid", "true"));
+    await expect(request).toHaveAccessibleDescription(
+      "timeout_request_s must be between 0 and 3600",
+    );
+    await waitFor(() => expect(request).toHaveFocus());
   },
 };
 
