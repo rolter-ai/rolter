@@ -55,8 +55,9 @@ often queueing minutes to get one (#2025). As steps they cost no extra runner,
 and a title or body edit starts one job instead of three. The price is when
 title feedback arrives. On a run a commit started (`opened`, `synchronize`,
 `reopened`), `pr-title` now runs only after `quality` and `codeql` finish,
-about eight minutes in, rather than within seconds. An `edited` run skips
-both, so a title fix made after the gate is still checked within seconds.
+about eight minutes in, rather than within seconds. A title or body `edited` run skips
+`quality` and `codeql`, so its `pr-title` and body steps start at once and a
+title fix made after the gate is still checked within seconds.
 The action fetches the title live rather than reading it from the payload, so
 a title fixed while the gate is still running is the one that step validates.
 The body step does the same on a pull request (see
@@ -76,7 +77,9 @@ The heavy jobs are skipped on a title or body edit: a title lives in GitHub's
 database, not in the tree, so no test result can change because of it. The tree
 that was gated is the same tree. That is only true of a _metadata-only_ edit,
 which is why the guard on `quality`, `codeql` and `gate-ok` reads
-`changes.base` as well as the action (see the next section).
+`changes.base` as well as the action (see the next section). It is scoped to
+the `pull_request` event for the reason given in
+[the merge queue](#a-merge-group-ref-must-never-take-the-fast-path).
 
 ## A retarget is not a metadata edit (#2031)
 
