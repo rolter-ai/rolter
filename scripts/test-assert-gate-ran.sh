@@ -116,6 +116,8 @@ for job in quality codeql gate-ok; do
 done
 static_check "the fast path runs on a metadata-only edit and nothing else" \
   "if: \${{ !cancelled() && $metadata_only }}"
+# the literal ${METADATA_ONLY} below is the workflow text being matched
+# shellcheck disable=SC2016
 if ! grep -qF "METADATA_ONLY: \${{ $metadata_only }}" "$workflow" ||
   ! grep -qF 'if [ "${METADATA_ONLY}" = "true" ]; then' "$workflow"; then
   echo "FAIL [workflow wiring] ci-ok's verdict must branch on METADATA_ONLY, or it judges a retarget as a metadata edit" >&2
