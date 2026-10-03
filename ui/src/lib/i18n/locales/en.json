@@ -2242,7 +2242,7 @@
         },
         "ssoConfirm": {
           "title": "Turn off single sign-on?",
-          "body": "While it is off, every sign-in through this organization's identity providers is refused. The providers, their secrets and group mappings stay, so turning it back on restores sign-in.",
+          "body": "While it is off, this organization's provider buttons disappear from the sign-in screen and new sign-ins through its identity providers are refused at once, as are any already under way when they return from the provider. The providers, their secrets and group mappings stay, so turning it back on restores the buttons and sign-in.",
           "confirm": "Turn it off",
           "notice": {
             "title": "Members who only sign in through a provider would be locked out",
