@@ -119,6 +119,7 @@ function ProviderUsageNotice({
           <Skeleton height={44} radius={8} />
         </LoadingRegion>
       ) : failed ? (
+        // load-error-allow: which routes use a provider, inside its sheet; the providers list pairs as providers
         <LoadError
           error={failed}
           resource={t("pages.providers.usage.resource")}

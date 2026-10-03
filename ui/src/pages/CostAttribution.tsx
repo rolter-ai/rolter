@@ -312,6 +312,7 @@ function SpendStrip({
   }
   if (error) {
     return (
+      // load-error-allow: the spend figures beside the governance list, which pairs as cost-attribution; the figures have no empty state of their own
       <LoadError
         error={error}
         resource={t("errors.resources.attributionSpend")}

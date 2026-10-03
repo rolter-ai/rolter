@@ -349,6 +349,7 @@ function RouteTargets({
   }
   if (state.kind === "failed") {
     return (
+      // load-error-allow: one route's expanded target breakdown; the routes list pairs as routes
       <LoadError
         error={state.error}
         resource={t("errors.resources.routeTargets")}

@@ -149,6 +149,7 @@ export default function ComplexityRouter() {
           {/* one alert for the group rather than one per route: it is the same
               endpoint failing every time, and the routes it covers are named
               underneath. retry re-runs exactly the reads that failed */}
+          {/* load-error-allow: one alert for the per-route policy reads beside the route list, which pairs as complexity-routes; no list of its own */}
           <LoadError
             error={failed[0].error}
             resource={t("errors.resources.complexityPolicies")}
@@ -369,6 +370,7 @@ function PolicyDialog({
           replaced a policy nobody had seen (#1461) */}
       {existing.isPending && <FormSkeleton fields={3} />}
       {existing.error && (
+        // load-error-allow: the editor sheet's seed read; it is one policy, not a list
         <LoadError
           error={existing.error}
           resource={translate("errors.resources.complexityPolicy")}

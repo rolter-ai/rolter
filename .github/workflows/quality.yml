@@ -1325,6 +1325,15 @@ jobs:
         id: waits
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:waits
+      # the dead-states query pairs a list's error state with its empty state by
+      # region name, and #2444 renamed sixteen alerts that had drifted to a name
+      # of their own by hand. a `LoadError` whose `target` names no `EmptyState`
+      # `uxTarget` in its file fails here; a region with no empty state carries
+      # a `load-error-allow:` waiver with its reason (#2641)
+      - name: load error targets pair with an empty state
+        id: load-error-targets
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run check:load-error-targets
       # an override wins over the dependency range, so a bump of
       # @playwright/test that skips `overrides.playwright` installs nothing new
       # (#2028)
@@ -1393,6 +1402,7 @@ jobs:
           OUTCOME_PRIMITIVES: ${{ steps.primitives.outcome }}
           OUTCOME_FOCUS: ${{ steps.focus.outcome }}
           OUTCOME_WAITS: ${{ steps.waits.outcome }}
+          OUTCOME_LOAD_ERROR_TARGETS: ${{ steps.load-error-targets.outcome }}
           OUTCOME_PLAYWRIGHT_PIN: ${{ steps.playwright-pin.outcome }}
           OUTCOME_UNIT: ${{ steps.unit.outcome }}
           OUTCOME_BUILD: ${{ steps.build.outcome }}
@@ -1444,6 +1454,7 @@ jobs:
           row "${ui}" "no hand-rolled shared components" "${OUTCOME_PRIMITIVES}" "cd ui && bun run check:primitives"
           row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
           row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
+          row "${ui}" "load error targets pair with an empty state" "${OUTCOME_LOAD_ERROR_TARGETS}" "cd ui && bun run check:load-error-targets"
           row "${ui}" "playwright pin matches @playwright/test" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
           row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
           row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
