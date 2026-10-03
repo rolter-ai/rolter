@@ -27,6 +27,7 @@ import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/li
 import { logout, ROLES, type MeMembership } from "@/lib/api";
 import { useAuth, type SessionUser } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
+import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import {
@@ -227,7 +228,7 @@ function MenuRow({
  * is named by its membership role in the org currently in scope. Before #1196
  * every session read "Admin", including the ones that were not.
  */
-function roleLabel(
+function accountRoleLabel(
   t: TFunction,
   user: SessionUser | null,
   memberships: MeMembership[],
@@ -238,7 +239,7 @@ function roleLabel(
     // an unknown role string from a newer control plane has no label here, so
     // it falls through rather than rendering a raw key
     if (membership && (ROLES as readonly string[]).includes(membership.role)) {
-      return t(`shell.roles.${membership.role}`);
+      return roleLabel(t, membership.role);
     }
   }
   return t("shell.role");
@@ -417,7 +418,7 @@ function Shell() {
   const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const visible = visibleNav(can);
   const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
-  const roleName = roleLabel(t, user, memberships, scope.orgId);
+  const roleName = accountRoleLabel(t, user, memberships, scope.orgId);
   const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
   // the name the account goes by, else its email (#2434)
   const shownName = user?.display_name?.trim() || email;

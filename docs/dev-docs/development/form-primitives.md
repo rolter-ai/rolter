@@ -21,6 +21,7 @@ stories are grouped under **Forms/** in Storybook.
 | `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                       |
 | `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                    |
 | `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block               |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note      |
 
 ## Which one to reach for
 
@@ -43,6 +44,14 @@ stories are grouped under **Forms/** in Storybook.
   bordered surface with `CardHeader` / `CardTitle` / `CardDescription` /
   `CardContent` parts you compose yourself; `SettingsPanel` is the settings
   shape — title, one explanatory line, and a control row that dims as a unit.
+
+- A value someone copies out of the dashboard and can copy again (an address,
+  an id) is `CopyableValue`, or `CopyableText` where the label is already
+  there (`variant="inline"` inside a description list). A value shown once is
+  `SecretValue`, which composes the same box (#2418). An address built on the
+  control plane's public base is `PublicUrlValue`
+  (`ui/src/components/PublicUrlValue.tsx`), which says the pending, failed and
+  unset-`ROLTER_PUBLIC_URL` states once for every screen (#2366).
 
 ## What they already guarantee
 
