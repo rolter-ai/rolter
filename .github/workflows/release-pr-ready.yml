@@ -40,7 +40,7 @@ jobs:
       github.event.label.name == 'release:ready'
       && startsWith(github.event.pull_request.head.ref, 'release-plz-')
       && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # the confirmation below gives up after 5 minutes; this only catches a hang
     timeout-minutes: 10
     permissions:
