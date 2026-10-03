@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TFunction } from "i18next";
 import { Loader2, Trash2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -25,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ROLES } from "@/lib/api";
 import type { Capability } from "@/lib/can";
+import { roleLabel } from "@/lib/roles";
 import { useToast } from "@/lib/toast";
 
 // the roles a group mapping may grant, mirroring `parse_role` in
@@ -37,12 +37,6 @@ export const MAPPABLE_ROLES = ROLES;
 // the role a new mapping starts on: the least powerful one, chosen here rather
 // than read off `ROLES`, whose order other screens depend on (#2078)
 const STARTING_ROLE = "viewer";
-
-// the label for a role the server sent us, falling back to the raw value so a
-// newer control plane's role is shown rather than rendered as a missing key
-export function roleLabel(t: TFunction, role: string): string {
-  return t(`shell.roles.${role}`, { defaultValue: role });
-}
 
 // the capability each kind of mapping is gated on, and the one the control
 // plane's table (`rbac_matrix.rs`) writes for it

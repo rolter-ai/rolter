@@ -122,7 +122,10 @@ The pieces that carry the rule:
 - **Anything derived from the list waits too.** A card that reads "No spend in
   this window" when its unit has no row in the rollup only says so once the
   rollup succeeded (Cost Attribution, #2105); an Export CSV or a "collector
-  config" button that renders the list waits for a list that answered.
+  config" button that renders the list waits for a list that answered. The
+  same card adds "no key assigned" only when the listing's `live_key_count`
+  is `0` (#2581): an absent count is an older control plane or a
+  create/update answer, which is unknown, not zero.
 
 A card-grid screen with no `ListTable` gates its `EmptyState` the same way:
 `query.isSuccess && query.data.length === 0`.
