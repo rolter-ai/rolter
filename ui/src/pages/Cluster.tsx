@@ -155,7 +155,7 @@ function ClusterScreen() {
               onClick={() => drain.mutate({ id: row.id, draining: !draining })}
             >
               {drain.isPending && drain.variables?.id === row.id && (
-                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
               {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
             </GatedButton>
@@ -172,7 +172,7 @@ function ClusterScreen() {
               onClick={() => startForget(row)}
             >
               {forget.isPending && forget.variables === row.id && (
-                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
               {t("pages.cluster.forget")}
             </GatedButton>

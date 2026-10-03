@@ -551,7 +551,7 @@ function IssueTokenSheet({
                 {t("common.cancel")}
               </Button>
               <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
-                {create.isPending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
+                {create.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {t("pages.userProvisioning.issueToken")}
               </Button>
             </>

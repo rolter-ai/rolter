@@ -111,7 +111,7 @@ export function EditorSheet({
             {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button disabled={!canSave || saving} onClick={save}>
-            {saving && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
             {saveLabel}
           </Button>
         </SheetActions>

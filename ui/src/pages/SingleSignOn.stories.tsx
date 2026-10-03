@@ -1061,7 +1061,7 @@ export const DisableRefusedByTheServerStaysInTheDialog: Story = {
     <Harness
       fetchStub={scoped(async (input, init) =>
         (init?.method ?? "GET").toUpperCase() === "PUT" && String(input).includes("/sso-providers/")
-          ? json({ error: { message: "the provider could not be updated" } }, 422)
+          ? json({ error: { message: "the provider could not be updated" } }, 409)
           : api({ providers: () => [provider()] })(input, init),
       )}
     >
@@ -1108,100 +1108,134 @@ export const DeletesWithConfirmation: Story = {
   },
 };
 
-// --- a change that would shut members out (#2084, #2443) -------------------
+// --- a change that would shut members out (#2084) ---------------------------
 
-const REASON =
-  "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off";
-
-// password sign-in off and one enabled provider: the control plane refuses to
-// take it away (409), so the card holds the controls back instead of asking
-const lastOff = recording(api({ providers: () => [provider()], policy: () => PASSWORDS_OFF }));
+// password sign-in off and one enabled provider: taking it away leaves every
+// member with no way in, which the control plane only checks the other way round
+let lastOff: Recorder;
+// the update is held until the story lets it land, so the dialog can be read
+// while the request is on the wire
+let releaseDisable: () => void = () => {};
+const held =
+  (inner: FetchStub): FetchStub =>
+  async (input, init) => {
+    if (
+      (init?.method ?? "GET").toUpperCase() === "PUT" &&
+      String(input).includes("/sso-providers/")
+    ) {
+      await new Promise<void>((resolve) => {
+        releaseDisable = resolve;
+      });
+    }
+    return inner(input, init);
+  };
 
 /**
- * The last enabled provider with password sign-in off cannot be disabled or
- * deleted: both controls are disabled and a reason beside them says what to do
- * instead. Nothing is confirmed and nothing is sent.
+ * Taking the last enabled provider out of service, with password sign-in off,
+ * says what that does and who still gets in, from what the control plane
+ * enforces: superadmins are exempt from the password setting, and an account
+ * created through a provider has no password to fall back on.
  */
-export const TheLastProviderCannotBeDisabledOrDeleted: Story = {
-  render: () => (
-    <Harness fetchStub={lastOff.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const toggle = await canvas.findByRole("switch", { name: "Enable provider Acme Okta" });
-    const remove = canvas.getByLabelText("Delete provider Acme Okta");
-    // story-wait-allow: disabled by the card's own prop from the first paint, not by the gate
-    await expect(toggle).toBeDisabled();
-    // story-wait-allow: disabled by the card's own prop from the first paint, not by the gate
-    await expect(remove).toBeDisabled();
-    await expect(toggle).toHaveAttribute("title", expect.stringContaining(REASON));
-    await expect(remove).toHaveAttribute("title", expect.stringContaining(REASON));
-
-    const reason = canvas.getByText(/Enable password sign-in or another provider first/);
-    await expect(reason).toBeVisible();
-    await expect(toggle).toHaveAccessibleDescription(reason.textContent ?? "");
-    await expect(remove).toHaveAccessibleDescription(reason.textContent ?? "");
-
-    // disabled controls open no dialog and send nothing
-    await userEvent.click(toggle);
-    await userEvent.click(remove);
-    await expect(within(document.body).queryByRole("alertdialog")).toBeNull();
-    lastOff.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
-    lastOff.expectNotSent("DELETE", "/sso-providers/sso-1");
+export const DisablingTheLastProviderWarnsOfALockout: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    lastOff = recording(held(api({ providers: () => [provider()], policy: () => PASSWORDS_OFF })));
+    return (
+      <Harness fetchStub={lastOff.stub}>
+        <UxScreenProvider screen="sso">
+          <SingleSignOn />
+        </UxScreenProvider>
+      </Harness>
+    );
   },
-};
-
-// the control plane answers 409 anyway: another admin turned the other
-// provider off after this screen read the list
-const raced = recording(
-  scoped(async (input, init) => {
-    const method = (init?.method ?? "GET").toUpperCase();
-    if (method !== "GET" && String(input).includes("/sso-providers/")) {
-      return json(
-        {
-          error: {
-            message:
-              "cannot disable the last enabled sso provider while password sign-in is off: no member could sign in. Enable password sign-in or another sso provider first",
-          },
-        },
-        409,
-      );
-    }
-    return api({
-      providers: () => [
-        provider(),
-        provider({ id: "sso-2", name: "Entra staging", slug: "entra" }),
-      ],
-      policy: () => PASSWORDS_OFF,
-    })(input, init);
-  }),
-);
-
-/** A 409 from the server is shown in the dashboard's words, not the raw message. */
-export const AServerRefusalIsShownInTheDashboardsWords: Story = {
-  render: () => (
-    <Harness fetchStub={raced.stub}>
-      <SingleSignOn />
-    </Harness>
-  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("switch", { name: "Enable provider Acme Okta" }));
-    await confirmDestructive(/Take Acme Okta out of service/, "Take out of service");
-    await raced.expectSent("PUT", "/api/v1/sso-providers/sso-1");
 
-    const dialog = within(await confirmation());
-    await expect(await dialog.findByText(/the control plane refused this one/)).toBeInTheDocument();
-    await expect(dialog.queryByText(/cannot disable the last enabled sso provider/)).toBeNull();
-    await cancelConfirmation();
+    const dialogElement = await confirmation();
+    // the dialog animates in, so visibility is polled rather than read once (#2287)
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Take Acme Okta out of service?" }),
+    ).toBeInTheDocument();
+    const notice = dialog.getByRole("note");
+    await expect(notice).toHaveTextContent("Members would be locked out of sign-in");
+    await expect(notice).toHaveTextContent(
+      "Password sign-in is off and Acme Okta is the only enabled provider, so no member could sign in",
+    );
+    // who can still sign in, and how they get everyone else back
+    await expect(notice).toHaveTextContent(
+      "Superadmins are exempt from the password setting, so only they could still get in",
+    );
+    await expect(notice).toHaveTextContent("turn password sign-in back on from this screen");
+    await expect(notice).toHaveTextContent("Accounts created through a provider have no password");
+
+    // backing out sends nothing and is recorded as a cancel, not a decision
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+    lastOff.expectNotSent("PUT", "/api/v1/sso-providers/sso-1");
+    const abandon = await expectUxEvent("form_abandon", "sso-provider-disable");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "sso-provider-disable");
+
+    // the warning does not block it: an IdP migration is a reason to do this
+    await userEvent.click(canvas.getByRole("switch", { name: "Enable provider Acme Okta" }));
+    await confirmDestructive(/Take Acme Okta out of service/, "Take out of service");
+    const body = await lastOff.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/api/v1/sso-providers/sso-1",
+    );
+    await expect(body.enabled).toBe(false);
+
+    // in flight: the request is on the wire, so neither button can be pressed
+    const inFlight = within(await confirmation());
+    await waitFor(() =>
+      expect(inFlight.getByRole("button", { name: "Take out of service" })).toBeDisabled(),
+    );
+    await expect(inFlight.getByRole("button", { name: "Cancel" })).toBeDisabled();
+
+    releaseDisable();
+    await expectSheetClosed();
+    const submit = await expectUxEvent("form_submit", "sso-provider-disable");
+    await expect(submit.outcome).toBe("ok");
+    await expectUxEvent("save_confirmed", "sso-provider-disable");
+  },
+};
+
+const lastDelete = recording(api({ providers: () => [provider()], policy: () => PASSWORDS_OFF }));
+
+/** Deleting it says the same, since it takes the route away just as surely. */
+export const DeletingTheLastProviderWarnsOfALockout: Story = {
+  render: () => (
+    <Harness fetchStub={lastDelete.stub}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByLabelText("Delete provider Acme Okta"));
+
+    const dialogElement = await confirmation();
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Delete provider Acme Okta?" }),
+    ).toBeInTheDocument();
+    const notice = dialog.getByRole("note");
+    await expect(notice).toHaveTextContent("Members would be locked out of sign-in");
+    await expect(notice).toHaveTextContent("Acme Okta is the only enabled provider");
+    await expect(notice).toHaveTextContent(
+      "Superadmins are exempt from the password setting, so only they could still get in",
+    );
+
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+    lastDelete.expectNotSent("DELETE", "/sso-providers/sso-1");
 
     await userEvent.click(canvas.getByLabelText("Delete provider Acme Okta"));
     await confirmDestructive(/Delete provider Acme Okta\?/, "Delete provider");
-    await expect(
-      await within(await confirmation()).findByText(/the control plane refused this one/),
-    ).toBeInTheDocument();
+    await lastDelete.expectSent("DELETE", "/sso-providers/sso-1");
   },
 };
 
@@ -1218,7 +1252,7 @@ const oneOfTwo = recording(
  * off. With another provider enabled, members still have a route, and a
  * warning here would be the click-through the last one depends on being read.
  */
-export const AnotherEnabledProviderLeavesTheControlsOn: Story = {
+export const AnotherEnabledProviderMeansNoLockoutWarning: Story = {
   render: () => (
     <Harness fetchStub={oneOfTwo.stub}>
       <SingleSignOn />

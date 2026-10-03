@@ -80,7 +80,7 @@ export function DeleteIconButton({
         {...props}
       >
         {pending ? (
-          <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Trash2 className="h-3.5 w-3.5" />
         )}

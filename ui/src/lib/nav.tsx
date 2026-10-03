@@ -36,7 +36,6 @@ import {
   Split,
   TrendingUp,
   UserCheck,
-  UserCog,
   Users,
   Wallet,
   WalletCards,
@@ -121,10 +120,7 @@ export const NAV: NavDef[] = [
       { key: "customers", icon: <WalletCards />, resource: "customer" },
       { key: "user-provisioning", icon: <BookUser />, resource: "scim_token" },
       { key: "sso", icon: <Fingerprint />, resource: "sso_provider" },
-      /* no resource: the role matrix describes what roles can do, not anyone's
-         data, so every signed-in role reads it (#2527). the org's custom roles
-         on it stay behind the server's own check */
-      { key: "rbac", icon: <UserCheck /> },
+      { key: "rbac", icon: <UserCheck />, resource: "custom_role" },
       { key: "access-profiles", icon: <Shield />, resource: "access_profile" },
       { key: "audit-logs", icon: <ScrollText />, resource: "audit_log" },
     ],
@@ -166,8 +162,6 @@ export const NAV: NavDef[] = [
       { key: "security", icon: <Shield />, resource: "security_settings" },
       // the account's own keys and profile: self-service, so no role gates it
       { key: "api-keys", icon: <KeyRound /> },
-      // the account's own language, default scope, Playground model and zone
-      { key: "preferences", icon: <UserCog /> },
       { key: "performance", icon: <TrendingUp />, resource: "runtime_policy" },
       { key: "feature-flags", icon: <Flag />, resource: "feature_flags" },
     ],

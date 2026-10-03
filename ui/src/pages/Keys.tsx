@@ -76,7 +76,6 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -217,7 +216,7 @@ export default function Keys() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
           {/* a list that has not loaded exports a header line and no rows,
               which reads as a project with no keys (#2056) */}
           <Button variant="outline" disabled={!keys.isSuccess} onClick={exportCsv}>
@@ -579,8 +578,7 @@ function AddKeyDialog({
         unitId !== UNATTRIBUTED ||
         customerId !== UNATTRIBUTED
       }
-      errorMessage={create.isError ? describeError(create.error, t).message : undefined}
-      errorDetail={create.isError ? describeError(create.error, t).detail : undefined}
+      errorMessage={create.isError ? (create.error as Error).message : undefined}
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
@@ -706,8 +704,7 @@ function EditKeyDialog({
       title={t("pages.virtualKeys.editTitle")}
       subtitle={name}
       dirty={providersChanged || attributionChanged}
-      errorMessage={save.isError ? describeError(save.error, t).message : undefined}
-      errorDetail={save.isError ? describeError(save.error, t).detail : undefined}
+      errorMessage={save.isError ? (save.error as Error).message : undefined}
       saveLabel={save.isPending ? t("pages.virtualKeys.saving") : t("pages.virtualKeys.save")}
       canSave={providersChanged || attributionChanged}
       saving={save.isPending}

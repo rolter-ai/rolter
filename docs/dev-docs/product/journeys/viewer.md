@@ -22,37 +22,37 @@ say clearly enough that it is read-only.
 
 | #    | step                                        | where                                                           | expect                                                                           | status           |
 | ---- | ------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------- |
-| V1.1 | sign in                                     | login screen                                                    | the dashboard for project `default/default`                                      | verified         |
+| V1.1 | sign in                                     | login screen                                                    | the dashboard for project `default/default`                                      | bug — #1846      |
 | V1.2 | traffic, spend and latency                  | **Observability → Dashboard**                                   | the project's numbers only                                                       | verified         |
 | V1.3 | a request in detail                         | **LLM Logs** → a row                                            | status, tokens, cost, target; the bodies say they are hidden for the viewer role | verified         |
 | V1.4 | the bodies too, where the project allows it | a project admin turns on **Viewers can read captured payloads** | the same row now shows the request and the response                              | verified (#1820) |
 
 ## V2 — own the account
 
-| #    | step                         | where                                                      | expect                                                                                                                      | status                        |
-| ---- | ---------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| V2.1 | set a display name and a bio | **Account → Profile**                                      | the rail's account menu and **Governance → Users** show the name (the email beneath it); the bio says who to ask about what | verified (#1823, #2434)       |
-| V2.2 | enrol a second factor        | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes, same as any role                                                                                   | verified (as a member, E10.4) |
+| #    | step                         | where                                                      | expect                                                  | status                               |
+| ---- | ---------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------ |
+| V2.1 | set a display name and a bio | —                                                          | others see the name; the bio says who to ask about what | backend done (#1823), screen pending |
+| V2.2 | enrol a second factor        | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes, same as any role               | verified (as a member, E10.4)        |
 
 ## V3 — preferences
 
-| #    | step                                    | where                                           | expect                                                                                                                       | status       |
-| ---- | --------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| V3.1 | switch the dashboard language           | the language picker; **Settings → Preferences** | the whole dashboard in Russian — kept on the server, so any browser you sign in on follows                                   | done (#2448) |
-| V3.2 | land on the right scope on a new laptop | **Settings → Preferences**; the scope switcher  | the default scope you saved, from the server rather than `localStorage`; a scope picked in the switcher wins for the session | done (#2448) |
+| #    | step                                    | where               | expect                                                           | status                                                                   |
+| ---- | --------------------------------------- | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| V3.1 | switch the dashboard language           | the language picker | the whole dashboard in Russian — remembered in this browser only | partial — #1824 (backend done: `/api/v1/me/preferences`; screen pending) |
+| V3.2 | land on the right scope on a new laptop | the scope switcher  | the last scope, from the server rather than `localStorage`       | partial — #1824 (backend done: `/api/v1/me/preferences`; screen pending) |
 
 ## V4 — read the configuration without changing it
 
-| #    | step                                      | where                                | expect                                                                                                                       | status                                                                                                                                          |
-| ---- | ----------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| V4.1 | which models, routes and strategies exist | **Model Catalog**, **Routing Rules** | readable; every edit, delete and toggle disabled, naming the role it needs                                                   | verified                                                                                                                                        |
-| V4.2 | which keys exist and what they may reach  | **Governance → Virtual Keys**        | names, prefixes, allow-lists; never a secret                                                                                 | verified                                                                                                                                        |
-| V4.3 | which budgets and limits apply            | **Budgets & Limits**                 | readable, not editable — for a viewer at the org (FinOps, F1.1); a project-only viewer is refused                            | gap — budgets are org-scoped (`budget:read`), so a project viewer gets "no access" (issue not yet filed)                                        |
-| V4.4 | who may do what                           | **Governance → Roles & Permissions** | the published matrix, including this session's `analytics`, `request_payload`, `provider_health` and `project_settings` rows | gap — Roles & Permissions answers "no access" to a project-only viewer; `GET /api/v1/rbac/matrix` publishes all four rows (issue not yet filed) |
+| #    | step                                      | where                                | expect                                                                                                                       | status                                                   |
+| ---- | ----------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| V4.1 | which models, routes and strategies exist | **Model Catalog**, **Routing Rules** | readable; every edit, delete and toggle disabled, naming the role it needs                                                   | bug — #1846 (no project in scope, so the screen refuses) |
+| V4.2 | which keys exist and what they may reach  | **Governance → Virtual Keys**        | names, prefixes, allow-lists; never a secret                                                                                 | bug — #1846                                              |
+| V4.3 | which budgets and limits apply            | **Budgets & Limits**                 | readable, not editable                                                                                                       | bug — #1846                                              |
+| V4.4 | who may do what                           | **Governance → Roles & Permissions** | the published matrix, including this session's `analytics`, `request_payload`, `provider_health` and `project_settings` rows | bug — #1846 (the API publishes all four rows)            |
 
 ## V5 — keep my own view
 
-| #    | step                                                | where                                           | expect                                                                                                    | status                  |
-| ---- | --------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------- |
-| V5.1 | save "errors on gpt-4o this week" as a named filter | **LLM Logs** or **Dashboard** → **Saved views** | one click back to it on any browser                                                                       | verified (#1825, #2452) |
-| V5.2 | the saved filter is mine alone                      | **LLM Logs** or **Dashboard** → **Saved views** | nobody else sees it; it never widens what I can read; an id it can no longer read is left out and counted | verified (#1825, #2452) |
+| #    | step                                                | where | expect                                               | status                               |
+| ---- | --------------------------------------------------- | ----- | ---------------------------------------------------- | ------------------------------------ |
+| V5.1 | save "errors on gpt-4o this week" as a named filter | —     | one click back to it on any browser                  | backend done (#1825), screen pending |
+| V5.2 | the saved filter is mine alone                      | —     | nobody else sees it; it never widens what I can read | backend done (#1825), screen pending |

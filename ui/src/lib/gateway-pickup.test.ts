@@ -28,7 +28,7 @@ describe("what the gateways report after a save", () => {
   });
 
   it("says nothing is known when the answer is not an inventory", () => {
-    expect(gatewayPickup({ auth_bypass_routes: [] } as never, false)).toEqual({
+    expect(gatewayPickup({ virtual_key_required: true } as never, false)).toEqual({
       state: "unavailable",
     });
   });

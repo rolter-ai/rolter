@@ -65,7 +65,7 @@ export function StatusRow({
       {...props}
     >
       <span
-        className={cn("flex-none text-[10px] leading-none", breathe && "motion-safe:animate-pulse")}
+        className={cn("flex-none text-[10px] leading-none", breathe && "animate-pulse")}
         style={{ color }}
         aria-hidden
       >

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -28,14 +29,10 @@ import {
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
-import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
-import { Segmented } from "@/components/ui/segmented";
 import {
-  ALERT_COMPARISONS,
-  ALERT_NO_DATA_POLICIES,
   ALERT_SIGNALS,
   createAlertChannel,
   createAlertRule,
@@ -48,8 +45,6 @@ import {
   updateAlertChannel,
   updateAlertRule,
   type AlertChannelRow,
-  type AlertComparison,
-  type AlertNoDataPolicy,
   type AlertRuleRow,
 } from "@/lib/api";
 import {
@@ -63,7 +58,6 @@ import {
   thresholdInputMax,
   thresholdLabel,
   thresholdRangeKey,
-  supportsNoData,
   thresholdValid,
   toFormValue,
   type AlertSignal,
@@ -490,9 +484,6 @@ function AlertRulesScreen() {
     name: r.name,
     signal: r.signal,
     threshold: r.threshold,
-    // `no_data` is left out: a PUT keeps it, and a signal without the policy
-    // would answer 400
-    comparison: r.comparison,
     window_secs: r.window_secs,
     channel_id: r.channel_id,
     enabled: r.enabled,
@@ -647,12 +638,7 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statThreshold")}
-                  value={t(
-                    `pages.alerting.rules.reading.${r.comparison === "below" ? "below" : "above"}`,
-                    {
-                      value: reading(r, r.threshold),
-                    },
-                  )}
+                  value={reading(r, r.threshold)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statWindow")}
@@ -660,15 +646,7 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statLastValue")}
-                  value={
-                    r.last_value !== null
-                      ? reading(r, r.last_value)
-                      : r.last_evaluated_at
-                        ? // evaluated, but the window held nothing to measure
-                          t("pages.alerting.rules.noDataReading")
-                        : "—"
-                  }
-                  mono={r.last_value !== null || !r.last_evaluated_at}
+                  value={r.last_value === null ? "—" : reading(r, r.last_value)}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statEvaluated")}
@@ -711,7 +689,7 @@ function AlertRulesScreen() {
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   {evaluate.isPending && evaluate.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <Play className="h-3.5 w-3.5" />
                   )}
@@ -814,8 +792,6 @@ interface RuleDraft {
   signal: string;
   /** typed in the signal's form unit: a percentage for `error_rate` */
   threshold: string;
-  comparison: AlertComparison;
-  noData: AlertNoDataPolicy;
   windowSecs: string;
   channelId: string;
 }
@@ -829,8 +805,6 @@ function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): R
         name: existing.name,
         signal: existing.signal,
         threshold: String(toFormValue(existing.signal, existing.threshold)),
-        comparison: existing.comparison ?? "above",
-        noData: existing.no_data ?? "ignore",
         windowSecs: String(existing.window_secs),
         channelId: existing.channel_id ?? "",
       }
@@ -838,8 +812,6 @@ function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): R
         name: "",
         signal: DEFAULT_SIGNAL,
         threshold: defaultThresholdInput(DEFAULT_SIGNAL),
-        comparison: "above",
-        noData: "ignore",
         windowSecs: String(DEFAULT_WINDOW_SECS),
         channelId: channels[0]?.id ?? "",
       };
@@ -868,12 +840,8 @@ function RuleSheet({
   // this build does not know, and an edit sends it back as it found it
   const [signal, setSignal] = React.useState(seed.signal);
   const [threshold, setThreshold] = React.useState(seed.threshold);
-  const [comparison, setComparison] = React.useState<AlertComparison>(seed.comparison);
-  const [noData, setNoData] = React.useState<AlertNoDataPolicy>(seed.noData);
   const [windowSecs, setWindowSecs] = React.useState(seed.windowSecs);
   const [channelId, setChannelId] = React.useState(seed.channelId);
-  const comparisonLabelId = React.useId();
-  const noDataLabelId = React.useId();
 
   // a threshold means something only in its signal's unit, so another signal
   // starts from its own default rather than carrying 5 % over as 5 ms. picking
@@ -895,9 +863,6 @@ function RuleSheet({
           existing && signal === existing.signal && threshold === seed.threshold
             ? existing.threshold
             : fromFormValue(signal, Number(threshold)),
-        comparison,
-        // the API answers 400 for a signal with no data policy, so it is not sent
-        ...(supportsNoData(signal) ? { no_data: noData } : {}),
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
       };
@@ -938,8 +903,6 @@ function RuleSheet({
       setName(seed.name);
       setSignal(seed.signal);
       setThreshold(seed.threshold);
-      setComparison(seed.comparison);
-      setNoData(seed.noData);
       setWindowSecs(seed.windowSecs);
       setChannelId(seed.channelId);
       // a refusal for one rule must not greet the next one opened
@@ -969,8 +932,6 @@ function RuleSheet({
     name !== seed.name ||
     signal !== seed.signal ||
     threshold !== seed.threshold ||
-    comparison !== seed.comparison ||
-    noData !== seed.noData ||
     windowSecs !== seed.windowSecs ||
     channelId !== seed.channelId;
 
@@ -1037,41 +998,6 @@ function RuleSheet({
             onChange={(e) => setThreshold(e.target.value)}
           />
         </Field>
-        <div className="space-y-1.5">
-          <FieldLabel label={t("pages.alerting.rules.fieldComparison")} id={comparisonLabelId} />
-          <Segmented
-            labelledBy={comparisonLabelId}
-            value={comparison}
-            onChange={setComparison}
-            options={ALERT_COMPARISONS.map((c) => ({
-              value: c,
-              label: t(`pages.alerting.rules.comparison.${c}`),
-            }))}
-          />
-          <p className="text-xs text-muted-foreground">
-            {t("pages.alerting.rules.thresholdInclusive")}
-          </p>
-          {signal === "request_volume" && comparison === "below" && Number(threshold) === 0 && (
-            <p className="text-xs text-muted-foreground">
-              {t("pages.alerting.rules.trafficStoppedHelp")}
-            </p>
-          )}
-        </div>
-        {supportsNoData(signal) && (
-          <div className="space-y-1.5">
-            <FieldLabel label={t("pages.alerting.rules.fieldNoData")} id={noDataLabelId} />
-            <Segmented
-              labelledBy={noDataLabelId}
-              value={noData}
-              onChange={setNoData}
-              options={ALERT_NO_DATA_POLICIES.map((p) => ({
-                value: p,
-                label: t(`pages.alerting.rules.noData.${p}`),
-              }))}
-            />
-            <p className="text-xs text-muted-foreground">{t("pages.alerting.rules.noDataHint")}</p>
-          </div>
-        )}
         <Field
           label={t("pages.alerting.rules.fieldWindow")}
           hint={windowValid ? windowRange : undefined}
@@ -1233,11 +1159,7 @@ function AlertHistoryScreen() {
               <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
-              {/* the rule name is what tells two rows of one state apart, so it wraps
-                  rather than truncates (#2428) */}
-              <ListCell className="min-w-0 break-words font-mono text-xs">
-                {ruleName(n.rule_id)}
-              </ListCell>
+              <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
               {/* the diagnosis of a failed delivery wraps rather than truncates:
                   `channel secret could not be unsealed; check ROLTER_KEK` cut to
                   `channel secret could not be…` names the fault and hides what to
@@ -1270,9 +1192,12 @@ function AlertHistoryScreen() {
                   {t("pages.alerting.history.clearFilters")}
                 </Button>
               ) : (
-                <EmptyStateLink to="/alerting-rules">
+                <Link
+                  to="/alerting-rules"
+                  className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   {t("pages.alerting.history.emptyAction")}
-                </EmptyStateLink>
+                </Link>
               )
             }
           />

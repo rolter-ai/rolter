@@ -251,12 +251,10 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 
 ## Filtering LLM Logs
 
-**Filters** opens a rail beside the **LLM Logs** table that narrows the requests of one time window, the last 24 hours unless you pick another. The window is counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
+**Filters** opens a rail beside the **LLM Logs** table that narrows the last 24 hours of requests. The 24 hours are counted back from each refresh, so a screen left open keeps showing a single day. The control plane applies each filter before it cuts the page, so a page of 50 is 50 matching requests.
 
-- **Time window** is one of the [reporting windows](#time-windows). The address carries it as `window=7d`.
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`. A request that got no answer at all, shown as `ERR` in the table and **No response** in the drawer, appears under **All** only.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
-- **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
 - **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
 
@@ -269,14 +267,6 @@ The filters are part of the page's address, so a reload keeps them and a copied 
 ```
 
 A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
-
-### Saved views
-
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. A view holds the time window, status, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
-
-Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
-
-The [Dashboard](/concepts/dashboard) has the same control and keeps the time window it is reading. Saved views need a signed-in account, so they are unavailable while the control plane runs in open mode.
 
 ## Paging the invocation log
 

@@ -170,30 +170,3 @@ export function useTimeWindowOptions(): { value: TimeWindow; label: string }[] {
   };
   return TIME_WINDOWS.map((value) => ({ value, label: labels[value] }));
 }
-
-/**
- * The window a screen reads, kept in the address and nowhere else.
- *
- * {@link useTimeWindow} also remembers the pick for the next screen opened from
- * the nav rail. LLM Logs and the Dashboard do not: a saved view (#2452) names
- * its window, and a window carried in from another screen would make the same
- * address read two ways. An unknown value reads as the default.
- */
-export function useAddressWindow(): [TimeWindow, (next: TimeWindow) => void] {
-  const [params, setParams] = useSearchParams();
-  const window = readTimeWindow(params.get(TIME_WINDOW_PARAM));
-  const pick = React.useCallback(
-    (next: TimeWindow) =>
-      setParams(
-        (prev) => {
-          const out = new URLSearchParams(prev);
-          if (next === DEFAULT_TIME_WINDOW) out.delete(TIME_WINDOW_PARAM);
-          else out.set(TIME_WINDOW_PARAM, next);
-          return out;
-        },
-        { replace: true },
-      ),
-    [setParams],
-  );
-  return [window, pick];
-}

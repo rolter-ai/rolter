@@ -29,12 +29,6 @@ import { resolveColorToken } from "@/lib/story-tokens";
 
 const fmt = formattersFor("en");
 
-/** the spend chart's accessible name, over the window the screen opens on */
-const SPEND_CHART = en.pages.dashboard.spendChartAria.replace(
-  "{{window}}",
-  en.common.timeWindow.last24h,
-);
-
 const loadedWith = (summary: typeof SUMMARY): FetchStub =>
   routes([
     ["/api/v1/analytics/summary", () => ({ data: [summary] })],
@@ -310,7 +304,7 @@ export const Mobile: Story = {
     // third of that, and 9px text came out near 3px
     const spend = canvas.getByTestId("dashboard-spend");
     const svg = (await within(spend).findByRole("img", {
-      name: SPEND_CHART,
+      name: en.pages.dashboard.spendChartAria,
     })) as unknown as SVGSVGElement;
     const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
     await expect(scale).toBeGreaterThan(0.95);
@@ -617,7 +611,7 @@ export const AFailedPollKeepsWhatLoaded: Story = {
     await expect(canvas.getAllByText(fmt.number(132))).not.toHaveLength(0);
     await expect(
       within(canvas.getByTestId("dashboard-spend")).getByRole("img", {
-        name: SPEND_CHART,
+        name: en.pages.dashboard.spendChartAria,
       }),
     ).toBeVisible();
     await expect(canvas.getByTestId("dashboard-traffic")).toHaveTextContent(
@@ -719,7 +713,7 @@ async function expectTheOthersLoaded(canvasElement: HTMLElement, skip: string[])
     "dashboard-spend": async () => {
       await expect(
         await within(canvas.getByTestId("dashboard-spend")).findByRole("img", {
-          name: SPEND_CHART,
+          name: en.pages.dashboard.spendChartAria,
         }),
       ).toBeVisible();
     },
@@ -869,7 +863,9 @@ export const OneFailedCardLeavesTheRestUp: Story = {
     const reads = ENDPOINTS.map((e) => readsOf(partial, e));
     spendDown = false;
     await userEvent.click(within(spend).getByRole("button", { name: "Try again" }));
-    await expect(await within(spend).findByRole("img", { name: SPEND_CHART })).toBeVisible();
+    await expect(
+      await within(spend).findByRole("img", { name: en.pages.dashboard.spendChartAria }),
+    ).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
     // the retry asked for the spend series once, and for nothing else
     await expect(readsOf(partial, ENDPOINTS[1])).toBe(reads[1] + 1);
@@ -1302,67 +1298,5 @@ export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
 
     await userEvent.click(link);
     await expect(canvas.getByTestId("where")).toHaveTextContent("/logs?request_id=req-earlier");
-  },
-};
-
-const VIEW_7D = {
-  id: "11111111-1111-4111-8111-111111111111",
-  surface: "dashboard",
-  name: "This week",
-  filters: { window: "7d" },
-  effective_filters: { window: "7d" },
-  unavailable: [],
-  created_at: "2026-09-01T09:00:00Z",
-  updated_at: "2026-09-01T09:00:00Z",
-};
-
-const withSavedViews = recording(
-  scoped(async (input, init) => {
-    const path = new URL(String(input), "http://localhost").pathname;
-    if (path === "/api/v1/me/saved-views") {
-      return init?.method === "POST" ? json(VIEW_7D, 201) : json([VIEW_7D]);
-    }
-    return loaded(input, init);
-  }),
-);
-
-/**
- * #2452: the dashboard keeps its window in the address, so a saved view of it
- * is one name; applying it re-reads the figures over that window, and saving
- * sends the window being read.
- */
-export const ASavedViewChangesTheWindow: Story = {
-  render: () => (
-    <MemoryRouter initialEntries={["/"]}>
-      <Harness fetchStub={withSavedViews.stub}>
-        <Dashboard />
-        <Where />
-      </Harness>
-    </MemoryRouter>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
-    const sheet = within(await within(document.body).findByRole("dialog", { name: "Saved views" }));
-    await userEvent.click(await sheet.findByRole("button", { name: "Apply This week" }));
-    await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent("?window=7d"));
-    await waitFor(() => {
-      const reads = withSavedViews.calls.filter((c) => c.url.includes("/analytics/summary"));
-      const since = new URL(reads[reads.length - 1].url, "http://localhost").searchParams.get(
-        "since",
-      );
-      expect(Date.now() - Date.parse(since ?? "")).toBeGreaterThan(6.9 * 24 * 3600_000);
-    });
-    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue("Last 7 days");
-
-    await userEvent.click(canvas.getByRole("button", { name: "Saved views" }));
-    const again = within(await within(document.body).findByRole("dialog", { name: "Saved views" }));
-    await userEvent.type(await again.findByLabelText("Save the current filters as"), "Mine");
-    await userEvent.click(again.getByRole("button", { name: "Save view" }));
-    const body = await withSavedViews.expectSentBody<{ surface: string; filters: unknown }>(
-      "POST",
-      "/api/v1/me/saved-views",
-    );
-    await expect(body).toEqual({ surface: "dashboard", name: "Mine", filters: { window: "7d" } });
   },
 };
