@@ -37,6 +37,8 @@ Rolter creates an **independent bounded queue and worker set per provider**, so 
 | `queue_backpressure` | `drop` / `block` / `error` | What happens when the queue is full.                                       |
 | `queue_block_ms`     | 0–120000                   | How long `block` waits for capacity.                                       |
 
+On the dashboard the queue fields are disabled while the queue is off, and the block timeout unless the policy is `block`. A disabled field is not validated, so an out-of-range value already stored never blocks **Save**, and saving keeps it unchanged. It is checked again once the field is enabled.
+
 The three backpressure policies:
 
 - **`drop`** — shed the request immediately with an overload response.

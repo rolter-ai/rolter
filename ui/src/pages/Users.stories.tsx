@@ -1585,9 +1585,13 @@ export const PendingInvitationsAreListed: Story = {
 
     const row = (email: string) =>
       within(section.getByText(email).closest('[role="row"]') as HTMLElement);
+    // the rows land with the invitations read, but the sender column is drawn
+    // from the users read and the scope column from the org's teams and
+    // projects, each a skeleton until its own read answers. under load either
+    // can land a commit after the rows, so wait for both before reading a row
+    await expect(await row("newcomer@example.com").findByText("ada@example.com")).toBeVisible();
+    await expect(await row("newcomer@example.com").findByText("Gateway")).toBeVisible();
     await expect(row("newcomer@example.com").getByText("Member")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("Gateway")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("ada@example.com")).toBeVisible();
     await expect(
       row("newcomer@example.com").getByText(expiryDate(INVITATIONS[0].expires_at)),
     ).toBeVisible();
@@ -2665,5 +2669,105 @@ export const AccountControlsOpenToASuperadmin: Story = {
     await expectAllowed(canvasElement, "Edit grace@example.com");
     await expectAllowed(canvasElement, "Deactivate grace@example.com");
     await expectAllowed(canvasElement, "Reactivate former@example.com");
+  },
+};
+
+const LAST_SUPERADMIN_REFUSAL = () =>
+  json(
+    {
+      error: {
+        code: "last_superadmin",
+        message: "this is the last active superadmin; make another account superadmin first",
+      },
+    },
+    409,
+  );
+const LAST_SUPERADMIN_HINT =
+  "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again.";
+
+/**
+ * The control plane refuses a deactivate that would leave no active superadmin
+ * with a 409 `last_superadmin` (#2471). The list is org-scoped, so the screen
+ * cannot warn before the click; the dialog stays open and says what to do.
+ */
+export const DeactivatingTheLastSuperadminSaysWhatToDo: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi({ onPut: LAST_SUPERADMIN_REFUSAL })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Deactivate ada@example.com" }),
+    );
+    const dialog = within(await confirmation());
+    await userEvent.click(dialog.getByRole("button", { name: "Deactivate" }));
+    await waitFor(() => expect(dialog.getByText(LAST_SUPERADMIN_HINT)).toBeVisible());
+    await expect(dialog.getByRole("alert")).toHaveTextContent("last active superadmin");
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+  },
+};
+
+/** The same refusal on a delete raised from the edit sheet. */
+export const DeletingTheLastSuperadminSaysWhatToDo: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi({ onDelete: LAST_SUPERADMIN_REFUSAL })}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { panel, form } = await openEditor(canvasElement, "ada@example.com");
+    await userEvent.click(form.getByRole("button", { name: "Delete" }));
+    const ask = await dialogNamed("Delete ada@example.com?");
+    await press(ask, "Delete account");
+    await waitFor(() => expect(within(ask).getByText(LAST_SUPERADMIN_HINT)).toBeVisible());
+    await expect(panel).toBeInTheDocument();
+  },
+};
+
+/** A demote saved straight from the sheet carries the hint beside the server's message. */
+export const DemotingTheLastSuperadminSaysWhatToDo: Story = {
+  render: () => (
+    <Harness fetchStub={accountsApi({ onPut: LAST_SUPERADMIN_REFUSAL })}>
+      <SignedInAs user={{ ...ME, id: "user-9", email: "root@example.com" }}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const { form } = await openEditor(canvasElement, "ada@example.com");
+    await userEvent.click(form.getByRole("switch", { name: SUPERADMIN_SWITCH }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(form.getByText(/Make another account superadmin first/)).toBeVisible(),
+    );
+    await expect(form.getByRole("button", { name: "Save" })).toBeInTheDocument();
+  },
+};
+
+/**
+ * Inviting an address that already has a live invitation replaces it, so the
+ * sheet says the old link stops working before the operator sends (#2471).
+ */
+export const InvitingAPendingAddressSaysItReplacesTheOldLink: Story = {
+  render: () => (
+    <Harness fetchStub={invitationsApi()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /invite user/i);
+    const form = within(sheet());
+    const email = await form.findByLabelText("Email");
+    await userEvent.type(email, "other@example.com");
+    await expect(form.queryByText(/already has a pending invitation/)).toBeNull();
+    await userEvent.clear(email);
+    await userEvent.type(email, "Newcomer@Example.com");
+    await expect(
+      await form.findByText(
+        "Newcomer@Example.com already has a pending invitation. Sending another replaces it, and the old link stops working.",
+      ),
+    ).toBeVisible();
   },
 };
