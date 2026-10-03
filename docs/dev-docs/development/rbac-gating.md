@@ -180,7 +180,11 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   open like everywhere else. A 403 from one of its lists hides it too, since
   a role held below the org the provider list is read at is not something
   the gate can say first; it is never a `forbidden` `LoadError` on the first
-  screen a member opens (#1848).
+  screen a member opens (#1848). With no project under the team in scope, its
+  **Create project** control is a `GatedButton` on `project:create` that calls
+  `openCreateProject()` (#2611); the sentence beside it is picked by the same
+  answer, and the `CreateProjectAllowedForAnAdmin` and
+  `NoProjectAndCannotCreateOne` stories pin both sides.
 - **The pending invitations on the Users screen.** The section reads
   `invitation:read` through `useCan()` for its presence, the way the checklist
   does: it waits for the answer, is absent on an explicit `false`, and sends no
