@@ -17906,6 +17906,101 @@ async fn concurrent_demotions_cannot_both_remove_a_superadmin() {
     assert_eq!(left, 1);
 }
 
+/// #2705: a SCIM replace with `active:false` that the lockout guard refuses
+/// must not have renamed the account or rewritten its identity first.
+#[tokio::test]
+async fn a_refused_scim_replace_leaves_the_identity_unchanged() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = org["id"].as_str().unwrap().to_string();
+    let token: Value = client
+        .post(format!("{base}/api/v1/orgs/{org}/scim-tokens"))
+        .bearer_auth("admintok")
+        .json(&json!({"name": "idp"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token["secret"].as_str().unwrap().to_string();
+    let provisioned: Value = client
+        .post(format!("{base}/scim/v2/Users"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "boss@acme.test",
+            "externalId": "ext-old",
+            "displayName": "Old Name",
+            "emails": [{"value": "boss@acme.test", "primary": true}]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scim_id = provisioned["id"].as_str().unwrap().to_string();
+    let boss: uuid::Uuid = scim_id.parse().unwrap();
+    sqlx::query("update users set is_superadmin = true where id = $1")
+        .bind(boss)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let res = client
+        .put(format!("{base}/scim/v2/Users/{scim_id}"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "userName": "renamed@acme.test",
+            "externalId": "ext-new",
+            "displayName": "New Name",
+            "active": false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("last active superadmin"),
+        "{body}"
+    );
+    let (user_name, external_id, display_name): (String, Option<String>, String) = sqlx::query_as(
+        "select user_name, external_id, display_name from scim_identities where user_id = $1",
+    )
+    .bind(boss)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(user_name, "boss@acme.test");
+    assert_eq!(external_id.as_deref(), Some("ext-old"));
+    assert_eq!(display_name, "Old Name");
+    assert_eq!(user_row(&pool, boss).await, Some((true, false)));
+}
+
 #[tokio::test]
 async fn scim_cannot_deprovision_the_last_active_superadmin() {
     skip_without_db!();

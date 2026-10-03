@@ -455,6 +455,14 @@ async fn replace_user(
     let (user, identity) = resolve(&state, &principal, &id).await?;
     let pool = pool(&state);
     let user_name = body.user_name.clone().unwrap_or(identity.user_name);
+    let mut detail = json!({});
+    // deactivate before writing: when the lockout guard refuses it (the
+    // account is the last admin it protects) the rename, externalId and
+    // display name must not have been applied, or the IdP's retry sees a
+    // half-applied replace (#2705)
+    if body.active == Some(false) {
+        detail["personal_keys"] = deactivate(&state, user.id, true).await?.into();
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -469,9 +477,9 @@ async fn replace_user(
         )
         .await?;
     sync_display_name(pool, user.id, &identity).await?;
-    let mut detail = json!({"user_name": identity.user_name});
-    if let Some(active) = body.active {
-        detail["personal_keys"] = deactivate(&state, user.id, !active).await?.into();
+    detail["user_name"] = identity.user_name.clone().into();
+    if body.active == Some(true) {
+        detail["personal_keys"] = deactivate(&state, user.id, false).await?.into();
     }
     audit_scim(
         &state,
