@@ -3,6 +3,8 @@ import { AlertTriangle, Cable, FileCode2, FlaskConical, Loader2, Pencil, Plus } 
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyButton } from "@/components/CopyButton";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -416,18 +418,17 @@ function ConnectorsScreen() {
           const tone = healthTone(c.health_status);
           const problem = problemWith(c);
           return (
-            <div
+            <CardStack
               key={c.id}
               // named after the connector, so the card's own test, delete and
               // error line read as belonging to it
               role="group"
               aria-label={c.name}
-              className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
-                <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+                <IconFrame>
                   <Cable className="h-4 w-4" />
-                </span>
+                </IconFrame>
                 <div className="min-w-0 flex-1">
                   <div className="font-mono text-sm font-semibold">{c.name}</div>
                   {/* wraps rather than truncating: at 375 px a cut-off URL has no
@@ -542,7 +543,7 @@ function ConnectorsScreen() {
                   />
                 </div>
               </div>
-            </div>
+            </CardStack>
           );
         })}
       </div>
