@@ -1038,7 +1038,9 @@ type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
 /// an operator granted by hand — through the admin API or an invitation —
 /// carries `source = 'manual'` and survives untouched, so the two enrolment
 /// paths can be used side by side. Removing a user from an IdP group does
-/// revoke the role that group granted, on their next login.
+/// revoke the role that group granted, on their next login — except an org's
+/// last active admin grant, which is kept and audited rather than failing the
+/// sign-in (#2558).
 async fn apply_mappings(
     state: &ControlState,
     provider: &SsoProvider,
@@ -1074,15 +1076,19 @@ async fn reconcile_grants(
         .filter(|m| m.user_id == user_id)
         .collect();
 
+    let mut granted = Vec::new();
     for stale in existing
         .iter()
         .filter(|m| m.source == "sso")
         .filter(|m| !wanted.iter().any(|w| grant_matches(m, w)))
     {
-        repo.delete(stale.id).await?;
+        // the org's last admin grant outlives the group change rather than
+        // failing the sign-in; it stays in force, so it is reported (#2558)
+        if crate::crud::revoke_idp_grant(state, stale).await? {
+            granted.push(stale.role.clone());
+        }
     }
 
-    let mut granted = Vec::new();
     for want in wanted {
         granted.push(want.3.clone());
         if existing.iter().any(|m| grant_matches(m, want)) {

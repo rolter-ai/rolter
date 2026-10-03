@@ -59,6 +59,7 @@ A provisioned account is deliberately minimal:
 - Deactivating a user through SCIM also drops their live sessions, so a leaver disabled in the IdP is logged out of Rolter rather than merely blocked from signing in again.
 - A SCIM `DELETE` deactivates the account and removes the org's identity mapping, but keeps the underlying user row: its memberships and audit trail have to outlive any one IdP. Re-provisioning the same person adopts the existing account instead of creating a duplicate.
 - Deactivating or deprovisioning the deployment's **last active superadmin** is refused with `409`, the same as from the dashboard, so an IdP sync cannot leave nobody able to administer the deployment. Make another account superadmin first.
+- Deactivating or deprovisioning an account that holds an organization's **last active admin** grant is refused with a SCIM `409` too, for every organization the account administers, not only the one the token belongs to. The provisioning token cannot repair an organization afterwards the way a superadmin can, so the IdP is told and retries. Grant `admin` to another person first.
 
 - Its **display name** comes from the IdP. SCIM `displayName` is copied onto the account on every create and replace, and the account cannot change it from the dashboard or `PATCH /api/v1/me/profile` (the API answers `409`); `GET /api/v1/auth/me` reports `display_name_managed: true`. An IdP that sends no `displayName` leaves the stored name as it was. The account's **bio** stays its own.
 
@@ -117,6 +118,7 @@ Every group change recomputes the affected people's provisioning-granted roles f
 - Removing someone from a group revokes exactly what that group gave them, right away.
 - A role **you** granted by hand — in the dashboard, through the API, or through an invitation — is never touched by a sync. Manual and provisioned grants coexist.
 - Deleting a group, or deprovisioning a user, withdraws the roles involved in the same request.
+- The one exception is an organization's **last active admin** grant: a sync that would withdraw it keeps it, still answers success, and records `membership.last_admin_kept` in the audit log. The next sync that touches that person withdraws it once someone else holds `admin` on the organization.
 
 <Warning>
 Because a mapping is a way to grant a role, creating or deleting one requires the **admin** role on the org — the same bar as granting a role directly.

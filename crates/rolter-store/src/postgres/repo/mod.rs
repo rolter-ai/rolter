@@ -1513,6 +1513,18 @@ pub enum LockoutGuard<T> {
     WouldLockOut,
 }
 
+/// Outcome of [`UserRepo::set_deactivated_guarding_org_admins`]: the
+/// deactivation went through, or it is refused because the account is the last
+/// active superadmin (#2344) or holds the last active org-scoped `admin` grant
+/// of the named org (#2558).
+#[derive(Debug, Clone)]
+pub enum DeactivationGuard {
+    Done(User),
+    LastSuperadmin,
+    /// the org the account is the last active admin of
+    LastOrgAdmin(Uuid),
+}
+
 /// Serialise every write that decides whether an org keeps a sign-in method.
 ///
 /// The two guards read different rows (the provider list, the policy row), so
@@ -3393,6 +3405,75 @@ impl UserRepo<'_> {
             .await
     }
 
+    /// flip the deactivation flag like [`Self::set_deactivated`], and also
+    /// refuse to deactivate an account that holds an org's last org-scoped
+    /// `admin` grant among active accounts (#2558).
+    ///
+    /// Used where the caller is not a superadmin who could repair the org
+    /// afterwards: SCIM deprovisioning and `active: false`. The account is
+    /// global, so every org it administers is checked, not only the one the
+    /// caller is scoped to. Each org is counted under the same per-org advisory
+    /// lock `MembershipRepo::delete_guarded` takes, in ascending org order so
+    /// two deactivations cannot deadlock, all in the update's transaction: a
+    /// concurrent revoke or deactivation of the org's other admin waits and
+    /// then counts this one.
+    pub async fn set_deactivated_guarding_org_admins(
+        &self,
+        id: Uuid,
+        deactivated: bool,
+    ) -> Result<DeactivationGuard> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if deactivated {
+            lock_superadmins(&mut tx).await?;
+            if last_active_superadmin(&mut tx, id).await? {
+                return Ok(DeactivationGuard::LastSuperadmin);
+            }
+            let orgs: Vec<Uuid> = sqlx::query_scalar(
+                "select distinct m.org_id from memberships m join users u on u.id = m.user_id
+                 where m.user_id = $1 and m.role = 'admin' and m.org_id is not null
+                   and u.deactivated_at is null
+                 order by m.org_id",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            for org in orgs {
+                lock_org_admins(&mut tx, org).await?;
+                let others: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.user_id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if !others {
+                    return Ok(DeactivationGuard::LastOrgAdmin(org));
+                }
+            }
+        }
+        let user: Option<User> = sqlx::query_as(
+            "update users set
+                 deactivated_at = case when $2 then coalesce(deactivated_at, now()) else null end
+             where id = $1
+             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio",
+        )
+        .bind(id)
+        .bind(deactivated)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(DeactivationGuard::Done(user))
+    }
+
     /// set the self-service profile. each `Some(x)` replaces the column with `x`
     /// (`Some(None)` clears it); `None` leaves it alone. deliberately separate
     /// from [`Self::update_account`]: that one names `is_superadmin` in its `set` list
@@ -3454,6 +3535,20 @@ impl UserRepo<'_> {
 /// first one's commit. Writes that only grow the set never take it.
 async fn lock_superadmins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
     sqlx::query("select pg_advisory_xact_lock(hashtextextended('superadmins', 0))")
+        .execute(&mut **tx)
+        .await
+        .map_err(store_err)?;
+    Ok(())
+}
+
+/// Serialise every write that can shrink the set of active admins of `org`
+/// (#2311, #2558): a revoked org-scoped `admin` grant, or a deactivated account
+/// holding one. Like [`lock_superadmins`], one advisory lock per org held to
+/// the end of the transaction, so the second of two concurrent writers counts
+/// the first one's commit.
+async fn lock_org_admins(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, org: Uuid) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))")
+        .bind(org)
         .execute(&mut **tx)
         .await
         .map_err(store_err)?;
@@ -3643,13 +3738,7 @@ impl MembershipRepo<'_> {
             .map_err(store_err)?
             .flatten();
             if let Some(org) = org {
-                sqlx::query(
-                    "select pg_advisory_xact_lock(hashtextextended('org_admins:' || $1::text, 0))",
-                )
-                .bind(org)
-                .execute(&mut *tx)
-                .await
-                .map_err(store_err)?;
+                lock_org_admins(&mut tx, org).await?;
                 // read again under the lock: a concurrent revoke may have
                 // committed while this one waited
                 let last: bool = sqlx::query_scalar(

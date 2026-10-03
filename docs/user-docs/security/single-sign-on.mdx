@@ -185,6 +185,7 @@ A group arriving from your identity provider grants nothing on its own. **You** 
 - Every mapping grants inside the provider's own org. A mapping can never reach another tenant, whatever the identity provider sends or what you pick here.
 - Each mapping is listed with the scope it grants at, so a team-scoped one is never mistaken for an org-wide one. A scope the dashboard cannot name is marked **Unresolved scope** instead of being drawn as a bare id; the id stays in the chip's tooltip, and the removal prompt names it inline.
 - Removing a mapping stops that group being granted the role — at that scope — on the next sign-in. The prompt names both before anything is withdrawn, and roles someone already holds are not taken back.
+- **The last admin stays.** When a sign-in would withdraw an `admin` grant at the whole organization from the last active account holding one, Rolter keeps that grant instead. The sign-in itself is not refused for it, the audit log records `membership.last_admin_kept`, and the next sign-in withdraws the grant once someone else holds `admin` on the organization. Grant `admin` to the next person first, then change the group.
 
 <Warning>
 A user who matches no mapping falls back to the provider's **Default role**. Leave that unset and they are **refused** instead of quietly admitted with no memberships — which is the safe default, and the reason a provider with neither a mapping nor a default role cannot log anybody in.
