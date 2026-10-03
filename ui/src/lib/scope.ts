@@ -51,6 +51,31 @@ function writeStored(scope: StoredScope) {
 // the write is broadcast instead
 const listeners = new Set<(scope: StoredScope) => void>();
 
+// the create-project dialog belongs to the sidebar switcher, which owns the
+// scope it creates under. other screens reach it through the same kind of
+// broadcast rather than a route or a query param: nothing to keep in the url,
+// nothing to strip afterwards, and no effect on a screen the switcher is not
+// mounted beside (stories, the sign-in screens)
+const createProjectOpeners = new Set<() => void>();
+
+/** Open the create-project dialog the shell's scope switcher owns. */
+export function openCreateProject() {
+  for (const open of createProjectOpeners) open();
+}
+
+/** Registers the dialog's opener for as long as the caller is mounted. */
+export function useCreateProjectOpener(open: () => void) {
+  const latest = React.useRef(open);
+  latest.current = open;
+  React.useEffect(() => {
+    const fn = () => latest.current();
+    createProjectOpeners.add(fn);
+    return () => {
+      createProjectOpeners.delete(fn);
+    };
+  }, []);
+}
+
 /** The org, team and project of the account's most specific membership. */
 function ownScope(
   memberships: MeMembership[] | undefined,

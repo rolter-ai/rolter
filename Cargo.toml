@@ -18,7 +18,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/rolter-ai/rolter"
 authors = ["Ilya Lubenets <lii291001@gmail.com>"]
-rust-version = "1.82"
+rust-version = "1.91"
 
 [workspace.dependencies]
 # async runtime + web
