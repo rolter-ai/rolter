@@ -5,5 +5,5 @@
 # scripts/check-tool-pins.sh fails on an inline pin or an unused entry here
 maturin==1.15.0
 zizmor==1.26.1
-ruff==0.15.0
+ruff==0.16.9
 shellcheck-py==0.11.0.1
