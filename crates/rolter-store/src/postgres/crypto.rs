@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn roundtrips_and_uses_fresh_nonces() {
-        let kek = Kek::from_secret("correct horse battery staple");
+        let kek = Kek::from_secret(&format!("kek-{}", uuid::Uuid::new_v4()));
         let (c1, n1) = kek.encrypt("sk-upstream-secret").unwrap();
         let (c2, n2) = kek.encrypt("sk-upstream-secret").unwrap();
         assert_ne!(n1, n2, "each encryption must draw a fresh nonce");

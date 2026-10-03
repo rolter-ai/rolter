@@ -987,7 +987,9 @@ mod tests {
 
     #[test]
     fn a_short_kek_is_rejected_despite_hashing() {
-        let env = FakeEnv::healthy().with(KEK_ENV, "hunter2");
+        // under MIN_KEK_LEN on purpose, so it is a slice of a generated value
+        let short = uuid::Uuid::new_v4().simple().to_string()[..7].to_string();
+        let env = FakeEnv::healthy().with(KEK_ENV, &short);
         let findings = run_checks(&env);
         assert!(findings
             .iter()
@@ -1119,11 +1121,13 @@ mod tests {
 
     #[test]
     fn a_rejected_database_url_is_redacted_in_the_report() {
-        let env = FakeEnv::healthy().with("ROLTER_DATABASE_URL", "mysql://user:hunter2@db/rolter");
+        let password = format!("pw-{}", uuid::Uuid::new_v4());
+        let url = format!("mysql://user:{password}@db/rolter");
+        let env = FakeEnv::healthy().with("ROLTER_DATABASE_URL", &url);
         let findings = run_checks(&env);
         let (text, _) = report(&findings, false);
         assert!(
-            !text.contains("hunter2"),
+            !text.contains(&password),
             "credentials leaked into the report:\n{text}"
         );
         assert!(text.contains("***@db/rolter"), "{text}");

@@ -5301,7 +5301,7 @@ async fn login_me_logout_round_trip() {
     // seed a user the way `rolter-seed` does (same argon2id hashing call shape)
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     sqlx::query("insert into users (email, password_hash, is_superadmin) values ($1, $2, true)")
@@ -5340,7 +5340,7 @@ async fn login_me_logout_round_trip() {
     // correct credentials issue a session token
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "admin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "admin@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -5419,7 +5419,7 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
             "insert into users (email, password_hash, is_superadmin) values ($1, $2, true)",
         )
         .bind(email)
-        .bind(hash_for("correct horse battery staple"))
+        .bind(hash_for(shared_password()))
         .execute(&pool)
         .await
         .unwrap();
@@ -5467,7 +5467,7 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
         .post(format!("{base}/api/v1/auth/login"))
         .json(&json!({
             "email": "bystander@example.com",
-            "password": "correct horse battery staple"
+            "password": shared_password()
         }))
         .send()
         .await
@@ -6444,7 +6444,7 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
             "slug": "stub",
             "issuer": issuer,
             "client_id": "rolter",
-            "client_secret": "s3cret",
+            "client_secret": shared_secret(),
             "group_claim": "groups"
         }))
         .send()
@@ -6457,7 +6457,7 @@ async fn sso_login_maps_groups_to_memberships_and_fails_closed() {
     // the client secret is sealed and never echoed back
     let provider_text = provider.to_string();
     assert!(
-        !provider_text.contains("s3cret") && !provider_text.contains("secret_ciphertext"),
+        !provider_text.contains(shared_secret()) && !provider_text.contains("secret_ciphertext"),
         "client secret leaked into the api response: {provider_text}"
     );
     // the row names the two addresses an operator needs, built from the
@@ -6793,7 +6793,7 @@ async fn scim_users_are_provisioned_scoped_and_idempotent() {
             "externalId": "idp-1",
             "displayName": "Ada Lovelace",
             "emails": [{"value": "ada@example.com", "primary": true}],
-            "password": "hunter2"
+            "password": shared_password()
         }))
         .send()
         .await
@@ -8163,7 +8163,7 @@ async fn user_and_membership_lifecycle() {
     let created = post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "dev@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "dev@example.com", "password": shared_password(), "role": "member"}),
     )
     .await;
     let user_id = created["user"]["id"].as_str().unwrap().to_string();
@@ -8190,7 +8190,7 @@ async fn user_and_membership_lifecycle() {
     // duplicate email is a conflict
     let dup = client
         .post(format!("{base}/api/v1/orgs/{org_id}/users"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap();
@@ -8224,7 +8224,7 @@ async fn user_and_membership_lifecycle() {
     // the account can log in before deactivation
     let ok = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap();
@@ -8244,7 +8244,7 @@ async fn user_and_membership_lifecycle() {
     // login is now blocked, but the user + memberships still exist
     let blocked = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "dev@example.com", "password": "hunter2!!"}))
+        .json(&json!({"email": "dev@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap();
@@ -8334,7 +8334,7 @@ async fn self_service_key_lifecycle() {
     post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "member@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "member@example.com", "password": shared_password(), "role": "member"}),
     )
     .await;
 
@@ -8342,7 +8342,7 @@ async fn self_service_key_lifecycle() {
     let login = post(
         &client,
         format!("{base}/api/v1/auth/login"),
-        json!({"email": "member@example.com", "password": "hunter2!!"}),
+        json!({"email": "member@example.com", "password": shared_password()}),
     )
     .await;
     let token = login["token"].as_str().unwrap().to_string();
@@ -8525,13 +8525,13 @@ async fn playground_key_is_scoped_by_the_server() {
     post(
         &client,
         format!("{base}/api/v1/orgs/{org_id}/users"),
-        json!({"email": "operator@example.com", "password": "hunter2!!", "role": "member"}),
+        json!({"email": "operator@example.com", "password": shared_password(), "role": "member"}),
     )
     .await;
     let login = post(
         &client,
         format!("{base}/api/v1/auth/login"),
-        json!({"email": "operator@example.com", "password": "hunter2!!"}),
+        json!({"email": "operator@example.com", "password": shared_password()}),
     )
     .await;
     let token = login["token"].as_str().unwrap().to_string();
@@ -8854,7 +8854,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     let invited: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/users"))
         .bearer_auth("admintok")
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -8872,7 +8872,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
 
     let logged_in = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap();
@@ -8886,7 +8886,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
         .bearer_auth("admintok")
         .json(&json!({
             "name": "Stub IdP", "slug": "mixed", "issuer": issuer,
-            "client_id": "rolter", "client_secret": "s3cret"
+            "client_id": "rolter", "client_secret": shared_secret()
         }))
         .send()
         .await
@@ -9015,7 +9015,7 @@ async fn sso_and_password_login_coexist_per_org_policy() {
     assert_eq!(enforced.status(), 200);
     let blocked = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery"}))
+        .json(&json!({"email": "ada@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap();
@@ -10691,7 +10691,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     // a member who will do the consenting
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -10709,7 +10709,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "ada@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "ada@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -10782,7 +10782,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
             "authorize_url": format!("{authz}/authorize"),
             "token_url": format!("{authz}/token"),
             "client_id": "rolter",
-            "client_secret": "cli3nt-s3cret",
+            "client_secret": shared_secret(),
             "default_scopes": ["tools:read", "tools:write"],
             // this server publishes no metadata, so it is pinned to the
             // hand-configured endpoints and nothing is probed (#1347)
@@ -10801,7 +10801,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     );
     let registered_text = registered.to_string();
     assert!(
-        !registered_text.contains("cli3nt-s3cret"),
+        !registered_text.contains(shared_secret()),
         "the client secret leaked into the api response: {registered_text}"
     );
     // and listing the servers must not carry it either
@@ -10814,7 +10814,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .json()
         .await
         .unwrap();
-    assert!(!servers.to_string().contains("cli3nt-s3cret"));
+    assert!(!servers.to_string().contains(shared_secret()));
 
     // -- consent ------------------------------------------------------------
 
@@ -10870,7 +10870,7 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
     let form = stub.form();
     assert!(form.contains("grant_type=authorization_code"));
     assert!(form.contains("code_verifier="));
-    assert!(form.contains("client_secret=cli3nt-s3cret"));
+    assert!(form.contains(&format!("client_secret={}", shared_secret())));
 
     // the same state cannot be redeemed twice
     let replayed = client
@@ -11117,7 +11117,7 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
 
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11135,7 +11135,7 @@ async fn mcp_oauth_discovers_its_authorization_server_and_validates_the_issuer()
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "grace@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "grace@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -11433,7 +11433,7 @@ async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
     let org_id = org["id"].as_str().unwrap().to_string();
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11451,7 +11451,7 @@ async fn mcp_oauth_callback_sends_a_browser_to_the_dashboard() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "lin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "lin@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -11707,7 +11707,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
     // session rather than the admin token
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11725,7 +11725,7 @@ async fn moving_an_mcp_server_url_invalidates_its_discovery_cache() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "mallory@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "mallory@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -11913,7 +11913,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
 
     use argon2::password_hash::PasswordHasher;
     let hash = argon2::Argon2::default()
-        .hash_password(b"correct horse battery staple")
+        .hash_password(shared_password().as_bytes())
         .unwrap()
         .to_string();
     let user_id: uuid::Uuid =
@@ -11931,7 +11931,7 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
         .unwrap();
     let login: Value = client
         .post(format!("{base}/api/v1/auth/login"))
-        .json(&json!({"email": "repin@example.com", "password": "correct horse battery staple"}))
+        .json(&json!({"email": "repin@example.com", "password": shared_password()}))
         .send()
         .await
         .unwrap()
@@ -12140,7 +12140,7 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
     let mut ids = Vec::new();
     for email in ["owner@example.com", "other@example.com"] {
         let hash = argon2::Argon2::default()
-            .hash_password(b"correct horse battery staple")
+            .hash_password(shared_password().as_bytes())
             .unwrap()
             .to_string();
         let id: uuid::Uuid = sqlx::query_scalar(
@@ -12159,7 +12159,7 @@ async fn mcp_oauth_sessions_are_not_reachable_across_owners() {
             .unwrap();
         let login: Value = client
             .post(format!("{base}/api/v1/auth/login"))
-            .json(&json!({"email": email, "password": "correct horse battery staple"}))
+            .json(&json!({"email": email, "password": shared_password()}))
             .send()
             .await
             .unwrap()
@@ -12649,7 +12649,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
             "required_headers": {"X-Mesh-Id": "edge-42"},
             "auth_bypass_routes": ["/v1/models"],
             "dashboard_auth_enabled": false,
-            "managed_dashboard_secret": "hunter2",
+            "managed_dashboard_secret": shared_secret(),
         }))
         .send()
         .await
@@ -12705,7 +12705,7 @@ async fn security_policy_reaches_the_snapshot_and_drops_the_dashboard_password()
     // the sealed dashboard secret must not ride along anywhere in the payload
     let payload = serde_json::to_string(&after).unwrap();
     assert!(
-        !payload.contains("hunter2"),
+        !payload.contains(shared_secret()),
         "the snapshot carries the secret"
     );
     assert!(!payload.contains("dashboard_credential"), "{payload}");
@@ -12908,6 +12908,20 @@ async fn open_mode_still_serves_the_public_example_key() {
 /// is any particular string.
 fn random_password() -> String {
     format!("pw-{}", uuid::Uuid::new_v4())
+}
+
+/// One generated password shared by a whole test binary run, for the tests that
+/// seed a hash and log in with it in separate helpers.
+fn shared_password() -> &'static str {
+    static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PASSWORD.get_or_init(random_password)
+}
+
+/// One generated secret (client secret, dashboard secret) shared by a run, for
+/// tests that assert it never appears in an api response or snapshot.
+fn shared_secret() -> &'static str {
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SECRET.get_or_init(|| format!("sec-{}", uuid::Uuid::new_v4()))
 }
 
 /// Seed a local superadmin with a known password and return its id.
