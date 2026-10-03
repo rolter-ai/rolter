@@ -929,20 +929,19 @@ export const EditsAConnectorInPlaceKeepingItsSecret: Story = {
     keepsSecret.expectNotSent("POST", "/api/v1/connectors");
     keepsSecret.expectNotSent("DELETE", "/connectors");
     await expectSheetClosed();
-    // the card keeps the health the last test recorded, which now describes
-    // the old endpoint, so the confirmation says to test again
-    await expectToast(canvasElement, /health still describes the old endpoint or secret/);
+    // the control plane resets the health of a moved endpoint, so the toast
+    // is the plain confirmation rather than a warning about stale health
+    await expectToast(canvasElement, /signoz updated\./);
   },
 };
 
 const renames = editing();
 
-// nothing about where the records go changed, so there is nothing to test again
+// a rename leaves the endpoint alone, so the control plane keeps the health
 export const EditingOnlyTheNameDoesNotAskForANewTest: Story = {
   render: () => <Harness fetchStub={renames.stub} toasted />,
   play: async ({ canvasElement }) => {
     const copy = en.pages.connectors;
-    const canvas = within(canvasElement);
     const form = await openEditSheet(canvasElement);
     const name = form.getByLabelText(copy.form.name);
     await userEvent.clear(name);
@@ -952,7 +951,6 @@ export const EditingOnlyTheNameDoesNotAskForANewTest: Story = {
     const body = await renames.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
     await expect(body).toMatchObject({ name: "signoz-eu", sampling_rate: 1, enabled: true });
     await expectToast(canvasElement, /signoz-eu updated\./);
-    await expect(canvas.queryByText(/health still describes/)).toBeNull();
   },
 };
 
@@ -982,8 +980,7 @@ export const ReplacesTheSecretWhenOneIsTyped: Story = {
     });
     replaces.expectNotSent("DELETE", "/connectors");
     await expectSheetClosed();
-    // the new credential has not been tried, whatever the card said before
-    await expectToast(canvasElement, /health still describes the old endpoint or secret/);
+    await expectToast(canvasElement, /signoz updated\./);
   },
 };
 

@@ -1,4 +1,7 @@
+import * as React from "react";
+
 import { Combobox, type ComboboxProps } from "@/components/ui/combobox";
+import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { useRefusedClick } from "@/lib/ux-react";
 
@@ -20,9 +23,11 @@ export function GatedCombobox({
 }: ComboboxProps & { gate: Capability; control: string }) {
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
+  const generated = React.useId();
+  const id = props.id ?? generated;
   return (
-    <span className="contents" {...refusal}>
-      <Combobox {...props} disabled={disabled || denied} title={denied ? reason : title} />
-    </span>
+    <RefusalWrap denied={denied} reason={reason} controlId={id} {...refusal}>
+      <Combobox {...props} id={id} disabled={disabled || denied} title={denied ? reason : title} />
+    </RefusalWrap>
   );
 }

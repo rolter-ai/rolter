@@ -553,6 +553,23 @@ fn unknown_key_findings(raw: &str) -> Vec<Finding> {
         .collect()
 }
 
+/// `project_scoped = true` in a file the gateway serves directly is inert (#2468).
+///
+/// A warning, not an error: the same file is valid input to `rolter-seed
+/// --import`, where the flag is the point.
+fn project_scoped_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    config
+        .project_scoped_warnings()
+        .into_iter()
+        .map(|detail| {
+            Finding::warn(
+                "project_scoped has no effect without the control plane",
+                detail,
+            )
+        })
+        .collect()
+}
+
 /// Render the migration plan for a config file, and the finding that goes with it.
 ///
 /// This is a preview, not an action: nothing is written, here or at load time.
@@ -652,6 +669,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
             Ok(config) => {
                 findings.extend(custom_api_base_findings(&config));
                 findings.extend(example_key_findings(&config));
+                findings.extend(project_scoped_findings(&config));
             }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
@@ -1349,5 +1367,22 @@ mod tests {
         let mut findings = Vec::new();
         check_analytics_destination(&env, &mut findings);
         assert_eq!(findings.len(), 1, "{:?}", titles(&findings));
+    }
+
+    #[test]
+    fn project_scoped_in_a_served_file_is_a_warning() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            "[[providers]]\nname = \"p\"\nkind = \"openai\"\napi_base = \"https://api.example.com/v1\"\napi_key_env = \"K\"\nproject_scoped = true\n",
+        )
+        .expect("parses");
+        let findings = project_scoped_findings(&config);
+        assert_eq!(findings.len(), 1);
+        assert!(!findings[0].fatal);
+
+        let plain = rolter_core::GatewayConfig::from_toml_str(
+            "[[providers]]\nname = \"p\"\nkind = \"openai\"\napi_base = \"https://api.example.com/v1\"\napi_key_env = \"K\"\n",
+        )
+        .expect("parses");
+        assert!(project_scoped_findings(&plain).is_empty());
     }
 }

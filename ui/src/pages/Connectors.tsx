@@ -672,17 +672,10 @@ function ConnectorSheet({
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       if (existing) {
-        // a save keeps the health the last test recorded, and after a new
-        // endpoint or secret that describes the old one
-        const retest =
-          !!existing.health_checked_at &&
-          (endpoint.trim() !== existing.endpoint || !!secret.trim());
         toast.push({
           tone: "success",
           title: t("toast.saved"),
-          detail: retest
-            ? t("pages.connectors.savedRetest", { name })
-            : t("toast.savedDetail", { what: name }),
+          detail: t("toast.savedDetail", { what: name }),
         });
       } else {
         // one that was left off says so and what to do next, or nothing ever
