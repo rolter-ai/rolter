@@ -19,7 +19,7 @@ import { DocsLink } from "@/components/DocsLink";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
-import { GroupMappings, MAPPABLE_ROLES, roleLabel } from "@/components/GroupMappings";
+import { GroupMappings, MAPPABLE_ROLES } from "@/components/GroupMappings";
 import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +59,7 @@ import {
   type SecretGap,
 } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
+import { roleLabel } from "@/lib/roles";
 import { errorDetail, useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { cn } from "@/lib/utils";

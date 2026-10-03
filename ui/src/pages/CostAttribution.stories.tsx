@@ -484,6 +484,11 @@ export const BusinessUnitsShowWindowSpend: Story = {
     await expect(canvas.getByText(fmt.currency(41.5, "USD"))).toBeVisible();
     await expect(canvas.getByText("Unattributed")).toBeVisible();
     await expect(canvas.getByText(/of the window/)).toBeVisible();
+    // the figure says how to reduce it, and where
+    await expect(canvas.getByRole("link", { name: "virtual key" })).toHaveAttribute(
+      "href",
+      "/virtual-keys",
+    );
   },
 };
 

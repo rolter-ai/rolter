@@ -1489,7 +1489,10 @@ export const TurningSingleSignOnOffConfirmsFirst: Story = {
       dialog.getByRole("heading", { name: "Turn off single sign-on?" }),
     ).toBeInTheDocument();
     await expect(dialogElement).toHaveTextContent(
-      "every sign-in through this organization's identity providers is refused",
+      "provider buttons disappear from the sign-in screen and new sign-ins through its identity providers are refused at once",
+    );
+    await expect(dialogElement).toHaveTextContent(
+      "already under way when they return from the provider",
     );
     const notice = dialog.getByRole("note");
     await expect(notice).toHaveTextContent(

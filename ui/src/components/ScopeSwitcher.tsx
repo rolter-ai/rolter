@@ -28,7 +28,7 @@ import {
   fetchProjectSettings,
   updateProjectSettings,
 } from "@/lib/api";
-import { useScope } from "@/lib/scope";
+import { useCreateProjectOpener, useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 
 type Level = "org" | "team" | "project";
@@ -51,6 +51,12 @@ export function ScopeSwitcher() {
   const [settingsTarget, setSettingsTarget] = React.useState<{ id: string; name: string } | null>(
     null,
   );
+
+  // a project is created under the team in scope, so with no team there is
+  // nothing to open — the same condition that hides the + beside Project
+  useCreateProjectOpener(() => {
+    if (scope.teamId) setCreateLevel("project");
+  });
 
   const invalidateScope = () => {
     queryClient.invalidateQueries({ queryKey: ["scope"] });

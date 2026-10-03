@@ -54,7 +54,7 @@ jobs:
   # ROLTER_DATABASE_URL). see ROL-245
   compose-smoke:
     name: compose smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,7 +73,7 @@ jobs:
   # version against a lockfile that already needs 1.88
   msrv:
     name: msrv build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,7 +110,7 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:
@@ -180,7 +180,7 @@ jobs:
   # reads bun.lock
   bun-pin:
     name: bun pin
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -222,7 +222,7 @@ jobs:
     name: report failure
     needs: [cross-platform, compose-smoke, msrv, coverage, bun-pin]
     if: ${{ !cancelled() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/master' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       issues: write

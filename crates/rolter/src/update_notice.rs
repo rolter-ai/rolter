@@ -37,6 +37,11 @@ pub struct Cache {
     /// its release page
     #[serde(default)]
     pub release_url: Option<String>,
+    /// unix seconds of the last attempt, successful or not. A failed fetch
+    /// records only this, so an unreachable host waits out the interval too
+    /// instead of dialling on every invocation (#2485)
+    #[serde(default)]
+    pub last_attempt_at: Option<i64>,
     /// unix seconds of the last notice printed; a notice is printed once per
     /// fetch, so this at or after `checked_at` means "already said"
     #[serde(default)]
@@ -46,7 +51,7 @@ pub struct Cache {
 /// What to do with a cache at `now`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Step {
-    /// the last fetch is recent enough
+    /// the last attempt is recent enough
     UseCache,
     /// no fetch yet, the interval has elapsed, or the clock went backwards
     Refresh,
@@ -55,7 +60,15 @@ pub enum Step {
 /// Decide whether the cache is still fresh at `now` (unix seconds).
 pub fn next_step(cache: &Cache, now: i64) -> Step {
     let interval = CACHE_INTERVAL.as_secs() as i64;
-    match cache.checked_at {
+    // the later of the two stamps: a failure waits the same interval as a
+    // success rather than a shorter back-off, since a host that cannot reach
+    // GitHub is unlikely to recover within the hour and the notice is a hint
+    let at = cache
+        .checked_at
+        .into_iter()
+        .chain(cache.last_attempt_at)
+        .max();
+    match at {
         Some(at) if at <= now && now - at < interval => Step::UseCache,
         _ => Step::Refresh,
     }
@@ -129,16 +142,37 @@ fn unix_now() -> i64 {
 /// One launcher run: refresh the cache when it is stale, print the notice once
 /// per fetch, and write back. Returns the notice it printed, for tests.
 pub async fn run(client: &reqwest::Client, path: &Path, current: &str, now: i64) -> Option<String> {
+    run_with(
+        || async {
+            fetch_latest(client)
+                .await
+                .map(|release| (release.version, release.url))
+                .map_err(|err| err.to_string())
+        },
+        path,
+        current,
+        now,
+    )
+    .await
+}
+
+/// [`run`] with the fetch injected: `fetch` yields `(version, release_url)`.
+/// It is called only when the cache is stale.
+pub async fn run_with<F, Fut>(fetch: F, path: &Path, current: &str, now: i64) -> Option<String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(String, String), String>>,
+{
     let mut cache = load(path);
     if next_step(&cache, now) == Step::Refresh {
-        match fetch_latest(client).await {
-            Ok(release) => {
-                cache = Cache {
-                    checked_at: Some(now),
-                    latest: Some(release.version),
-                    release_url: Some(release.url),
-                    notified_at: cache.notified_at,
-                };
+        // stamped before the outcome is known so a failure is remembered too;
+        // the last known release survives it
+        cache.last_attempt_at = Some(now);
+        match fetch().await {
+            Ok((version, url)) => {
+                cache.checked_at = Some(now);
+                cache.latest = Some(version);
+                cache.release_url = Some(url);
             }
             Err(err) => tracing::debug!(error = %err, "update check failed; offline is fine"),
         }
@@ -199,6 +233,7 @@ mod tests {
             checked_at: Some(checked_at),
             latest: Some(latest.to_string()),
             release_url: Some("https://github.com/rolter-ai/rolter/releases/tag/v9.9.9".into()),
+            last_attempt_at: None,
             notified_at: None,
         }
     }
@@ -333,10 +368,10 @@ mod tests {
         }
     }
 
-    /// Offline: the fetch fails, nothing is printed, and the cache does not
-    /// gain a `checked_at` it did not earn — the next run asks again.
+    /// Offline: the fetch fails, nothing is printed, the cache does not gain a
+    /// `checked_at` it did not earn, but the attempt is recorded.
     #[tokio::test]
-    async fn an_unreachable_endpoint_prints_nothing_and_keeps_the_cache_stale() {
+    async fn an_unreachable_endpoint_prints_nothing_and_records_the_attempt() {
         let dir = std::env::temp_dir().join(format!(
             "rolter-update-notice-offline-{}-{}",
             std::process::id(),
@@ -347,6 +382,44 @@ mod tests {
         let printed = run(&client, &path, "0.1.0", 1_000).await;
         assert_eq!(printed, None);
         assert_eq!(load(&path).checked_at, None);
+        assert_eq!(load(&path).last_attempt_at, Some(1_000));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failed fetch is dialled once; runs inside the interval do not dial,
+    /// the next one after it does, and a failure keeps the last known release.
+    #[tokio::test]
+    async fn a_failed_fetch_is_not_retried_inside_the_interval() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = std::env::temp_dir().join(format!(
+            "rolter-update-notice-backoff-{}-{}",
+            std::process::id(),
+            unix_now()
+        ));
+        let path = dir.join(CACHE_FILE);
+        let calls = AtomicUsize::new(0);
+        let failing = || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<(String, String), _>("unreachable".to_string())
+        };
+        assert_eq!(run_with(failing, &path, "0.1.0", 1_000).await, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            run_with(failing, &path, "0.1.0", 1_000 + DAY - 1).await,
+            None
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "inside the interval");
+        run_with(failing, &path, "0.1.0", 1_000 + DAY).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "interval elapsed");
+
+        // a failure after a success must not erase the known release
+        store(&path, &cached(1_000, "9.9.9")).expect("store");
+        let printed = run_with(failing, &path, "0.1.0", 1_000 + 2 * DAY).await;
+        assert!(printed.is_some_and(|m| m.contains("9.9.9 is available")));
+        let after = load(&path);
+        assert_eq!(after.latest.as_deref(), Some("9.9.9"));
+        assert_eq!(after.checked_at, Some(1_000));
+        assert_eq!(after.last_attempt_at, Some(1_000 + 2 * DAY));
         std::fs::remove_dir_all(&dir).ok();
     }
 
