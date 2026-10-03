@@ -25,7 +25,7 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
-import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
+import { expectUxEvent, recordUxEvents, uxEvents } from "@/pages/story-harness";
 
 /** What the gateway serves: a route, a provider pin, and a provider group. */
 const GATEWAY_MODELS = {
@@ -1842,5 +1842,27 @@ export const ReportsTimeToInteractive: Story = {
     const event = await expectUxEvent("time_to_interactive");
     await expect(event.screen).toBe("playground");
     await expect(typeof event.duration_ms).toBe("number");
+  },
+};
+
+/**
+ * The playground had no `useErrorState` at all, so a key that failed to mint
+ * reached the operator and never the dead-states query. The alert records its
+ * own now (#2444): one `error_state`, under the key's region.
+ */
+export const AFailedMintIsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="playground">
+      <Screen
+        fetchStub={deployment(async () => json({ error: { message: "store unavailable" } }, 500))}
+      />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /playground key/i);
+    const failed = await expectUxEvent("error_state", "playground-key");
+    await expect(failed.screen).toBe("playground");
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
   },
 };

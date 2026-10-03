@@ -84,7 +84,7 @@ import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // a state's three colours. the pill label is the -text half of the hue, because
 // a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
@@ -163,7 +163,6 @@ function AlertChannelsScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!channels.isLoading);
-  useErrorState(!!channels.error, "alert-channels");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["alert-channels"] });
 
   const toggle = useMutation({
@@ -223,6 +222,7 @@ function AlertChannelsScreen() {
           error={channels.error}
           resource={t("errors.resources.alertChannels")}
           onRetry={() => void channels.refetch()}
+          target="alert-channels"
         />
       )}
       {channels.data && channels.data.length === 0 && (
@@ -471,7 +471,6 @@ function AlertRulesScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!rules.isLoading);
-  useErrorState(!!rules.error, "alert-rules");
   const channels = useQuery({
     queryKey: ["alert-channels"],
     queryFn: fetchAlertChannels,
@@ -586,6 +585,7 @@ function AlertRulesScreen() {
           error={rules.error}
           resource={t("errors.resources.alertRules")}
           onRetry={() => void rules.refetch()}
+          target="alert-rules"
         />
       )}
       {rules.data && rules.data.length === 0 && (
@@ -1130,7 +1130,6 @@ function AlertHistoryScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!history.isLoading);
-  useErrorState(!!history.error, "alert-history");
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
@@ -1194,6 +1193,7 @@ function AlertHistoryScreen() {
           error={history.error}
           resource={t("errors.resources.alertHistory")}
           onRetry={() => void history.refetch()}
+          target="alert-history"
         />
       )}
       {capped && (

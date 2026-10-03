@@ -59,7 +59,7 @@ import { defaultToken, replacementToken, ruleBody, withSource } from "@/lib/guar
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const EMPTY: GuardrailRuleInput = {
   name: "",
@@ -163,7 +163,6 @@ function GuardrailRulesScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!loading);
-  useErrorState(!!query.error, "guardrail-rules");
   const [editing, setEditing] = React.useState<GuardrailRuleRow | null | undefined>();
   const fileHeadingId = React.useId();
 
@@ -326,6 +325,7 @@ function GuardrailRulesScreen() {
           error={query.error}
           resource={t("errors.resources.guardrailRules")}
           onRetry={() => void query.refetch()}
+          target="guardrail-rules"
         />
       ) : (
         <>

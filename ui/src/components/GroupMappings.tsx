@@ -221,6 +221,7 @@ export function GroupMappings({
           error={mappings.error}
           resource={t("errors.resources.groupMappings")}
           onRetry={() => mappings.refetch()}
+          target="group-mappings"
         />
       )}
       {mappings.isSuccess && rows.length === 0 && (

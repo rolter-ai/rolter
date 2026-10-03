@@ -56,7 +56,7 @@ import { announceConsent, readConsentResult, type ConsentResult } from "@/lib/mc
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // both screens read crates/rolter-control/src/mcp_oauth.rs, whose three rules
 // they exist to make visible: no token material crosses the API boundary, a
@@ -148,12 +148,14 @@ function ForbiddenNote({
   resource,
   error,
   onRetry,
+  target,
 }: {
   resource: string;
   error: unknown;
   onRetry: () => void;
+  target: string;
 }) {
-  return <LoadError error={error} resource={resource} onRetry={onRetry} />;
+  return <LoadError error={error} resource={resource} onRetry={onRetry} target={target} />;
 }
 
 // `lead` is what a screen says above its body whatever state the body is in —
@@ -196,7 +198,6 @@ export function OAuthGrants() {
   // readiness tracks `grants` alone — `users` is best-effort and the screen
   // renders without it, so waiting on it would overstate time-to-interactive
   useScreenReady(!grants.isLoading);
-  useErrorState(!!grants.error, "oauth-grants");
   const [confirming, setConfirming] = React.useState<McpOAuthGrantRow | null>(null);
   const now = Date.now();
 
@@ -236,6 +237,7 @@ export function OAuthGrants() {
       {grants.isError ? (
         <ForbiddenNote
           resource={t("errors.resources.oauthGrants")}
+          target="oauth-grants"
           error={grants.error}
           onRetry={() => void grants.refetch()}
         />
@@ -466,7 +468,6 @@ export function AuthSessions() {
   // readiness tracks `sessions` alone — `users` is best-effort and the screen
   // renders without it, so waiting on it would overstate time-to-interactive
   useScreenReady(!sessions.isLoading);
-  useErrorState(!!sessions.error, "auth-sessions");
 
   // the end of a consent, when the control plane sent the browser here (#2166)
   const location = useLocation();
@@ -545,6 +546,7 @@ export function AuthSessions() {
       {sessions.isError ? (
         <ForbiddenNote
           resource={t("errors.resources.authSessions")}
+          target="auth-sessions"
           error={sessions.error}
           onRetry={() => void sessions.refetch()}
         />

@@ -19,7 +19,7 @@ import {
   type ModelDefaultsDto,
 } from "@/lib/api";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // every field is optional, so the form keeps raw strings and an empty string
 // means "leave this to the provider" rather than "send zero"
@@ -107,7 +107,6 @@ function ModelSettingsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `defaults` is the query the user is actually waiting on for this screen
   useScreenReady(!defaults.isLoading);
-  useErrorState(!!defaults.error, "model-settings");
 
   const [form, setForm] = React.useState<FormState | null>(null);
   React.useEffect(() => {
@@ -172,6 +171,7 @@ function ModelSettingsScreen() {
           error={defaults.error}
           resource={t("errors.resources.modelSettings")}
           onRetry={() => void defaults.refetch()}
+          target="model-settings"
         />
       </div>
     );

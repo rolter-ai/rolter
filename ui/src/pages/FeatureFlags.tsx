@@ -20,7 +20,7 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 interface FlagCopy {
   title: string;
@@ -80,7 +80,6 @@ function FeatureFlagsScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `flags` is the query the user is actually waiting on for this screen
   useScreenReady(!flags.isLoading);
-  useErrorState(!!flags.error, "feature-flags");
 
   const [form, setForm] = React.useState<FeatureFlagValues | null>(null);
   React.useEffect(() => {
@@ -129,6 +128,7 @@ function FeatureFlagsScreen() {
           error={flags.error}
           resource={t("errors.resources.featureFlags")}
           onRetry={() => void flags.refetch()}
+          target="feature-flags"
         />
       </div>
     );

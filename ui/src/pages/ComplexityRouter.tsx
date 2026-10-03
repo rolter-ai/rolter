@@ -25,7 +25,7 @@ import {
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 /**
  * What is known about one route's complexity policy.
@@ -92,10 +92,9 @@ export default function ComplexityRouter() {
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
   // the route list is half of what the reader waits on — the policy reads decide
-  // what every card says — so readiness and the error signal follow both
+  // what every card says — so readiness follows both. the error signal is the
+  // two `LoadError`s' own, one for the route list and one for the policy group
   useScreenReady(!routes.isLoading && checking.length === 0);
-  useErrorState(!!routes.error, "complexity-router");
-  useErrorState(failed.length > 0, "complexity-policies");
 
   return (
     <PageBody>
@@ -124,6 +123,7 @@ export default function ComplexityRouter() {
           error={routes.error}
           resource={t("errors.resources.routes")}
           onRetry={() => void routes.refetch()}
+          target="complexity-routes"
         />
       )}
       {routes.isSuccess && states.length === 0 && (
@@ -153,6 +153,7 @@ export default function ComplexityRouter() {
             error={failed[0].error}
             resource={t("errors.resources.complexityPolicies")}
             onRetry={() => failed.forEach((f) => f.retry())}
+            target="complexity-policies"
           />
           <div className="flex flex-wrap gap-2.5">
             {failed.map(({ route }) => (
@@ -372,6 +373,7 @@ function PolicyDialog({
           error={existing.error}
           resource={translate("errors.resources.complexityPolicy")}
           onRetry={() => void existing.refetch()}
+          target="complexity-policy"
         />
       )}
       {!existing.isPending && !existing.error && (
