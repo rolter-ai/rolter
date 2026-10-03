@@ -41,6 +41,9 @@ import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { RowCapabilityScope, type RowScope } from "@/lib/can";
+import { capGateScope } from "@/lib/limit-scope";
+import { useOrgScope } from "@/components/OrgScopePicker";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -63,6 +66,7 @@ export default function Limits() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -314,6 +318,10 @@ export default function Limits() {
               key={budget.id}
               budget={budget}
               scope={scopeName}
+              gateAt={capGateScope(budget, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingBudget(budget);
                 setEditBudgetOpen(true);
@@ -379,6 +387,10 @@ export default function Limits() {
               key={limit.id}
               limit={limit}
               scope={scopeName}
+              gateAt={capGateScope(limit, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingRateLimit(limit);
                 setEditRateLimitOpen(true);
@@ -570,9 +582,11 @@ function BudgetCard({
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   budget: BudgetRow;
   scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -591,7 +605,7 @@ function BudgetCard({
     <LimitCard
       figure={<span className="block truncate font-mono text-xl font-medium">{names.amount}</span>}
       actions={
-        <>
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="budget:update"
             control="budget-edit"
@@ -608,7 +622,7 @@ function BudgetCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </>
+        </RowCapabilityScope>
       }
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -642,9 +656,11 @@ function RateLimitCard({
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   limit: RateLimitRow;
   scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -673,7 +689,7 @@ function RateLimitCard({
         </div>
       }
       actions={
-        <>
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="rate_limit:update"
             control="rate-limit-edit"
@@ -690,7 +706,7 @@ function RateLimitCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </>
+        </RowCapabilityScope>
       }
     />
   );

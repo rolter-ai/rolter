@@ -28,6 +28,7 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
+import { ProfileCard } from "@/components/ProfileCard";
 import { TwoFactorPanel } from "@/components/TwoFactorPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ import {
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { describeError } from "@/lib/error-copy";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -123,6 +125,8 @@ export default function Account() {
 
   return (
     <PageBody>
+      {/* who you are comes before how you sign in (#2434) */}
+      <ProfileCard />
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
@@ -382,7 +386,7 @@ function KeyCard({
             <span>{t("account.keys.card.noUsage")}</span>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {/* both controls name their card: N identical "Rotate" and "Delete"
               buttons are a list a screen reader cannot tell apart (#1214, #1896) */}
           <Button
@@ -483,7 +487,11 @@ function MintKeyDialog({
       // the lead is ours and translated; the control plane's own words follow as
       // the detail, since the server answers in English whatever the locale
       errorMessage={mint.isError ? t("account.keys.mint.failed") : undefined}
-      errorDetail={mint.isError ? errorDetail(mint.error) : undefined}
+      errorDetail={
+        mint.isError
+          ? (describeError(mint.error, t).detail ?? describeError(mint.error, t).message)
+          : undefined
+      }
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}

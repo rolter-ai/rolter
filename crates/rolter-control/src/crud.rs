@@ -3831,7 +3831,7 @@ async fn set_route_complexity(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    Json(value): Json<serde_json::Value>,
+    SafeJson(value): SafeJson<serde_json::Value>,
 ) -> ApiResult<Json<Route>> {
     let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
     let policy: rolter_balancer::complexity::ComplexityPolicy = serde_json::from_value(value)
@@ -4455,6 +4455,39 @@ fn validate_scope(scope_type: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Authorize reading the caps set at one scope.
+///
+/// A cap applies to everything beneath the scope it is set on, so the caller
+/// may read the rows at their own scope and at the team and org above it, which
+/// is what throttles their keys (#2527). Holding the role at the scope itself
+/// passes as always. Otherwise the scope must be the team or org of a place the
+/// caller holds the role at; another project's rows, a sibling team's, a
+/// customer's or a business unit's stay refused, and writes never come through
+/// here.
+async fn authorize_scope_read(
+    state: &ControlState,
+    principal: &Principal,
+    scope: &ScopeQuery,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    match authorize(state, principal, chain, requirement).await {
+        Err(ApiError::Forbidden) if matches!(scope.scope_type.as_str(), "org" | "team") => {}
+        other => return other,
+    }
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    for held in filter.reach(pool(state)).await? {
+        let above = match scope.scope_type.as_str() {
+            "org" => held.org == Some(scope.scope_id),
+            _ => held.team == Some(scope.scope_id),
+        };
+        if above && filter.allows(held) {
+            return Ok(());
+        }
+    }
+    Err(ApiError::Forbidden)
+}
+
 async fn list_budgets(
     principal: Principal,
     State(state): State<ControlState>,
@@ -4462,7 +4495,7 @@ async fn list_budgets(
 ) -> ApiResult<Json<Vec<Budget>>> {
     validate_scope(&scope.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
-    authorize(&state, &principal, chain, cap!("budget", Read)).await?;
+    authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
     Ok(Json(
         BudgetRepo(pool(&state))
             .list_for_scope(&scope.scope_type, scope.scope_id)
@@ -4738,7 +4771,7 @@ async fn list_rate_limits(
 ) -> ApiResult<Json<Vec<RateLimit>>> {
     validate_scope(&scope.scope_type)?;
     let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
-    authorize(&state, &principal, chain, cap!("rate_limit", Read)).await?;
+    authorize_scope_read(&state, &principal, &scope, chain, cap!("rate_limit", Read)).await?;
     Ok(Json(
         RateLimitRepo(pool(&state))
             .list_for_scope(&scope.scope_type, scope.scope_id)
@@ -5237,6 +5270,20 @@ pub(crate) fn last_superadmin() -> ApiError {
     }
 }
 
+/// stable code of the 409 for a write that would leave an org with no active
+/// org-scoped admin (#2311)
+pub(crate) const LAST_ORG_ADMIN: &str = "last_org_admin";
+
+/// the refusal for revoking an org's last admin grant. a superadmin is exempt
+pub(crate) fn last_org_admin() -> ApiError {
+    ApiError::CodedConflict {
+        code: LAST_ORG_ADMIN,
+        message: "this is the organization's last admin grant; grant admin to another person \
+                  first, or ask a superadmin"
+            .to_string(),
+    }
+}
+
 /// edit a global account. superadmin-only because it reaches across every org
 /// the user belongs to and can grant the cross-org superadmin bit.
 async fn update_user(
@@ -5491,7 +5538,15 @@ async fn delete_membership(
     };
     let org_id = chain.org;
     authorize(&state, &principal, chain, cap!("membership", Delete)).await?;
-    MembershipRepo(pool).delete(id).await?;
+    // a superadmin can always repair an org, so only the other callers are
+    // kept from leaving it without an admin (#2311)
+    if MembershipRepo(pool)
+        .delete_guarded(id, !matches!(principal, Principal::Superadmin))
+        .await?
+        == LockoutGuard::WouldLockOut
+    {
+        return Err(last_org_admin());
+    }
     log_audit(
         &state,
         &principal,

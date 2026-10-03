@@ -60,15 +60,24 @@ await step("P2.3", "a traceparent joins the service's trace", async () => {
 });
 
 await step("P2.4", "a conversation stays on one replica; the pool still spreads", async () => {
-  // x-rolter-target names the upstream model; the replica is x-rolter-provider
-  const call = (session: string) =>
-    gw("/v1/chat/completions", svc.key, { model: "llama-3.1-8b-cached", max_tokens: 8, messages: [{ role: "user", content: `turn of ${session}: ${crypto.randomUUID()}` }] }, { "x-session-id": session }).then((r) => r.headers.get("x-rolter-provider") ?? `?${r.status}`);
-  const picks = await Promise.all(Array.from({ length: 24 }, (_, i) => call(`conv-${i % 6}`).then((p) => [`conv-${i % 6}`, p] as const)));
-  const bySession = new Map<string, Set<string>>();
-  for (const [s, p] of picks) (bySession.get(s) ?? bySession.set(s, new Set()).get(s)!).add(p);
-  const replicas = new Set(picks.map(([, p]) => p));
-  const sticky = [...bySession.values()].every((v) => v.size === 1);
-  const note = `6 conversations × 4 concurrent turns on llama-3.1-8b-cached (3 replicas): ${replicas.size} replica(s) used, each conversation on ${sticky ? "one" : "several"}`;
+  // cache_aware follows the conversation's prefix, not x-session-id: every turn resends the history, so
+  // a conversation's later turns share its opening and should land where the opening warmed a replica.
+  // x-rolter-provider names the replica that served the call
+  const opening = (c: number) => `conversation ${c} ${crypto.randomUUID()}: summarise the quarterly report in detail, section by section, with figures`;
+  const conversation = async (c: number) => {
+    const messages: { role: string; content: string }[] = [{ role: "user", content: opening(c) }];
+    const served: string[] = [];
+    for (let turn = 0; turn < 4; turn++) {
+      const r = await gw("/v1/chat/completions", svc.key, { model: "llama-3.1-8b-cached", max_tokens: 8, messages });
+      served.push(r.headers.get("x-rolter-provider") ?? `?${r.status}`);
+      messages.push({ role: "assistant", content: "ok" }, { role: "user", content: `follow-up ${turn}` });
+    }
+    return served;
+  };
+  const convs = await Promise.all(Array.from({ length: 6 }, (_, c) => conversation(c)));
+  const replicas = new Set(convs.flat());
+  const sticky = convs.every((v) => new Set(v).size === 1);
+  const note = `6 conversations × 4 turns (history resent) on llama-3.1-8b-cached (3 replicas): ${replicas.size} replica(s) used, each conversation on ${sticky ? "one" : "several"} [${convs.map((v) => [...new Set(v)].join("+")).join(", ")}]`;
   return replicas.size > 1 && sticky ? ["pass", note] : ["bug", `${note} (#1851)`];
 });
 

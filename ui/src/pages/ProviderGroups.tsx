@@ -5,6 +5,8 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderGroupSheet, type ProviderGroupSheetMode } from "@/components/ProviderGroupSheet";
+import { orgScopeText, useOrgScope } from "@/components/OrgScopePicker";
+import { ProjectScopeBadge } from "@/components/ProjectScopeField";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
@@ -34,17 +36,21 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
+import { RowCapabilityScope } from "@/lib/can";
+import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
-const GRID = "1.2fr 1fr 1.2fr 2fr 108px";
+const GRID = "1.2fr 1fr 1.2fr 1fr 2fr 108px";
 
 export default function ProviderGroups() {
   const { t } = useTranslation();
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  // the names of the projects a row can be scoped to, for the Scope column
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -76,7 +82,7 @@ export default function ProviderGroups() {
   });
 
   const [search, setSearch] = React.useState("");
-  const { sort, cycle, apply } = useSort<"name" | "strategy" | "slug" | "members">();
+  const { sort, cycle, apply } = useSort<"name" | "strategy" | "slug" | "members" | "scope">();
   const [sheet, setSheet] = React.useState<{
     mode: ProviderGroupSheetMode;
     group?: ProviderGroupRow | null;
@@ -104,6 +110,8 @@ export default function ProviderGroups() {
     strategy: (g) => g.strategy,
     slug: (g) => g.slug,
     members: (g) => g.members.length,
+    // org-wide rows first, then by the project's name
+    scope: (g) => (g.project_id ? orgScopeText(t, orgScope, { project_id: g.project_id }) : ""),
   });
 
   return (
@@ -168,6 +176,12 @@ export default function ProviderGroups() {
             onCycle={(c) => cycle(c as never)}
           />
           <SortLabel
+            label={t("pages.providerGroups.columns.scope")}
+            col="scope"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <SortLabel
             label={t("pages.providerGroups.columns.members")}
             col="members"
             sort={sort}
@@ -197,6 +211,9 @@ export default function ProviderGroups() {
                 className="h-6 px-1"
               />
             </ListCell>
+            <ListCell className="grid">
+              <ProjectScopeBadge projectId={group.project_id} scope={orgScope} />
+            </ListCell>
             <ListCell className="flex min-w-0 flex-wrap items-center gap-1">
               {group.members.length === 0 ? (
                 <span className="text-xs text-muted-foreground">
@@ -212,32 +229,34 @@ export default function ProviderGroups() {
               )}
             </ListCell>
             <ListCell className="flex items-center justify-end gap-1.5">
-              <GatedButton
-                gate="provider_group:update"
-                control="provider-group-edit"
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("pages.providerGroups.editOne", { name: group.name })}
-                onClick={() => setSheet({ mode: "edit", group })}
-              >
-                {t("pages.providerGroups.edit")}
-              </GatedButton>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("labels.labelsOf", { name: group.name })}
-                onClick={() => setLabelling(group)}
-              >
-                <Tag className="h-3.5 w-3.5" />
-              </Button>
-              <DeleteIconButton
-                gate="provider_group:delete"
-                control="provider-group-delete"
-                label={t("pages.providerGroups.deleteOne", { name: group.name })}
-                onClick={() => setDeleteTarget(group)}
-              />
+              <RowCapabilityScope at={rowGateScope(group, orgScope.byTeam)}>
+                <GatedButton
+                  gate="provider_group:update"
+                  control="provider-group-edit"
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.providerGroups.editOne", { name: group.name })}
+                  onClick={() => setSheet({ mode: "edit", group })}
+                >
+                  {t("pages.providerGroups.edit")}
+                </GatedButton>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("labels.labelsOf", { name: group.name })}
+                  onClick={() => setLabelling(group)}
+                >
+                  <Tag className="h-3.5 w-3.5" />
+                </Button>
+                <DeleteIconButton
+                  gate="provider_group:delete"
+                  control="provider-group-delete"
+                  label={t("pages.providerGroups.deleteOne", { name: group.name })}
+                  onClick={() => setDeleteTarget(group)}
+                />
+              </RowCapabilityScope>
             </ListCell>
           </ListRow>
         ))}
@@ -301,6 +320,7 @@ export default function ProviderGroups() {
         orgId={scope.orgId ?? null}
         providers={providers.data ?? []}
         group={sheet?.group ?? null}
+        defaultProjectId={scope.projectId}
         onDone={invalidate}
       />
 

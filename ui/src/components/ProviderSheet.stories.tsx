@@ -13,6 +13,7 @@ import {
   answerDiscardPrompt,
   discardPrompt,
   recording,
+  scoped,
   type Recorder,
 } from "@/pages/story-harness";
 
@@ -79,7 +80,8 @@ function Harness({
   const original = React.useRef<typeof globalThis.fetch | null>(null);
   const client = React.useMemo(() => {
     original.current ??= globalThis.fetch;
-    globalThis.fetch = fetchStub as typeof globalThis.fetch;
+    // the scope picker reads the org's teams and projects as the sheet opens
+    globalThis.fetch = scoped(fetchStub) as typeof globalThis.fetch;
     return new QueryClient({ defaultOptions: { queries: { retry: false } } });
   }, [fetchStub]);
   React.useEffect(

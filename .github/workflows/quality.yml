@@ -2,10 +2,10 @@ name: quality
 
 # reusable quality/security gate, called from ci.yml on every push/pr (and from
 # the one-shot publish-bootstrap.yml). the release paths do not re-run it: they
-# wait for ci.yml's `ci-ok` on the commit they publish (release-plz.yml's
-# `release-gate` on the push run, release.yml's `verify-external-checks` on the
-# tagged sha), so nothing publishes on a commit whose tests, lint or
-# supply-chain check has not passed.
+# wait for `ci-ok` on ci.yml's push run for the commit they publish
+# (release-plz.yml's `release-gate` and release.yml's `verify-external-checks`,
+# both through scripts/wait-for-ci-gate.sh), so nothing publishes on a commit
+# whose tests, lint or supply-chain check has not passed.
 #
 # most development in this repo is done by AI agents, so CI is the strongest
 # reviewer: many independent checks. they share a handful of jobs by what they
@@ -70,7 +70,7 @@ jobs:
         id: checkout
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         id: toolchain
         if: ${{ !cancelled() }}
         with:
@@ -242,7 +242,7 @@ jobs:
           # dispatch finds it with git merge-base, which needs the history a
           # shallow clone omits
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         id: toolchain
         if: ${{ !cancelled() }}
         with:
@@ -562,7 +562,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
       - uses: ./.github/actions/wild-linker
@@ -715,6 +715,15 @@ jobs:
         id: session-urls-fixture
         if: ${{ !cancelled() }}
         run: bash scripts/test-agent-session-urls.sh
+      # ci-ok's `edited` fast path waits on and reads other ci runs through the
+      # api, so its shell only ever runs on a pull request whose title or body
+      # was edited. this runs scripts/assert-gate-ran.sh against a fake gh and
+      # clock: a gate that passes or fails while the edit waits, one that never
+      # finishes, concurrent edits, and a flaking api (#2391, #1328)
+      - name: ci-ok fast path against a fake gh
+        id: fast-path-fixture
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-assert-gate-ran.sh
 
       # ── storage: migrations are append-only ───────────────────────────────
       # sqlx checksums every applied migration, so editing a shipped file breaks
@@ -944,6 +953,7 @@ jobs:
           OUTCOME_HELM: ${{ steps.helm.outcome }}
           OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
+          OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
           OUTCOME_TYPOS: ${{ steps.typos.outcome }}
           OUTCOME_TAPLO: ${{ steps.taplo.outcome }}
@@ -1017,6 +1027,8 @@ jobs:
             "bash scripts/check-agent-session-urls.sh --commit-range origin/master..HEAD"
           row "no agent session urls (commits)" "pr body lookups against a fake gh" "${OUTCOME_SESSION_URLS_FIXTURE}" yes \
             "prek run agent-session-urls --all-files"
+          row "ci-ok fast path" "ci-ok fast path against a fake gh" "${OUTCOME_FAST_PATH_FIXTURE}" yes \
+            "prek run assert-gate-ran --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
           row "typos" "typos" "${OUTCOME_TYPOS}" yes "prek run typos --all-files"
@@ -1392,7 +1404,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: stable
           components: llvm-tools-preview

@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 
 import { GatedButton } from "@/components/GatedButton";
+import { GatewayBasePrompt } from "@/components/GatewayBasePrompt";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -144,6 +145,7 @@ function StepRow({ step, index }: { step: Step; index: number }) {
 function ClientRequest() {
   const { t } = useTranslation();
   const gateway = useGatewayBase();
+  if (!gateway) return <GatewayBasePrompt />;
   const snippet = [
     `curl ${gateway.url}/v1/chat/completions \\`,
     `  -H "Authorization: Bearer $ROLTER_VIRTUAL_KEY" \\`,

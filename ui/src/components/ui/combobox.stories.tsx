@@ -67,16 +67,18 @@ function Controlled({
   clearable = false,
   disabled = false,
   label = "Strategy",
+  width = "w-80",
 }: {
   options?: ComboboxOption[];
   initial?: string;
   clearable?: boolean;
   disabled?: boolean;
   label?: string;
+  width?: string;
 }) {
   const [value, setValue] = React.useState(initial);
   return (
-    <div className="w-80">
+    <div className={width}>
       <Field label={label} hint={`current: ${value || "(none)"}`}>
         <Combobox
           options={options}
@@ -199,6 +201,28 @@ export const ScrolledGroupsKeepTheirName: Story = {
         await expect(within(group).getAllByRole("option").length).toBeGreaterThan(0);
       }
     });
+  },
+};
+
+// a selected label longer than the control ends in an ellipsis rather than being
+// cut mid-glyph under the chevron, and the full label stays on the title (#2261)
+export const LongSelectedLabelEllipsizes: Story = {
+  render: () => (
+    <Controlled
+      width="w-40"
+      options={[
+        { value: "block", label: "Блокировать при сбое выполнения плагина" },
+        { value: "allow", label: "Пропускать" },
+      ]}
+      initial="block"
+      label="Failure policy"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const input = within(canvasElement).getByRole("combobox") as HTMLInputElement;
+    await expect(getComputedStyle(input).textOverflow).toBe("ellipsis");
+    await expect(input.scrollWidth).toBeGreaterThan(input.clientWidth);
+    await expect(input.title).toBe("Блокировать при сбое выполнения плагина");
   },
 };
 
@@ -366,6 +390,21 @@ export const ClearsSelection: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Clear selection" }));
     await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
     await expect(canvas.getByRole("combobox", { name: "Strategy" })).toHaveValue("");
+  },
+};
+
+// keyboard path: Backspace (or Delete) with nothing typed removes the selection
+export const ClearsFromTheKeyboard: Story = {
+  render: () => <Controlled initial="weighted" clearable />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Strategy" });
+    await userEvent.tab();
+    await expect(input).toHaveFocus();
+    await userEvent.keyboard("{Backspace}");
+    await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+    await expect(input).toHaveValue("");
+    await expect(input).toHaveFocus();
   },
 };
 
