@@ -1585,9 +1585,13 @@ export const PendingInvitationsAreListed: Story = {
 
     const row = (email: string) =>
       within(section.getByText(email).closest('[role="row"]') as HTMLElement);
+    // the rows land with the invitations read, but the sender column is drawn
+    // from the users read and the scope column from the org's teams and
+    // projects, each a skeleton until its own read answers. under load either
+    // can land a commit after the rows, so wait for both before reading a row
+    await expect(await row("newcomer@example.com").findByText("ada@example.com")).toBeVisible();
+    await expect(await row("newcomer@example.com").findByText("Gateway")).toBeVisible();
     await expect(row("newcomer@example.com").getByText("Member")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("Gateway")).toBeVisible();
-    await expect(row("newcomer@example.com").getByText("ada@example.com")).toBeVisible();
     await expect(
       row("newcomer@example.com").getByText(expiryDate(INVITATIONS[0].expires_at)),
     ).toBeVisible();

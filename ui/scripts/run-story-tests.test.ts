@@ -14,6 +14,7 @@ import {
   parseWorkingDirectory,
   portIsFree,
   stopChild,
+  warmupStories,
   type StorybookIndex,
 } from "./run-story-tests";
 
@@ -52,6 +53,43 @@ describe("indexedPaths", () => {
     // would make every file look absent from its own index
     const paths = indexedPaths(index([["screens-keys--empty", "./src/pages/Keys.stories.tsx"]]));
     expect(paths.has("src/pages/Keys.stories.tsx")).toBe(true);
+  });
+});
+
+describe("warmupStories", () => {
+  it("opens the first story of each file, and only of the files asked for", () => {
+    const served = index([
+      ["screens-keys--empty", "./src/pages/Keys.stories.tsx"],
+      ["screens-keys--loaded", "./src/pages/Keys.stories.tsx"],
+      ["screens-users--loaded", "./src/pages/Users.stories.tsx"],
+      ["screens-rbac--loaded", "./src/pages/Rbac.stories.tsx"],
+    ]);
+    const files = [{ path: "src/pages/Keys.stories.tsx" }, { path: "src/pages/Users.stories.tsx" }];
+    expect(warmupStories(served, files)).toEqual(["screens-keys--empty", "screens-users--loaded"]);
+  });
+
+  it("never picks a docs entry, which renders no story", () => {
+    const served: StorybookIndex = {
+      entries: {
+        "screens-keys--docs": {
+          id: "screens-keys--docs",
+          importPath: "./src/pages/Keys.stories.tsx",
+          type: "docs",
+        },
+        "screens-keys--empty": {
+          id: "screens-keys--empty",
+          importPath: "./src/pages/Keys.stories.tsx",
+          type: "story",
+        },
+      },
+    };
+    expect(warmupStories(served, [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([
+      "screens-keys--empty",
+    ]);
+  });
+
+  it("skips a file the index has no story for", () => {
+    expect(warmupStories(index([]), [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([]);
   });
 });
 
