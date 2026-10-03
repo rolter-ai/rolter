@@ -142,8 +142,8 @@ struct ProfileResponse {
 /// SCIM is the only source treated as authoritative: its `displayName` is
 /// written into `users.display_name` on every provision and replace, so a
 /// local edit would be overwritten on the next sync. OIDC's claim is read at
-/// login but never persisted, and LDAP's is likewise unused, so those accounts
-/// keep an editable name.
+/// login but never persisted, and LDAP is not wired to any sign-in route
+/// (#1826), so those accounts keep an editable name.
 pub(crate) async fn display_name_managed(
     state: &ControlState,
     user_id: Uuid,

@@ -54,7 +54,7 @@ use crate::ControlState;
 /// [`IdentityProvider`] for rolter's own local accounts (email + argon2id
 /// password hash). Implements ROL-35: local login is now one of potentially
 /// several pluggable providers, alongside [`crate::sso::OidcIdentityProvider`]
-/// and, eventually, LDAP (#241).
+/// and, once it is wired to sign-in, LDAP (#1826).
 pub(crate) struct LocalIdentityProvider {
     pool: PgPool,
 }

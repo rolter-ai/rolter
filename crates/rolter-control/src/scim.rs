@@ -195,6 +195,15 @@ impl FromRequestParts<ControlState> for ScimPrincipal {
 /// Render a user + identity as a SCIM Users resource. `active` mirrors the
 /// account's deactivation flag, which is the only lifecycle state SCIM and the
 /// dashboard both act on.
+///
+/// `displayName` is echoed from `scim_identities` exactly as the IdP last sent
+/// it, not from the sanitised copy on `users.display_name` (#2731). IdPs
+/// reconcile by comparing what they pushed with what the resource returns, so
+/// echoing a trimmed or control-stripped name would read as drift and be
+/// pushed again on every sync. The account column is also shared by every org
+/// that provisions the same person, and keeps its previous value when a name
+/// sanitises to nothing, so it is not this org's `displayName` to report. The
+/// value only ever leaves as an escaped JSON string to the IdP that sent it.
 fn user_resource(user: &User, identity: &ScimIdentity) -> Value {
     let mut resource = json!({
         "schemas": [USER_SCHEMA],

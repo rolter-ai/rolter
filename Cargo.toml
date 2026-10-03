@@ -136,7 +136,7 @@ jsonwebtoken = { version = "11", default-features = false, features = [
 ] }
 base64 = "0.23"
 
-# ldap identity provider (#241). 0.12, not 0.11: the older release pins rustls
+# ldap identity provider (#241), not yet wired to sign-in (#1826). 0.12, not 0.11: the older release pins rustls
 # 0.21 / ring 0.16, which carry RUSTSEC-2025-0009 and -0010 and would have been
 # a second, stale TLS stack alongside the workspace's rustls 0.23. tls-rustls-ring
 # matches the crypto provider rustls already uses here, so ldaps needs no system

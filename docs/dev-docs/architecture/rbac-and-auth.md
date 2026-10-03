@@ -648,8 +648,10 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories (#241), the next
-  provider to implement `IdentityProvider`.
+- **LDAP** — bind + group mapping for enterprise directories. The provider
+  implements `IdentityProvider` (#241) but no configuration, route or screen
+  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
+  [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.

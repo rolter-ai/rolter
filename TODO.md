@@ -53,7 +53,8 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] Pluggable `IdentityProvider` trait (`crates/rolter-auth/src/identity.rs`)
 - [x] OAuth2/OIDC SSO (group→role mapping) (#240 — per-org providers, PKCE, `source`-tagged memberships, org login policy with superadmin break-glass)
 - [x] Invitation onboarding: one-time links, invitee-chosen password (#712)
-- [x] LDAP bind + group mapping (#241 — `crates/rolter-control/src/ldap.rs`; SCIM user and group provisioning shipped alongside it in `scim.rs` / `scim_groups.rs`)
+- [x] LDAP bind + group mapping provider (#241 — `crates/rolter-control/src/ldap.rs`; SCIM user and group provisioning shipped alongside it in `scim.rs` / `scim_groups.rs`)
+- [ ] LDAP sign-in: wire the provider to a configuration, the login route and a Governance screen (#1826; #2731 kept the provider marked as unwired until then)
 - [x] Audit log writes + UI surface (`audit_log` table and repo methods, an RBAC capability, `ui/src/pages/AuditLog.tsx`)
 - [x] Virtual-key hardening (pepper, constant-time lookup, expiry/rotation, scopes)
 
