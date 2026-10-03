@@ -35,7 +35,7 @@ concurrency:
 jobs:
   smoke:
     name: live interactions endpoint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # the key lives in this environment, so a run against a real provider is
     # reviewable rather than something any workflow can reach for

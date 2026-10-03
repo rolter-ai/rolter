@@ -691,6 +691,18 @@ Pull-request runs are unchanged: pushing again to a PR still cancels the
 in-flight run for the superseded commit, which is what you want, because nobody
 will ever merge that sha.
 
+## Runner image pin
+
+Every workflow runs on `ubuntu-24.04`, never `ubuntu-latest`. GitHub moves the
+`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), which changes the
+preinstalled tools, the default Docker and compose versions and the system
+libraries under the gate at once, so the compose smoke test, coverage, the
+Playwright `--with-deps` install and the release image build could all start
+failing on an unrelated pull request. The pin is deliberate. Moving to
+`ubuntu-26.04` is a tracked follow-up (#2736), done on a branch where a
+dispatch run of `quality.yml` and `extended.yml` shows what breaks. New
+workflows and matrix entries use the explicit `ubuntu-24.04` label too.
+
 ## `codeql (rust)` on a pull request with no Rust change
 
 `codeql (rust)` is the longest job `ci-ok` waits on (about 8 min), and about
