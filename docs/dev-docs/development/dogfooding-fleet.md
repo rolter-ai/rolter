@@ -44,6 +44,7 @@ just dogfood-sheet  # re-print every url, login, endpoint and model
 just dogfood-key    # mint another gateway virtual key
 just dogfood-seed   # re-import dogfood.toml over a running stack
 just dogfood-adaptive off  # serve deepseek-r1 from its fallback stack (`on` undoes it)
+just dogfood-capture off   # stop raw payload capture (`on` undoes it; `just dogfood` turns it back on)
 just dogfood-ux     # prove the dashboard UX capture works, before relying on it
 ```
 
