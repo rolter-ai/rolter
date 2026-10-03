@@ -297,7 +297,11 @@ function TargetRow({
       />
       {/* the dot is the row's only state marker, so its meaning is also text */}
       <span className="sr-only">{label(state)}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">{row.target_id}</span>
+      {/* a full row of its own below sm, so the four fixed-width figures wrap
+          under the name instead of squeezing it to "gp…" (#2004) */}
+      <span className="min-w-0 flex-[1_1_100%] truncate font-mono text-xs sm:flex-1">
+        {row.target_id}
+      </span>
       <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
       <span
         className={cn(
