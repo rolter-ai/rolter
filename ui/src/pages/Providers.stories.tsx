@@ -29,6 +29,7 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  withDocsBase,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
@@ -165,7 +166,7 @@ export const NoSearchMatch: Story = {
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await userEvent.type(canvas.getByLabelText("Search providers"), "cohere");
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -423,7 +424,7 @@ export const NoLabelMatch: Story = {
     await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
     // clearing puts both back, so the button really cleared both narrowings
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
   },
 };
@@ -490,20 +491,6 @@ export const LabelsUnavailable: Story = {
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /**
  * Open the add-provider sheet, where the provider-key field explains which of
