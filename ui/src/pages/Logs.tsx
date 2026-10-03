@@ -243,6 +243,16 @@ const TH =
   "sticky top-0 z-[1] whitespace-nowrap border-b border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-2 py-2.5 text-left text-xs font-medium text-muted-foreground @min-[480px]:px-3";
 const TD =
   "border-b border-[color:var(--border-subtle)] px-2 py-[9px] font-mono text-xs @min-[480px]:px-3";
+// below 480px the table is the wrong shape for a request, so each row stacks
+// instead: model and status on the first line, time and cost on the second,
+// the chevron beside both (#2446). the table elements stay, so the header and
+// the cells keep their names; the header is only taken out of sight. the
+// model gets what the fixed cells leave and is cut with an ellipsis rather than
+// wrapped, its full name in `title` and in the chevron's accessible name.
+// every class is written out whole: tailwind cannot see one built from parts
+const TR_STACKED =
+  "@max-[479px]:grid @max-[479px]:grid-cols-[minmax(0,1fr)_auto_1.75rem] @max-[479px]:items-center @max-[479px]:gap-x-2 @max-[479px]:border-b @max-[479px]:border-[color:var(--border-subtle)] @max-[479px]:px-3 @max-[479px]:py-2";
+const TD_STACKED = "@max-[479px]:border-b-0 @max-[479px]:p-0";
 const PROVIDER_COL = "hidden @min-[840px]:table-cell";
 const TOKENS_COL = "hidden @min-[720px]:table-cell";
 const LATENCY_COL = "hidden @min-[600px]:table-cell";
@@ -876,8 +886,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           </Button>
         </form>
 
-        <div className="@container min-h-0 flex-1 overflow-auto">
-          <table className="w-full min-w-[320px] table-fixed border-collapse text-sm">
+        <div className="@container relative min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[320px] table-fixed border-collapse text-sm @max-[479px]:block">
             <colgroup>
               <col className="w-[104px] @min-[480px]:w-28" />
               {/* what is left once the fixed ones have theirs */}
@@ -889,7 +899,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               <col className="w-[84px] @min-[480px]:w-24" />
               <col className="w-7 @min-[480px]:w-9" />
             </colgroup>
-            <thead>
+            <thead className="@max-[479px]:sr-only">
               <tr>
                 <th scope="col" className={TH}>
                   {t("pages.logs.time")}
@@ -917,7 +927,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="@max-[479px]:block">
               {rows.map((r) => {
                 const st = num(r.status);
                 // the drawer beside the table has no other tie back to the
@@ -931,6 +941,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     onClick={() => setSelected(r)}
                     className={cn(
                       "cursor-pointer transition-colors",
+                      TR_STACKED,
                       isOpen
                         ? "bg-[color:var(--surface-selected)]"
                         : "hover:bg-[color:var(--surface-hover)]",
@@ -939,12 +950,27 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     {/* the clock and its milliseconds, which tell rows apart.
                         the day is in the title and in the drawer's verdict,
                         not repeated on every row of a 24 hour window */}
-                    <td className={cn(TD, "truncate whitespace-nowrap")}>
+                    <td
+                      className={cn(
+                        TD,
+                        TD_STACKED,
+                        "truncate whitespace-nowrap @max-[479px]:col-start-1 @max-[479px]:row-start-2 @max-[479px]:text-[color:var(--text-secondary)]",
+                      )}
+                    >
                       <time dateTime={r.ts} title={fmt.dateTimeMs(r.ts)}>
                         {fmt.timeMs(r.ts)}
                       </time>
                     </td>
-                    <td className={cn(TD, "[overflow-wrap:anywhere]")}>{r.model}</td>
+                    <td
+                      title={r.model}
+                      className={cn(
+                        TD,
+                        TD_STACKED,
+                        "[overflow-wrap:anywhere] @max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
+                      )}
+                    >
+                      {r.model}
+                    </td>
                     <td
                       className={cn(
                         TD,
@@ -954,7 +980,13 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     >
                       {r.provider || "—"}
                     </td>
-                    <td className={TD}>
+                    <td
+                      className={cn(
+                        TD,
+                        TD_STACKED,
+                        "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
+                      )}
+                    >
                       <Badge
                         tone={verdictTone(st)}
                         className="font-mono text-[0.6875rem] font-semibold"
@@ -983,6 +1015,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     <td
                       className={cn(
                         TD,
+                        TD_STACKED,
+                        "@max-[479px]:col-start-2 @max-[479px]:row-start-2",
                         "whitespace-nowrap text-right text-[color:var(--text-secondary)]",
                       )}
                     >
@@ -991,6 +1025,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                     <td
                       className={cn(
                         TD,
+                        TD_STACKED,
+                        "@max-[479px]:col-start-3 @max-[479px]:row-span-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
                         "pl-0 pr-2 @min-[480px]:pl-0 @min-[480px]:pr-2.5 text-right",
                       )}
                     >

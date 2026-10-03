@@ -19,6 +19,22 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// reason to wait longer for a write whose rows are best-effort telemetry.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long an idle pooled connection to ClickHouse may be reused.
+///
+/// ClickHouse closes an idle keep-alive connection after its own
+/// `keep_alive_timeout` (10 seconds by default, 3 on older releases), and
+/// reqwest's default of 90 seconds keeps handing that connection out
+/// regardless. A flush written onto a socket the server is closing at that
+/// instant gets no response (hyper reports an incomplete message), so the batch
+/// is dropped and counted although ClickHouse would have accepted it (#2696,
+/// the same race as #1940 on the control plane). Retiring connections well
+/// inside the server's window means a reused connection is one the server still
+/// holds open.
+pub(crate) const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+// below the shortest keep_alive_timeout ClickHouse has shipped as a default
+const _: () = assert!(POOL_IDLE_TIMEOUT.as_secs() < 3);
+
 /// The client every ClickHouse writer uses, with the default bounds.
 pub(crate) fn client() -> reqwest::Client {
     client_with(CONNECT_TIMEOUT, REQUEST_TIMEOUT)
@@ -28,9 +44,20 @@ pub(crate) fn client() -> reqwest::Client {
 /// back to an unbounded client only if the builder itself fails, which cannot
 /// happen for a bare timeout configuration.
 pub(crate) fn client_with(connect: Duration, request: Duration) -> reqwest::Client {
+    client_with_pool_idle(connect, request, POOL_IDLE_TIMEOUT)
+}
+
+/// [`client_with`] with an explicit idle-connection bound, so a test can cross
+/// it without waiting out the production value.
+fn client_with_pool_idle(
+    connect: Duration,
+    request: Duration,
+    pool_idle: Duration,
+) -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(connect)
         .timeout(request)
+        .pool_idle_timeout(pool_idle)
         .build()
         .unwrap_or_default()
 }
@@ -65,6 +92,103 @@ mod tests {
             }
         });
         (url, handle)
+    }
+
+    /// A server that answers the first request on each connection, keeps the
+    /// connection alive, and drops it unanswered when a second request arrives
+    /// on it: what a client sees when it reuses a connection at the instant
+    /// ClickHouse's `keep_alive_timeout` closes it.
+    struct ClosesReusedConnections {
+        url: String,
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        _task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Read one HTTP/1.1 request (head plus a `content-length` body); `false`
+    /// when the peer closed first.
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0);
+        while buf.len() < head_end + length {
+            match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return false,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        true
+    }
+
+    impl ClosesReusedConnections {
+        async fn start() -> Self {
+            use tokio::io::AsyncWriteExt;
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = connections.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    counted.fetch_add(1, Relaxed);
+                    tokio::spawn(async move {
+                        if !read_request(&mut socket).await {
+                            return;
+                        }
+                        let reply = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n";
+                        if socket.write_all(reply).await.is_err() {
+                            return;
+                        }
+                        // the reused connection: closed with the request unanswered
+                        read_request(&mut socket).await;
+                    });
+                }
+            });
+            Self {
+                url: format!("http://127.0.0.1:{port}"),
+                connections,
+                _task: task,
+            }
+        }
+    }
+
+    /// A connection idle past the pool bound is retired rather than reused, so
+    /// a flush after a pause never lands on a socket ClickHouse is closing
+    /// (#2696). The fake server drops any second request on a connection:
+    /// reuse fails the post, a fresh connection succeeds.
+    #[tokio::test]
+    async fn an_idle_connection_is_retired_before_the_server_closes_it() {
+        let server = ClosesReusedConnections::start().await;
+        let pool_idle = Duration::from_millis(200);
+        let http = client_with_pool_idle(Duration::from_secs(1), Duration::from_secs(5), pool_idle);
+        for round in 0..2 {
+            let sent = tokio::time::timeout(CEILING, http.post(&server.url).body("x").send())
+                .await
+                .expect("bounded");
+            assert!(sent.is_ok(), "post {round} must be answered: {sent:?}");
+            // wall-clock, not paused tokio time: the pool stamps idle
+            // connections with std's clock
+            tokio::time::sleep(pool_idle * 3).await;
+        }
+        assert_eq!(server.connections.load(Relaxed), 2);
+    }
+
+    #[test]
+    fn production_client_retires_idle_connections_inside_the_server_window() {
+        assert!(POOL_IDLE_TIMEOUT < Duration::from_secs(3));
     }
 
     fn short_client() -> reqwest::Client {
