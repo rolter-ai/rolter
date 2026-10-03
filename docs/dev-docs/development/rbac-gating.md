@@ -98,8 +98,9 @@ read from the org's project list. The query key is the provider's, so rows
 sharing a scope share one request. A project the dashboard cannot place
 (deleted, or not listable by this caller) keeps the page's answer and the `403`
 stays the backstop. Stories play a project admin with
-`role={adminOfProject(id)}` on `Harness`, which answers `rbac/effective` per
-queried chain.
+`role={adminOfProject(id)}` on `Harness` — a viewer of the org plus an admin
+membership on the project — and the stub answers `rbac/effective` for the
+queried chain, deciding each row at its own scope as the server does.
 
 Budgets and rate limits (#2529) are the second user. A cap names its own scope,
 so `capGateScope(row, { byTeam, keyProjectId })` (`ui/src/lib/limit-scope.ts`)
@@ -249,6 +250,17 @@ written by `bun run gen:rbac` (`ui/scripts/gen-rbac-capabilities.ts`).
 `ui/src/lib/rbac-capabilities.ts` turns that copy into the two payloads the
 same way the control plane does: `matrixFixture()` is the port of
 `resource_view`, `effectiveFor()` of `allowed_for`.
+
+`allowed_for` decides each capability at the part of the queried chain its
+`scope` names (`chain_at`, #1877): an org-scoped row at the org alone, a
+team-scoped row at org + team, anything else at the whole chain, each with the
+role `resolve_role` picks there (most specific membership wins, ties to the
+higher role). `effectiveFor()` ports both (#2376), so a team admin's stub
+answers `role: "admin"` yet lacks `team:create` and `plugin:create`, exactly as
+the server does. A bare `role="admin"` is one org membership, which reaches
+every part of every chain; pass memberships to play anyone held lower.
+`rbac-matrix-source.test.ts` also re-parses `chain_at`'s match arms and fails
+when the port's `CHAIN_TRIMS` disagrees with them.
 
 It used to be a table typed out by hand in `story-harness.tsx`, and nothing
 compared the two. So it drifted — #1258 found it calling `model` and
