@@ -12606,6 +12606,41 @@ async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new
     );
 }
 
+/// #1810: drives the real route against a store that fails, so a handler that
+/// echoes the driver error fails here; the unit test it replaces only
+/// rendered an `ApiError` the test had built itself.
+#[tokio::test]
+async fn collector_config_redacts_a_failing_connector_query() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("sekrit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    // the schema is private to this test; a missing table makes sqlx return a
+    // driver error naming the relation
+    sqlx::query("drop table observability_connectors cascade")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/api/v1/connectors/collector-config"))
+        .bearer_auth("sekrit")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 500);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("failed to query observability connectors"),
+        "{body}"
+    );
+    assert!(!body.contains("observability_connectors"), "{body}");
+    assert!(!body.contains("does not exist"), "{body}");
+}
+
 /// #1162: the Security screen wrote to a table nothing downstream read. This
 /// is the propagation half of the fix — the enforcement half lives in
 /// `rolter-gateway`'s integration suite. It asserts the settings arrive in the
