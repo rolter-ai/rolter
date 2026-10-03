@@ -362,6 +362,13 @@ async fn create_user(
         Some(existing) => existing,
         None => UserRepo(pool).create(&email, None, false).await?,
     };
+    // deactivate before linking: when the lockout guard refuses it (the
+    // adopted account is the last admin it protects) no identity may be left
+    // behind, or the IdP's retry gets "userName already exists" instead of
+    // the same refusal (#2672)
+    if body.active == Some(false) {
+        deactivate(&state, user.id, true).await?;
+    }
     let identity = ScimIdentityRepo(pool)
         .upsert(
             user.id,
@@ -375,9 +382,6 @@ async fn create_user(
     // give the account a least-privilege foothold in the org it was
     // provisioned into; nothing here can grant more than viewer
     ensure_membership(&state, principal.org_id, user.id).await?;
-    if body.active == Some(false) {
-        deactivate(&state, user.id, true).await?;
-    }
     audit_scim(
         &state,
         &principal,
