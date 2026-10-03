@@ -5792,9 +5792,12 @@ mod tests {
             .await
             .unwrap();
 
+        // the oidc nonce is generated, never a literal: a fixed value here reads
+        // to codeql as a hard-coded cryptographic nonce
+        let nonce = Uuid::new_v4().to_string();
         // three abandoned logins, backdated past the ttl, and one in flight
         for state in ["old-1", "old-2", "old-3", "live"] {
-            repo.start_login(state, provider.id, "verifier", "nonce", "https://cb")
+            repo.start_login(state, provider.id, "verifier", &nonce, "https://cb")
                 .await
                 .unwrap();
         }
@@ -5847,7 +5850,7 @@ mod tests {
         // an expired state is refused even when the bounded sweep stops short
         // of it: a full batch of older rows sits in front, and the row is
         // spent all the same
-        repo.start_login("stale", provider.id, "verifier", "nonce", "https://cb")
+        repo.start_login("stale", provider.id, "verifier", &nonce, "https://cb")
             .await
             .unwrap();
         sqlx::query("update sso_login_states set created_at = now() - interval '1 hour'")
