@@ -4,11 +4,14 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Providers from "./Providers";
 import {
   Harness,
+  adminOfProject,
   cancelConfirmation,
   clickWhenEnabled,
   confirmDestructive,
   expectEmptyState,
+  expectAllowed,
   expectNoUxEvent,
+  expectRefused,
   expectSheetClosed,
   expectUxEvent,
   expectLoadError,
@@ -26,9 +29,18 @@ import {
   expectToast,
   uxEvents,
   type Recorder,
+  withDocsBase,
 } from "./story-harness";
 import type { LabelRow, ProviderGroupRow, ProviderRow, ProviderTestResult } from "@/lib/api";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
+import {
+  atMobile,
+  atTablet,
+  expectInFrame,
+  expectNoHorizontalOverflow,
+  phoneFits,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: ProviderRow[] = [
@@ -154,7 +166,7 @@ export const NoSearchMatch: Story = {
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await userEvent.type(canvas.getByLabelText("Search providers"), "cohere");
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
-    await expect(canvas.getByRole("button", { name: /Clear search/i })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /Clear filters/i })).toBeInTheDocument();
   },
 };
 
@@ -412,7 +424,7 @@ export const NoLabelMatch: Story = {
     await userEvent.click(await within(document.body).findByRole("option", { name: "region=eu" }));
     await waitFor(() => expect(canvas.getByText(/No providers match/)).toBeVisible());
     // clearing puts both back, so the button really cleared both narrowings
-    await userEvent.click(canvas.getByRole("button", { name: /Clear search/i }));
+    await userEvent.click(canvas.getByRole("button", { name: /Clear filters/i }));
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
   },
 };
@@ -479,20 +491,6 @@ export const LabelsUnavailable: Story = {
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /**
  * Open the add-provider sheet, where the provider-key field explains which of
@@ -909,3 +907,93 @@ export const DeleteUsageHandlesManyAndLongNames: Story = {
     await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
   },
 };
+
+/**
+ * A provider scoped to a project says so (#1919). The name comes from the org's
+ * project list, and an org-wide row says it is org-wide rather than leaving the
+ * cell empty, so the column reads as a statement about every row.
+ */
+export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Project: Gateway")).toBeVisible();
+    await expect(canvas.getByText("Organization-wide")).toBeVisible();
+    await expect(canvas.getByRole("columnheader", { name: /Scope/ })).toBeVisible();
+    // the badge sits in the scoped provider's own row
+    const row = canvas.getAllByText("openai-prod")[0].closest('[role="row"]') as HTMLElement;
+    await expect(within(row).getByText("Project: Gateway")).toBeVisible();
+    await expectListTable(canvasElement, "Model Providers");
+  },
+};
+
+/**
+ * A project admin looking at a mixed list (#2522).
+ *
+ * `provider` is a project capability, so asked at their own project the
+ * effective answer grants the writes, and a page-level gate would offer Edit
+ * and Delete on the org-wide row too — which `crud.rs` refuses, because it
+ * checks such a row at the org. Each row is gated at its own scope instead: the
+ * project's row is theirs, the org-wide one names the role it takes.
+ */
+export const ProjectAdminOnAMixedList: Story = {
+  render: () => (
+    <Harness
+      role={adminOfProject("project-1")}
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], project_id: "project-1" },
+            { ...PROVIDERS[1], project_id: null },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Edit provider openai-prod");
+    await expectAllowed(canvasElement, "Delete provider openai-prod");
+    await expectRefused(canvasElement, "Edit provider anthropic-eu");
+    await expectRefused(canvasElement, "Delete provider anthropic-eu");
+  },
+};
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const providersFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Providers />
+    </Harness>
+  ),
+  ready: async (canvas, locale) => {
+    await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
+    // the list scrolls sideways, but a row's buttons stay at the frame's edge:
+    // they sat at x=663 on a 375px phone, a scroll away from being pressed
+    const frame = canvas.getByRole("table");
+    const copy = (locale === "ru" ? ru : en).pages.providers.editOne;
+    const edit = canvas.getByRole("button", { name: copy.replace("{{name}}", "openai-prod") });
+    await expectInFrame(edit, frame);
+  },
+});
+export const MobileInRussian: Story = providersFit("mobile", "ru");
+export const ActionsStayInReachAtMobile: Story = providersFit("mobile", "en");

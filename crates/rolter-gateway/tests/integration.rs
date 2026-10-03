@@ -305,12 +305,18 @@ async fn mcp_logging_config(
     (config, seen)
 }
 
+/// The argument value the mcp audit row must redact, generated once per run.
+fn mcp_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("tok-{}", uuid::Uuid::new_v4()))
+}
+
 async fn mcp_call(gateway: SocketAddr, method: &str) -> Value {
     reqwest::Client::new()
         .post(format!("http://{gateway}/mcp/docs"))
         .header("x-api-key", "sk-mcp-log")
         .json(&json!({"jsonrpc": "2.0", "id": 41, "method": method,
-            "params": {"name": "search", "arguments": {"q": "rust", "token": "hunter2"}}}))
+            "params": {"name": "search", "arguments": {"q": "rust", "token": mcp_token()}}}))
         .send()
         .await
         .unwrap()
@@ -348,7 +354,7 @@ async fn mcp_proxy_records_a_tool_call_with_key_and_session_owner_attribution() 
     assert!(!row["event_id"].as_str().unwrap().is_empty());
     let arguments = row["arguments"].as_str().unwrap();
     assert!(arguments.contains("rust"), "{arguments}");
-    assert!(arguments.contains("[REDACTED]") && !arguments.contains("hunter2"));
+    assert!(arguments.contains("[REDACTED]") && !arguments.contains(mcp_token()));
     assert_eq!(row["result"], r#"{"content":[]}"#);
 }
 
@@ -4741,11 +4747,32 @@ async fn an_ingress_filter_is_absent_until_the_operator_sets_one() {
     assert_eq!(resp.status(), 200);
 }
 
+/// Serve the gateway the way `run` does when it polls a control plane, so
+/// auth decides as a managed deployment does.
+async fn serve_managed_gateway(config: &GatewayConfig) -> SocketAddr {
+    let mut state = rolter_gateway::AppState::with_logging(config, None);
+    state.managed_auth = true;
+    let app = rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    );
+    serve(app).await
+}
+
+// #2357: the Security screen's "enforce virtual keys" switch was removed
+// because a managed gateway holding no keys is closed whatever it said. pin
+// both halves of that: the closed default, and that the only way to open one
+// is the operator's own `server.require_auth = false`
 #[tokio::test]
-async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
-    let mut config = GatewayConfig::default();
-    config.security.virtual_key_required = true;
-    let addr = serve_gateway(&config).await;
+async fn a_managed_gateway_holding_no_keys_is_closed_unless_its_operator_opens_it() {
+    // the snapshot an older control plane sends still carries the retired
+    // field; switched off, it must not open anything
+    let snapshot: GatewayConfig = serde_json::from_value(json!({
+        "security": { "virtual_key_required": false },
+    }))
+    .unwrap();
+    let addr = serve_managed_gateway(&snapshot).await;
     let closed = reqwest::get(format!("http://{addr}/v1/models"))
         .await
         .unwrap();
@@ -4753,9 +4780,9 @@ async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
     let body: serde_json::Value = closed.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_api_key");
 
-    // and the same deployment with the toggle off answers — so the test is
-    // measuring the toggle, not the absence of keys
-    let addr = serve_gateway(&GatewayConfig::default()).await;
+    let mut opened = snapshot.clone();
+    opened.server.require_auth = Some(false);
+    let addr = serve_managed_gateway(&opened).await;
     let open = reqwest::get(format!("http://{addr}/v1/models"))
         .await
         .unwrap();
@@ -4765,7 +4792,7 @@ async fn enforcing_virtual_keys_closes_a_gateway_that_holds_no_keys() {
 #[tokio::test]
 async fn a_bypass_route_opens_exactly_the_path_it_names() {
     let mut config = GatewayConfig::default();
-    config.security.virtual_key_required = true;
+    config.server.require_auth = Some(true);
     config.security.auth_bypass_routes = vec!["/v1/models".to_string()];
     let addr = serve_gateway(&config).await;
     let client = reqwest::Client::new();

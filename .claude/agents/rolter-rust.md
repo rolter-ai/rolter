@@ -45,9 +45,9 @@ same PR.
   duplicate.
 - Finish the whole issue. If part of it is blocked by another issue, implement
   everything else and state plainly what you left and why.
-- Leave `ui/` to the dashboard station. When a backend change needs a screen
-  change, do not edit `ui/`; list the files and fields it touches in your
-  report so a `station:mac` child issue can be filed.
+- Leave `ui/` to the rolter-ui agent unless the parent asks otherwise. When a
+  backend change needs a screen change, list the files and fields it touches
+  in your report so the parent can plan the dashboard half.
 
 # Code standards
 
@@ -160,7 +160,8 @@ auth control ui docs infra ci deps release e2e` — and anything else fails the
 - **Never** put a Claude session or remote-connection URL in a commit message,
   a PR body, or anywhere else.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).
-- Open the PR as a draft, then mark it ready once `ci-ok` is green. Do not merge
+- Open the PR ready for review, not as a draft (a draft reports `BLOCKED` however
+  green its checks are), and keep owning it until `ci-ok` is green. Do not merge
   and never pass `--delete-branch`.
 - Ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the _same_ PR,
   including the `docs/dev-docs/SUMMARY.md` or `docs/user-docs/docs.json` nav line — an

@@ -8,6 +8,8 @@ import { PageBody } from "@/components/screen";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { LoadError } from "@/components/LoadError";
+import { SavedViews } from "@/components/SavedViews";
+import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Donut } from "@/components/ui/donut";
 import { LineChart } from "@/components/ui/line-chart";
@@ -23,23 +25,33 @@ import {
   fetchInvocations,
   type AnalyticsByModelRow,
   type InvocationRow,
+  type SavedViewFilters,
 } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { modelColor, rankedByRequests } from "@/lib/model-colors";
 import { isAwaiting } from "@/lib/read-state";
-import { windowBounds, type TimeWindow } from "@/lib/time-window";
+import {
+  DEFAULT_TIME_WINDOW,
+  readTimeWindow,
+  useAddressWindow,
+  useTimeWindowOptions,
+  windowBounds,
+  type TimeWindow,
+} from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
-// the screen reads one window, by name. its bounds are worked out as each
+// the figures and charts read one window, by name: the last 24 hours unless the
+// address names another (`?window=7d`). its bounds are worked out as each
 // request leaves rather than once when the module loads, so a tab left open
-// reads the last 24 hours as they are now and not every hour since it was
-// opened (#1975). the name is what the query keys carry
-const WINDOW_NAME: TimeWindow = "24h";
-const readWindow = () => ({ ...windowBounds(WINDOW_NAME), bucket: "hour" });
+// reads the window as it is now and not as it was when it was opened (#1975).
+// the name is what the query keys carry
+const readWindow = (name: TimeWindow) => ({ ...windowBounds(name), bucket: "hour" });
+// "recent" is the latest requests, whatever window the figures are read over
+const readRecent = () => windowBounds(DEFAULT_TIME_WINDOW);
 
 // the recent requests card says "live", so it asks again every 15s, the pace
 // of the other polled screens (Cluster, Adaptive Routing). react-query holds
@@ -104,12 +116,15 @@ const failedEmpty = (q: UseQueryResult<unknown>) =>
 function CardRead<T>({
   read,
   resource,
+  target,
   skeleton,
   failed,
   children,
 }: {
   read: UseQueryResult<T>;
   resource: string;
+  /** the card's region on the `error_state` UX event its `LoadError` records */
+  target: string;
   skeleton: React.ReactNode;
   failed?: React.ReactNode;
   children: (data: T) => React.ReactNode;
@@ -120,7 +135,12 @@ function CardRead<T>({
     if (!read.isError) return null;
     return (
       failed ?? (
-        <LoadError error={read.error} resource={resource} onRetry={() => void read.refetch()} />
+        <LoadError
+          error={read.error}
+          resource={resource}
+          onRetry={() => void read.refetch()}
+          target={target}
+        />
       )
     );
   }
@@ -131,15 +151,22 @@ function CardRead<T>({
 // since blanking a dashboard that had loaded on every blip would tell the
 // reader less than the stale numbers do, and this line says they may be old.
 // plain text rather than a live region: it is rewritten by every failed poll,
-// and five of them announcing once a minute would be noise
+// and five of them announcing once a minute would be noise. it records an
+// `error_state` under `target`, once each time it appears (#2640): a LoadError
+// is not on screen, so nothing else would say this data is going stale
 function RefreshFailed({
   read,
+  target,
 }: {
   read: Pick<UseQueryResult<unknown>, "isError" | "data" | "errorUpdatedAt">;
+  /** the card's region on the UX event, suffixed `-stale` to tell it from a `LoadError` */
+  target: string;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  if (!read.isError || read.data === undefined) return null;
+  const stale = read.isError && read.data !== undefined;
+  useErrorState(stale, target);
+  if (!stale) return null;
   return (
     <p className="mt-2 text-xs text-[color:var(--status-danger-text)]">
       {t("pages.dashboard.feed.refreshFailedRetrying", { time: fmt.time(read.errorUpdatedAt) })}
@@ -172,9 +199,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const currency = useCurrencyCode();
   const money = (n: number) => fmt.currency(n, currency);
   const overviewPoll = pollEvery(pollMs ?? OVERVIEW_POLL_MS);
+  const [timeWindow, setWindow] = useAddressWindow();
+  const windowOptions = useTimeWindowOptions();
+  const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
+  // what a saved view keeps: the window. the buckets are fixed at an hour here
+  const savedFilters: SavedViewFilters = { window: timeWindow };
   const summary = useQuery({
-    queryKey: ["analytics", "summary", WINDOW_NAME],
-    queryFn: () => fetchAnalyticsSummary(readWindow()),
+    queryKey: ["analytics", "summary", timeWindow],
+    queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow)),
     refetchInterval: overviewPoll,
     retry: false,
   });
@@ -183,20 +215,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", WINDOW_NAME],
-    queryFn: () => fetchAnalyticsTimeseries(readWindow()),
+    queryKey: ["analytics", "timeseries", timeWindow],
+    queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", WINDOW_NAME],
-    queryFn: () => fetchAnalyticsByModel(readWindow()),
+    queryKey: ["analytics", "by-model", timeWindow],
+    queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const recent = useQuery({
     queryKey: ["invocations", "recent"],
-    queryFn: () => fetchInvocations({ ...readWindow(), limit: 8 }),
+    queryFn: () => fetchInvocations({ ...readRecent(), limit: 8 }),
     refetchInterval: pollEvery(pollMs ?? RECENT_POLL_MS),
     retry: false,
   });
@@ -207,13 +239,9 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // one that answered, makes it a partial failure, where each failed card holds
   // its own alert
   const outage = reads.every(failedEmpty);
-  // one signal per error placeholder on screen: the screen-level alert while
-  // there is one, else the card that shows it
-  useErrorState(outage, "dashboard-analytics");
-  useErrorState(!outage && failedEmpty(summary), "dashboard");
-  useErrorState(!outage && failedEmpty(series), "dashboard-spend");
-  useErrorState(!outage && failedEmpty(byModel), "dashboard-traffic");
-  useErrorState(!outage && failedEmpty(recent), "dashboard-recent");
+  // one `error_state` per error placeholder on screen, which each `LoadError`
+  // records itself: the screen-level alert while there is one, else the card
+  // that shows it (#2444)
 
   // a deployment with no analytics store answers every panel on this screen the
   // same way. It used to render as an empty state, which says "nothing happened
@@ -222,6 +250,14 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // it is one panel for the screen, not one per card
   const unavailable =
     reads.find((q) => q.data === undefined && isUnavailable(q.error))?.error ?? null;
+
+  // the Recent card says its refresh failed in its header, not in a line of its
+  // own, and that is the same appearance (#2640). it is said only while the
+  // cards are drawn, as the other lines are
+  useErrorState(
+    !unavailable && !outage && recent.isError && recent.data !== undefined,
+    "dashboard-recent-stale",
+  );
 
   if (unavailable || outage) {
     return (
@@ -240,6 +276,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             error={summary.error}
             resource={t("errors.resources.analytics")}
             onRetry={() => reads.forEach((q) => void q.refetch())}
+            target="dashboard-analytics"
           />
         )}
       </PageBody>
@@ -263,11 +300,26 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
 
   return (
     <PageBody className="gap-[18px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <Combobox
+          aria-label={t("common.timeWindow.label")}
+          className="w-48"
+          options={windowOptions}
+          value={timeWindow}
+          onChange={(next) => setWindow(readTimeWindow(next))}
+        />
+        <SavedViews
+          surface="dashboard"
+          current={savedFilters}
+          onApply={(view) => setWindow(readTimeWindow(view.window))}
+        />
+      </div>
       <GettingStarted requests={summary.isSuccess ? num(summary.data?.requests) : undefined} />
       <div data-testid="dashboard-figures">
         <CardRead
           read={summary}
           resource={t("errors.resources.dashboardFigures")}
+          target="dashboard"
           // `Skeleton` is `aria-hidden`, so the four bare ones this used to
           // render were a loading state no screen reader could hear (#1605)
           skeleton={<StatGridSkeleton cards={4} />}
@@ -320,7 +372,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             );
           }}
         </CardRead>
-        <RefreshFailed read={summary} />
+        <RefreshFailed read={summary} target="dashboard-stale" />
       </div>
 
       <IncompleteSpendNotice
@@ -332,7 +384,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <Card data-testid="dashboard-spend">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {t("pages.dashboard.last24h")}
+              {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.spendTitle")}</CardTitle>
             {/* the amounts follow the deployment's currency, so the subtitle
@@ -343,6 +395,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={series}
               resource={t("errors.resources.dashboardSpend")}
+              target="dashboard-spend"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={220} />
@@ -370,10 +423,10 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                   </p>
                 ) : (
                   <LineChart
-                    series={[{ name: "spend", values: spendPoints }]}
+                    series={[{ name: t("pages.dashboard.spendTitle"), values: spendPoints }]}
                     labels={spendLabels}
                     height={220}
-                    label={t("pages.dashboard.spendChartAria")}
+                    label={t("pages.dashboard.spendChartAria", { window: windowLabel })}
                     formatValue={(v) => money(v)}
                     emptyState={
                       <p className="text-sm text-muted-foreground">{t("analytics.noRowsYet")}</p>
@@ -382,13 +435,13 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={series} />
+            <RefreshFailed read={series} target="dashboard-spend-stale" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-traffic">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {t("pages.dashboard.last24h")}
+              {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.trafficTitle")}</CardTitle>
             <CardDescription>{t("pages.dashboard.trafficSub")}</CardDescription>
@@ -397,6 +450,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardTrafficShare")}
+              target="dashboard-traffic"
               skeleton={
                 <LoadingRegion>
                   <Skeleton height={180} />
@@ -426,7 +480,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} />
+            <RefreshFailed read={byModel} target="dashboard-traffic-stale" />
           </CardContent>
         </Card>
       </div>
@@ -435,7 +489,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <Card data-testid="dashboard-by-model">
           <CardHeader>
             <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
-              {t("pages.dashboard.last24h")}
+              {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.byModelTitle")}</CardTitle>
           </CardHeader>
@@ -443,6 +497,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={byModel}
               resource={t("errors.resources.dashboardByModel")}
+              target="dashboard-by-model"
               skeleton={<BarsSkeleton />}
               // the traffic share reads this endpoint and holds the alert with its
               // retry, so this card says where the failure is and adds none
@@ -488,7 +543,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} />
+            <RefreshFailed read={byModel} target="dashboard-by-model-stale" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-recent">
@@ -507,6 +562,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             <CardRead
               read={recent}
               resource={t("errors.resources.dashboardRecent")}
+              target="dashboard-recent"
               skeleton={<ListSkeleton rows={4} />}
             >
               {(rows) =>

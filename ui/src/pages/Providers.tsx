@@ -4,6 +4,8 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ProviderSheet, type ProviderSheetMode } from "@/components/ProviderSheet";
+import { useOrgScope, orgScopeText } from "@/components/OrgScopePicker";
+import { ProjectScopeBadge } from "@/components/ProjectScopeField";
 import { GatedButton } from "@/components/GatedButton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import { LoadError } from "@/components/LoadError";
@@ -15,6 +17,7 @@ import {
   ListEmptyRow,
   ListHeader,
   ListLoadingRow,
+  STICKY_ACTIONS,
   ListRow,
   ListTable,
   PageBody,
@@ -41,9 +44,11 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
+import { RowCapabilityScope } from "@/lib/can";
+import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
 
@@ -114,6 +119,7 @@ function ProviderUsageNotice({
           <Skeleton height={44} radius={8} />
         </LoadingRegion>
       ) : failed ? (
+        // load-error-allow: which routes use a provider, inside its sheet; the providers list pairs as providers
         <LoadError
           error={failed}
           resource={t("pages.providers.usage.resource")}
@@ -121,6 +127,7 @@ function ProviderUsageNotice({
             void config.refetch();
             void groups.refetch();
           }}
+          target="provider-usage"
         />
       ) : unused ? (
         <p className="text-xs text-muted-foreground">{t("pages.providers.usage.none")}</p>
@@ -154,6 +161,8 @@ export default function Providers() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  // the names of the projects a row can be scoped to, for the Scope column
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -188,7 +197,9 @@ export default function Providers() {
     provider?: ProviderRow | null;
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
-  const { sort, cycle, apply } = useSort<"name" | "kind" | "apiBase" | "slug" | "keyEnv">();
+  const { sort, cycle, apply } = useSort<
+    "name" | "kind" | "apiBase" | "slug" | "keyEnv" | "scope"
+  >();
   const [search, setSearch] = React.useState("");
   // the label the list is narrowed to, as `key=value`; "" is no filter
   const [labelFilter, setLabelFilter] = React.useState("");
@@ -214,7 +225,6 @@ export default function Providers() {
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider
   useScreenReady(!providers.isLoading);
-  useErrorState(!!providers.error, "provider-list");
 
   const scopeBlocked = !scope.isLoading && !!scope.errorKey;
   // editing and deleting a provider are an admin's, the same as adding one
@@ -235,10 +245,12 @@ export default function Providers() {
     apiBase: (p) => p.api_base,
     slug: (p) => p.slug,
     keyEnv: (p) => p.api_key_env ?? "",
+    // org-wide rows first, then by the project's name
+    scope: (p) => (p.project_id ? orgScopeText(t, orgScope, { project_id: p.project_id }) : ""),
   });
   const filtering = !!q || !!labelFilter;
 
-  const GRID = "1fr 1.1fr 2fr 1fr 1fr 108px";
+  const GRID = "1fr 1.1fr 1.7fr 1fr 1fr 1fr 108px";
 
   return (
     <PageBody>
@@ -267,6 +279,7 @@ export default function Providers() {
           error={providers.error}
           resource={t("errors.resources.providers")}
           onRetry={() => providers.refetch()}
+          target="providers"
         />
       )}
       {scopeBlocked && (
@@ -315,7 +328,13 @@ export default function Providers() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
-          <ListActionsHeader />
+          <SortLabel
+            label={t("pages.providers.colScope")}
+            col="scope"
+            sort={sort}
+            onCycle={(c) => cycle(c as never)}
+          />
+          <ListActionsHeader className={STICKY_ACTIONS.header} />
         </ListHeader>
         <ListLoadingRow read={providers}>
           <ListSkeleton rows={4} className="p-3" />
@@ -345,34 +364,39 @@ export default function Providers() {
             <ListCell className="truncate font-mono text-xs text-muted-foreground">
               {provider.api_key_env || "—"}
             </ListCell>
-            <ListCell className="flex items-center justify-end gap-1.5">
-              <GatedButton
-                gate="provider:update"
-                control="provider-edit"
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("pages.providers.editOne", { name: provider.name })}
-                onClick={() => setSheet({ mode: "edit", provider })}
-              >
-                {t("pages.providers.edit")}
-              </GatedButton>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-[30px]"
-                aria-label={t("labels.labelsOf", { name: provider.name })}
-                onClick={() => setLabelling(provider)}
-              >
-                <Tag className="h-3.5 w-3.5" />
-              </Button>
-              <DeleteIconButton
-                gate="provider:delete"
-                control="provider-delete"
-                label={t("pages.providers.deleteOne", { name: provider.name })}
-                title={t("pages.providers.deleteTitle")}
-                onClick={() => setDeleteTarget(provider)}
-              />
+            <ListCell className="grid">
+              <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />
+            </ListCell>
+            <ListCell className={`flex items-center justify-end gap-1.5 ${STICKY_ACTIONS.cell}`}>
+              <RowCapabilityScope at={rowGateScope(provider, orgScope.byTeam)}>
+                <GatedButton
+                  gate="provider:update"
+                  control="provider-edit"
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("pages.providers.editOne", { name: provider.name })}
+                  onClick={() => setSheet({ mode: "edit", provider })}
+                >
+                  {t("pages.providers.edit")}
+                </GatedButton>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
+                  aria-label={t("labels.labelsOf", { name: provider.name })}
+                  onClick={() => setLabelling(provider)}
+                >
+                  <Tag className="h-3.5 w-3.5" />
+                </Button>
+                <DeleteIconButton
+                  gate="provider:delete"
+                  control="provider-delete"
+                  label={t("pages.providers.deleteOne", { name: provider.name })}
+                  title={t("pages.providers.deleteTitle")}
+                  onClick={() => setDeleteTarget(provider)}
+                />
+              </RowCapabilityScope>
             </ListCell>
           </ListRow>
         ))}
@@ -393,7 +417,7 @@ export default function Providers() {
                     setLabelFilter("");
                   }}
                 >
-                  {t("common.clearSearch")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
                 <GatedButton
@@ -427,6 +451,7 @@ export default function Providers() {
         onOpenChange={(open) => !open && setSheet(null)}
         orgId={scope.orgId ?? null}
         provider={sheet?.provider ?? null}
+        defaultProjectId={scope.projectId}
         onDone={invalidate}
       />
 

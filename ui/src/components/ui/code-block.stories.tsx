@@ -245,6 +245,32 @@ export const Copies: Story = {
  * The scroll container takes focus, so the part of a payload below the fold is
  * reachable without a mouse (#1181).
  */
+/** the copy button sits above the first line, never over it (#2226) */
+export const CopyButtonClearsFirstLine: Story = {
+  render: () => (
+    <div className="w-80">
+      <CodeBlock
+        label="Collector config"
+        language="yaml"
+        value={`endpoint: https://collector.example.internal:4318/v1/traces?with=a&very=long&first=line\nsecond: line`}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = await canvas.findByRole("button", { name: /copy/i });
+    const code = canvasElement.querySelector("code");
+    if (!code) throw new Error("no code element");
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const first = range.getClientRects()[0];
+    const b = button.getBoundingClientRect();
+    const overlaps =
+      b.left < first.right && b.right > first.left && b.top < first.bottom && b.bottom > first.top;
+    await expect(overlaps).toBe(false);
+  },
+};
+
 export const KeyboardReachable: Story = {
   args: { maxHeight: 80 },
   play: async ({ canvasElement }) => {

@@ -231,9 +231,75 @@ export const RejectsInvalidConfiguration: Story = {
     await userEvent.click(within(dialog).getByLabelText("Plugin configuration"));
     await userEvent.paste("[]");
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
+    const config = within(dialog).getByLabelText("Plugin configuration");
     await expect(within(dialog).getByRole("alert")).toHaveTextContent(
       "Configuration must be a JSON object.",
     );
+    await expect(config).toHaveAttribute("aria-invalid", "true");
+    await expect(config).toHaveAccessibleDescription("Configuration must be a JSON object.");
+    await waitFor(() => expect(config).toHaveFocus());
+  },
+};
+
+// nothing is flagged before the first press on Install; then every failing
+// field is marked under itself and focus moves to the first one (#2651)
+export const MarksEveryInvalidField: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
+    const dialog = within(document.body).getByRole("dialog");
+    const name = within(dialog).getByLabelText("Name");
+    const endpoint = within(dialog).getByLabelText("Webhook endpoint");
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "plugins.internal/hook");
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await expect(within(dialog).queryByRole("alert")).toBeNull();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
+    await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
+    await expect(name).toHaveAccessibleDescription("Name is required.");
+    await expect(endpoint).toHaveAttribute("aria-invalid", "true");
+    await expect(endpoint).toHaveAccessibleDescription(
+      "Endpoint must start with http:// or https://.",
+    );
+    await waitFor(() => expect(name).toHaveFocus());
+    // fixing a field clears its message as it is typed
+    await userEvent.type(name, "Policy webhook");
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await expect(endpoint).toHaveAttribute("aria-invalid", "true");
+  },
+};
+
+// a 400 that names a field lands on that field, with focus, not in a toast
+export const ServerRejectionLandsOnTheField: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) => {
+        const scoped = scopeResponse(String(input));
+        if (scoped) return scoped;
+        if (init?.method === "POST") {
+          return json(
+            { error: { message: "secret_env must be omitted or name an environment variable" } },
+            400,
+          );
+        }
+        return json(PLUGINS);
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
+    const dialog = within(document.body).getByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
+    const secret = within(dialog).getByLabelText("Secret environment variable");
+    await userEvent.type(secret, " ");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
+    await waitFor(() => expect(secret).toHaveAttribute("aria-invalid", "true"));
+    await expect(secret).toHaveAccessibleDescription(
+      "secret_env must be omitted or name an environment variable",
+    );
+    await waitFor(() => expect(secret).toHaveFocus());
   },
 };
 

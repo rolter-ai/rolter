@@ -15,10 +15,17 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
-import { fetchAuditLogPage, fetchUsers, type AuditLogEntry } from "@/lib/api";
+import {
+  fetchAuditLogPage,
+  fetchDeploymentAuditLogPage,
+  fetchUsers,
+  type AuditLogEntry,
+} from "@/lib/api";
+import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
+import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 25;
 
@@ -31,58 +38,6 @@ const RANGES = [
   { id: "last7d", hours: 24 * 7 },
   { id: "last30d", hours: 24 * 30 },
   { id: "all", hours: null },
-] as const;
-
-// well-known audited actions for the filter dropdown; the API filters
-// server-side so the list doesn't depend on the current page
-const ACTIONS = [
-  "provider.create",
-  "provider.update",
-  "provider.delete",
-  "route.create",
-  "route.delete",
-  "route.set_params",
-  "route.set_complexity",
-  "route.set_advanced",
-  "virtual_key.create",
-  "virtual_key.delete",
-  "user.invite",
-  "user.update",
-  "user.delete",
-  "membership.create",
-  "membership.delete",
-  "budget.create",
-  "budget.delete",
-  "security.settings.update",
-  // account events: written with no org, and shown for this org's own people
-  "auth.login",
-  "auth.sso_login",
-  "auth.logout",
-  "auth.login_failed",
-  "auth.login_throttled",
-  "auth.login_locked",
-  "auth.mfa_enabled",
-  "auth.mfa_disabled",
-  "auth.mfa_failed",
-  "auth.mfa_confirm_failed",
-  "auth.mfa_disable_failed",
-  "auth.mfa_enrolment_required",
-  "auth.mfa_recovery_code_used",
-  "auth.mfa_recovery_codes_regenerated",
-  "auth.mfa_break_glass_reset",
-] as const;
-
-const TARGET_TYPES = [
-  "provider",
-  "route",
-  "route_target",
-  "virtual_key",
-  "user",
-  "membership",
-  "rate_limit",
-  "budget",
-  "model_price",
-  "security_settings",
 ] as const;
 
 // dashboard route that owns each audited resource type, for the link-out
@@ -98,6 +53,29 @@ const TARGET_PATH: Record<string, string> = {
   budget: "/budgets",
   model_price: "/pricing-overrides",
   security_settings: "/security",
+  // identity: the screens that own each target, so an SSO or SCIM row links out
+  sso_provider: "/sso",
+  sso_group_mapping: "/sso",
+  scim_token: "/user-provisioning",
+  scim_group: "/user-provisioning",
+  scim_group_mapping: "/user-provisioning",
+  custom_role: "/rbac",
+  invitation: "/gov-users",
+  team: "/gov-teams",
+  access_profile: "/access-profiles",
+  access_profile_assignment: "/access-profiles",
+  provider_group: "/provider-groups",
+  guardrail_rule: "/guardrail-rules",
+  guardrail_provider: "/guardrail-providers",
+  mcp_server: "/mcp-catalog",
+  plugin: "/plugins",
+  prompt_template: "/prompt-repo",
+  skill: "/skills-repo",
+  feature_flags: "/feature-flags",
+  client_settings: "/client-settings",
+  logging_settings: "/logs-settings",
+  compatibility_policy: "/compatibility",
+  cluster_node: "/cluster",
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -115,6 +93,12 @@ export default function AuditLog() {
   const fmt = useFormat();
   const scope = useScope();
   const [expanded, setExpanded] = React.useState<string | null>(null);
+
+  // the deployment-wide read is offered on an explicit yes only: an unanswered
+  // gate must not show a switch the control plane may then refuse
+  const canReadDeployment = useCan()("deployment_audit_log", "read") === true;
+  const [wide, setWide] = React.useState(false);
+  const deployment = canReadDeployment && wide;
 
   const [actor, setActor] = React.useState("");
   const [action, setAction] = React.useState("");
@@ -141,9 +125,17 @@ export default function AuditLog() {
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
-    queryKey: ["audit-log", scope.orgId, action, target, actorParam, rangeIdx, cursor],
-    queryFn: () =>
-      fetchAuditLogPage(scope.orgId as string, {
+    queryKey: [
+      "audit-log",
+      deployment ? "deployment" : scope.orgId,
+      action,
+      target,
+      actorParam,
+      rangeIdx,
+      cursor,
+    ],
+    queryFn: () => {
+      const query = {
         limit: PAGE_SIZE,
         cursor,
         action: action || undefined,
@@ -151,8 +143,12 @@ export default function AuditLog() {
         actor: actorParam,
         from,
         include_total: !cursor,
-      }),
-    enabled: !!scope.orgId,
+      };
+      return deployment
+        ? fetchDeploymentAuditLogPage(query)
+        : fetchAuditLogPage(scope.orgId as string, query);
+    },
+    enabled: deployment || !!scope.orgId,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -161,15 +157,15 @@ export default function AuditLog() {
 
   useScreenReady(!page.isLoading);
 
-  useErrorState(!!page.error, "audit-log");
+  const [total, setTotal] = React.useState<number | null>(null);
 
   // reset to the first page whenever the filter set changes
   React.useEffect(() => {
     setCursors([]);
-  }, [action, target, actorParam, rangeIdx]);
+    setTotal(null);
+  }, [action, target, actorParam, rangeIdx, deployment]);
 
   const rows = page.data?.items ?? [];
-  const [total, setTotal] = React.useState<number | null>(null);
   const filtersActive = !!actor || !!action || !!target || rangeIdx !== DEFAULT_RANGE;
   const clearFilters = () => {
     setActor("");
@@ -192,9 +188,31 @@ export default function AuditLog() {
       key: "actor_user_id",
       header: t("pages.auditLog.columns.actor"),
       mono: true,
-      render: (v) =>
-        v ? <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span> : "system",
+      render: (v, row) =>
+        v ? (
+          <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span>
+        ) : deployment && row.action.startsWith("auth.") ? (
+          // a sign-in attempt against an address nobody registered has no actor
+          <Badge tone="outline">{t("pages.auditLog.unknownAddress")}</Badge>
+        ) : (
+          "system"
+        ),
     },
+    ...(deployment
+      ? [
+          {
+            key: "org_id",
+            header: t("pages.auditLog.columns.org"),
+            mono: true,
+            render: (v: unknown) =>
+              v ? (
+                <span title={String(v)}>{String(v).slice(0, 8)}</span>
+              ) : (
+                <Badge tone="outline">{t("pages.auditLog.noOrg")}</Badge>
+              ),
+          },
+        ]
+      : []),
     {
       key: "action",
       header: t("pages.auditLog.columns.action"),
@@ -258,9 +276,10 @@ export default function AuditLog() {
           error={page.error}
           resource={t("errors.resources.auditLog")}
           onRetry={() => page.refetch()}
+          target="audit-log"
         />
       )}
-      {!scope.isLoading && !scope.errorKey && !scope.orgId && (
+      {!deployment && !scope.isLoading && !scope.errorKey && !scope.orgId && (
         <EmptyState
           uxTarget="audit-log-no-org"
           icon={<Building2 />}
@@ -269,10 +288,21 @@ export default function AuditLog() {
         />
       )}
 
-      {scope.orgId && (
+      {(deployment || scope.orgId) && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            {users.data && users.data.length > 0 ? (
+            {canReadDeployment && (
+              <Segmented
+                value={wide ? "deployment" : "org"}
+                options={[
+                  { value: "org", label: t("pages.auditLog.scopes.org") },
+                  { value: "deployment", label: t("pages.auditLog.scopes.deployment") },
+                ]}
+                onChange={(val) => setWide(val === "deployment")}
+                ariaLabel={t("pages.auditLog.scopeAria")}
+              />
+            )}
+            {!deployment && users.data && users.data.length > 0 ? (
               <Combobox
                 className="w-[280px]"
                 aria-label={t("pages.auditLog.actorFilterAria")}
@@ -293,13 +323,17 @@ export default function AuditLog() {
               />
             )}
             <Combobox
-              className="w-52"
+              className="w-60"
               aria-label={t("pages.auditLog.actionFilterAria")}
               value={action}
               onChange={setAction}
               options={[
                 { value: "", label: t("pages.auditLog.allActions") },
-                ...ACTIONS.map((a) => ({ value: a, label: a })),
+                ...groupedActions().map((a) => ({
+                  value: a,
+                  label: a,
+                  group: t(`pages.auditLog.actionGroups.${auditGroup(a)}`),
+                })),
               ]}
             />
             <Combobox
@@ -309,7 +343,7 @@ export default function AuditLog() {
               onChange={setTarget}
               options={[
                 { value: "", label: t("pages.auditLog.allTargets") },
-                ...TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
+                ...AUDIT_TARGET_TYPES.map((kind) => ({ value: kind, label: kind })),
               ]}
             />
             <Segmented
@@ -348,7 +382,7 @@ export default function AuditLog() {
                   actions={
                     filtersActive ? (
                       <Button variant="outline" onClick={clearFilters}>
-                        {t("common.clearSearch")}
+                        {t("common.clearFilters")}
                       </Button>
                     ) : undefined
                   }

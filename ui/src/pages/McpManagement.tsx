@@ -108,7 +108,7 @@ import {
 } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
 const slugify = (value: string) =>
@@ -538,7 +538,7 @@ function ConnectButton({ server }: { server: McpServerRow }) {
       onClick={() => connect.mutate()}
     >
       {connect.isPending ? (
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+        <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
       ) : (
         <Link2 className="mr-2 h-4 w-4" aria-hidden />
       )}
@@ -560,7 +560,6 @@ export function McpCatalog() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-servers");
 
   // which servers the signed-in account is connected to (#2166). both reads
   // are best-effort: a caller who may not list them sees the cards without
@@ -678,6 +677,7 @@ export function McpCatalog() {
           error={query.error}
           resource={t("errors.resources.mcpServers")}
           onRetry={() => void query.refetch()}
+          target="mcp-servers"
         />
       ) : !query.data?.length ? (
         <EmptyState
@@ -736,7 +736,7 @@ export function McpCatalog() {
               <div className="mt-3">
                 <ToolBadges tools={server.tools} />
               </div>
-              <div className="mt-4 flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <Badge tone="info">{server.transport.replace("_", " ")}</Badge>
                 <AuthBadge server={server} />
                 <span className="ml-auto flex flex-wrap justify-end gap-1">
@@ -1348,7 +1348,6 @@ export function McpLibrary() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-library");
   const install = useMutation({
     mutationFn: (item: McpLibraryItem) =>
       createMcpServer(orgId as string, { ...item, enabled: true, source: "library" }),
@@ -1370,10 +1369,12 @@ export function McpLibrary() {
       {query.isLoading ? (
         <CardGridSkeleton cards={4} height={190} min={300} />
       ) : query.error ? (
+        // load-error-allow: the curated catalog ships with the control plane and is never empty
         <LoadError
           error={query.error}
           resource={t("errors.resources.mcpLibrary")}
           onRetry={() => void query.refetch()}
+          target="mcp-library"
         />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
@@ -1412,7 +1413,7 @@ export function McpLibrary() {
                   onClick={() => install.mutate(item)}
                 >
                   {install.isPending && install.variables?.slug === item.slug && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                   )}
                   {item.installed ? t("pages.mcpLibrary.installed") : t("pages.mcpLibrary.install")}
                 </Button>
@@ -1438,7 +1439,6 @@ export function ToolGroups() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!groups.isLoading);
-  useErrorState(!!groups.error, "tool-groups");
   const servers = useQuery({
     queryKey: ["mcp-servers", orgId],
     queryFn: () => fetchMcpServers(orgId as string),
@@ -1492,6 +1492,7 @@ export function ToolGroups() {
           error={groups.error}
           resource={t("errors.resources.toolGroups")}
           onRetry={() => void groups.refetch()}
+          target="tool-groups"
         />
       ) : !groups.data?.length ? (
         <EmptyState
@@ -1533,7 +1534,7 @@ export function ToolGroups() {
                   </Badge>
                 ))}
               </div>
-              <div className="mt-4 flex justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
+              <div className="mt-4 flex flex-wrap justify-end gap-1 border-t border-[color:var(--border-subtle)] pt-3">
                 <GatedButton
                   gate="mcp_tool_group:delete"
                   control="tool-group-delete"
@@ -1543,7 +1544,7 @@ export function ToolGroups() {
                   onClick={() => startDelete(group)}
                 >
                   {remove.isPending && remove.variables === group.id && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
                   )}
                   {t("common.delete")}
                 </GatedButton>
@@ -1624,7 +1625,7 @@ function ToolGroupDialog({
         </DialogTitle>
         <DialogDescription>{t("pages.tool-groups.dialog.lead")}</DialogDescription>
       </DialogHeader>
-      <div className="grid gap-4 py-4">
+      <DialogBody className="grid gap-4 py-4">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name">
             <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
@@ -1679,7 +1680,7 @@ function ToolGroupDialog({
             {error.message}
           </p>
         )}
-      </div>
+      </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
@@ -1716,7 +1717,6 @@ export function McpSettings() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "mcp-settings");
   if (!orgId)
     return (
       <PageBody>
@@ -1737,10 +1737,12 @@ export function McpSettings() {
   if (query.error)
     return (
       <PageBody>
+        {/* load-error-allow: a settings form, not a list */}
         <LoadError
           error={query.error}
           resource={t("errors.resources.mcpSettings")}
           onRetry={() => void query.refetch()}
+          target="mcp-settings"
         />
       </PageBody>
     );

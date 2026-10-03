@@ -12,6 +12,21 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "sso": {
+      "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
+      "errors": {
+        "idp_error": "Your identity provider declined the sign-in. Try again, or contact your administrator.",
+        "state_expired": "This sign-in took too long or was already used. Start it again.",
+        "sso_disabled": "Single sign-on is turned off for this organization.",
+        "unknown_provider": "That single sign-on option is no longer available. Pick another way to sign in, or contact your administrator.",
+        "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
+        "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
+        "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
+        "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
+      },
+      "provider": "Identity provider: {{name}}"
+    },
     "errors": {
       "invalidCredentials": "That email and password do not match an account here.",
       "passwordLoginDisabled": "Password sign-in is turned off for this organization. Use single sign-on below.",
@@ -57,8 +72,11 @@
     }
   },
   "common": {
+    "gatewayBasePrompt": "No gateway base URL to show. Save your gateway base URL under Client Settings (superadmins only) to get snippets for external clients. The dashboard’s own /gw proxy needs a dashboard session, so it is not an address they can use.",
     "cancel": "Cancel",
+    "chartPoint": "Time",
     "clearSearch": "Clear search",
+    "clearFilters": "Clear filters",
     "close": "Close",
     "copied": "Copied",
     "copy": "Copy",
@@ -86,6 +104,9 @@
         "request": "First request"
       }
     },
+    "publicUrl": {
+      "unset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which only a caller on the control plane's own host can reach. Set <code>ROLTER_PUBLIC_URL</code> to an address the caller can reach and restart the control plane before you copy this one."
+    },
     "copyValue": "{{label}}: {{value}}",
     "moreInfo": "More info",
     "loading": "Loading…",
@@ -94,6 +115,8 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save Changes",
+    "fieldsNeedAttention_one": "{{count}} field needs attention",
+    "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
     "done": "Done",
     "scopeReadOnly": "Add/edit/delete is unavailable: {{reason}}. Read-only view still works.",
@@ -102,6 +125,7 @@
       "placeholder": "Select…",
       "options": "Options",
       "clear": "Clear selection",
+      "use": "Use “{{value}}”",
       "noMatches": "No options match your filter",
       "results_one": "{{count}} option available",
       "results_other": "{{count}} options available"
@@ -192,6 +216,7 @@
       "dashboardTrafficShare": "the traffic share",
       "dashboardByModel": "requests by model",
       "dashboardRecent": "recent requests",
+      "savedViews": "your saved views",
       "requestLogs": "request logs",
       "routes": "routes",
       "routeTargets": "this route's targets",
@@ -239,12 +264,43 @@
       "complexityPolicy": "this route's complexity policy",
       "paletteRecords": "searchable records",
       "playgroundKey": "the playground key",
-      "projectSettings": "project settings"
+      "projectSettings": "project settings",
+      "preferences": "your preferences",
+      "yourProfile": "your profile"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
       "requestFailed": "gateway request failed: {{status}}"
+    },
+    "api": {
+      "unreachable": "Could not reach the server. Check your connection and try again.",
+      "unauthorized": "Your session is missing or has expired. Sign in again.",
+      "forbidden": "Your role does not permit this.",
+      "rateLimited": "Too many attempts. Wait a moment and try again.",
+      "server": "The control plane hit an error. Try again, and check its logs if it persists.",
+      "generic": "The server rejected this request.",
+      "codes": {
+        "analytics_query_failed": "The analytics query failed.",
+        "internal": "The control plane hit an internal error.",
+        "invalid_credentials": "The email or password is wrong.",
+        "invalid_cursor": "The page position is no longer valid. Reload the list.",
+        "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",
+        "invalid_field": "One of the values is not accepted. Correct it and try again.",
+        "invalid_query": "The filter is not valid.",
+        "invalid_time_bound": "The time range is not valid.",
+        "last_org_admin": "This is the organization's last admin, so the grant cannot be revoked. Make someone else an admin first, or ask a superadmin.",
+        "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
+        "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
+        "name_taken": "That name is already taken. Choose another.",
+        "no_such_endpoint": "This control plane does not offer that feature.",
+        "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
+        "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
+        "referenced": "Other items still depend on this one. Move or delete them first.",
+        "scope_mismatch": "A provider here is scoped to a different project. Use an org-wide provider or one scoped to the same project.",
+        "too_many_attempts": "Too many failed attempts. Try again later.",
+        "unauthenticated": "Your session is missing or has expired. Sign in again."
+      }
     }
   },
   "locale": {
@@ -320,7 +376,9 @@
       "upstreamAria": "Target {{n}} upstream model",
       "weightAria": "Target {{n}} weight",
       "removeAria": "Remove target {{n}}",
-      "upstreamPlaceholder": "same as model name"
+      "upstreamPlaceholder": "same as model name",
+      "scopeNote_one": "{{count}} provider scoped to another project is not offered here.",
+      "scopeNote_other": "{{count}} providers scoped to other projects are not offered here."
     },
     "lock": {
       "lockAll": "Lock all",
@@ -385,7 +443,7 @@
       "minRole": "Minimum role",
       "minRoleInfo": "The lowest role allowed to call this model. Members below this role won't see it in pickers or be able to invoke it.",
       "visibility": "Visibility",
-      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below.",
+      "visibilityInfo": "Whole organization = any key in this organization that meets the minimum role. This project = only keys minted in this project. Restricted = only the teams, virtual keys, and users you list below. This narrows the route only: a provider stays reachable as provider-slug/model by every key of the organization unless the provider itself is scoped to a project, which you do on its own sheet under Providers.",
       "public": "Whole organization",
       "project": "This project",
       "restricted": "Restricted",
@@ -443,7 +501,7 @@
     "plugins": "Plugins",
     "alerting": "Alerting",
     "alerting-channels": "Channels",
-    "alerting-rules": "Rules",
+    "alerting-rules": "Alert Rules",
     "alerting-history": "History",
     "governance": "Governance",
     "virtual-keys": "Virtual Keys",
@@ -457,7 +515,7 @@
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
     "guardrails": "Guardrails",
-    "guardrail-rules": "Rules",
+    "guardrail-rules": "Guardrail Rules",
     "guardrail-providers": "Providers",
     "cluster": "Cluster Config",
     "adaptive-routing": "Adaptive Routing",
@@ -472,7 +530,8 @@
     "security": "Security",
     "api-keys": "My Virtual Keys",
     "performance": "Performance Tuning",
-    "feature-flags": "Feature Flags"
+    "feature-flags": "Feature Flags",
+    "preferences": "Preferences"
   },
   "pages": {
     "gettingStarted": {
@@ -484,6 +543,11 @@
       "todo": "To do",
       "noScopeTitle": "No project selected",
       "noScopeBody": "Pick an organisation, team and project in the header. Each step below is done when the row exists in that project.",
+      "noProjectTitle": "No project yet",
+      "noProjectBody": "Step 1 needs a project, and the team in scope has none yet. Create one here, or later with the + beside Project in the scope switcher in the sidebar.",
+      "noTeamBody": "Step 1 needs a project, and a project belongs to a team. Add an organisation and a team with the + controls in the scope switcher in the sidebar, then come back to create the project.",
+      "createProject": "Create project",
+      "noProjectDenied": "Step 1 needs a project, and this deployment has none. Ask an administrator to create one; creating a project takes the admin role.",
       "snippetLabel": "Request",
       "steps": {
         "call": {
@@ -521,7 +585,6 @@
       "noRequestsInWindow": "No requests in this window",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
-      "last24h": "Last 24h",
       "live": "Live",
       "feed": {
         "loading": "Loading",
@@ -551,7 +614,7 @@
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
       },
-      "spendChartAria": "Spend over the last 24 hours",
+      "spendChartAria": "Spend, {{window}}",
       "noAnalytics": {
         "title": "Traffic and spend need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
@@ -650,7 +713,8 @@
         "onlyMember": "only member",
         "more_one": "and {{count}} more",
         "more_other": "and {{count}} more"
-      }
+      },
+      "colScope": "Scope"
     },
     "plugins": {
       "eyebrow": "Pipeline workbench",
@@ -712,7 +776,8 @@
       "enabledHint": "An enabled plugin is consulted on live traffic at its stage. Paused plugins keep their configuration but are skipped.",
       "errorConfigJson": "Configuration must be valid JSON.",
       "errorConfigObject": "Configuration must be a JSON object.",
-      "errorNameEndpoint": "Name and an HTTP(S) endpoint are required.",
+      "errorName": "Name is required.",
+      "errorEndpoint": "Endpoint must start with http:// or https://.",
       "cancel": "Cancel",
       "saving": "Saving…",
       "save": "Save configuration",
@@ -775,6 +840,15 @@
       "currency": "Currency",
       "currencyHint": "Any code — ISO-4217, crypto, or a custom unit. Anything other than the base currency needs a rate in [currency.rates]; without one the price is rejected rather than charged at the wrong rate.",
       "currencyInfo": "Spend and budgets accumulate in the deployment's base currency. A price in another currency is converted at the configured rate before it reaches a budget.",
+      "modelPlaceholder": "Choose or type a model",
+      "modelRequired": "Choose a model to price.",
+      "priceUnit": "{{currency}} per million tokens",
+      "priceRequired": "Enter a price. Type 0 if the model is free; empty stays unpriced.",
+      "priceInvalid": "Enter a price of 0 or more.",
+      "currencyRequired": "Choose a currency.",
+      "modelGroupRoutes": "Routes",
+      "modelGroupTraffic": "Seen in traffic",
+      "currencyBase": "base currency",
       "confirm": {
         "deleteTitle": "Delete the price for {{model}}?",
         "deleteBody": "Cost accounting for this model falls back to no known price.",
@@ -798,6 +872,10 @@
       "pcaChartAria": "PCA projection of the embedded texts",
       "removeColumn": "Remove column {{n}} ({{model}})",
       "columnName": "{{model}}, column {{n}}",
+      "modelAriaFor": "Model for {{model}}",
+      "rawOutputFor": "Show raw text for {{model}}",
+      "removeAttachmentFor": "Remove attachment for {{model}}",
+      "attachImageFor": "Attach image for {{model}}",
       "threadAria": "Conversation with {{model}}",
       "sendTo": "Send to {{model}}",
       "copyAsCodeFor": "Copy as code for {{model}}",
@@ -1252,7 +1330,26 @@
         },
         "fieldChannel": "Channel",
         "channelNone": "none (record only)",
-        "namePlaceholder": "high error rate"
+        "namePlaceholder": "high error rate",
+        "fieldComparison": "Comparison",
+        "comparison": {
+          "above": "Above or equal",
+          "below": "Below or equal"
+        },
+        "thresholdInclusive": "The threshold is inclusive: the rule fires when the value equals it.",
+        "trafficStoppedHelp": "This rule fires when no requests arrive in the window, so it alerts when traffic stops.",
+        "fieldNoData": "When there is no data",
+        "noData": {
+          "ignore": "Keep current state",
+          "fire": "Fire",
+          "ok": "Resolve"
+        },
+        "noDataHint": "What the rule does when the window holds no requests to measure.",
+        "reading": {
+          "above": "above {{value}}",
+          "below": "below {{value}}"
+        },
+        "noDataReading": "No data"
       },
       "signals": {
         "error_rate": {
@@ -1320,8 +1417,7 @@
         "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
         "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
         "noMatchTitle": "No transitions match these filters",
-        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest.",
-        "clearFilters": "Clear filters"
+        "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest."
       },
       "confirm": {
         "channelTitle": "Delete channel {{name}}?",
@@ -1346,7 +1442,6 @@
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
-        "urlUnset": "<code>ROLTER_PUBLIC_URL</code> is not set, so this is the default address, which only a caller on the control plane's own host can reach. Set it and restart the control plane to show the address your tooling calls.",
         "emptyTitle": "Nothing to deliver yet",
         "emptyBody": "With no connectors the config renders no exporters and no pipelines, so a collector running it would deliver nothing. Add a connector first.",
         "allOffTitle": "Every connector is switched off",
@@ -1371,7 +1466,6 @@
       "deleteAria": "Delete connector {{name}}",
       "editAria": "Edit connector {{name}}",
       "editTitle": "Edit connector {{name}}",
-      "savedRetest": "{{name}} updated, but its health still describes the old endpoint or secret. Run Test delivery on its card.",
       "summary_one": "{{count}} connector · OTLP/HTTP sinks for request logs",
       "summary_other": "{{count}} connectors · OTLP/HTTP sinks for request logs",
       "add": "Add connector",
@@ -1395,7 +1489,7 @@
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
         "secretReplaceHint": "Saving replaces the stored secret with this one.",
-        "secretMovesHint": "The endpoint now points at another scheme, host or port, and the stored secret stays in place, so it would be sent there. Type that endpoint's own secret to replace it.",
+        "secretMovesHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new endpoint's secret to keep it authenticated.",
         "start": "Start sending as soon as it is created",
         "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
         "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
@@ -1739,9 +1833,9 @@
         "customerBody": "The customer is removed outright and the spend already attributed to it loses its label. Retire it instead to keep the history."
       },
       "unitEmptyTitle": "No business units yet",
-      "unitEmptyBody": "Business units roll teams up so spend can be attributed to the part of the organisation that incurred it.",
+      "unitEmptyBody": "Spend reaches a business unit through a virtual key assigned to it, and through customers that roll up into it. Create the unit, then assign it on a virtual key or a customer.",
       "customerEmptyTitle": "No customers yet",
-      "customerEmptyBody": "Customers attribute usage and spend to the people you serve, so it can be billed on or reported per account.",
+      "customerEmptyBody": "Spend reaches a customer through a virtual key assigned to it, so it can be billed on or reported per account. A customer can also roll up into a business unit.",
       "spendWindows": {
         "last24h": "Spend, last 24 hours",
         "last7d": "Spend, last 7 days",
@@ -1753,7 +1847,9 @@
       "spendAttributed": "Attributed",
       "spendUnattributed": "Unattributed",
       "spendUnattributedShare": "{{share}} of the window",
+      "spendUnattributedHint": "Assign a business unit or customer on a <0>virtual key</0> to attribute its spend.",
       "noSpend": "No spend in this window",
+      "noSpendNoKey": "No spend in this window · no key assigned. <0>Assign a key</0>",
       "cardRequests_one": "{{count}} request",
       "cardRequests_other": "{{count}} requests",
       "editAria": "Edit {{name}}",
@@ -2162,7 +2258,7 @@
         },
         "ssoConfirm": {
           "title": "Turn off single sign-on?",
-          "body": "While it is off, every sign-in through this organization's identity providers is refused. The providers, their secrets and group mappings stay, so turning it back on restores sign-in.",
+          "body": "While it is off, this organization's provider buttons disappear from the sign-in screen and new sign-ins through its identity providers are refused at once, as are any already under way when they return from the provider. The providers, their secrets and group mappings stay, so turning it back on restores the buttons and sign-in.",
           "confirm": "Turn it off",
           "notice": {
             "title": "Members who only sign in through a provider would be locked out",
@@ -2221,8 +2317,7 @@
         "body": "Register your OIDC provider and members sign in with the company account they already have — rolter turns the groups in their id token into roles here, so joiners and leavers are handled in the directory instead of one invitation at a time."
       },
       "publicUrl": {
-        "title": "The redirect and login URLs use the default address",
-        "body": "<code>ROLTER_PUBLIC_URL</code> is not set, so the control plane builds them from <code>{{url}}</code>, which reaches rolter only from a browser on its own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your users open rolter at and restart the control plane before you copy a redirect URI into your identity provider."
+        "title": "The redirect and login URLs use the default address"
       },
       "confirm": {
         "title": "Delete provider {{name}}?",
@@ -2234,10 +2329,9 @@
         "body": "People signing in through it lose that route immediately. Its registration, client secret and group mappings stay, so turning it back on restores sign-in.",
         "confirm": "Take out of service"
       },
-      "lockout": {
-        "title": "Members would be locked out of sign-in",
-        "body": "Password sign-in is off and {{name}} is the only enabled provider, so no member could sign in. Superadmins are exempt from the password setting, so only they could still get in, and they could turn password sign-in back on from this screen.",
-        "noPassword": "Accounts created through a provider have no password. Turning password sign-in back on does not restore them; a superadmin has to set one."
+      "lastMethod": {
+        "reason": "Disabling or deleting this provider is unavailable: it is the last enabled one and password sign-in is off, so no member could sign in. Enable password sign-in or another provider first.",
+        "refused": "Another change left no other way to sign in, so the control plane refused this one. Enable password sign-in or another provider first."
       },
       "clearSecret": {
         "title": "Remove the stored client secret for {{name}}?",
@@ -2261,7 +2355,6 @@
         "redirectUriHint": "Register this in your identity provider when you create the application there. The provider then issues the client ID and secret below.",
         "redirectUriEmpty": "Type a slug to see the redirect URI.",
         "redirectUriInvalid": "The slug above is not valid, so there is no redirect URI to register yet.",
-        "redirectUriDefault": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which reaches rolter only from a browser on the control plane's own host.",
         "redirectUriUnknown": "The control plane's public address could not be read, so only the path is shown. The full redirect URI is the value of <code>ROLTER_PUBLIC_URL</code> followed by this path.",
         "issuer": "Issuer URL",
         "issuerHint": "The provider's OIDC issuer. Its discovery document and signing keys are read from here.",
@@ -2318,6 +2411,19 @@
       "prevPageAria": "Previous page",
       "nextPageAria": "Next page",
       "allActions": "All actions",
+      "actionGroups": {
+        "identity": "Identity and access",
+        "tenancy": "Organisations and teams",
+        "keys": "Keys, budgets and limits",
+        "routing": "Providers and routing",
+        "guardrails": "Guardrails",
+        "mcp": "MCP and connectors",
+        "alerts": "Alerts",
+        "content": "Prompts, skills and plugins",
+        "settings": "Settings and policies",
+        "account": "Sign-in and MFA",
+        "other": "Other"
+      },
       "allTargets": "All targets",
       "page": "page {{page}}",
       "totalSuffix": " · {{total}} total",
@@ -2334,11 +2440,19 @@
         "actor": "Actor",
         "action": "Action",
         "target": "Target",
-        "detail": "Detail"
+        "detail": "Detail",
+        "org": "Org"
       },
       "unknownTarget": "unknown",
       "hideDetails": "hide",
-      "showDetails": "show"
+      "showDetails": "show",
+      "scopeAria": "Audit log scope",
+      "scopes": {
+        "org": "This organization",
+        "deployment": "Whole deployment"
+      },
+      "noOrg": "No org",
+      "unknownAddress": "Unknown address"
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",
@@ -2379,7 +2493,10 @@
       "grainProvider": "probed · {{sources}}",
       "incidents": "Incidents",
       "mttr": "MTTR",
-      "noEvents": "No events in window.",
+      "noTimeline": "No timeline.",
+      "timelineSummary": "Health timeline, {{from}} to {{to}}: {{failures}} failures in {{events}} events over {{buckets}} hourly buckets",
+      "legendOk": "No failures",
+      "legendFailed": "Failures (taller = larger share)",
       "slaAtRisk": "SLA at risk",
       "slaBreaching": "below SLA",
       "slaWithin": "within SLA",
@@ -2406,8 +2523,8 @@
       "rateLimitsEmptyBody": "A rate limit caps requests and tokens per minute for the selected scope, so one client cannot starve the rest.",
       "rateLimitsEmptyTitle": "No rate limits for this scope",
       "rateLimitsHint": "Requests- and tokens-per-minute caps per scope",
-      "scopeHint": "The {{type}} this cap applies to",
-      "scopeIdHint": "Paste the {{type}} id — a uuid, since none are available to pick",
+      "scopeHint": "This cap applies to: {{type}}",
+      "scopeIdHint": "Paste the id ({{type}}) — a uuid, since none are available to pick",
       "scopeTypes": {
         "org": "Organization",
         "team": "Team",
@@ -2493,7 +2610,8 @@
       "emptyTitle": "Nothing logged yet",
       "emptyBody": "Every request the gateway serves is recorded here with its model, latency, tokens and cost.",
       "noMatchTitle": "No requests match these filters",
-      "noMatchBody": "Nothing in the last 24 hours matched the filters you selected.",
+      "noMatchBody": "Nothing in the selected time window matched the filters you selected.",
+      "window": "Time window",
       "businessUnit": "Business unit",
       "customer": "Customer",
       "filterBusinessUnits": "Filter business units",
@@ -2513,7 +2631,7 @@
       "statusOkHint": "OK is any request answered with a status below 400.",
       "statusErrors": "Errors",
       "allModels": "All models",
-      "clearFilters": "Clear filters",
+      "allKeys": "All keys",
       "latency": "Latency",
       "cost": "Cost",
       "unpricedOnly": "Unpriced only",
@@ -2589,8 +2707,9 @@
         "title": "MCP tool-call logs need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no MCP tool-call log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every tool call they proxy from then on is logged here."
       },
+      "myCalls": "My calls",
       "emptyTitle": "No MCP tool calls yet",
-      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy.",
+      "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
       "noMatchBody": "Nothing in this window matched the status and transport you selected.",
       "statusFilterAria": "Filter by status",
@@ -2614,6 +2733,10 @@
       "arguments": "Arguments",
       "result": "Result",
       "closeDetails": "Close MCP log details",
+      "argumentsAndResult": "Arguments and result",
+      "payloadWithheld": "The arguments and result were captured for this call, but they are hidden for your role: on this project, tool arguments and results are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
+      "notFoundTitle": "This call is not available",
+      "notFoundBody": "It no longer exists, or it belongs to an organization, team or project you do not hold a role in.",
       "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
     },
     "providerGroups": {
@@ -2631,7 +2754,8 @@
         "name": "Name",
         "strategy": "Strategy",
         "address": "Address",
-        "members": "Members"
+        "members": "Members",
+        "scope": "Scope"
       },
       "copyAddress": "Copy address prefix",
       "noMembers": "no members",
@@ -2659,8 +2783,7 @@
       "baseUrl": {
         "label": "SCIM base URL",
         "copy": "Copy SCIM base URL",
-        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org.",
-        "default": "<code>ROLTER_PUBLIC_URL</code> is not set, so this uses the default address, <code>{{url}}</code>, which an identity provider can reach only if it runs on the control plane's own host. Set <code>ROLTER_PUBLIC_URL</code> to the address your identity provider can call and restart the control plane before you paste this URL into its connector."
+        "hint": "Point your identity provider's SCIM connector here. It is the same for every token in this org."
       },
       "mappings": {
         "title": "Group mappings",
@@ -2754,6 +2877,7 @@
       "projectRole": "Project role",
       "scopeOrgOnly": "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
       "inviteRefused": "Inviting into {{scope}} takes Admin there or on a scope above it.",
+      "inviteReplaces": "{{email}} already has a pending invitation. Sending another replaces it, and the old link stops working.",
       "editTitle": "Edit user",
       "editSubtitle": "Email, password and the superadmin flag require superadmin privileges",
       "newPassword": "New password",
@@ -2776,6 +2900,7 @@
       "viaScim": "from SCIM",
       "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
       "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
+      "lastAdminHint": "{{email}}'s {{role}} role on {{scope}} is the organization's last admin grant. Grant admin to someone else first.",
       "toastRevoked": "Revoked {{role}} on {{scope}} from {{email}}",
       "toastAlreadyRevoked": "{{email}} no longer held {{role}} on {{scope}}",
       "toastChanged": "{{email}} is now {{role}} on {{scope}}.",
@@ -2813,6 +2938,7 @@
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
+        "lastAdminRefused": "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
         "changeTitle": "Change {{email}}'s role on {{scope}}?",
         "changeBody": "They hold {{role}} there now. The role you pick is granted first and {{role}} is revoked right after, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
@@ -2842,7 +2968,8 @@
         "superadminRemoveSelf": "This is your own account. Without superadmin you lose every deployment-wide setting and every organization where you hold no role, and only another superadmin can give it back.",
         "superadminRemoveConfirm": "Remove superadmin",
         "accountRefused": "Editing, deactivating or deleting an account takes a superadmin.",
-        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed."
+        "accountGone": "This account no longer exists, most likely because it was just deleted. The list has been refreshed.",
+        "lastSuperadmin": "This is the last active superadmin, so the change was refused. Make another account superadmin first, then try again."
       }
     },
     "config": {
@@ -2874,7 +3001,7 @@
         "title": "Related settings",
         "featureFlags": {
           "title": "Feature flags",
-          "desc": "Toggle experimental gateway features. Persisted and hot-reloaded — no restart."
+          "desc": "Switch deployment-wide gateway subsystems on or off. Persisted and hot-reloaded — no restart."
         },
         "clientSettings": {
           "title": "Client settings",
@@ -2901,7 +3028,19 @@
         "apiBase": "API base",
         "model": "Model",
         "strategy": "Strategy",
-        "targets": "Targets"
+        "targets": "Targets",
+        "virtualKeys": "Virtual keys (from the config file)",
+        "allowedModels": "Allowed models",
+        "allModels": "all models",
+        "weight": "weight {{value}}",
+        "upstreamModel": "model {{model}}",
+        "noTargets": "no targets",
+        "emptyProvidersTitle": "No providers configured",
+        "emptyProvidersBody": "Add a provider so the gateway has an upstream to call.",
+        "addProvider": "Go to Providers",
+        "emptyRoutesTitle": "No routes configured",
+        "emptyRoutesBody": "Add a routing rule to expose a model name through the gateway.",
+        "addRoute": "Go to Routing Rules"
       }
     },
     "mcpSettings": {
@@ -2972,7 +3111,7 @@
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
-      "baseUrlHint": "The address clients point their SDK at. Left empty, the dashboard’s snippets go through its own /gw proxy, which is fine for trying rolter out but sends every call through the control plane; for production, set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so snippets shown to other roles keep the /gw proxy.",
+      "baseUrlHint": "The address clients point their SDK at. Until you save one, the dashboard shows no snippet for external clients: its own /gw proxy needs a dashboard session, so it is not an address they can use. Set the gateway’s own address, such as its load balancer or a custom domain. Only superadmins can read this setting, so other roles are asked to have a superadmin save it.",
       "publicBaseUrl": "Public base URL",
       "forwarded": "Forwarded request headers",
       "forwardedHint": "Inbound client headers passed through to the upstream provider, comma or newline separated. Everything not listed is dropped at the gateway.",
@@ -3002,15 +3141,6 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "dashboardAuth": "Password protect the dashboard",
-      "dashboardAuthHint": "Require a credential to open the dashboard. Provide either an external secret-manager reference or a managed secret stored encrypted.",
-      "credentialRef": "Credential reference",
-      "managedSecret": "Managed secret",
-      "secretConfigured": "configured — enter to replace",
-      "secretPlaceholder": "Enter a secret to store",
-      "secretHint": "Write-only: the secret is encrypted server-side and never shown again.",
-      "enforceVk": "Enforce Virtual Keys on Inference",
-      "enforceVkHint": "Require a virtual key for all inference requests.",
       "allowedOrigins": "Allowed Origins",
       "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
       "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
@@ -3047,14 +3177,6 @@
         "body_one": "This save loosens security in the way listed below.",
         "body_other": "This save loosens security in {{count}} ways, listed below.",
         "confirm": "Save changes",
-        "virtualKeys": {
-          "label": "Virtual keys are no longer enforced on inference",
-          "effect": "A gateway that holds no virtual keys stops refusing every request by default. How it was started decides whether callers need a key."
-        },
-        "dashboardAuth": {
-          "label": "The dashboard is no longer password protected",
-          "effect": "The dashboard stops requiring its credential to open."
-        },
         "bypassRoute": {
           "label": "Auth bypass route added:",
           "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
@@ -3182,7 +3304,9 @@
         "title": "Model",
         "desc": "Used when a request arrives without a model. Leave this empty to keep rejecting such requests instead of silently picking one for the caller.",
         "defaultModel": "Default model",
-        "defaultModelHint": "A routed model or group-slug/model address"
+        "defaultModelHint": "A routed model or group-slug/model address",
+        "placeholder": "Leave empty to reject requests that arrive without a model",
+        "modelsUnavailable": "Couldn’t load the list of models. You can still type an address."
       },
       "timeoutsNote": "Upstream timeouts and the retry budget are deployment-wide and live under <0>Settings › Performance Tuning</0>.",
       "providerDefault": "provider default",
@@ -3211,6 +3335,21 @@
       }
     },
     "featureFlags": {
+      "lastSaved": "Last saved {{when}}",
+      "neverSaved": "Not saved yet",
+      "changed": "Changed",
+      "confirm": {
+        "title": "Apply these flag changes?",
+        "body_one": "{{count}} switch changes for the whole deployment, every org. The gateway picks it up on its next config poll, with no restart.",
+        "body_other": "{{count}} switches change for the whole deployment, every org. The gateway picks them up on its next config poll, with no restart.",
+        "confirm": "Apply changes",
+        "on": "turned on",
+        "off": "turned off",
+        "offConsequence": {
+          "guardrails": "Every pre- and post-call guardrail rule stops running for every org.",
+          "circuit_breaker": "Failing targets stay in rotation instead of being tripped out of the pool."
+        }
+      },
       "stillOn": "Still on from before it became unavailable, and it has no effect here. You can turn it off; it cannot be turned back on until it is available again.",
       "flags": {
         "response_cache": {
@@ -3238,6 +3377,36 @@
           "desc": "Run the configured pre- and post-call guardrail rules on every request."
         }
       }
+    },
+    "preferences": {
+      "language": {
+        "title": "Language",
+        "hint": "The language of the dashboard. “Browser default” follows your browser’s language.",
+        "label": "Dashboard language",
+        "browser": "Browser default"
+      },
+      "scope": {
+        "title": "Default scope",
+        "hint": "The org, team and project the dashboard opens on. A scope you pick in the switcher during a session wins until you sign out.",
+        "none": "None",
+        "lost": "Your saved default is no longer available to you, so the dashboard opens on the first scope you can reach.",
+        "moved": "Part of your saved default is no longer available to you, so the dashboard opens on the closest scope you can reach."
+      },
+      "playground": {
+        "title": "Playground model",
+        "hint": "The model the Playground’s chat opens on, when the gateway serves it.",
+        "label": "Default model",
+        "placeholder": "for example gpt-4o"
+      },
+      "zone": {
+        "title": "Time zone",
+        "description": "The zone charts, time axes and timestamps are drawn in.",
+        "label": "Time zone",
+        "hint": "Left empty, times follow your browser’s zone ({{zone}}).",
+        "browser": "Browser default ({{zone}})",
+        "unknown": "This browser does not know the zone “{{zone}}”, so times follow its own zone instead."
+      },
+      "discard": "Discard changes"
     }
   },
   "playground": {
@@ -3261,7 +3430,7 @@
       "rejectedPasteHint": "The gateway refused this key, so requests sent with it would fail. Paste a key the gateway accepts.",
       "noProject": "Pick a project to mint a key against, or paste one below.",
       "refused": "Your role in this project cannot mint keys. Paste a virtual key someone gave you to send requests.",
-      "routeless": "This project has no routes yet, so a key minted for it would have nothing to reach. Mint one once the project routes a model.",
+      "routeless": "This project has no routes yet, so this key reaches the built-in fake-llm only. Renew it once the project routes a model.",
       "routelessLink": "Open {{screen}}",
       "keyless": "This gateway takes requests without a key, so the Playground sends none. To test one, use a specific key below.",
       "idle": "Mint a key to send requests, or paste one below.",
@@ -3310,7 +3479,8 @@
       "providerKeyEnvHint": "read the provider key from this env var instead",
       "egressProxy": "Egress proxy (optional)",
       "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
-      "apiKeyUnchanged": "unchanged"
+      "apiKeyUnchanged": "unchanged",
+      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead."
     },
     "title": {
       "add": "Add provider",
@@ -3420,7 +3590,7 @@
     },
     "dashboard": {
       "title": "Dashboard",
-      "subtitle": "Traffic, spend, latency, and error rate over the last 24 hours, plus the latest requests."
+      "subtitle": "Traffic, spend, latency, and error rate over the window you pick (the last 24 hours by default), plus the latest requests."
     },
     "logs": {
       "title": "LLM Logs",
@@ -3515,7 +3685,7 @@
       "subtitle": "Webhook endpoints that alert state changes are POSTed to."
     },
     "alerting-rules": {
-      "title": "Rules",
+      "title": "Alert Rules",
       "subtitle": "Threshold rules over gateway signals, evaluated every minute."
     },
     "alerting-history": {
@@ -3540,7 +3710,7 @@
     },
     "business-units": {
       "title": "Business Units",
-      "subtitle": "Roll teams up into cost-attributed business units."
+      "subtitle": "Attribute spend to business units through the virtual keys assigned to them."
     },
     "customers": {
       "title": "Customers",
@@ -3632,7 +3802,11 @@
     },
     "feature-flags": {
       "title": "Feature Flags",
-      "subtitle": "Toggle experimental gateway features."
+      "subtitle": "Deployment-wide gateway subsystems. Saved changes apply to every org and hot-reload on the next config poll."
+    },
+    "preferences": {
+      "title": "Preferences",
+      "subtitle": "Your language, default scope, Playground model and time zone, kept with your account."
     }
   },
   "shell": {
@@ -3726,8 +3900,8 @@
   },
   "providers": {
     "unserved": {
-      "title_one": "{{count}} config entry is not being served to gateways",
-      "title_other": "{{count}} config entries are not being served to gateways"
+      "title_one": "{{count}} config entry is not being served as written",
+      "title_other": "{{count}} config entries are not being served as written"
     }
   },
   "account": {
@@ -3840,6 +4014,30 @@
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
       }
+    },
+    "profile": {
+      "title": "Profile",
+      "subtitle": "The name other people see beside your account, and a line on what to ask you about.",
+      "name": "Display name",
+      "nameHint": "Shown in place of your email. Leave it empty to go by your email.",
+      "namePlaceholder": "Ada Lovelace",
+      "managed": "Your name is managed by your identity provider",
+      "bio": "Bio",
+      "bioPlaceholder": "Who to ask about what",
+      "bioHint": "{{count}} of {{max}} characters",
+      "save": "Save profile",
+      "saved": "Profile saved",
+      "saveFailed": "Could not save your profile.",
+      "problem": {
+        "name": {
+          "blank": "The name cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A display name is at most {{max}} characters."
+        },
+        "bio": {
+          "blank": "The bio cannot be only spaces. Empty it to clear it.",
+          "tooLong": "A bio is at most {{max}} characters."
+        }
+      }
     }
   },
   "keyMint": {
@@ -3901,6 +4099,51 @@
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
   },
+  "savedViews": {
+    "open": "Saved views",
+    "title": "Saved views",
+    "surface": {
+      "llm_logs": "LLM Logs",
+      "dashboard": "Dashboard"
+    },
+    "save": {
+      "label": "Save the current filters as",
+      "hint": "Only you can see your saved views, on any browser you sign in from.",
+      "placeholder": "Errors on gpt-4o this week",
+      "action": "Save view"
+    },
+    "saved": "{{name}} saved",
+    "list": "Your saved views",
+    "apply": "Apply",
+    "applyAria": "Apply {{name}}",
+    "renameAria": "Rename {{name}}",
+    "renameField": "New name for {{name}}",
+    "deleteAria": "Delete view {{name}}",
+    "empty": {
+      "title": "No saved views yet",
+      "description": "Pick the filters you keep coming back to, then save them under a name to apply them again in one click.",
+      "action": "Name a view"
+    },
+    "notice": "Applied without: {{dropped}}.",
+    "dismissNotice": "Dismiss",
+    "dropped": {
+      "key_one": "{{count}} key",
+      "key_other": "{{count}} keys",
+      "business_unit_one": "{{count}} business unit",
+      "business_unit_other": "{{count}} business units",
+      "customer_one": "{{count}} customer",
+      "customer_other": "{{count}} customers"
+    },
+    "errors": {
+      "conflict": "A view with this name already exists, or you have reached the limit of 50 views for this screen.",
+      "failed": "The view could not be saved."
+    },
+    "confirm": {
+      "deleteTitle": "Delete the view {{name}}?",
+      "deleteBody": "The saved filters are removed from your account. The filters on screen stay as they are.",
+      "deleteConfirm": "Delete view"
+    }
+  },
   "toast": {
     "region": "Notifications",
     "dismiss": "Dismiss notification",
@@ -3961,7 +4204,9 @@
       "weight": "Weight",
       "relativeWeight": "Relative weight",
       "remove": "Remove member",
-      "upstreamModelPlaceholder": "passthrough"
+      "upstreamModelPlaceholder": "passthrough",
+      "outOfScopeProject": "{{name}} is scoped to a different project, so this group cannot use it. Pick another provider or remove the row.",
+      "outOfScopeOrg": "{{name}} is scoped to a project, and an organization-wide group would expose it to every project. Pick another provider, or scope the group to that project."
     }
   },
   "paramsEditor": {
@@ -4006,7 +4251,7 @@
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
-      "realtime": "Guardrails, the PII sanitizer and plugins do not run on /v1/realtime session events: a session meets budgets and rate limits and its usage is recorded, but what it carries reaches the provider without a content check",
+      "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },
@@ -4036,5 +4281,13 @@
       "reasonAdmin": "Admin has full control within that scope: providers, routes, virtual keys, members and budgets.",
       "reasonOrg": "The whole organization is every team and project in it, not one of them."
     }
+  },
+  "projectScope": {
+    "label": "Scope",
+    "hint": "Whole organization lets every project use it. Pick a project to keep it to that project's keys.",
+    "hintOwnProject": "You can scope it to a project of your own. Making it organization-wide takes an organization admin.",
+    "hintLocked": "Moving it to another project, or making it organization-wide, takes an organization admin.",
+    "orgWide": "Organization-wide",
+    "badge": "Project: {{project}}"
   }
 }

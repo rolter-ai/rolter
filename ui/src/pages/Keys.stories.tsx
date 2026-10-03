@@ -22,6 +22,7 @@ import {
   recording,
   scoped,
   secretClosePrompt,
+  StaleSession,
   sheet,
   stubClipboard,
   type FetchStub,
@@ -30,6 +31,7 @@ import {
   expectEmptyState,
   expectNoFalseEmpty,
   uxEvents,
+  withDocsBase,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -40,6 +42,7 @@ import {
   atTablet,
   expectInViewport,
   expectNoHorizontalOverflow,
+  phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -349,18 +352,13 @@ export const CreatesAKey: Story = {
     // that dialog means the caller never gets their secret
     await waitFor(() => expect(within(dialog).getByText(MINTED_KEY)).toBeInTheDocument());
 
-    // and the step after it: where to send the key, and a request that does.
-    // the address is the dashboard's own /gw proxy when no public base URL is
-    // saved (#2218), the model is the first the key may reach, and the key
-    // itself stays out of the snippet
-    const origin = window.location.origin;
-    const address = await within(dialog).findByRole("region", { name: /Gateway URL/ });
-    await expect(address).toHaveTextContent(`${origin}/gw/v1`);
-    const request = within(dialog).getByRole("region", { name: /First request/ });
-    await waitFor(() => expect(request).toHaveTextContent(`curl ${origin}/gw/v1/chat/completions`));
-    await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
-    await expect(request).toHaveTextContent("$ROLTER_API_KEY");
-    await expect(request).not.toHaveTextContent(MINTED_KEY);
+    // and the step after it. with no public base URL known there is no
+    // address to hand out: the /gw proxy needs a dashboard session an external
+    // client lacks, so the step asks for a base URL instead (#2486)
+    await expect(await within(dialog).findByRole("note")).toHaveTextContent(
+      "Save your gateway base URL under Client Settings",
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
 };
 
@@ -392,6 +390,48 @@ export const TheNextStepUsesTheSavedGatewayUrl: Story = {
     );
     await expect(within(dialog).getByRole("region", { name: /First request/ })).toHaveTextContent(
       "curl https://llm.example.com/v1/chat/completions",
+    );
+    await expect(dialog.textContent ?? "").not.toContain("/gw/");
+    // the key is referenced, never written out, and names the first model it may reach
+    const request = within(dialog).getByRole("region", { name: /First request/ });
+    await expect(request).toHaveTextContent(`"model":"gpt-4o"`);
+    await expect(request).toHaveTextContent("$ROLTER_API_KEY");
+    await expect(request).not.toHaveTextContent(MINTED_KEY);
+  },
+};
+
+/**
+ * An org admin cannot read client settings either, yet the saved public base
+ * URL reaches the next step through `/auth/me` (#2512).
+ */
+export const TheNextStepUsesTheSavedUrlForAnAdmin: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
+        if (String(input).includes("/auth/me")) {
+          return json({
+            user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+            memberships: [],
+            display_name_managed: false,
+            gateway_base_url: "https://llm.example.com",
+          });
+        }
+        return lookups(String(input)) ?? json(KEYS);
+      })}
+    >
+      <StaleSession>
+        <Keys />
+      </StaleSession>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await mintAKey(canvasElement);
+    await waitFor(() =>
+      expect(within(dialog).getByRole("region", { name: /Gateway URL/ })).toHaveTextContent(
+        "https://llm.example.com/v1",
+      ),
     );
     await expect(dialog.textContent ?? "").not.toContain("/gw/");
   },
@@ -467,7 +507,17 @@ export const TheRevealFitsAPhoneInRussian: Story = {
   globals: { ...atMobile.globals, locale: "ru" },
   beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
   render: () => (
-    <Harness fetchStub={minting()}>
+    // a saved base URL, so the step shows the snippet whose width is under test
+    <Harness
+      role="superadmin"
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") return json({ ...KEYS[0], key: MINTED_KEY }, 201);
+        if (String(input).includes("/client-settings")) {
+          return json({ public_base_url: "https://llm.example.com" });
+        }
+        return lookups(String(input)) ?? json(KEYS);
+      })}
+    >
       <Keys />
     </Harness>
   ),
@@ -845,20 +895,6 @@ export const TheAllowListOffersTheProjectsRoutes: Story = {
   },
 };
 
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
-
 /** The explainer carries a link into `security/which-key` when docs exist (#1164). */
 export const ExplainerLinksToTheDocs: Story = {
   beforeEach: withDocsBase("https://docs.example.com"),
@@ -945,3 +981,17 @@ export const DeleteIsConfirmedAndReported: Story = {
     ).toHaveLength(1);
   },
 };
+
+// the same screen at a phone's width in both languages: Russian runs a third
+// longer than English and overflowed twice as many screens (#2004)
+const keysFit = phoneFits({
+  render: () => (
+    <Harness fetchStub={withKeys(KEYS)}>
+      <Keys />
+    </Harness>
+  ),
+  ready: (canvas) => canvas.findByText("backend service"),
+});
+export const MobileInRussian: Story = keysFit("mobile", "ru");
+export const SmallPhone: Story = keysFit("small", "en");
+export const SmallPhoneInRussian: Story = keysFit("small", "ru");

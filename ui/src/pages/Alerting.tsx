@@ -2,8 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
 
+import { Overline } from "@/components/ui/overline";
+import { IconFrame } from "@/components/ui/icon-frame";
+import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -29,10 +31,14 @@ import {
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
+import { Segmented } from "@/components/ui/segmented";
 import {
+  ALERT_COMPARISONS,
+  ALERT_NO_DATA_POLICIES,
   ALERT_SIGNALS,
   createAlertChannel,
   createAlertRule,
@@ -45,6 +51,8 @@ import {
   updateAlertChannel,
   updateAlertRule,
   type AlertChannelRow,
+  type AlertComparison,
+  type AlertNoDataPolicy,
   type AlertRuleRow,
 } from "@/lib/api";
 import {
@@ -58,6 +66,7 @@ import {
   thresholdInputMax,
   thresholdLabel,
   thresholdRangeKey,
+  supportsNoData,
   thresholdValid,
   toFormValue,
   type AlertSignal,
@@ -75,7 +84,7 @@ import { movesOrigin } from "@/lib/origin";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // a state's three colours. the pill label is the -text half of the hue, because
 // a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
@@ -154,7 +163,6 @@ function AlertChannelsScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!channels.isLoading);
-  useErrorState(!!channels.error, "alert-channels");
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["alert-channels"] });
 
   const toggle = useMutation({
@@ -214,6 +222,7 @@ function AlertChannelsScreen() {
           error={channels.error}
           resource={t("errors.resources.alertChannels")}
           onRetry={() => void channels.refetch()}
+          target="alert-channels"
         />
       )}
       {channels.data && channels.data.length === 0 && (
@@ -235,14 +244,11 @@ function AlertChannelsScreen() {
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
         {(channels.data ?? []).map((c) => (
-          <div
-            key={c.id}
-            className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
-          >
+          <CardStack key={c.id}>
             <div className="flex items-center gap-2.5">
-              <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+              <IconFrame>
                 <Megaphone className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-sm font-semibold">{c.name}</div>
                 <div className="truncate text-xs text-muted-foreground">{c.endpoint}</div>
@@ -288,7 +294,7 @@ function AlertChannelsScreen() {
                 />
               </div>
             </div>
-          </div>
+          </CardStack>
         ))}
       </div>
 
@@ -465,7 +471,6 @@ function AlertRulesScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!rules.isLoading);
-  useErrorState(!!rules.error, "alert-rules");
   const channels = useQuery({
     queryKey: ["alert-channels"],
     queryFn: fetchAlertChannels,
@@ -484,6 +489,9 @@ function AlertRulesScreen() {
     name: r.name,
     signal: r.signal,
     threshold: r.threshold,
+    // `no_data` is left out: a PUT keeps it, and a signal without the policy
+    // would answer 400
+    comparison: r.comparison,
     window_secs: r.window_secs,
     channel_id: r.channel_id,
     enabled: r.enabled,
@@ -577,6 +585,7 @@ function AlertRulesScreen() {
           error={rules.error}
           resource={t("errors.resources.alertRules")}
           onRetry={() => void rules.refetch()}
+          target="alert-rules"
         />
       )}
       {rules.data && rules.data.length === 0 && (
@@ -638,7 +647,12 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statThreshold")}
-                  value={reading(r, r.threshold)}
+                  value={t(
+                    `pages.alerting.rules.reading.${r.comparison === "below" ? "below" : "above"}`,
+                    {
+                      value: reading(r, r.threshold),
+                    },
+                  )}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statWindow")}
@@ -646,7 +660,15 @@ function AlertRulesScreen() {
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statLastValue")}
-                  value={r.last_value === null ? "—" : reading(r, r.last_value)}
+                  value={
+                    r.last_value !== null
+                      ? reading(r, r.last_value)
+                      : r.last_evaluated_at
+                        ? // evaluated, but the window held nothing to measure
+                          t("pages.alerting.rules.noDataReading")
+                        : "—"
+                  }
+                  mono={r.last_value !== null || !r.last_evaluated_at}
                 />
                 <RuleStat
                   label={t("pages.alerting.rules.statEvaluated")}
@@ -689,7 +711,7 @@ function AlertRulesScreen() {
                   onClick={() => evaluate.mutate(r.id)}
                 >
                   {evaluate.isPending && evaluate.variables === r.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                   ) : (
                     <Play className="h-3.5 w-3.5" />
                   )}
@@ -772,9 +794,7 @@ function RuleStat({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="mb-0.5 text-[0.6875rem] uppercase tracking-[0.05em] text-[color:var(--text-subtle)]">
-        {label}
-      </dt>
+      <Overline as="dt">{label}</Overline>
       <dd
         className={cn(
           "break-words text-xs text-[color:var(--text-secondary)]",
@@ -792,6 +812,8 @@ interface RuleDraft {
   signal: string;
   /** typed in the signal's form unit: a percentage for `error_rate` */
   threshold: string;
+  comparison: AlertComparison;
+  noData: AlertNoDataPolicy;
   windowSecs: string;
   channelId: string;
 }
@@ -805,6 +827,8 @@ function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): R
         name: existing.name,
         signal: existing.signal,
         threshold: String(toFormValue(existing.signal, existing.threshold)),
+        comparison: existing.comparison ?? "above",
+        noData: existing.no_data ?? "ignore",
         windowSecs: String(existing.window_secs),
         channelId: existing.channel_id ?? "",
       }
@@ -812,6 +836,8 @@ function ruleSeed(existing: AlertRuleRow | null, channels: AlertChannelRow[]): R
         name: "",
         signal: DEFAULT_SIGNAL,
         threshold: defaultThresholdInput(DEFAULT_SIGNAL),
+        comparison: "above",
+        noData: "ignore",
         windowSecs: String(DEFAULT_WINDOW_SECS),
         channelId: channels[0]?.id ?? "",
       };
@@ -840,8 +866,12 @@ function RuleSheet({
   // this build does not know, and an edit sends it back as it found it
   const [signal, setSignal] = React.useState(seed.signal);
   const [threshold, setThreshold] = React.useState(seed.threshold);
+  const [comparison, setComparison] = React.useState<AlertComparison>(seed.comparison);
+  const [noData, setNoData] = React.useState<AlertNoDataPolicy>(seed.noData);
   const [windowSecs, setWindowSecs] = React.useState(seed.windowSecs);
   const [channelId, setChannelId] = React.useState(seed.channelId);
+  const comparisonLabelId = React.useId();
+  const noDataLabelId = React.useId();
 
   // a threshold means something only in its signal's unit, so another signal
   // starts from its own default rather than carrying 5 % over as 5 ms. picking
@@ -863,6 +893,9 @@ function RuleSheet({
           existing && signal === existing.signal && threshold === seed.threshold
             ? existing.threshold
             : fromFormValue(signal, Number(threshold)),
+        comparison,
+        // the API answers 400 for a signal with no data policy, so it is not sent
+        ...(supportsNoData(signal) ? { no_data: noData } : {}),
         window_secs: Number(windowSecs),
         channel_id: channelId || null,
       };
@@ -903,6 +936,8 @@ function RuleSheet({
       setName(seed.name);
       setSignal(seed.signal);
       setThreshold(seed.threshold);
+      setComparison(seed.comparison);
+      setNoData(seed.noData);
       setWindowSecs(seed.windowSecs);
       setChannelId(seed.channelId);
       // a refusal for one rule must not greet the next one opened
@@ -932,6 +967,8 @@ function RuleSheet({
     name !== seed.name ||
     signal !== seed.signal ||
     threshold !== seed.threshold ||
+    comparison !== seed.comparison ||
+    noData !== seed.noData ||
     windowSecs !== seed.windowSecs ||
     channelId !== seed.channelId;
 
@@ -998,6 +1035,41 @@ function RuleSheet({
             onChange={(e) => setThreshold(e.target.value)}
           />
         </Field>
+        <div className="space-y-1.5">
+          <FieldLabel label={t("pages.alerting.rules.fieldComparison")} id={comparisonLabelId} />
+          <Segmented
+            labelledBy={comparisonLabelId}
+            value={comparison}
+            onChange={setComparison}
+            options={ALERT_COMPARISONS.map((c) => ({
+              value: c,
+              label: t(`pages.alerting.rules.comparison.${c}`),
+            }))}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t("pages.alerting.rules.thresholdInclusive")}
+          </p>
+          {signal === "request_volume" && comparison === "below" && Number(threshold) === 0 && (
+            <p className="text-xs text-muted-foreground">
+              {t("pages.alerting.rules.trafficStoppedHelp")}
+            </p>
+          )}
+        </div>
+        {supportsNoData(signal) && (
+          <div className="space-y-1.5">
+            <FieldLabel label={t("pages.alerting.rules.fieldNoData")} id={noDataLabelId} />
+            <Segmented
+              labelledBy={noDataLabelId}
+              value={noData}
+              onChange={setNoData}
+              options={ALERT_NO_DATA_POLICIES.map((p) => ({
+                value: p,
+                label: t(`pages.alerting.rules.noData.${p}`),
+              }))}
+            />
+            <p className="text-xs text-muted-foreground">{t("pages.alerting.rules.noDataHint")}</p>
+          </div>
+        )}
         <Field
           label={t("pages.alerting.rules.fieldWindow")}
           hint={windowValid ? windowRange : undefined}
@@ -1058,7 +1130,6 @@ function AlertHistoryScreen() {
 
   // UX stream (#805); screen key comes from the enclosing UxScreenProvider
   useScreenReady(!history.isLoading);
-  useErrorState(!!history.error, "alert-history");
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
@@ -1122,6 +1193,7 @@ function AlertHistoryScreen() {
           error={history.error}
           resource={t("errors.resources.alertHistory")}
           onRetry={() => void history.refetch()}
+          target="alert-history"
         />
       )}
       {capped && (
@@ -1159,7 +1231,11 @@ function AlertHistoryScreen() {
               <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
                 {fmt.dateTime(n.sent_at)}
               </ListCell>
-              <ListCell className="truncate font-mono text-xs">{ruleName(n.rule_id)}</ListCell>
+              {/* the rule name is what tells two rows of one state apart, so it wraps
+                  rather than truncates (#2428) */}
+              <ListCell className="min-w-0 break-words font-mono text-xs">
+                {ruleName(n.rule_id)}
+              </ListCell>
               {/* the diagnosis of a failed delivery wraps rather than truncates:
                   `channel secret could not be unsealed; check ROLTER_KEK` cut to
                   `channel secret could not be…` names the fault and hides what to
@@ -1189,15 +1265,12 @@ function AlertHistoryScreen() {
             actions={
               filtering ? (
                 <Button variant="outline" onClick={clearFilters}>
-                  {t("pages.alerting.history.clearFilters")}
+                  {t("common.clearFilters")}
                 </Button>
               ) : (
-                <Link
-                  to="/alerting-rules"
-                  className="text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
+                <EmptyStateLink to="/alerting-rules">
                   {t("pages.alerting.history.emptyAction")}
-                </Link>
+                </EmptyStateLink>
               )
             }
           />

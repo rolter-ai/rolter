@@ -115,14 +115,15 @@ out (#2084), on the Single Sign-On screen:
 - **Taking a provider out of service** confirms as `sso-provider-disable` with
   `tone="default"`, since one flip undoes it. Switching a provider back on sends
   at once. Deleting one keeps `sso-connection-delete`. When the provider is the
-  last enabled one and the saved policy has password sign-in off, both carry a
-  `LockoutNotice` as `children` and the disable button turns `danger`.
-  `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides it. It reads the
-  saved policy, not the draft on the policy card, and a provider that is already
-  out of service never counts. The notice states only what the control plane
-  enforces: superadmins are exempt from `allow_password_login = false`, and an
-  account created through a provider has no password, so turning password
-  sign-in back on does not restore it.
+  last enabled one and the saved policy has password sign-in off, the control
+  plane refuses both with a 409 (#2443), so the card disables the enable switch
+  and the delete button instead of confirming, with a reason beside them
+  (`pages.sso.lastMethod.reason`) that the controls reference through
+  `aria-describedby`. `locksOutMembers` in `ui/src/lib/sso-lockout.ts` decides
+  it. It reads the saved policy, not the draft on the policy card, and a
+  provider that is already out of service never counts. A 409 that still comes
+  back (another admin changed the list first) is shown as
+  `pages.sso.lastMethod.refused`, not as the server's raw message.
 - **Turning password sign-in off** confirms as `sso-password-off`, and lists the
   enabled providers with no stored client secret (`secretGap`). It warns and
   never blocks, since a public client has no secret on purpose. A save that
@@ -133,9 +134,11 @@ out (#2084), on the Single Sign-On screen:
   `locksOutSsoMembers` in `ui/src/lib/sso-lockout.ts` decides it from the saved
   policy and the draft: only the flip from on to off counts, and with no enabled
   provider (none at all, or every one out of service) nobody signs in through
-  one, so the save goes straight out. Turning it on asks nothing. The notice
-  states only what the control plane enforces: the callback refuses every
-  provider of the org while `allow_sso` is off, and an account created through a
+  one, so the save goes straight out. Turning it on asks nothing. The dialog
+  body and notice state only what the control plane enforces: while `allow_sso`
+  is off the org's providers drop out of `GET /api/v1/auth/methods` (the
+  sign-in screen's buttons disappear), `/auth/sso/{slug}/start` refuses at once
+  and the callback refuses a login begun before the switch (#2339, #2605), and an account created through a
   provider has no password, so those members cannot sign in until single sign-on
   is back on or a superadmin sets one. An account that holds a password, such as
   one made from an invitation, keeps signing in, because password sign-in stays

@@ -35,14 +35,15 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  ApiError,
   fetchConfigProblems,
   fetchModels,
+  fetchRoutes,
   mintPlaygroundKey,
   unservedRoutes,
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
+import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
   chatCompletion,
@@ -60,9 +61,13 @@ import {
   type ChatMessage,
   type GeneratedImage,
   type PlaygroundKeyState,
+  getGatewayCallsInFlight,
+  subscribeGatewayCalls,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
+import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
+import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -218,11 +223,14 @@ function ModelSelect({
   value,
   onChange,
   className,
+  label,
 }: {
   models: ModelOption[];
   value: string;
   onChange: (v: string) => void;
   className?: string;
+  /** names the picker; a compare column passes its own so the pickers differ */
+  label?: string;
 }) {
   const { t } = useTranslation();
   const routesLabel = t("pages.playground.groupRoutes");
@@ -244,7 +252,7 @@ function ModelSelect({
       options={[...groups.values()].flat()}
       value={value}
       onChange={onChange}
-      aria-label={t("pages.playground.modelAria")}
+      aria-label={label ?? t("pages.playground.modelAria")}
       size="sm"
       className={className}
     />
@@ -306,22 +314,6 @@ function usePlaygroundKeyState(): PlaygroundKeyState {
 }
 
 /**
- * The current time, re-read every `intervalMs`.
- *
- * A minted key is good for half an hour, so "expires in 29 min" has to count
- * down on its own — a countdown that only moves when something else re-renders
- * is how a key reads as live several minutes after it stopped working.
- */
-function useNow(intervalMs = 15_000): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
-/**
  * Whether a minted key has run out, flipped by a timer at the instant it does.
  *
  * Kept apart from `useNow` so the screen as a whole re-renders once, at the
@@ -341,16 +333,29 @@ function useExpired(expiresAt: string | null): boolean {
 }
 
 /**
- * Whether a mint was refused because the project routes nothing.
+ * Whether a key rolter minted reaches the built-in `fake-llm` and nothing else.
  *
- * The mint takes no body, so the one client error it answers is that one:
- * `mint_playground_key` in crates/rolter-control/src/me.rs returns `400`
- * exactly when the project has no routes, and `control_integration.rs` pins
- * the status. The message is prose and free to be reworded, so it is not read
- * (#2061).
+ * That is the key `mint_playground_key` in crates/rolter-control/src/me.rs
+ * mints for a project with no routes yet (#2300): an empty list would reach
+ * every model, so the control plane scopes it to the one model a fresh
+ * deployment can answer. It works, so Send stays live; the band only says
+ * what it cannot reach yet and how to widen it.
  */
-function isRouteless(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 400;
+function isBuiltinOnly(state: PlaygroundKeyState): boolean {
+  return state.minted && state.models.length === 1 && state.models[0] === FAKE;
+}
+
+/**
+ * The reach `mint_playground_key` gives a project with these routes, as one
+ * comparable string: the distinct public names, sorted, and the built-in alone
+ * when there are none (#2300).
+ */
+function mintedReach(models: readonly string[]): string {
+  return reachSignature(models.length ? models : [FAKE]);
+}
+
+function reachSignature(models: readonly string[]): string {
+  return [...new Set(models)].sort().join("\n");
 }
 
 /**
@@ -370,7 +375,7 @@ interface KeySession {
   /** a project is in scope and the role is not refused, so a mint can be asked for */
   canMint: boolean;
   mint: UseMutationResult<MintedKey, Error, void>;
-  /** the last mint was refused because the project routes nothing */
+  /** the minted key reaches only the built-in, because the project routes nothing yet */
   routeless: boolean;
 }
 
@@ -402,12 +407,15 @@ function useKeySession(): KeySession {
   const mint = useMutation({
     mutationFn: () => mintPlaygroundKey(projectId as string),
     onSuccess: (minted) =>
-      setPlaygroundKey(minted.key, { expiresAt: minted.expires_at ?? null, minted: true }),
+      setPlaygroundKey(minted.key, {
+        expiresAt: minted.expires_at ?? null,
+        minted: true,
+        models: minted.models,
+      }),
   });
 
-  // one automatic attempt per project, not one per render: a refusal — a
-  // project with no routes answers 400 — must not turn into a mint loop, and
-  // the operator mints by hand from here on
+  // one automatic attempt per project, not one per render: a refusal must not
+  // turn into a mint loop, and the operator mints by hand from here on
   const { mutate } = mint;
   const asked = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -415,6 +423,50 @@ function useKeySession(): KeySession {
     asked.current = projectId;
     mutate();
   }, [projectId, state.key, gateSettled, refused, mutate]);
+
+  // a minted key's reach is fixed when it is minted, so a route added or
+  // removed afterwards leaves it stale (#2608). the same query the Models screen
+  // lists, so a route saved there reaches this one through its invalidation
+  const routes = useQuery({
+    queryKey: ["routes", projectId],
+    queryFn: () => fetchRoutes(projectId as string),
+    enabled: !!projectId && state.minted,
+  });
+  const callsInFlight = React.useSyncExternalStore(
+    subscribeGatewayCalls,
+    getGatewayCallsInFlight,
+    getGatewayCallsInFlight,
+  );
+  const wanted = routes.data ? mintedReach(routes.data.map((r) => r.model)) : null;
+  const held = reachSignature(state.models);
+  // one re-mint per route set: a failed one is left to the Renew button, and a
+  // set the control plane keeps answering differently cannot turn into a loop
+  const reminted = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    // a pasted key is never touched, and nor is an expired one: the band asks
+    // for that renewal itself
+    if (!projectId || !state.minted || expired || refused || !wanted) return;
+    if (routes.isFetching || mint.isPending || callsInFlight > 0) return;
+    if (wanted === held) {
+      reminted.current = null;
+      return;
+    }
+    const attempt = `${projectId}:${wanted}`;
+    if (reminted.current === attempt) return;
+    reminted.current = attempt;
+    mutate();
+  }, [
+    projectId,
+    state.minted,
+    expired,
+    refused,
+    wanted,
+    held,
+    routes.isFetching,
+    mint.isPending,
+    callsInFlight,
+    mutate,
+  ]);
 
   // the automatic mint is due and has not gone out yet, which is a key on its
   // way rather than a screen without one
@@ -429,7 +481,7 @@ function useKeySession(): KeySession {
     refused,
     canMint: !!projectId && !refused,
     mint,
-    routeless: isRouteless(mint.error),
+    routeless: isBuiltinOnly(state),
   };
 }
 
@@ -461,10 +513,11 @@ function keyMessage(
 ): KeyMessage {
   const { state } = session;
   if (session.pending) return "pending";
-  if (session.mint.error) return session.routeless ? "routeless" : "failed";
+  if (session.mint.error) return "failed";
   if (state.key) {
     if (state.minted && session.expired) return "expired";
     if (gateway.rejected) return "rejected";
+    if (session.routeless) return "routeless";
     return state.minted ? "active" : "pasted";
   }
   if (gateway.keyless) return "keyless";
@@ -476,7 +529,6 @@ function keyMessage(
 /** the states in which the screen could not get a key itself, so pasting one is the way on */
 const OFFERS_PASTE: ReadonlySet<KeyMessage> = new Set([
   "failed",
-  "routeless",
   "rejected",
   "noProject",
   "refused",
@@ -504,7 +556,8 @@ function SessionKeyBar({
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const now = useNow();
+  // a minted key is good for half an hour, so "expires in 29 min" has to count down on its own
+  const now = useNow(15_000);
   const can = useCan();
   const { state, expired, mint, pending, projectId } = session;
   const message = keyMessage(session, { rejected, keyless });
@@ -551,7 +604,7 @@ function SessionKeyBar({
           ) : (
             <KeyStatus state={state} expired={expired} rejected={rejected} />
           )}
-          {!pending && message === "active" && state.expiresAt && (
+          {!pending && (message === "active" || message === "routeless") && state.expiresAt && (
             <span className="text-xs text-[color:var(--text-subtle)]">
               {t("playground.key.expires", { when: fmt.relative(state.expiresAt, now) })}
             </span>
@@ -565,7 +618,7 @@ function SessionKeyBar({
             disabled={!projectId || mint.isPending}
             onClick={() => mint.mutate()}
           >
-            {mint.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {mint.isPending && <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />}
             {/* nothing to renew until rolter has minted one: a pasted key is
                 replaced, not renewed */}
             {state.key && state.minted ? t("playground.key.renew") : t("playground.key.mint")}
@@ -574,9 +627,9 @@ function SessionKeyBar({
         {text && (
           <p role="status" className="text-xs leading-snug text-[color:var(--text-subtle)]">
             {text}
-            {/* the fix for a routeless project is a route, so the band points
-                at the screen that makes one. only an explicit "no" on reading
-                routes hides it, the rule the rail follows for that leaf */}
+            {/* what widens a routeless project's key is a route, so the band
+                points at the screen that makes one. only an explicit "no" on
+                reading routes hides it, the rule the rail follows for that leaf */}
             {message === "routeless" && can("route", "read") !== false && (
               <>
                 {" "}
@@ -596,13 +649,12 @@ function SessionKeyBar({
           onSaved={() => mint.reset()}
         />
       </div>
-      {/* a routeless project has its own line above and no retry: minting
-          again cannot succeed until the project routes something */}
       {message === "failed" && (
         <LoadError
           error={mint.error}
           resource={t("errors.resources.playgroundKey")}
           onRetry={() => mint.mutate()}
+          target="playground-key"
         />
       )}
     </>
@@ -778,14 +830,19 @@ function GatewayButton({
 }
 
 // an error arrives after an action, so it is announced the moment it appears
-function ErrorNote({ error }: { error: string | null }) {
+function ErrorNote({ error }: { error: ErrorCopy | null }) {
   if (!error) return null;
   return (
     <p
       role="alert"
       className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-xs text-[color:var(--status-danger-text)]"
     >
-      {error}
+      {error.message}
+      {error.detail && (
+        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+          {error.detail}
+        </span>
+      )}
     </p>
   );
 }
@@ -830,6 +887,11 @@ function ChatColumn({
   // enough once two columns can hold the same one, so a compare view adds the
   // place; a lone column is just its model
   const who = position === null ? model : t("pages.playground.columnName", { model, n: position });
+  // a lone column keeps the plain names; a compare view names each after its column
+  const rawLabel =
+    position === null
+      ? t("playground.rawOutput")
+      : t("pages.playground.rawOutputFor", { model: who });
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   // rendered by default, because that is what a model reply is *for*; raw is
   // what an operator switches to when the question is what the model literally
@@ -837,7 +899,7 @@ function ChatColumn({
   const [raw, setRaw] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [image, setImage] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [lastPrompt, setLastPrompt] = React.useState("");
   // the finished reply, for the live region: `id` makes a reply identical to
@@ -895,7 +957,7 @@ function ChatColumn({
       }));
     } catch (e) {
       setMsgs((m) => m.slice(0, -1));
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -904,7 +966,12 @@ function ChatColumn({
   return (
     <div className="relative flex h-[460px] flex-col overflow-hidden rounded-lg border border-[color:var(--border-default)] bg-card">
       <div className="flex items-center gap-2 border-b border-[color:var(--border-subtle)] p-2">
-        <ModelSelect models={models} value={model} onChange={onModel} />
+        <ModelSelect
+          models={models}
+          value={model}
+          onChange={onModel}
+          label={position === null ? undefined : t("pages.playground.modelAriaFor", { model: who })}
+        />
         {/* the last thing sent, so the snippet reproduces a call that is known
             to work rather than whatever is half-typed in the composer */}
         <CopyAsCodeButton
@@ -920,8 +987,8 @@ function ChatColumn({
           className="h-8 w-8"
           aria-pressed={raw}
           onClick={() => setRaw((v) => !v)}
-          aria-label={t("playground.rawOutput")}
-          title={t("playground.rawOutput")}
+          aria-label={rawLabel}
+          title={rawLabel}
         >
           <Pilcrow className="h-3.5 w-3.5" />
         </Button>
@@ -1000,7 +1067,11 @@ function ChatColumn({
               <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               <button
                 onClick={() => setImage(null)}
-                aria-label={t("pages.playground.removeAttachment")}
+                aria-label={
+                  position === null
+                    ? t("pages.playground.removeAttachment")
+                    : t("pages.playground.removeAttachmentFor", { model: who })
+                }
                 className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
               >
                 <Trash2 className="h-3 w-3" />
@@ -1025,7 +1096,11 @@ function ChatColumn({
               variant="ghost"
               className="h-8 w-8"
               onClick={() => fileRef.current?.click()}
-              aria-label={t("pages.playground.attachImage")}
+              aria-label={
+                position === null
+                  ? t("pages.playground.attachImage")
+                  : t("pages.playground.attachImageFor", { model: who })
+              }
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -1043,7 +1118,7 @@ function ChatColumn({
             void send();
           }}
           placeholder={t("pages.playground.messagePlaceholder")}
-          aria-label={t("pages.playground.messageAria", { model })}
+          aria-label={t("pages.playground.messageAria", { model: who })}
           className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
         />
         <GatewayButton
@@ -1053,7 +1128,11 @@ function ChatColumn({
           disabled={busy}
           aria-label={t("pages.playground.sendTo", { model: who })}
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {busy ? (
+            <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+          ) : (
+            <Send className="h-4 w-4" />
+          )}
         </GatewayButton>
       </div>
     </div>
@@ -1062,6 +1141,11 @@ function ChatColumn({
 
 function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: string | null }) {
   const { t } = useTranslation();
+  // the account's saved Playground model (#2448) is what the column opens on,
+  // once the catalog confirms the gateway serves it; a stale name that no
+  // longer routes would only make the first message fail
+  const saved = useOptionalPreferences()?.preferences?.default_playground_model ?? null;
+  const preferredModel = saved && models.some((option) => option.id === saved) ? saved : preferred;
   // a column's thread lives in the column, so a column needs an identity that
   // outlasts its position: removing the first of two must not hand its thread
   // to the one that moved up
@@ -1076,13 +1160,13 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   const touched = React.useRef(false);
   const auto = React.useRef(FAKE);
   React.useEffect(() => {
-    if (touched.current || !preferred) return;
+    if (touched.current || !preferredModel) return;
     const previous = auto.current;
-    auto.current = preferred;
+    auto.current = preferredModel;
     setCols((c) =>
-      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferred }] : c,
+      c.length === 1 && c[0].model === previous ? [{ ...c[0], model: preferredModel }] : c,
     );
-  }, [preferred]);
+  }, [preferredModel]);
   const compare = cols.length > 1;
   const setModel = (i: number, v: string) => {
     touched.current = true;
@@ -1192,7 +1276,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
     t("pages.playground.samples.embeddings").split("\n"),
   );
   const [points, setPoints] = React.useState<ScatterPoint[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const setText = (i: number, v: string) => setTexts((a) => a.map((t, j) => (j === i ? v : t)));
@@ -1203,7 +1287,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
   const run = async () => {
     const rows = texts.filter((t) => t.trim());
     if (rows.length < 2) {
-      setError(t("pages.playground.embedNeedTwo"));
+      setError({ message: t("pages.playground.embedNeedTwo") });
       return;
     }
     setError(null);
@@ -1219,7 +1303,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         ((v - Math.min(...ys)) / (Math.max(...ys) - Math.min(...ys) || 1)) * 100;
       setPoints(proj.map((p, i) => ({ x: nx(p.x), y: ny(p.y), label: rows[i] })));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1260,7 +1344,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
           </Button>
           <GatewayButton size="sm" onClick={run} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}{" "}
@@ -1299,7 +1383,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
   const [size, setSize] = React.useState("1024x1024");
   const [n, setN] = React.useState(4);
   const [images, setImages] = React.useState<GeneratedImage[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
 
   const gen = async () => {
@@ -1308,7 +1392,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
     try {
       setImages(await generateImages(model, prompt, n, size));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1348,7 +1432,7 @@ function ImageMode({ models }: { models: ModelOption[] }) {
           />
           <GatewayButton size="sm" onClick={gen} disabled={busy}>
             {busy ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <ImageIcon className="h-3.5 w-3.5" />
             )}{" "}
@@ -1396,7 +1480,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
   const [voice, setVoice] = React.useState("nova");
   const [audioUrl, setAudioUrl] = React.useState<string | null>(null);
   const [transcript, setTranscript] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const clipRef = React.useRef<HTMLAudioElement>(null);
@@ -1413,7 +1497,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setAudioUrl(await synthesizeSpeech(model, text, voice));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1426,7 +1510,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
     try {
       setTranscript(await transcribe(model, f));
     } catch (e) {
-      setError((e as Error).message);
+      setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
@@ -1469,7 +1553,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               />
               <GatewayButton size="sm" onClick={speak} disabled={busy}>
                 {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
                 ) : (
                   <Mic className="h-3.5 w-3.5" />
                 )}{" "}
@@ -1509,7 +1593,7 @@ function AudioMode({ models, active }: { models: ModelOption[]; active: boolean 
               disabled={busy}
             >
               {busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
               ) : (
                 <Upload className="h-3.5 w-3.5" />
               )}{" "}

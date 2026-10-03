@@ -3,6 +3,7 @@ import { Download, KeyRound, ShieldCheck } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
@@ -10,6 +11,7 @@ import { downloadRecoveryCodes, EnrolSteps, RecoveryCodesList } from "@/componen
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogBody,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -94,7 +96,7 @@ export function TwoFactorPanel() {
   if (isOpenModeNoSession(status.error)) return null;
 
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]">
+    <SurfacePanel>
       <header className="border-b border-[color:var(--border-subtle)] px-4 py-3">
         <h2 className="text-sm font-medium text-foreground">{t("account.mfa.title")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t("account.mfa.subtitle")}</p>
@@ -107,6 +109,7 @@ export function TwoFactorPanel() {
             error={status.error}
             resource={t("errors.resources.twoFactor")}
             onRetry={() => void status.refetch()}
+            target="mfa"
           />
         )}
 
@@ -237,7 +240,7 @@ export function TwoFactorPanel() {
           />
         </Field>
       </ConfirmDialog>
-    </section>
+    </SurfacePanel>
   );
 }
 
@@ -287,27 +290,31 @@ function EnrolDialog({
         <DialogDescription>{t("account.mfa.enrol.subtitle")}</DialogDescription>
       </DialogHeader>
 
-      {enrolment.isLoading && <PanelSkeleton panels={1} height={176} />}
-      {enrolment.error && (
-        <LoadError
-          error={enrolment.error}
-          resource={t("errors.resources.twoFactorSecret")}
-          onRetry={() => void enrolment.refetch()}
-        />
-      )}
-      {enrolment.data && (
-        <EnrolSteps
-          enrolment={enrolment.data}
-          code={code}
-          onCodeChange={setCode}
-          onSubmit={() => confirm.mutate()}
-        />
-      )}
-      {confirm.isError && (
-        <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-          {(confirm.error as Error).message}
-        </p>
-      )}
+      <DialogBody>
+        {enrolment.isLoading && <PanelSkeleton panels={1} height={176} />}
+        {enrolment.error && (
+          // load-error-allow: the enrolment secret fills a dialog step; there is no list to be empty
+          <LoadError
+            error={enrolment.error}
+            resource={t("errors.resources.twoFactorSecret")}
+            onRetry={() => void enrolment.refetch()}
+            target="mfa-enrolment"
+          />
+        )}
+        {enrolment.data && (
+          <EnrolSteps
+            enrolment={enrolment.data}
+            code={code}
+            onCodeChange={setCode}
+            onSubmit={() => confirm.mutate()}
+          />
+        )}
+        {confirm.isError && (
+          <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
+            {(confirm.error as Error).message}
+          </p>
+        )}
+      </DialogBody>
 
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

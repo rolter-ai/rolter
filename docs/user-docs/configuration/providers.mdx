@@ -130,4 +130,4 @@ A URL that carries credentials (`user:pass@host`) is not accepted. To use an aut
 
 **Delete provider** asks first and names the provider. The dialog also lists what still points at it: the routes that target it and the provider groups it belongs to. A route or group that would be left with nothing is marked **only target** or **only member**. While that list is loading, or if it could not be read, the dialog says so instead of claiming nothing uses the provider.
 
-The control plane refuses to delete a provider that a route target or a group member still references, so take it out of those first. A provider nothing references can still be addressed directly as `provider-slug/model`, and stops answering there once it is deleted.
+The control plane refuses to delete a provider that a route target or a group member still references: `DELETE /api/v1/providers/{id}` answers `409` naming each route and provider group that uses it, and the provider is left in place, so take it out of those first. A provider nothing references can still be addressed directly as `provider-slug/model`, and stops answering there once it is deleted.

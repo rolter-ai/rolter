@@ -28,7 +28,7 @@ import {
   fetchProjectSettings,
   updateProjectSettings,
 } from "@/lib/api";
-import { useScope } from "@/lib/scope";
+import { useCreateProjectOpener, useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 
 type Level = "org" | "team" | "project";
@@ -154,6 +154,42 @@ export function ScopeSwitcher() {
         onOpenChange={(open) => !open && setSettingsTarget(null)}
       />
     </div>
+  );
+}
+
+/**
+ * The create-project dialog other screens open through `openCreateProject()`
+ * (#2611), such as the Getting started card when no project exists yet.
+ *
+ * Mounted once in the shell rather than inside `ScopeSwitcher`: the switcher
+ * lives in the rail's account menu, which is only in the document while that
+ * menu is open, so an opener registered there was gone by the time any screen
+ * could call it. It is the same dialog the + beside Project raises, under the
+ * same team, and it selects the project it creates the way the switcher does.
+ */
+export function CreateProjectHost() {
+  const scope = useScope();
+  const queryClient = useQueryClient();
+  const [open, setOpen] = React.useState(false);
+
+  // a project is created under the team in scope, so with no team there is
+  // nothing to open — the same condition that hides the + beside Project
+  useCreateProjectOpener(() => {
+    if (scope.teamId) setOpen(true);
+  });
+
+  return (
+    <CreateScopeDialog
+      level={open ? "project" : null}
+      orgId={scope.orgId}
+      teamId={scope.teamId}
+      onOpenChange={(next) => !next && setOpen(false)}
+      onCreated={(_, id) => {
+        queryClient.invalidateQueries({ queryKey: ["scope"] });
+        scope.setProjectId(id);
+        setOpen(false);
+      }}
+    />
   );
 }
 
@@ -325,6 +361,7 @@ function ProjectSettingsDialog({
             error={settings.error}
             resource={t("errors.resources.projectSettings")}
             onRetry={() => settings.refetch()}
+            target="project-settings"
           />
         ) : settings.isPending ? (
           <FormSkeleton fields={1} />
@@ -409,9 +446,11 @@ function CreateScopeDialog({
         <DialogDescription>{level ? t(CREATE_KEYS[level].hint) : ""}</DialogDescription>
       </DialogHeader>
       <div className="space-y-3">
+        {/* no `autoFocus`: the dialog already puts focus on its first field,
+            and focusing it during the commit made the field the "opener" the
+            dialog hands focus back to on close, so focus fell to the page */}
         <Field label={t("scope.name")}>
           <Input
-            autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t(
@@ -434,7 +473,7 @@ function CreateScopeDialog({
           {t("common.cancel")}
         </Button>
         <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
-          {create.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {create.isPending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
           {t("common.create")}
         </Button>
       </DialogFooter>

@@ -24,7 +24,7 @@ use crate::redis_conn::ReconnectingRedis;
 
 /// Scope identity of a request, taken from its virtual key. An empty string
 /// means "no id at this level" and never matches a budget.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScopeIds {
     pub org: String,
     pub team: String,

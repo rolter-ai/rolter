@@ -95,6 +95,7 @@ bun run check:stories
 bun run check:primitives
 bun run check:focus
 bun run check:waits
+bun run check:load-error-targets
 bun run test
 bun run build
 bun run test:stories <the story files you touched>
@@ -111,8 +112,9 @@ bun run test:stories <the story files you touched>
 - Stay inside your worktree. Never write scratch or backup files outside it.
 - Do what the parent asked about pushing. If it says commit locally, do not
   push or open a PR.
-- Leave the Rust crates to the backend station. When a screen needs an API
-  change, report it for a `station:rtx` issue instead of editing `crates/`.
+- Leave the Rust crates to the rolter-rust agent unless the parent asks
+  otherwise. When a screen needs an API change, report it instead of editing
+  `crates/`.
 - Branch name is `<type>/<issue-number>-<short-description>`.
 - Verify before you build — grep for the component or endpoint the issue says is
   missing. If it exists, narrow the change to the real gap.
@@ -130,8 +132,9 @@ proxy core store auth control ui docs infra ci deps release e2e`. Dashboard
 - **Never** put a Claude session or remote-connection URL in a commit message,
   a PR body, or anywhere else.
 - Commit with `--no-gpg-sign` (no TTY for pinentry in an agent session).
-- Open the PR as a draft, mark it ready once `ci-ok` is green. Do not merge and
-  never pass `--delete-branch`.
+- Open the PR ready for review, not as a draft (a draft reports `BLOCKED` however
+  green its checks are), and keep owning it until `ci-ok` is green. Do not merge
+  and never pass `--delete-branch`.
 - Ship the `docs/user-docs/` update in the same PR when behaviour changes, including
   the `docs/user-docs/docs.json` nav line — an unlisted page is invisible.
 - File a GitHub issue for anything out of scope and add it to the board:

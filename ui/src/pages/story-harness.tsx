@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
+import { MemoryRouter, useInRouterContext } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -7,11 +8,16 @@ import type { RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
-import { effectiveFor as effectiveFromTable, matrixFixture } from "@/lib/rbac-capabilities";
+import {
+  effectiveFor as effectiveFromTable,
+  matrixFixture,
+  type Membership,
+} from "@/lib/rbac-capabilities";
 import { expectInFrame, expectInViewport } from "@/lib/story-viewport";
 import { ToastProvider } from "@/lib/toast";
 import type { UiEvent } from "@/lib/api";
 import { pendingUxEvents, resetUxForTests } from "@/lib/ux";
+import { STRICT_MOUNT_LABEL, doubleInvokeFailure, strictProbeCounts } from "./story-strict";
 
 // Shared fetch-stub harness for screen stories (#879).
 //
@@ -102,9 +108,12 @@ export function routes(table: [string, () => unknown][], status = 200): FetchStu
 export function Harness({
   fetchStub,
   role,
+  route,
   children,
 }: {
   fetchStub: FetchStub;
+  /** the router's starting path, when a story asserts where a link went */
+  route?: string;
   /**
    * Answer `GET /api/v1/rbac/effective` as this role and mount the screen
    * under a `CapabilityProvider` (#1183).
@@ -113,7 +122,7 @@ export function Harness({
    * un-gated case every other story asserts, because `can()` with no provider
    * above it says "unknown" and every control renders enabled.
    */
-  role?: StoryRole;
+  role?: StoryRole | StoryMemberships;
   children: React.ReactNode;
 }) {
   const original = React.useRef<typeof globalThis.fetch | null>(null);
@@ -141,7 +150,15 @@ export function Harness({
   ) : (
     children
   );
-  return <QueryClientProvider client={client}>{body}</QueryClientProvider>;
+  // screens link with the router's Link, which throws outside one; a story that
+  // brings its own router keeps it
+  const inRouter = useInRouterContext();
+  const routed = inRouter ? (
+    body
+  ) : (
+    <MemoryRouter initialEntries={route ? [route] : undefined}>{body}</MemoryRouter>
+  );
+  return <QueryClientProvider client={client}>{routed}</QueryClientProvider>;
 }
 
 /**
@@ -179,6 +196,23 @@ function GateProbe() {
 export type StoryRole = Role | "superadmin";
 
 /**
+ * A caller held by memberships rather than one org role (#2522). The stub reads
+ * `org_id`, `team_id` and `project_id` off the query string, the way the
+ * control plane does, and decides each capability at the part of that chain
+ * its scope names (#2376) — so a project admin is an admin on their project's
+ * rows and holds nothing more on an org-scoped one.
+ */
+export type StoryMemberships = Membership[];
+
+/** An admin of `projectId` who is a viewer of the story's org. */
+export function adminOfProject(projectId: string): StoryMemberships {
+  return [
+    { role: "viewer", orgId: ORG.id },
+    { role: "admin", projectId },
+  ];
+}
+
+/**
  * What the control plane would answer for a caller holding `role`, derived
  * from its own capability table (#1298).
  *
@@ -187,8 +221,11 @@ export type StoryRole = Role | "superadmin";
  * both are deployment-wide catalogs a superadmin alone writes, which let two
  * screens gate on capabilities the control plane does not define while their
  * stories passed. `src/lib/rbac-capabilities.ts` derives both payloads from a
- * generated copy of `CAPABILITIES` instead, and a test fails the build when
- * that copy and `crates/rolter-control/src/rbac_matrix.rs` disagree.
+ * copy of `crates/rolter-control/rbac-matrix.json` instead — the matrix the
+ * rolter-control test suite writes from `CAPABILITIES` (#1369) — and a test
+ * fails the build when that copy and the artifact disagree.
+ *
+ * A bare role is one org membership, which every row of every chain reaches.
  */
 export function effectiveFor(role: StoryRole): RbacEffective {
   return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
@@ -198,10 +235,23 @@ export function effectiveFor(role: StoryRole): RbacEffective {
 export { matrixFixture };
 
 /** Answer the two RBAC endpoints as `role`, then fall through to `handler`. */
-export function withCapabilities(role: StoryRole, handler: FetchStub): FetchStub {
+export function withCapabilities(
+  role: StoryRole | StoryMemberships,
+  handler: FetchStub,
+): FetchStub {
   return async (input, init) => {
-    const path = new URL(String(input), "http://localhost").pathname;
-    if (path === "/api/v1/rbac/effective") return json(effectiveFor(role));
+    const url = new URL(String(input), "http://localhost");
+    const path = url.pathname;
+    if (path === "/api/v1/rbac/effective") {
+      const q = url.searchParams;
+      if (typeof role === "string") return json(effectiveFor(role));
+      const chain = {
+        orgId: q.get("org_id"),
+        teamId: q.get("team_id"),
+        projectId: q.get("project_id"),
+      };
+      return json(effectiveFromTable({ memberships: role, chain }));
+    }
     if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
     return handler(input, init);
   };
@@ -989,4 +1039,42 @@ export async function expectUxEvent(action: UiEvent["action"], target?: string):
  */
 export function expectNoUxEvent(action: UiEvent["action"], target?: string): void {
   expect(pendingUxEvents().find((e) => matches(e, action, target))).toBeUndefined();
+}
+
+/**
+ * Wait until the probe beside a `StrictModeHost` subject has seen StrictMode's
+ * simulated unmount and remount: two mounts and one cleanup. A story whose
+ * StrictMode doubled nothing fails here, with the reason, instead of going
+ * green against a lifecycle that never ran (#1887).
+ */
+export async function expectDoubleInvoked(): Promise<void> {
+  await waitFor(() => {
+    const failure = doubleInvokeFailure(strictProbeCounts());
+    if (failure !== null) throw new Error(failure);
+  });
+}
+
+/**
+ * Mount a `StrictModeHost`'s subject in a later commit and prove the
+ * double-invoke ran on it. Everything the play function does after this runs
+ * against a subject that has already been mounted, unmounted and remounted.
+ */
+export async function mountStrictly(label = STRICT_MOUNT_LABEL): Promise<void> {
+  await userEvent.click(within(document.body).getByRole("button", { name: label }));
+  await expectDoubleInvoked();
+}
+
+/**
+ * Sets the control plane's injected documentation base for one story and puts
+ * it back afterwards, so the linked and unlinked states cannot leak into each
+ * other.
+ */
+export function withDocsBase(base: string | undefined) {
+  return () => {
+    const before = window.__ROLTER_CONFIG__;
+    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
+    return () => {
+      window.__ROLTER_CONFIG__ = before;
+    };
+  };
 }

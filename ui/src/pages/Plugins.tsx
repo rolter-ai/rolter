@@ -32,9 +32,10 @@ import {
   type PluginInstanceInput,
   type PluginInstanceRow,
 } from "@/lib/api";
+import { serverFieldError } from "@/lib/field-errors";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 type Stage = PluginInstanceRow["stage"];
 type FailureMode = PluginInstanceRow["failure_mode"];
@@ -115,7 +116,6 @@ export default function Plugins() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
   useScreenReady(!query.isLoading);
-  useErrorState(!!query.error, "plugins");
   const [editing, setEditing] = React.useState<PluginInstanceRow | null | undefined>();
   const invalidate = () => client.invalidateQueries({ queryKey: ["plugins", scope.orgId] });
   const toggle = useMutation({
@@ -181,6 +181,7 @@ export default function Plugins() {
           error={query.error}
           resource={t("errors.resources.plugins")}
           onRetry={() => void query.refetch()}
+          target="plugin-list"
         />
       ) : plugins.length === 0 ? (
         <EmptyState
@@ -384,7 +385,9 @@ function StageLane({
                   disabled={removingId === plugin.id}
                   onClick={() => onDelete(plugin)}
                 >
-                  {removingId === plugin.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {removingId === plugin.id && (
+                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                  )}
                   {t("pages.plugins.delete")}
                 </GatedButton>
                 <GatedButton
@@ -404,6 +407,23 @@ function StageLane({
     </section>
   );
 }
+
+// the dialog's checked fields, in the order they sit, so focus lands on the
+// first one that is wrong (#2651)
+type PluginField = "name" | "slug" | "endpoint" | "position" | "secret_env" | "config";
+const PLUGIN_FIELD_ORDER: PluginField[] = [
+  "name",
+  "slug",
+  "endpoint",
+  "position",
+  "secret_env",
+  "config",
+];
+// the wire names a 400 opens with are the form keys themselves
+const PLUGIN_WIRE_FIELDS: Record<string, PluginField> = Object.fromEntries(
+  PLUGIN_FIELD_ORDER.map((field) => [field, field]),
+);
+const pluginFieldId = (field: PluginField) => `plugin-${field.replace("_env", "")}`;
 
 function PluginDialog({
   open,
@@ -437,7 +457,10 @@ function PluginDialog({
     secret_env: initial?.secret_env ?? "",
     config: JSON.stringify(initial?.config ?? {}, null, 2),
   });
-  const [localError, setLocalError] = React.useState<string | null>(null);
+  // the rules are checked from the first press on Save onwards, so a fresh
+  // install is not opened already shouting about the name it has not been given
+  const [attempted, setAttempted] = React.useState(false);
+  const [serverErrors, setServerErrors] = React.useState<Partial<Record<PluginField, string>>>({});
   // shown before saving, and read out with both pickers it depends on
   const streamingNoteId = React.useId();
   const streaming = form.stage === "post_response" ? form.failure_mode : undefined;
@@ -459,6 +482,12 @@ function PluginDialog({
       onDone();
     },
     onError: (error, body) => {
+      const named = serverFieldError(error, PLUGIN_WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(pluginFieldId(named.field))?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: body.name }),
@@ -468,22 +497,34 @@ function PluginDialog({
   });
   const set = (patch: Partial<typeof form>) => {
     setForm((value) => ({ ...value, ...patch }));
-    setLocalError(null);
+    // an edit answers the server's complaint about that field
+    setServerErrors((errors) => {
+      const next = { ...errors };
+      for (const key of Object.keys(patch)) delete next[key as PluginField];
+      return next;
+    });
   };
-  const save = () => {
-    let config: unknown;
-    try {
-      config = JSON.parse(form.config);
-    } catch {
-      setLocalError(t("pages.plugins.errorConfigJson"));
-      return;
-    }
+  // every failing field is reported at once, each under its own control
+  const local: Partial<Record<PluginField, string>> = {};
+  if (!form.name.trim()) local.name = t("pages.plugins.errorName");
+  if (!/^https?:\/\//.test(form.endpoint)) local.endpoint = t("pages.plugins.errorEndpoint");
+  let config: unknown;
+  try {
+    config = JSON.parse(form.config);
     if (!config || Array.isArray(config) || typeof config !== "object") {
-      setLocalError(t("pages.plugins.errorConfigObject"));
-      return;
+      local.config = t("pages.plugins.errorConfigObject");
     }
-    if (!form.name.trim() || !/^https?:\/\//.test(form.endpoint)) {
-      setLocalError(t("pages.plugins.errorNameEndpoint"));
+  } catch {
+    local.config = t("pages.plugins.errorConfigJson");
+  }
+  const errorOf = (field: PluginField) =>
+    (attempted ? local[field] : undefined) ?? serverErrors[field];
+  const save = () => {
+    setAttempted(true);
+    const first = PLUGIN_FIELD_ORDER.find((field) => local[field]);
+    if (first) {
+      // moved to the first field at fault, so the press says why it did nothing
+      document.getElementById(pluginFieldId(first))?.focus();
       return;
     }
     mutation.mutate({
@@ -511,7 +552,7 @@ function PluginDialog({
       </DialogHeader>
       <DialogBody className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.plugins.fieldName")} htmlFor="plugin-name">
+          <Field label={t("pages.plugins.fieldName")} htmlFor="plugin-name" error={errorOf("name")}>
             <Input
               id="plugin-name"
               value={form.name}
@@ -521,6 +562,7 @@ function PluginDialog({
           <Field
             label={t("pages.plugins.fieldSlug")}
             htmlFor="plugin-slug"
+            error={errorOf("slug")}
             hint={initial ? t("pages.plugins.hintSlugLocked") : t("pages.plugins.hintSlugDerived")}
           >
             <Input
@@ -560,7 +602,11 @@ function PluginDialog({
             />
           </Field>
         </div>
-        <Field label={t("pages.plugins.fieldEndpoint")} htmlFor="plugin-endpoint">
+        <Field
+          label={t("pages.plugins.fieldEndpoint")}
+          htmlFor="plugin-endpoint"
+          error={errorOf("endpoint")}
+        >
           <Input
             id="plugin-endpoint"
             type="url"
@@ -572,6 +618,7 @@ function PluginDialog({
           <Field
             label={t("pages.plugins.fieldPosition")}
             htmlFor="plugin-position"
+            error={errorOf("position")}
             hint={t("pages.plugins.hintPosition")}
           >
             <Input
@@ -599,6 +646,7 @@ function PluginDialog({
         <Field
           label={t("pages.plugins.fieldSecret")}
           htmlFor="plugin-secret"
+          error={errorOf("secret_env")}
           hint={t("pages.plugins.hintSecret")}
         >
           <Input
@@ -612,6 +660,7 @@ function PluginDialog({
         <Field
           label={t("pages.plugins.fieldConfig")}
           htmlFor="plugin-config"
+          error={errorOf("config")}
           hint={t("pages.plugins.hintConfig")}
         >
           <Textarea
@@ -633,9 +682,10 @@ function PluginDialog({
             onCheckedChange={(enabled) => set({ enabled })}
           />
         </div>
-        {(localError || mutation.isError) && (
+        {/* a refusal that names no field still needs saying in the dialog */}
+        {mutation.isError && !serverFieldError(mutation.error, PLUGIN_WIRE_FIELDS) && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {localError ?? (mutation.error as Error).message}
+            {(mutation.error as Error).message}
           </p>
         )}
       </DialogBody>

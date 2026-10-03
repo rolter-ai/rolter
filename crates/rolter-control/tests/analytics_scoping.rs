@@ -16,6 +16,9 @@
 //! `ROLTER_TEST_CLICKHOUSE_URL`; unset either and the tests self-skip.
 #![cfg(feature = "postgres")]
 
+#[path = "common/clickhouse_ddl.rs"]
+mod clickhouse_ddl;
+
 use std::net::SocketAddr;
 
 use rolter_store::postgres::test_database;
@@ -49,49 +52,8 @@ macro_rules! skip_without_stack {
     }};
 }
 
-/// Apply every shipped ClickHouse migration. All of them are idempotent — the
-/// same property `ux-capture.sh apply-schema` relies on — so a shared server
-/// that already has the tables is left as it was.
 async fn ensure_schema(client: &reqwest::Client, base: &str) {
-    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../clickhouse"));
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .expect("read the clickhouse migration directory")
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            (path.extension()? == "sql").then_some(path)
-        })
-        .collect();
-    files.sort();
-    for path in files {
-        let ddl = std::fs::read_to_string(&path).expect("read shipped DDL");
-        // comments go first, exactly as `ux-capture.sh apply-schema` strips them:
-        // several hold a `;` of their own. then one statement per request, since
-        // the HTTP interface refuses more than one
-        let stripped: String = ddl
-            .lines()
-            .map(|line| line.split("--").next().unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for statement in stripped
-            .split(';')
-            .map(str::trim)
-            .filter(|statement| !statement.is_empty())
-            .map(str::to_string)
-        {
-            let response = client
-                .post(format!("{base}/"))
-                .body(statement)
-                .send()
-                .await
-                .expect("reach clickhouse");
-            assert!(
-                response.status().is_success(),
-                "{}: {}",
-                path.display(),
-                response.text().await.unwrap_or_default()
-            );
-        }
-    }
+    clickhouse_ddl::apply_schema(client, base).await;
 }
 
 async fn insert_rows(client: &reqwest::Client, base: &str, table: &str, rows: &[Value]) {
@@ -1039,4 +1001,267 @@ async fn requests_sharing_an_id_and_a_millisecond_keep_their_own_bodies() {
         invocation_rows(&http, addr, &victim_member, &ids).await,
         vec![(shared.clone(), victim.clone(), "victim-body".into(), false)]
     );
+}
+
+/// A number from a ClickHouse `FORMAT JSON` row, which quotes 64-bit integers
+/// and leaves floats bare.
+fn number(value: &Value) -> f64 {
+    match value {
+        Value::String(text) => text.parse().unwrap_or_else(|_| panic!("{text} parses")),
+        other => other
+            .as_f64()
+            .unwrap_or_else(|| panic!("{other} is a number")),
+    }
+}
+
+/// The dashboard's summary, timeseries and by-model reads take the invocation
+/// list's `model`, `key`, `business_unit` and `customer` filters (#2453). A
+/// filter narrows what the caller already reads and never reaches past it:
+/// rows of another project or org that match it exactly still stay out.
+#[tokio::test]
+async fn dashboard_filters_narrow_the_rollups_inside_the_callers_visibility() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "dash-acme").await;
+    let umbrella = seed_tenant(&pool, "dash-umbrella").await;
+
+    // fresh names and ids, so rows other tests left in a shared clickhouse
+    // can never match a filter below
+    let tag = Uuid::new_v4().simple().to_string();
+    let (model_one, model_two) = (format!("dash-one-{tag}"), format!("dash-two-{tag}"));
+    let (key_one, key_two) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let (unit_one, unit_two) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let (customer_one, customer_two) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |tenant: &Tenant,
+               project: Uuid,
+               model: &str,
+               key: &str,
+               unit: &str,
+               customer: &str,
+               cost: f64| {
+        json!({
+            "ts": ts, "request_id": format!("dash-{}", Uuid::new_v4().simple()),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": project.to_string(), "virtual_key_id": key,
+            "business_unit_id": unit, "customer_id": customer,
+            "model": model, "status": 200, "total_tokens": 10, "cost_usd": cost,
+        })
+    };
+    // the "one" attribution appears in every project and both orgs; the "two"
+    // attribution only in acme's project a
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            row(
+                &acme,
+                acme.project_a,
+                &model_one,
+                &key_one,
+                &unit_one,
+                &customer_one,
+                1.0,
+            ),
+            row(
+                &acme,
+                acme.project_a,
+                &model_two,
+                &key_two,
+                &unit_two,
+                &customer_two,
+                2.0,
+            ),
+            row(
+                &acme,
+                acme.project_b,
+                &model_one,
+                &key_one,
+                &unit_one,
+                &customer_one,
+                4.0,
+            ),
+            row(
+                &umbrella,
+                umbrella.project_a,
+                &model_one,
+                &key_one,
+                &unit_one,
+                &customer_one,
+                8.0,
+            ),
+        ],
+    )
+    .await;
+
+    let get = |token: String, path: &'static str, query: String| {
+        let http = http.clone();
+        async move {
+            let response = http
+                .get(format!("http://{addr}/api/v1/analytics/{path}?{query}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{path}?{query}");
+            let body: Value = response.json().await.unwrap();
+            body["data"].as_array().unwrap().clone()
+        }
+    };
+    // (requests, cost) of the summary
+    let summary = |token: String, query: String| async move {
+        let data = get(token, "summary", query).await;
+        (number(&data[0]["requests"]), number(&data[0]["cost_usd"]))
+    };
+    let models = format!("model={model_one}");
+
+    // a project member reads project a only; each filter narrows inside it
+    let member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(summary(member.clone(), models.clone()).await, (1.0, 1.0));
+    assert_eq!(
+        summary(member.clone(), format!("model={model_two}")).await,
+        (1.0, 2.0)
+    );
+    assert_eq!(
+        summary(member.clone(), format!("key={key_one}")).await,
+        (1.0, 1.0)
+    );
+    assert_eq!(
+        summary(member.clone(), format!("business_unit={unit_one}")).await,
+        (1.0, 1.0)
+    );
+    // a set is any of its ids
+    assert_eq!(
+        summary(
+            member.clone(),
+            format!("business_unit={unit_one},{unit_two}")
+        )
+        .await,
+        (2.0, 3.0)
+    );
+    assert_eq!(
+        summary(member.clone(), format!("customer={customer_two}")).await,
+        (1.0, 2.0)
+    );
+    // filters combine with and: one model under the other unit is nothing
+    assert_eq!(
+        summary(member.clone(), format!("{models}&business_unit={unit_two}")).await,
+        (0.0, 0.0)
+    );
+
+    // an org viewer reaches both of acme's projects but never umbrella's
+    let org_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        summary(org_viewer.clone(), format!("customer={customer_one}")).await,
+        (2.0, 5.0)
+    );
+    // the admin token reads every org, so the same filter now finds all three
+    assert_eq!(
+        summary(ADMIN_TOKEN.to_string(), format!("customer={customer_one}")).await,
+        (3.0, 13.0)
+    );
+
+    // the timeseries applies the same filters
+    let buckets = get(
+        org_viewer.clone(),
+        "timeseries",
+        format!("bucket=hour&key={key_one}"),
+    )
+    .await;
+    let requests: f64 = buckets.iter().map(|b| number(&b["requests"])).sum();
+    let cost: f64 = buckets.iter().map(|b| number(&b["cost_usd"])).sum();
+    assert_eq!((requests, cost), (2.0, 5.0), "{buckets:?}");
+
+    // and so does by-model: a customer filter leaves only that customer's model
+    let by_model = get(
+        member.clone(),
+        "by-model",
+        format!("customer={customer_one},{customer_two}&business_unit={unit_one}"),
+    )
+    .await;
+    let rows: Vec<(String, f64)> = by_model
+        .iter()
+        .map(|row| {
+            (
+                row["model"].as_str().unwrap().to_string(),
+                number(&row["requests"]),
+            )
+        })
+        .collect();
+    assert_eq!(rows, vec![(model_one.clone(), 1.0)]);
+}
+
+/// Request-log sampling at 50 % (#2239): two kept rows weigh two requests
+/// each, so counts and sums double while latency percentiles do not.
+#[tokio::test]
+async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    // a model name no other test writes, so a shared server cannot skew it
+    let model = format!("sampled-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let rows: Vec<Value> = [(200, 100), (500, 300)]
+        .iter()
+        .enumerate()
+        .map(|(i, (status, latency))| {
+            json!({
+                "ts": ts, "request_id": format!("sampled-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": status, "latency_ms": latency,
+                "total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6,
+                "cost_usd": 0.5, "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/by-model"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model"] == model.as_str())
+        .expect("the sampled model has a row");
+    assert_eq!(row["requests"].as_f64(), Some(4.0));
+    assert_eq!(row["tokens"].as_f64(), Some(40.0));
+    assert_eq!(row["cost_usd"].as_f64(), Some(2.0));
+    assert_eq!(row["errors"].as_f64(), Some(2.0));
+    // a percentile of a uniform sample is already an estimate: never scaled
+    let p50 = row["p50_latency_ms"].as_f64().unwrap();
+    assert!((100.0..=300.0).contains(&p50), "{p50}");
 }

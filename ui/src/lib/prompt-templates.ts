@@ -10,11 +10,11 @@ import type {
  *
  * They live in `crates/rolter-core/src/prompt_templates.rs`:
  *
- * - a `{{ name }}` placeholder resolves from the caller's
- *   `rolter_template_vars`, then from the variable's default, and the request is
- *   refused with 400 `invalid_prompt_template` when neither has a value. The
- *   `required` flag is never read on the request path, so a variable a caller
- *   must send is one a decorator references and that has no default
+ * - a variable declared `required` must be in the caller's
+ *   `rolter_template_vars`, whether or not a decorator references it, and the
+ *   request is refused with 400 `invalid_prompt_template` when it is not (#2280)
+ * - a `{{ name }}` placeholder resolves from the caller's value, then from the
+ *   variable's default, and an optional variable with neither renders empty
  * - a caller variable that no template active for the request declares is
  *   refused the same way, so a version that drops a variable breaks every
  *   caller still sending it
@@ -40,14 +40,12 @@ export function referencedVariables(decorators: PromptTemplateDecorator[]): stri
 
 /**
  * The variables a request must carry for this content to render, in declared
- * order. `default` is read as the control plane stores it: absent (or null) is
- * no default, and an empty string is a default like any other.
+ * order: exactly the ones declared `required`. Whether a decorator references
+ * one does not matter, and an optional variable without a default is never
+ * required, because the gateway renders it empty.
  */
 export function requiredVariables(content: TemplateContent): string[] {
-  const referenced = new Set(referencedVariables(content.decorators));
-  return content.variables
-    .filter((variable) => referenced.has(variable.name) && variable.default == null)
-    .map((variable) => variable.name);
+  return content.variables.filter((variable) => variable.required).map((variable) => variable.name);
 }
 
 export interface PublishImpact {

@@ -51,10 +51,14 @@ throw it away.
 3. Dispatch the workflow (`gh workflow run gemini-interactions-smoke.yml`),
    optionally with `-f model=<id>`.
 
-Until the secret exists the workflow **fails** rather than skipping. A green
-tick from a run that made no request reads as "the wire format is still
-confirmed" when nothing was checked — worse than no sweep at all. Pass
-`-f allow_unconfigured=true` for a deliberate dry run of the workflow itself.
+Until the secret exists the workflow **skips** every live step and says so: the
+job summary reads "skipped: GEMINI_API_KEY not configured" and a notice
+annotation repeats it on the run. The run is not red (a weekly failure for a
+secret nobody has added teaches people to ignore scheduled failures, #2033), but
+it is also not evidence: a skipped run made no request and confirms nothing
+about the wire format. Check the summary, not just the tick, before treating the
+sweep as having run. Once the secret is present the steps run as before and a
+failure is a real finding.
 
 Each run records the wire shapes it observed into the job summary and uploads
 the full log as an artifact. A billable run should leave evidence behind: the
@@ -77,10 +81,12 @@ A content part the dialect cannot carry is rejected at the gateway with
 `400 unsupported_content_part` rather than being dropped (#882), so an
 unconfirmed part shape fails loudly instead of producing a shortened body.
 
-Test grouping is configured in [`.config/nextest.toml`](../../.config/nextest.toml):
-the Postgres-backed `rolter-store`/`rolter-control` suites share one database and
-reset the schema per test, so they run in a single-threaded group to avoid
-clobbering each other.
+[`.config/nextest.toml`](../../../.config/nextest.toml) defines no test group: the
+Postgres-backed `rolter-store`/`rolter-control` suites run in parallel, because
+every test owns a `TestSchema` and every worktree its own database. They used to
+share a single-threaded `serial-db` group; removing it (#1429) took the two suites
+from 389-572s to 155-342s on a 4-core machine with all 781 tests green in each of
+six runs. The file records the numbers.
 
 ## The Postgres test database
 
@@ -119,7 +125,7 @@ run, they just share the database the url names.
 `ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
 up writing to. The database is derived from the workspace the test binary was
 compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
-[`rolter_store::postgres::test_database`](../../crates/rolter-store/src/postgres/test_database.rs).
+[`rolter_store::postgres::test_database`](../../../crates/rolter-store/src/postgres/test_database.rs).
 A new worktree is therefore isolated without exporting anything, which is the
 point: this repository expects several agents working several worktrees at once
 (see [worktrees.md](worktrees.md)), so concurrent suites against one database is
@@ -151,10 +157,11 @@ from pg_database where datname like 'rolter_test_wt%';
 
 Set `ROLTER_TEST_PER_WORKTREE_DATABASE=0` to use `ROLTER_TEST_DATABASE_URL`
 exactly as given — a throwaway database that is already private, or a deliberate
-reproduction of the shared-database behaviour. The derivation also steps aside
-when it cannot create a database (a role without `CREATEDB`, for instance): it
-prints why and falls back to the configured url, because losing isolation is
-better than losing the suite.
+reproduction of the shared-database behaviour. The derivation never falls back
+silently (#1898): a failure to create the database is retried with a bounded
+backoff, then `test_database::url()` panics naming the cause, because a quiet
+fallback would put one worktree's migrations in a database other worktrees are
+reading. A role without `CREATEDB` should set the opt-out above.
 
 ### The connection budget
 
@@ -182,11 +189,9 @@ A test holds about one connection at a time, so a worktree costs roughly one
 connection per test thread plus a handful for the harness. The pool size barely
 moves the peak; the number of tests running at once does. That is why the stock
 limit of 100 holds six worktrees on an 8-thread laptop and fails four on a
-24-thread workstation. Under `cargo nextest` the `serial-db` group in
-[`.config/nextest.toml`](../../../.config/nextest.toml) runs one postgres test at a
-time per worktree, so a worktree holds only a few connections there; the numbers
-above are the case for `cargo test`, and for nextest too if that group goes
-(#1429).
+24-thread workstation. The numbers above apply to `cargo nextest` as well as
+`cargo test`: the `serial-db` group that used to hold a worktree to one postgres
+test at a time was removed (#1429).
 
 So the budget is kept in two places:
 
@@ -223,7 +228,7 @@ Each test gets a schema of its own, named `test_<pid>_<seq>` and pinned through
 `search_path`, because plain `cargo test` — which the coverage job runs — puts
 every test in one process as a thread, and a shared `public` schema would race
 on DDL. Build it through
-[`rolter_store::postgres::test_schema::TestSchema`](../../crates/rolter-store/src/postgres/test_schema.rs)
+[`rolter_store::postgres::test_schema::TestSchema`](../../../crates/rolter-store/src/postgres/test_schema.rs)
 rather than by hand; other crates reach it through the store's `test-support`
 feature, which `rolter-control` already carries as a dev-dependency.
 
@@ -292,7 +297,7 @@ sweep, so nothing is reclaimed until you drop it yourself.
 ### What keeps all of this honest
 
 Three rules hold the isolation together, and
-[`crates/rolter-store/tests/db_test_isolation.rs`](../../crates/rolter-store/tests/db_test_isolation.rs)
+[`crates/rolter-store/tests/db_test_isolation.rs`](../../../crates/rolter-store/tests/db_test_isolation.rs)
 fails the build when a new test breaks one — the same shape of source-level
 drift guard as the gateway's `lock_discipline.rs`:
 
@@ -381,6 +386,17 @@ black-box harness can only approximate with sleeps:
   request-log and health-event rows must still reach a ClickHouse stand-in
   before the child exits, proving the shutdown sink drain (#1924).
 
+The SIGTERM tests assert request-log and health-event rows but not an MCP
+tool-call row, deliberately. The MCP proxy authenticates with a database virtual
+key, and a TOML config cannot define one, so a child process started from a
+config file cannot reach `/mcp/{server}` without also standing up Postgres and a
+snapshot source. The in-process test
+`mcp_events_are_flushed_by_the_shutdown_drain` (`tests/integration.rs`, #2431)
+covers the MCP row's drain instead. It runs the same shutdown sink drain the
+child process runs, and the child-process tests already prove the signal reaches
+it, so the only untested seam is the signal wiring, which MCP rows share with the
+others.
+
 All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:
@@ -434,6 +450,11 @@ Everything else runs under nextest, which gives each test **its own process**.
 whole suite as **threads in one process** sharing one environment. Two rules
 follow, and both have bitten:
 
+When the coverage job goes red, each failing test is named in an `::error`
+annotation on the check run ("coverage test failed"), with its panic location
+and message (`.github/scripts/annotate-test-failures.sh`, #2753). Read those
+rather than the raw job log, which not every triage path can download.
+
 - **Never set a process-wide environment variable to a value only your test
   wants.** `Kek::from_env()` is read at request time, so a test that installs
   its own `ROLTER_KEK` is read by another test's in-flight request, and a value
@@ -453,8 +474,8 @@ CI runs coverage in the `coverage` job of `quality.yml` on every pull request
 [`extended.yml`](#nightly-extended-checks), whose run also saves the Rust cache
 the PR job restores under the shared key `coverage`. Both enforce a
 **ratcheting baseline**: the committed baseline lives in
-[`.github/coverage-baseline.txt`](../../.github/coverage-baseline.txt), and
-[`.github/scripts/coverage-ratchet.sh`](../../.github/scripts/coverage-ratchet.sh)
+[`.github/coverage-baseline.txt`](../../../.github/coverage-baseline.txt), and
+[`.github/scripts/coverage-ratchet.sh`](../../../.github/scripts/coverage-ratchet.sh)
 fails the step if the current percentage drops more than
 `COVERAGE_TOLERANCE` points (default `0.5`) below it. The job also uploads the
 `lcov.info` report as a CI artifact.
@@ -480,10 +501,11 @@ Policy (ROL-246):
 The checks that read the tree and build nothing run as steps of one job,
 `static checks` (`static` in `quality.yml`): gitleaks over the working tree and
 the branch history, the session-url check over the PR's commits, migrations
-append-only, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, the
-release handoff checker, its self-test and the release gate scripts' fixture
-test, the board automation retry policy, and the helm chart's appVersion check,
-lint and three renders. Until #2025 each was a job of its own. They did 0-15 s
+append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, ruff
+over `scripts/*.py`, the release handoff checker, its self-test and the release gate scripts' fixture
+test, the board automation retry policy, the dogfood scripts' exit codes and a
+shellcheck pass over `integration/`, and the helm chart's appVersion check,
+lint and its renders (`scripts/check-helm-chart.sh`, shared with the `helm-render` prek hook). Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
 a push starts draws on the same 20 concurrent slots. The decision and its
 trade-offs are in
@@ -519,6 +541,29 @@ line in the report's `env`, and a `row` call in the report's script. A step
 without a row runs unreported, and a row whose step id is misspelled reads an
 empty outcome, which the report counts as a failure.
 
+The `dev-docs links` step runs `scripts/check-dev-docs-links.py` (also the
+`dev-docs-links` prek hook). It fails on any relative link in a `.md` file under
+`docs/dev-docs/` that does not resolve to an existing file or directory, with
+the `#anchor` stripped. mdBook only validates links inside the book, so a link to
+a repository file written with one `../` too few used to point at nothing. From
+`docs/dev-docs/<section>/` the repository root is `../../../`; from
+`docs/dev-docs/` itself it is `../../`.
+
+#### The dogfood scripts' exit codes (#1928)
+
+`integration/dogfood/*.sh` tell an operator what to do next through their exit
+codes: `provision-signoz.sh` exits 1 for an account mismatch (and points at
+`just signoz-reset`, which deletes SigNoz's users, dashboards and alerts) and 2
+for a SigNoz release whose api moved (and names its version, changing nothing).
+`scripts/test-dogfood-scripts.sh` runs the scripts against a stub http server
+that plays a scenario file, one `METHOD|PATH|STATUS|CONTENT-TYPE|BODY` line per
+route, so it needs no SigNoz, docker or secret and takes about 25 s. It covers
+every row of `provision-signoz.sh`'s exit-code table and, for
+`adaptive-routing.sh`, the happy path and a refused read and write. A new
+script gets a `cases_<name>` function and one `run_cases <name>` line at the
+bottom. The job also runs `shellcheck` over every
+`integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.
+
 ### The rust lint and rust build jobs
 
 The Rust checks outside nextest run as steps of two jobs, split by whether they
@@ -526,11 +571,12 @@ link. `rust lint` holds fmt, clippy (default features and `postgres`),
 `cargo doc` with warnings as errors, `cargo hack` over each feature and the
 cross-crate feature combination. None of them invokes the linker, so the job
 skips the wild linker. `rust build` holds the publish verify build
-(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, and
-last the three advisory `semver-checks` steps. Until #2025 these were six jobs:
+(`cargo package` plus `maturin sdist`), the gateway smoke build and probe, the
+[published-port image smoke](#published-port-image-smoke), and last the three
+advisory `semver-checks` steps. Until #2025 these were six jobs:
 `fmt / clippy`, `feature matrix`, `cargo doc (warnings = errors)`,
 `package (publish verify)`, `gateway smoke (fake-llm)` and
-`semver-checks (advisory)`.
+`semver-checks (advisory)`; the image smoke was a seventh until #2037.
 
 They follow the rules of the static checks job above: every check step runs
 under `!cancelled()` and is guarded on the setup it reads, and a `report` step
@@ -647,8 +693,36 @@ declares, and the pull request that fixes them comes from the workflow below
 instead of from Dependabot. A package that only arrives transitively through
 `bun.lock` raises no alert at all: every transitive `ui` alert was marked
 `fixed` the moment `package-lock.json` was deleted, with no version having
-changed. Nothing monitors that class until #1930 audits the lockfile itself, and
-#1931 tracks the vulnerable transitive packages `bun audit` reports today.
+changed. The nightly `ui lockfile audit` job closes that gap by reading the
+lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931 and #2660
+track the vulnerable transitive packages it reports today.
+
+### UI lockfile audit
+
+The `ui lockfile audit` job in `.github/workflows/extended.yml` (#1930) runs
+`bun audit --json` against `ui/bun.lock` every night and on demand, through
+`ui/scripts/audit-lockfile.ts`. It is informational and never a merge gate: a new
+advisory lands on code that is already merged, and a gate would turn every
+unrelated pull request red for it. The failure reaches `report failure` like any
+other `extended.yml` job, which opens or comments on the `extended.yml: nightly
+checks failing` issue. The findings themselves are in the run: one `::error` or
+`::warning` annotation per advisory and a table in the job summary. A run
+that cannot read `bun audit` output fails rather than reading as clean.
+
+To acknowledge an advisory that is accepted rather than fixed, add a row to
+`ui/audit-accepted.json`:
+
+```json
+[{ "id": "GHSA-xxxx-xxxx-xxxx", "reason": "dev-only, never reaches the build", "issue": "#1234" }]
+```
+
+A row names the advisory, not the package, so a different advisory on the same
+package still fails. All three fields are required; the script rejects a row with
+no reason or no tracking issue. A row whose advisory is no longer reported is
+flagged as stale, so remove it. Run the audit locally with
+`cd ui && bun install --frozen-lockfile && bun scripts/audit-lockfile.ts`.
+`ui-security-updates.yml` does not list these findings under "left for a hand
+bump": that workflow plans from Dependabot alerts alone.
 
 ### UI security updates
 
@@ -690,8 +764,7 @@ listed, with its reason, in the run summary and the pull request body:
 - the range already starts at the patched release, so the alert is stale and
   closes on its own once GitHub re-reads the manifest.
 
-The pull request carries `station:mac`, since the mac station owns `ui/`, and
-that station reviews and merges it like any other of its PRs. A pull request
+A pull request
 the repository token opens raises no event that `project-automation.yml` fires
 on, so the workflow dispatches it with the new pull request's number and
 `area=ui` right after `gh pr create`, which puts it on the board as
@@ -738,7 +811,7 @@ merges, run it once from `master`:
 gh workflow run ui-security-updates.yml -f synthetic-alert=@opentelemetry/api@1.9.1
 ```
 
-Then check that the pull request opened with `station:mac`, that the dispatched
+Then check that the pull request opened, that the dispatched
 `ci.yml` run reported `ci-ok` on its head, and that the next run without the
 input withdrew it and deleted the branch. Merge nothing from a synthetic run.
 
@@ -753,6 +826,16 @@ actionlint has no entry for `vulnerability-alerts` yet
 ([rhysd/actionlint#713](https://github.com/rhysd/actionlint/issues/713)), so
 `.github/actionlint.yaml` ignores that one message in that one file. Any other
 permission typo in the workflow still fails the check.
+
+CI pins actionlint to **1.7.12**: the `actionlint` step in `quality.yml` downloads that release's
+tarball and checks it against a pinned sha256 before running it, so a new release that adds or
+tightens a rule cannot turn every open PR red on its own. (`taiki-e/install-action` has no
+actionlint manifest, which is why the step fetches it by hand.) Raising the version is a
+deliberate PR that changes `ACTIONLINT_VERSION` and `ACTIONLINT_SHA256` together, takes the digest
+from the release's `actionlint_<version>_checksums.txt`, and fixes whatever the newer rules
+report; it is also the moment to drop the `vulnerability-alerts` ignore above if the new release
+knows that scope. The `prek` hook runs whichever `actionlint` is on your `PATH`, so install the
+pinned version locally when the two disagree.
 
 ### Secret scanning
 
@@ -801,13 +884,30 @@ The gate runs at `--min-severity=medium --persona=regular`, the setting the
 baseline was proven clean against. Reproduce a CI run locally:
 
 ```bash
-uvx zizmor@1.26.1 --min-severity=medium --persona=regular \
+uvx --from "$(bash scripts/tool-pin.sh zizmor)" zizmor --min-severity=medium --persona=regular \
   .github/workflows/ .github/actions/
 ```
 
 Some audits query the GitHub API (`impostor-commit`, `stale-action-refs`,
 `known-vulnerable-actions`), so export a `GH_TOKEN` — or pass `--offline` to
 skip them, which is enough for a quick check but is **not** what CI runs.
+
+#### Where the `uvx` tool versions live
+
+`zizmor`, `maturin`, `ruff` and `shellcheck-py` run through `uvx`, and dependabot cannot read a version
+out of a command line, so a `uvx zizmor@x.y.z` pin goes stale without anyone
+being told (#2185). Both are pinned instead in
+`.github/tool-pins/requirements.txt`, a pip manifest that dependabot's `pip`
+ecosystem bumps weekly, and every command reads its version through
+`scripts/tool-pin.sh <tool>`. A newer release therefore arrives as a pull
+request that moves one line, and the gate runs against it.
+
+`scripts/check-tool-pins.sh` (the `uvx tool pins` step of `static checks`, and
+the `tool-pins` prek hook) fails on an inline `uvx <tool>@<version>`, a manifest
+line that is not `name==x.y.z`, a `tool-pin.sh` reference with no entry, and an
+entry nothing runs. `--self-test` drifts a fixture to prove each rule can fail.
+To pin a new tool, add `<tool>==x.y.z` to the manifest and run it as
+`uvx --from "$(bash scripts/tool-pin.sh <tool>)" <tool> ...`.
 
 #### Retrying an API hiccup, but never a finding
 
@@ -883,6 +983,25 @@ bun run test:stories                            # every story file
 bun run test:stories src/pages/Keys.stories.tsx # or just these
 ```
 
+#### Using a pre-installed chromium
+
+Both browser runners — the story tests above and the e2e journeys in `ui/e2e/`
+(`ui/playwright.config.ts`) — launch the chromium revision the pinned Playwright
+downloads. In a sandbox where that download is blocked but a chromium is already
+installed, set `ROLTER_CHROMIUM_PATH` to the binary and both launch it through
+`launchOptions.executablePath` instead (#2678):
+
+```bash
+export ROLTER_CHROMIUM_PATH=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell
+bun run test:stories src/pages/Keys.stories.tsx
+```
+
+Playwright has no variable of its own for this: `PLAYWRIGHT_BROWSERS_PATH` only
+moves the cache, and still looks for the exact revision the pinned version wants.
+The story runner reads the variable in `ui/test-runner-jest.config.js`, which wraps
+the test-runner's stock jest config. Unset, nothing changes. The path must name a
+chromium Playwright can drive; the headless shell and the full build both work.
+
 #### Why `test:stories` rather than the two commands by hand
 
 `storybook dev -p <port>` **does not fail when the port is taken.** It logs
@@ -915,6 +1034,15 @@ times the only thing that caught it was fetching `/index.json` by hand.
   worktree, or a process whose cwd lsof will not disclose — fails the run. On a
   machine with no `lsof` the check is skipped with a warning rather than failing;
   the index check still applies
+- **it renders one story of each file once, untimed.** `storybook dev` compiles
+  on demand, so whichever story ran first paid for the whole preview and its
+  screen's module graph inside its own 15 second budget — about 30s for
+  `Screens/Users › Loaded`, which timed out with nothing wrong with it (#2637).
+  A timed-out test also leaves its `postVisit` axe run going in the same tab, so
+  the story after it failed too, with "Axe is already running". The warm-up
+  opens the first indexed story of each file in headless chromium and waits for
+  it to render; a warm-up that fails is only logged, since the timed run says
+  more precisely what is wrong. CI never hit this: it tests a static build
 - only then does it run the tests, one file per invocation — the positional
   pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
   dies with a shell syntax error
@@ -936,9 +1064,13 @@ bun run test-storybook --url http://127.0.0.1:6006
 The test-runner declares its own loose `playwright` range, so without the pin it
 resolves a different version from `@playwright/test` and launches a browser
 revision `playwright install` never downloaded — the test-runner then fails at
-launch and the play tests silently stop running (#737). Keep both on one version,
-and install `chromium-headless-shell` alongside `chromium`, since the test-runner
-launches the shell rather than the full build.
+launch and the play tests silently stop running (#737). The pin must equal
+`@playwright/test`: an override wins over the dependency range, so a bump of
+`@playwright/test` that skips it installs nothing new and playwright stays frozen
+(#2028). `bun run check:playwright-pin` (`ui/scripts/check-playwright-pin.ts`)
+fails when `overrides.playwright`, `overrides.playwright-core` and
+`devDependencies["@playwright/test"]` differ, so move all three together. Install `chromium-headless-shell` alongside `chromium`,
+since the test-runner launches the shell rather than the full build.
 
 The static build is the one that matters. `storybook dev` serves modules
 unbundled and answers from a warm cache, so it is consistently faster than the
@@ -1166,6 +1298,33 @@ await expect(within(canvasElement).getByRole("button")).toBeDisabled();
 One thing the check deliberately does not see, and which a reviewer still has
 to: a data query more than one statement after the sheet opened.
 
+#### Text inside a `CodeBlock` is a container assertion
+
+`CodeBlock` paints its value as one text node and swaps it for token and line
+spans once the lazy highlight chunk resolves
+([#2644](https://github.com/rolter-ai/rolter/issues/2644)). So a
+`getByText(/"model": "gpt-4o"/)` or `findByText("curl https://…")` aimed at code
+passes only while it wins the race against that chunk: afterwards the key, the
+colon and the value sit in separate spans and no single element carries the
+string. The same story is green locally, where the chunk is cached, and red in
+CI. Only `language="text"` and values past `HIGHLIGHT_CHAR_LIMIT` never
+highlight.
+
+Assert on the container's text instead, and let it retry:
+
+```ts
+const body = within(drawer).getByRole("region", { name: /^Request — / });
+await waitFor(() => expect(body).toHaveTextContent(/"model": "gpt-4o"/));
+```
+
+`CodeBlock` names its scroll region from `label`, so the region is the handle.
+`toHaveTextContent` reads `textContent`, which is the same before and after
+highlighting; the `waitFor` is for the data behind the block, not the chunk. A
+matcher function over `textContent` is the alternative when a query is wanted.
+`check:waits` cannot see this: whether a string lives inside a `CodeBlock`
+depends on the page, not on the line, and a heuristic over the argument would
+flag prose as often as code. A reviewer still has to.
+
 #### Every story is also an axe test
 
 `postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
@@ -1361,44 +1520,65 @@ story's own `StrictMode`, the walk stops there, and nothing below it is doubled.
 Double rendering follows a different rule, the fiber's mode, which is why the
 renders still come in pairs and the story looks strict.
 
-So mount the `StrictMode` first and the subject into it later. The host renders
-the subject only when its own state says so, `render` starts it without one, and
-the play function mounts it with a click:
+So mount the `StrictMode` first and the subject into it later, and prove that
+the double-invoke ran. `StrictModeHost` in `ui/src/pages/story-strict.tsx` is
+that host (#1887): `render` hands it the subject, it renders a `StrictMode` with
+the subject absent, and `mountStrictly()` from `ui/src/pages/story-harness.tsx`
+clicks its mount button and then calls `expectDoubleInvoked()`. A probe placed
+beside the subject counts its effect's mounts and cleanups, and
+`expectDoubleInvoked()` fails the story with the reason unless it reads two
+mounts and one cleanup:
 
 ```tsx
 export const StrictModeDoesNotInventAnAbandon: Story = {
   render: () => (
-    <React.StrictMode>
-      <Unmountable mounted={false} />
-    </React.StrictMode>
+    <StrictModeHost>
+      <Unmountable />
+    </StrictModeHost>
   ),
   play: async () => {
-    // mounts the sheet in a later commit, under a StrictMode that is already there
-    await userEvent.click(screen().getByRole("button", { name: "open the editor" }));
-    // the double-invoke has happened by the time the sheet can be used
+    // mounts the sheet in a later commit and fails unless it was double-invoked
+    await mountStrictly();
+    // everything from here runs against a sheet that was mounted, unmounted and remounted
   },
 };
 ```
+
+`ui/src/pages/story-strict.test.tsx` is the negative proof, under `bun test`:
+it runs the real react-dom reconciler with Storybook's boundary above the
+`StrictMode`, reads one mount and no cleanup in the same-commit shape, and
+checks that `doubleInvokeFailure()`, the verdict `expectDoubleInvoked()` throws
+with, refuses those counts.
 
 This is also the app's own shape. `ui/src/main.tsx` makes the root strict long
 before anyone opens a sheet, so a story built this way runs the same lifecycle a
 browser on `bun run dev` does.
 
+It only runs on React's development build. The double-invoke is
+development-only, so the production build mounts every effect once, `StrictMode`
+or not. `storybook build` bundles the production build by default. That is why
+`ui/.storybook/main.ts` sets `features.developmentModeForBuild`, so the static
+build that `bun run build-storybook` writes and the `ui, storybook, docs` job
+tests carries the same React that `storybook dev` and `bun run dev` serve. With
+the flag off, every `StrictModeHost` story fails `expectDoubleInvoked()` in CI
+and still passes under `bun run test:stories`. Before #1887 added the probe,
+the `StrictMode*` stories in `EditorSheet.stories.tsx` passed in CI with no
+double-invoke ever running. The static build is a test fixture and is published
+nowhere, so nothing ships the development build.
+
 Two more habits keep such a story from passing for the wrong reason:
 
 - **Anchor an absence on something that happened.** "No `form_abandon`" is also
-  true before the sheet has finished mounting, so `expectNoUxEvent(…)` on the
-  line after the click proves nothing. `StrictModeDoesNotInventAnAbandon` first
+  true before a deferred emit has had its turn, so `expectNoUxEvent(…)` on the
+  line after `mountStrictly()` proves little. `StrictModeDoesNotInventAnAbandon` first
   presses the sheet's save button and waits for its `form_submit`: the button
   cannot be pressed until the sheet has mounted, been remounted and settled, so
   the absence asserted after that point covers the whole double-invoke.
 - **Watch it fail once.** Break the code the story guards and run the file with
   `bun run test:stories`; for #1739 that meant emitting the abandon straight
-  from the effect cleanup. A StrictMode story that stays green against the
-  broken code is asserting against a lifecycle that never ran. When the reason
-  is unclear, a probe settles it: a child whose effect counts its mounts and
-  cleanups should read two mounts and one cleanup under a working `StrictMode`,
-  and reads one and zero in the same-commit shape.
+  from the effect cleanup. `expectDoubleInvoked()` proves the lifecycle ran,
+  not that the story asserts anything about it, so a story that stays green
+  against the broken code still needs a sharper assertion.
 
 `framework.options.strictMode` in `ui/.storybook/main.ts` would put a
 `StrictMode` above that boundary for every story. It is off, and turning it on
@@ -1407,7 +1587,7 @@ than one assertion needs.
 
 ### Nightly extended checks
 
-[`.github/workflows/extended.yml`](../../.github/workflows/extended.yml) holds
+[`.github/workflows/extended.yml`](../../../.github/workflows/extended.yml) holds
 the informational checks that need a full build and gate nothing. It runs nightly
 at 01:41 UTC and on `workflow_dispatch`, rather than on every push, so none of
 them takes a slot from the 20-job runner pool while PRs wait
@@ -1422,8 +1602,14 @@ them takes a slot from the 20-job runner pool while PRs wait
 
 The msrv job runs `cargo +<version>` because `rust-toolchain.toml` pins `stable`
 and outranks the default a toolchain action sets, so a plain `cargo check` would
-test stable and never the declared version. It is red until #2026 settles
-`rust-version` against a lockfile that already needs 1.88.
+test stable and never the declared version; the step prints `rustc --version`
+for that toolchain first, so the log shows which compiler ran. The declared
+version is 1.91 (#2026): the lockfile alone needs 1.88 (redis, tonic, icu and
+`time` declare it), and our own code calls `str::floor_char_boundary`, stable
+since 1.91. To find the floor again after a dependency bump or a newer std API,
+install the candidate with `rustup toolchain install <ver> --profile minimal`
+and run `cargo +<ver> check --workspace --all-features`; the version below it
+must fail.
 
 None of these jobs is `continue-on-error`: nothing gates on `extended.yml`, and a
 failure has to reach the `report failure` job as `failure`. On `master` that
@@ -1435,7 +1621,7 @@ and `actions: write` at job level with no checkout.
 
 An issue opened with the workflow's own token raises no `issues` event, so
 `project-automation` never sees it. The job triages a new issue itself instead:
-it adds `station:rtx` and the `Maintenance, CI & DX` milestone, then dispatches
+it sets the `Maintenance, CI & DX` milestone, then dispatches
 `project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
 puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
 half only warns when it fails, since a renamed milestone must not cost the issue
@@ -1458,9 +1644,9 @@ it end-to-end. Run it locally with the same script CI uses:
 bash docker/smoke/smoke.sh
 ```
 
-It layers [`docker/docker-compose.ci.yml`](../../docker/docker-compose.ci.yml)
+It layers [`docker/docker-compose.ci.yml`](../../../docker/docker-compose.ci.yml)
 over the base compose file: the overlay mounts
-[`docker/smoke/rolter.smoke.toml`](../../docker/smoke/rolter.smoke.toml) (a
+[`docker/smoke/rolter.smoke.toml`](../../../docker/smoke/rolter.smoke.toml) (a
 keyless open config, `require_auth = false`) into the gateway and the control
 plane, so the built-in `fake-llm` model answers without any provider secret. The
 control plane gets it too because the gateway follows the control plane's
@@ -1475,24 +1661,103 @@ compose logs and runs `down -v`. It runs nightly rather than on every push,
 because its cold Docker release build costs about five minutes of a runner
 (ROL-245, ADR-0034).
 
-### Published-port image smoke
+### Nightly dashboard journeys
 
-The `image-smoke` job builds the single image from `docker/Dockerfile` and runs
-it the way the quickstart does: default command (`rolter easy-up`), ports
-published with `-p`, curled from the host. It checks three states: with no
-`ROLTER_ADMIN_TOKEN` and no `ROLTER_ALLOW_OPEN_MODE` the container exits with the
-refusal; acknowledged open, the gateway answers `fake-llm` and the control plane
-serves the dashboard; closed by a throwaway token, `/internal/snapshot` is 401
-without it and 200 with it. A bind on the container's loopback passes every
-check made from inside the container and answers nothing through a published
-port, which is how #1891 shipped. Run it locally against any tag:
+[`.github/workflows/ui-e2e.yml`](../../../.github/workflows/ui-e2e.yml) runs the
+Playwright journeys in `ui/e2e/` against the fake-vLLM compose stack
+(`integration/e2e/docker-compose.e2e.yml`), nightly at 03:17 UTC and on
+`workflow_dispatch`. Like `extended.yml` it gates nothing, and for the same
+reason: one run holds a runner for about ten minutes, and most pull requests touch
+`ui/`, so a path-filtered PR trigger would take a slot from the 20-job pool on
+nearly every push ([ADR-0034](../adr/2026-09-29-ci-runner-budget.md)). Why it
+stays out of `ci-ok` is in
+[ci-gating.md](ci-gating.md#suites-that-stay-out-of-ci-ok).
+
+A failing `master` run used to sit unread in the Actions tab; it was red for a
+week before anyone noticed (#2677). The workflow now ends in a `report failure`
+job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+`ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
+fails, and comments on it with the run link while it stays open. The run's
+`playwright-report` artifact holds the trace and screenshots. A new issue gets
+the `Maintenance, CI & DX` milestone and a `project-automation.yml` dispatch
+with `area=ui` and `effort=S`, both best-effort as in `extended.yml`. The two
+workflows use different titles, so they never share an issue. Close it once
+the fix lands; the next failure opens a new one.
+
+A pull request that changes a screen a journey walks through, or the control
+plane API under it, should dispatch the suite on its branch before merging. A
+failure there shows in that run and leaves the issue alone:
 
 ```bash
+gh workflow run ui-e2e.yml --ref <branch>
+```
+
+### Published-port image smoke
+
+The image smoke runs the single image the way the quickstart does: default
+command (`rolter easy-up`), ports published with `-p`, curled from the host. It
+checks three states: with no `ROLTER_ADMIN_TOKEN` and no
+`ROLTER_ALLOW_OPEN_MODE` the container exits with the refusal; acknowledged
+open, the gateway answers `fake-llm` and the control plane serves the dashboard;
+closed by a throwaway token, `/internal/snapshot` is 401 without it and 200 with
+it. It also checks that both `rolter-control` and `rolter easy-up` accept
+`--database-url`, so an image built without the `postgres` feature fails. A bind
+on the container's loopback passes every check made from inside the container
+and answers nothing through a published port, which is how #1891 shipped.
+
+On every `quality.yml` call it runs as steps of the `rust build` job, against
+the `runtime-prebuilt` target of `docker/Dockerfile` (#2037). That target and
+the published `runtime` target share one `runtime-base` stage, which holds the
+base image and its `nonroot` user, the working directory, the bundled
+`/app/rolter.toml`, the environment (`ROLTER_UI_DIR=/app/ui/dist` among it), the
+exposed ports and the default command. Apart from the base, described below,
+only the source of the three binaries and of `/app/ui/dist` differs: `runtime` compiles them in its builder stages,
+while `runtime-prebuilt` copies them from two named build contexts,
+`rolter-bin` and `rolter-ui`. The job fills those with a dev-profile
+`cargo build --workspace --features postgres`, the features the Dockerfile
+builds with, on its warm Rust cache, stripped into a directory of their own, and
+a `vite build` of the dashboard. It used to be a job of its own that built
+`runtime`, a cold release build of about five minutes on every call for a smoke
+that takes seconds; the prebuilt path adds an estimated two to three minutes to
+`rust build` once the cache is warm, and frees one runner per call.
+
+The trade is that a pull request no longer builds the Dockerfile's builder
+stages. A change that breaks them (a workspace member the `COPY` lines miss, a
+`bun.lock` the image cannot install) surfaces in `extended.yml`'s nightly
+compose smoke, which builds `runtime`, and in `release.yml`, which builds it
+for each architecture and runs this same script against each pushed digest in
+its `smoke image` job before anything is published. Build `runtime` locally
+when you touch those stages.
+
+Run it locally either way:
+
+```bash
+# the published target, compiled in docker (a cold release build)
 docker build -f docker/Dockerfile --target runtime -t rolter:dev .
+bash docker/smoke/image-smoke.sh rolter:dev
+
+# what CI runs: binaries and dashboard built on the host
+cargo build --workspace --features postgres
+(cd ui && bun install --frozen-lockfile && bun run build)
+docker build -f docker/Dockerfile --target runtime-prebuilt \
+  --build-arg RUNTIME_DISTRO=debian13 \
+  --build-context rolter-bin=target/debug \
+  --build-context rolter-ui=ui/dist -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
+The one other difference is the base. The prebuilt binaries have to run on the
+image's glibc, and a Rust build on Ubuntu 24.04, the CI runner, compiles aws-lc
+against glibc 2.39 headers that redirect `strtol` and `sscanf` to
+`__isoc23_*` symbols from glibc 2.38. Debian 12's glibc is 2.36, so those
+binaries do not start on the published base. The Dockerfile therefore names
+both distroless releases as stages, `distroless-debian12` and
+`distroless-debian13`, and `runtime-base` builds on
+`distroless-${RUNTIME_DISTRO}`, which defaults to `debian12`. CI and the local
+command above pass `RUNTIME_DISTRO=debian13` (glibc 2.41). Both are the same
+distroless `nonroot` image, uid 65532, so the user the smoke runs as does not
+change; the debian12 base itself is smoked by `release.yml`. Bump the two
+digests together.
+
 It needs no secrets and no compose stack, so unlike the compose smoke it runs
-on every push and is blocking. The release workflow's `smoke image` job runs the
-same script against each architecture's pushed digest before anything is
-published.
+on every push and is blocking.

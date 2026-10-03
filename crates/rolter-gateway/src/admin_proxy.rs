@@ -130,12 +130,13 @@ mod tests {
         let gateway = router(&format!("http://{control_addr}"));
         let gateway_addr = serve(gateway).await;
 
+        let bearer = format!("Bearer tok-{}", uuid::Uuid::new_v4());
         let client = reqwest::Client::new();
         let resp: serde_json::Value = client
             .post(format!(
                 "http://{gateway_addr}/admin/orgs/abc/providers?x=1"
             ))
-            .header("authorization", "Bearer sekrit")
+            .header("authorization", &bearer)
             .header("content-type", "application/json")
             .body(r#"{"name":"openai"}"#)
             .send()
@@ -148,7 +149,7 @@ mod tests {
         assert_eq!(resp["method"], "POST");
         assert_eq!(resp["path"], "/api/v1/orgs/abc/providers");
         assert_eq!(resp["query"], "x=1");
-        assert_eq!(resp["auth"], "Bearer sekrit");
+        assert_eq!(resp["auth"], bearer.as_str());
         assert_eq!(resp["body"], r#"{"name":"openai"}"#);
     }
 

@@ -15,15 +15,17 @@ import {
   json,
   recording,
   scopeResponse,
+  StaleSession,
   type FetchStub,
   type StoryRole,
+  withDocsBase,
 } from "./story-harness";
 import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
-import { expectUxEvent, recordUxEvents } from "@/pages/story-harness";
+import { expectUxEvent, recordUxEvents, uxEvents } from "@/pages/story-harness";
 
 /** What the gateway serves: a route, a provider pin, and a provider group. */
 const GATEWAY_MODELS = {
@@ -94,9 +96,14 @@ const minted = (key = "sk-rolter-minted") => ({
   key,
 });
 
-/** Every `Authorization` the screen sent to the gateway, in order. */
+/**
+ * What the screen sent to the gateway, in order: the virtual key from
+ * `x-rolter-gateway-key` and, beside it, the dashboard session from
+ * `Authorization`, which the control plane's `/gw` proxy requires (#2486).
+ */
 interface Sent {
   keys: string[];
+  sessions?: (string | null)[];
 }
 
 /** The body of a chat completion request, as the gateway reads it. */
@@ -226,9 +233,11 @@ function deployment(
     if (url.includes(MINT_PATH)) return mint();
     if (path === "/api/v1/config/problems") return problems();
     if (url.includes("/gw/v1/models")) {
-      const auth = new Headers(init?.headers).get("Authorization");
-      if (!auth) return json({ error: { message: "missing key" } }, 401);
-      sent.keys.push(auth.replace("Bearer ", ""));
+      const headers = new Headers(init?.headers);
+      const key = headers.get("x-rolter-gateway-key");
+      if (!key) return json({ error: { message: "missing key" } }, 401);
+      sent.keys.push(key);
+      sent.sessions?.push(headers.get("Authorization"));
       return gateway(gatewayCalls++);
     }
     if (url.includes(CHAT_PATH)) {
@@ -373,54 +382,124 @@ export const MintingShowsProgress: Story = {
 };
 
 /**
- * A project with no routes cannot mint: an empty model list on a virtual key
- * means *every* model, so the control plane refuses rather than handing out the
- * widest key in the system (#2061).
+ * A project with no routes yet still mints, so the first Getting started call
+ * works on a fresh deployment (#2300). An empty model list on a virtual key
+ * means *every* model, so the control plane scopes this one to the built-in
+ * `fake-llm` alone, and the gateway answers it with no provider or route.
  *
- * That refusal is a precondition, not a failure: the band says the project
- * needs a route and links the screen that makes one, instead of an unknown
- * error with the server's line and a retry that can never succeed. The paste
- * field opens, since pasting is the other way on, and Send waits for a key.
+ * The key works, so Send is live and the paste field stays shut. The band says
+ * what the key cannot reach yet and links the screen that widens it, instead
+ * of the refusal #2061 drew when the mint answered `400`.
  */
 const routeless = recording(
-  deployment(async () =>
-    json(
-      {
-        error: {
-          message:
-            "config error: this project has no routes, so there is nothing a playground key could address",
-        },
-      },
-      400,
-    ),
-  ),
+  deployment(async () => json({ ...minted(), models: ["fake-llm"] }), undefined, undefined, {
+    routes: [],
+    gateway: () => json({ data: [{ id: "fake-llm", object: "model", owned_by: "rolter" }] }),
+    chat: () => completion("Lorem ipsum from the built-in."),
+  }),
 );
 
-export const RoutelessProjectIsRefused: Story = {
+export const RoutelessProjectReachesTheBuiltin: Story = {
   render: () => <Screen fetchStub={routeless.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/This project has no routes yet/);
     const link = canvas.getByRole("link", { name: "Open Routing Rules" });
     await expect(link).toHaveAttribute("href", "/routing-rules");
+    await expect(canvas.getByText("Active")).toBeVisible();
 
-    // not the unknown-failure alert, and no retry of a refusal a retry cannot
-    // clear
+    // a working key, not a failure: no alert, and nothing to paste instead
     await expect(canvas.queryByRole("alert")).toBeNull();
-    await expect(canvas.queryByRole("button", { name: "Try again" })).toBeNull();
-    await expect(canvas.queryByText(/nothing a playground key could address/)).toBeNull();
-    // one message: nothing about a minted key that does not exist
+    await expect(canvas.queryByLabelText("Virtual key")).toBeNull();
+    // one message: the routeless line replaces the generic minted-key one
     await expect(canvas.queryByText(/mints this key when you open/)).toBeNull();
-
-    // the paste field is open without being asked for
-    await expect(canvas.getByLabelText("Virtual key")).toBeVisible();
-    // one automatic attempt, then it is the operator's call
     await expect(mintsIn(routeless.calls)).toBe(1);
-    await waitFor(() => {
-      const send = canvas.getByRole("button", { name: SEND });
-      expect(send).toBeDisabled();
-      expect(send).toHaveAttribute("title", SEND_NEEDS_KEY);
-    });
+
+    // and the first call goes out to the built-in and is answered
+    const composer = await canvas.findByRole("textbox", { name: "Message to fake-llm" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Lorem ipsum from the built-in.");
+    await expect(chatsIn(routeless.calls).map((c) => c.model)).toEqual(["fake-llm"]);
+  },
+};
+
+/**
+ * A minted key's reach is fixed when it is minted, so one minted before the
+ * project had a route stayed on `fake-llm` until the operator pressed Renew
+ * (#2608). The screen now compares the key's `models` with the project's
+ * routes each time that list is read, and mints again when they differ.
+ *
+ * The route is added after the screen opened and the list is re-read the way
+ * a returning tab re-reads it, on visibility. One mint more, not a loop, and
+ * the second key is the one the next message goes out with.
+ */
+const projectRoutes: { id: string; model: string; strategy: string }[] = [];
+const reminting = recording(
+  deployment(
+    async () =>
+      json({
+        ...minted(`sk-rolter-minted-${projectRoutes.length}`),
+        models: projectRoutes.length ? projectRoutes.map((r) => r.model) : ["fake-llm"],
+      }),
+    undefined,
+    undefined,
+    {
+      get routes() {
+        return projectRoutes;
+      },
+      gateway: () => json(GATEWAY_MODELS),
+      chat: () => completion("Hello from the new route."),
+    },
+  ),
+);
+
+export const RouteAddedRemintsTheKey: Story = {
+  beforeEach: () => {
+    projectRoutes.length = 0;
+  },
+  render: () => <Screen fetchStub={reminting.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This project has no routes yet/);
+    await expect(mintsIn(reminting.calls)).toBe(1);
+
+    projectRoutes.push(ROUTES[0]);
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+
+    // the key was swapped without a press on Renew, and the routeless line went
+    await waitFor(() => expect(mintsIn(reminting.calls)).toBe(2));
+    await waitFor(() => expect(canvas.queryByText(/This project has no routes yet/)).toBeNull());
+    await expect(canvas.getByText("Active")).toBeVisible();
+
+    // the same route set again is not a reason to mint a third time
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    await canvas.findByRole("textbox", { name: "Message to minicpm5-1b" });
+    await expect(mintsIn(reminting.calls)).toBe(2);
+
+    const composer = canvas.getByRole("textbox", { name: "Message to minicpm5-1b" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Hello from the new route.");
+  },
+};
+
+/** A key somebody pasted says nothing about the routes, so a route never replaces it. */
+const pastedCalls = recording(deployment(async () => json(minted())));
+
+export const PastedKeyIsNeverReminted: Story = {
+  render: () => <Screen role="viewer" fetchStub={pastedCalls.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/Your role in this project cannot mint keys/);
+    await userEvent.type(canvas.getByLabelText("Virtual key"), "sk-rolter-given");
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    // anchor on a read that can only follow the event, then count
+    await waitFor(() => expect(canvas.getByText("Pasted")).toBeVisible());
+    await expect(mintsIn(pastedCalls.calls)).toBe(0);
   },
 };
 
@@ -681,6 +760,24 @@ export const KeylessGatewayNeedsNoKey: Story = {
     // the list is the gateway's own, so there is no fallback to explain
     await expect(canvas.queryByText(/Showing configured routes/)).toBeNull();
     await expect(canvas.queryByText(/Pick a project to mint a key against/)).toBeNull();
+  },
+};
+
+/**
+ * The /gw proxy refuses a call without the dashboard session, and the gateway
+ * only knows the virtual key, so the screen sends both on separate headers
+ * (#2486): the key is never `Authorization`, and a signed-in tab's token is.
+ */
+const withSession = { keys: [] as string[], sessions: [] as (string | null)[] };
+export const SendsTheSessionBesideTheKey: Story = {
+  render: () => (
+    <StaleSession token="session-abc">
+      <Screen fetchStub={deployment(async () => json(minted()), withSession)} />
+    </StaleSession>
+  ),
+  play: async () => {
+    await waitFor(() => expect(withSession.keys).toContain("sk-rolter-minted"));
+    await expect(withSession.sessions.every((a) => a === "Bearer session-abc")).toBe(true);
   },
 };
 
@@ -1209,7 +1306,7 @@ export const RepeatedButtonsNameTheirColumn: Story = {
 
     // the same model twice is a fair comparison, and the names still tell the
     // columns apart
-    await userEvent.click(canvas.getAllByRole("combobox", { name: "Model" })[1]);
+    await userEvent.click(canvas.getAllByRole("combobox", { name: /^Model for / })[1]);
     await userEvent.click(
       within(canvas.getByRole("listbox")).getByRole("option", { name: "minicpm5-1b" }),
     );
@@ -1225,6 +1322,53 @@ export const RepeatedButtonsNameTheirColumn: Story = {
       expect(canvas.queryByRole("button", { name: /^Remove column / })).toBeNull(),
     );
     await canvas.findByRole("button", { name: "Send to minicpm5-1b" });
+  },
+};
+
+/**
+ * The rest of a column's repeated controls name their column too (#2425): the
+ * model picker, the raw-output toggle, Attach image, Remove attachment and the
+ * composer. Two columns on the same model still answer to four different names.
+ */
+export const OtherRepeatedControlsNameTheirColumn: Story = {
+  render: () => <Screen fetchStub={deployment(async () => json(minted()))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await readyComposer(canvas);
+    await userEvent.click(canvas.getByRole("switch", { name: en.pages.playground.multimodal }));
+    await userEvent.click(canvas.getByRole("button", { name: "Add model" }));
+    // put the second column on the first one's model
+    await userEvent.click(
+      await canvas.findByRole("combobox", { name: "Model for fake-llm, column 2" }),
+    );
+    await userEvent.click(
+      within(canvas.getByRole("listbox")).getByRole("option", { name: "minicpm5-1b" }),
+    );
+
+    for (const n of [1, 2]) {
+      const model = "minicpm5-1b";
+      await canvas.findByRole("combobox", { name: `Model for ${model}, column ${n}` });
+      await canvas.findByRole("button", { name: `Show raw text for ${model}, column ${n}` });
+      await canvas.findByRole("button", { name: `Attach image for ${model}, column ${n}` });
+      await canvas.findByRole("textbox", { name: `Message to ${model}, column ${n}` });
+    }
+    await expect(canvas.queryByRole("combobox", { name: "Model" })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Show raw text" })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Attach image" })).toBeNull();
+
+    const files = canvasElement.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    expect(files).toHaveLength(2);
+    for (const input of files) {
+      await userEvent.upload(input, new File(["x"], "pic.png", { type: "image/png" }));
+    }
+    await canvas.findByRole("button", { name: "Remove attachment for minicpm5-1b, column 1" });
+    await canvas.findByRole("button", { name: "Remove attachment for minicpm5-1b, column 2" });
+
+    expectDistinctNames(canvas.getAllByRole("combobox", { name: /^Model for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Show raw text for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Attach image for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Remove attachment for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("textbox", { name: /^Message to / }), 2);
   },
 };
 
@@ -1643,22 +1787,13 @@ export const Mobile: Story = {
     await waitFor(() => expect(canvasElement.querySelector('[role="combobox"]')).toBeTruthy());
     void canvas;
     await expectNoHorizontalOverflow();
+    // the strip scrolls and hides its scrollbar, so it says there is more: the
+    // last tab ("Realtime") was clipped with nothing to show it (#2004)
+    const strip = canvas.getByRole("tablist");
+    await expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+    await expect(strip).toHaveAttribute("data-more-end", "true");
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /** The paste field's hint links into `security/which-key` when docs exist (#1164). */
 export const KeyHintLinksToTheDocs: Story = {
@@ -1707,5 +1842,27 @@ export const ReportsTimeToInteractive: Story = {
     const event = await expectUxEvent("time_to_interactive");
     await expect(event.screen).toBe("playground");
     await expect(typeof event.duration_ms).toBe("number");
+  },
+};
+
+/**
+ * The playground had no `useErrorState` at all, so a key that failed to mint
+ * reached the operator and never the dead-states query. The alert records its
+ * own now (#2444): one `error_state`, under the key's region.
+ */
+export const AFailedMintIsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <UxScreenProvider screen="playground">
+      <Screen
+        fetchStub={deployment(async () => json({ error: { message: "store unavailable" } }, 500))}
+      />
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /playground key/i);
+    const failed = await expectUxEvent("error_state", "playground-key");
+    await expect(failed.screen).toBe("playground");
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
   },
 };

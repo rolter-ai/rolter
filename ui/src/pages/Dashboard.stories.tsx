@@ -12,11 +12,14 @@ import {
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
+  expectUxEvent,
   json,
   pending,
+  recordUxEvents,
   recording,
   routes,
   scoped,
+  uxEvents,
   type FetchStub,
   type Recorder,
   type StoryRole,
@@ -26,8 +29,15 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const fmt = formattersFor("en");
+
+/** the spend chart's accessible name, over the window the screen opens on */
+const SPEND_CHART = en.pages.dashboard.spendChartAria.replace(
+  "{{window}}",
+  en.common.timeWindow.last24h,
+);
 
 const loadedWith = (summary: typeof SUMMARY): FetchStub =>
   routes([
@@ -304,7 +314,7 @@ export const Mobile: Story = {
     // third of that, and 9px text came out near 3px
     const spend = canvas.getByTestId("dashboard-spend");
     const svg = (await within(spend).findByRole("img", {
-      name: en.pages.dashboard.spendChartAria,
+      name: SPEND_CHART,
     })) as unknown as SVGSVGElement;
     const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
     await expect(scale).toBeGreaterThan(0.95);
@@ -611,7 +621,7 @@ export const AFailedPollKeepsWhatLoaded: Story = {
     await expect(canvas.getAllByText(fmt.number(132))).not.toHaveLength(0);
     await expect(
       within(canvas.getByTestId("dashboard-spend")).getByRole("img", {
-        name: en.pages.dashboard.spendChartAria,
+        name: SPEND_CHART,
       }),
     ).toBeVisible();
     await expect(canvas.getByTestId("dashboard-traffic")).toHaveTextContent(
@@ -713,7 +723,7 @@ async function expectTheOthersLoaded(canvasElement: HTMLElement, skip: string[])
     "dashboard-spend": async () => {
       await expect(
         await within(canvas.getByTestId("dashboard-spend")).findByRole("img", {
-          name: en.pages.dashboard.spendChartAria,
+          name: SPEND_CHART,
         }),
       ).toBeVisible();
     },
@@ -863,9 +873,7 @@ export const OneFailedCardLeavesTheRestUp: Story = {
     const reads = ENDPOINTS.map((e) => readsOf(partial, e));
     spendDown = false;
     await userEvent.click(within(spend).getByRole("button", { name: "Try again" }));
-    await expect(
-      await within(spend).findByRole("img", { name: en.pages.dashboard.spendChartAria }),
-    ).toBeVisible();
+    await expect(await within(spend).findByRole("img", { name: SPEND_CHART })).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
     // the retry asked for the spend series once, and for nothing else
     await expect(readsOf(partial, ENDPOINTS[1])).toBe(reads[1] + 1);
@@ -1298,5 +1306,193 @@ export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
 
     await userEvent.click(link);
     await expect(canvas.getByTestId("where")).toHaveTextContent("/logs?request_id=req-earlier");
+  },
+};
+
+const VIEW_7D = {
+  id: "11111111-1111-4111-8111-111111111111",
+  surface: "dashboard",
+  name: "This week",
+  filters: { window: "7d" },
+  effective_filters: { window: "7d" },
+  unavailable: [],
+  created_at: "2026-09-01T09:00:00Z",
+  updated_at: "2026-09-01T09:00:00Z",
+};
+
+const withSavedViews = recording(
+  scoped(async (input, init) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/me/saved-views") {
+      return init?.method === "POST" ? json(VIEW_7D, 201) : json([VIEW_7D]);
+    }
+    return loaded(input, init);
+  }),
+);
+
+/**
+ * #2452: the dashboard keeps its window in the address, so a saved view of it
+ * is one name; applying it re-reads the figures over that window, and saving
+ * sends the window being read.
+ */
+export const ASavedViewChangesTheWindow: Story = {
+  render: () => (
+    <MemoryRouter initialEntries={["/"]}>
+      <Harness fetchStub={withSavedViews.stub}>
+        <Dashboard />
+        <Where />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    const sheet = within(await within(document.body).findByRole("dialog", { name: "Saved views" }));
+    await userEvent.click(await sheet.findByRole("button", { name: "Apply This week" }));
+    await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent("?window=7d"));
+    await waitFor(() => {
+      const reads = withSavedViews.calls.filter((c) => c.url.includes("/analytics/summary"));
+      const since = new URL(reads[reads.length - 1].url, "http://localhost").searchParams.get(
+        "since",
+      );
+      expect(Date.now() - Date.parse(since ?? "")).toBeGreaterThan(6.9 * 24 * 3600_000);
+    });
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue("Last 7 days");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Saved views" }));
+    const again = within(await within(document.body).findByRole("dialog", { name: "Saved views" }));
+    await userEvent.type(await again.findByLabelText("Save the current filters as"), "Mine");
+    await userEvent.click(again.getByRole("button", { name: "Save view" }));
+    const body = await withSavedViews.expectSentBody<{ surface: string; filters: unknown }>(
+      "POST",
+      "/api/v1/me/saved-views",
+    );
+    await expect(body).toEqual({ surface: "dashboard", name: "Mine", filters: { window: "7d" } });
+  },
+};
+
+/** `render`, under the screen key the app shell supplies, for a story reading the UX stream */
+const renderOnScreen = (stub: FetchStub) => (
+  <UxScreenProvider screen="dashboard">{render(stub)}</UxScreenProvider>
+);
+
+/** the regions of every `error_state` recorded so far, in order */
+const errorRegions = () =>
+  uxEvents()
+    .filter((e) => e.action === "error_state")
+    .map((e) => e.target);
+
+/**
+ * The error states come from the alerts on screen, which record their own
+ * (#2444): three failed cards are three rows, one per card under its own
+ * region, and the card that loaded adds none. No screen-level row is recorded
+ * for what is not an outage.
+ */
+export const EachFailedCardRecordsOneErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(mostDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-recent"),
+      /failed to return recent requests/i,
+    );
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(3));
+    const figures = await expectUxEvent("error_state", "dashboard");
+    await expect(figures.screen).toBe("dashboard");
+    await waitFor(() =>
+      expect([...errorRegions()].sort()).toEqual([
+        "dashboard",
+        "dashboard-recent",
+        "dashboard-spend",
+      ]),
+    );
+  },
+};
+
+/**
+ * The traffic share and the by-model bars read one endpoint and show one alert,
+ * so its failure is one row, under the card that holds the alert.
+ */
+export const TheSharedReadRecordsOneErrorState: Story = {
+  beforeEach: () => {
+    modelsDown = true;
+    return recordUxEvents();
+  },
+  render: () => renderOnScreen(byModelDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(
+      canvas.getByTestId("dashboard-traffic"),
+      /failed to return the traffic share/i,
+    );
+    await expectUxEvent("error_state", "dashboard-traffic");
+    await expect(errorRegions()).toEqual(["dashboard-traffic"]);
+  },
+};
+
+/**
+ * Every read failing is one alert for the screen, and one screen-level row for
+ * it, `dashboard-analytics`, however long the alert stays up.
+ */
+export const AnOutageRecordsOneScreenLevelErrorState: Story = {
+  beforeEach: recordUxEvents,
+  render: () => renderOnScreen(failing.stub),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return analytics/i);
+    const outage = await expectUxEvent("error_state", "dashboard-analytics");
+    await expect(outage.screen).toBe("dashboard");
+    await expect(errorRegions().filter((r) => r === "dashboard-analytics")).toHaveLength(1);
+  },
+};
+
+/**
+ * A poll that fails over figures already on screen shows no alert, so it is not
+ * an `error_state` of a `LoadError`, but it is data going stale and it records
+ * one (#2640): under the card's region with `-stale` after it, one per card per
+ * appearance. Polls that fail again while the line is up add none, and a line
+ * that went away and came back is a second appearance.
+ */
+export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
+  beforeEach: () => {
+    upstream = "ok";
+    return recordUxEvents();
+  },
+  render: () => (
+    <UxScreenProvider screen="dashboard">
+      {render(flaky.stub, undefined, FAST_POLL_MS)}
+    </UxScreenProvider>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    await expect(errorRegions()).toEqual([]);
+
+    upstream = "failing";
+    const stale = [
+      "dashboard-by-model-stale",
+      "dashboard-recent-stale",
+      "dashboard-spend-stale",
+      "dashboard-stale",
+      "dashboard-traffic-stale",
+    ];
+    // one line per stale region: the four cards' and the recent feed's
+    await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(stale.length));
+    await waitFor(() => expect([...errorRegions()].sort()).toEqual(stale));
+    const first = await expectUxEvent("error_state", "dashboard-stale");
+    await expect(first.screen).toBe("dashboard");
+    await expect(first.outcome).toBe("error");
+    // the polls go on failing under the lines, and none of them is a new row
+    await sleep(FAST_POLL_MS * 3);
+    await expect([...errorRegions()].sort()).toEqual(stale);
+
+    // the lines go when a poll lands, and a failure after that is a new one
+    upstream = "ok";
+    await waitFor(() => expect(canvas.queryAllByText(REFRESH_FAILED)).toHaveLength(0));
+    await expect(await canvas.findByText(en.pages.dashboard.live)).toBeVisible();
+    upstream = "failing";
+    await waitFor(() => expect(errorRegions()).toHaveLength(stale.length * 2));
+    await expect([...errorRegions()].sort()).toEqual([...stale, ...stale].sort());
   },
 };

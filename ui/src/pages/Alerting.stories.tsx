@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { AlertChannels, AlertHistory, AlertRules } from "./Alerting";
@@ -63,6 +63,8 @@ const RULES: AlertRuleRow[] = [
     name: "high error rate",
     signal: "error_rate",
     threshold: 0.05,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -78,6 +80,8 @@ const RULES: AlertRuleRow[] = [
     name: "slow p95",
     signal: "p95_latency_ms",
     threshold: 2000,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 600,
     channel_id: null,
     enabled: true,
@@ -93,6 +97,8 @@ const RULES: AlertRuleRow[] = [
     name: "spend spike",
     signal: "spend_velocity",
     threshold: 50,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 3600,
     channel_id: "chan-1",
     enabled: true,
@@ -109,6 +115,8 @@ const RULES: AlertRuleRow[] = [
     name: "traffic surge",
     signal: "request_volume",
     threshold: 1000,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -124,6 +132,8 @@ const RULES: AlertRuleRow[] = [
     name: "provider trouble",
     signal: "provider_health_flaps",
     threshold: 10,
+    comparison: "above",
+    no_data: "ignore",
     window_secs: 300,
     channel_id: "chan-1",
     enabled: true,
@@ -187,13 +197,13 @@ const empty = routes([
 // operator actually sees — worth a story of its own rather than a generic error
 const forbidden = scoped(async () => json({ error: { message: "forbidden" } }, 403));
 
-// an empty history links to the rules screen, so it renders under a router
+// an empty history links to the rules screen, under the harness's router
 function HistoryScreen() {
   return (
-    <MemoryRouter initialEntries={["/alerting-history"]}>
+    <>
       <AlertHistory />
       <PathProbe />
-    </MemoryRouter>
+    </>
   );
 }
 
@@ -543,14 +553,20 @@ export const RuleCardsReadInTheSignalsUnit: Story = {
     const canvas = within(canvasElement);
     const cards: [string, string, RegExp, RegExp, RegExp][] = [
       // name, signal, threshold, last value, window
-      ["high error rate", "Error rate", /^5%$/, /^11%$/, /^5m$/],
-      ["slow p95", "p95 latency", /^2,000 ms$/, /^840 ms$/, /^10m$/],
-      ["spend spike", "Spend rate", /^€50\.00\/h$/, /^€12\.50\/h$/, /^1h$/],
-      ["traffic surge", "Request volume", /^1,000 requests in 5m$/, /^340 requests in 5m$/, /^5m$/],
+      ["high error rate", "Error rate", /^above 5%$/, /^11%$/, /^5m$/],
+      ["slow p95", "p95 latency", /^above 2,000 ms$/, /^840 ms$/, /^10m$/],
+      ["spend spike", "Spend rate", /^above €50\.00\/h$/, /^€12\.50\/h$/, /^1h$/],
+      [
+        "traffic surge",
+        "Request volume",
+        /^above 1,000 requests in 5m$/,
+        /^340 requests in 5m$/,
+        /^5m$/,
+      ],
       [
         "provider trouble",
         "Provider health failures",
-        /^10 failed health events in 5m$/,
+        /^above 10 failed health events in 5m$/,
         /^1 failed health event in 5m$/,
         /^5m$/,
       ],
@@ -579,13 +595,13 @@ export const RuleCardsReadInRussian: Story = {
     const { statThreshold, statLastValue } = ru.pages.alerting.rules;
     const traffic = await canvas.findByRole("article", { name: "traffic surge" });
     await waitFor(() =>
-      expect(stat(traffic, statThreshold)).toHaveTextContent(/^1\s000 запросов за 5\sмин$/),
+      expect(stat(traffic, statThreshold)).toHaveTextContent(/^выше 1\s000 запросов за 5\sмин$/),
     );
     await expect(stat(traffic, statLastValue)).toHaveTextContent(/^340 запросов за 5\sмин$/);
     const health = canvas.getByRole("article", { name: "provider trouble" });
     await expect(stat(health, statLastValue)).toHaveTextContent(/^1 отказ за 5\sмин$/);
     const errors = canvas.getByRole("article", { name: "high error rate" });
-    await expect(stat(errors, statThreshold)).toHaveTextContent(/^5\s%$/);
+    await expect(stat(errors, statThreshold)).toHaveTextContent(/^выше 5\s%$/);
   },
 };
 
@@ -648,7 +664,7 @@ export const ThePercentThresholdRoundTrips: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const errors = await canvas.findByRole("article", { name: "high error rate" });
-    await expect(stat(errors, "Threshold")).toHaveTextContent(/^5%$/);
+    await expect(stat(errors, "Threshold")).toHaveTextContent(/^above 5%$/);
 
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = sheet();
@@ -790,6 +806,8 @@ type RuleBody = {
   name: string;
   signal: string;
   threshold: number;
+  comparison?: string;
+  no_data?: string;
   window_secs: number;
   channel_id: string | null;
   enabled: boolean;
@@ -838,6 +856,8 @@ export const EditsARule: Story = {
       name: "high error rate",
       signal: "error_rate",
       threshold: 0.02,
+      comparison: "above",
+      no_data: "ignore",
       window_secs: 300,
       channel_id: "chan-1",
       enabled: false,
@@ -1148,7 +1168,7 @@ export const EvaluatesARule: Story = {
 
 export const HistoryLoaded: Story = {
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1188,7 +1208,7 @@ export const HistoryLoading: Story = {
 
 export const HistoryEmpty: Story = {
   render: () => (
-    <Harness fetchStub={empty}>
+    <Harness fetchStub={empty} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1204,7 +1224,7 @@ export const HistoryEmpty: Story = {
 // link, so the path changes and the page stays (#2126)
 export const TheEmptyHistoryLinksToTheRulesInApp: Story = {
   render: () => (
-    <Harness fetchStub={empty}>
+    <Harness fetchStub={empty} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1222,7 +1242,7 @@ export const TheEmptyHistoryLinksToTheRulesInApp: Story = {
 
 export const HistoryForbidden: Story = {
   render: () => (
-    <Harness fetchStub={forbidden}>
+    <Harness fetchStub={forbidden} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1367,7 +1387,7 @@ export const RuleStatesReadInRussian: Story = {
 export const HistoryReadInRussian: Story = {
   globals: { locale: "ru" },
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1412,7 +1432,7 @@ const cappedHistory = recording(
 // the screen asked for 200 and stopped there with no word about it (#2126)
 export const HistorySaysWhenItIsCapped: Story = {
   render: () => (
-    <Harness fetchStub={cappedHistory.stub}>
+    <Harness fetchStub={cappedHistory.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1447,7 +1467,7 @@ const historyByRule = recording(
 
 export const HistoryFiltersByRule: Story = {
   render: () => (
-    <Harness fetchStub={historyByRule.stub}>
+    <Harness fetchStub={historyByRule.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1466,7 +1486,7 @@ export const HistoryFiltersByRule: Story = {
 
 export const HistoryFiltersByStateAndDelivery: Story = {
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1498,7 +1518,7 @@ export const HistoryFiltersByStateAndDelivery: Story = {
 export const HistoryStateAndDeliveryAreInViewOnAPhone: Story = {
   ...atMobile,
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1527,7 +1547,7 @@ export const HistoryReadInRussianOnAPhone: Story = {
   ...atMobile,
   globals: { locale: "ru" },
   render: () => (
-    <Harness fetchStub={loaded}>
+    <Harness fetchStub={loaded} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1606,7 +1626,7 @@ async function expectDetailsInFull(canvasElement: HTMLElement, name: string) {
 export const HistoryDetailIsReadInFullOnADesktop: Story = {
   ...atWide,
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1621,7 +1641,7 @@ export const HistoryDetailIsReadInFullOnADesktop: Story = {
 export const HistoryDetailIsReadInFullOnAPhone: Story = {
   ...atMobile,
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1634,7 +1654,7 @@ export const HistoryDetailIsReadInFullInRussianOnADesktop: Story = {
   ...atWide,
   globals: { ...atWide.globals, locale: "ru" },
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1647,7 +1667,7 @@ export const HistoryDetailIsReadInFullInRussianOnAPhone: Story = {
   ...atMobile,
   globals: { ...atMobile.globals, locale: "ru" },
   render: () => (
-    <Harness fetchStub={diagnosed}>
+    <Harness fetchStub={diagnosed} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1655,6 +1675,72 @@ export const HistoryDetailIsReadInFullInRussianOnAPhone: Story = {
     await expectDetailsInFull(canvasElement, ru.screens["alerting-history"].title);
   },
 };
+
+// --- #2428: the rule name is read in full too ---------------------------------
+
+const LONG_RULE = "production openai error rate";
+const LONG_RULE_RU = "производственная доля ошибок openai за пять минут";
+const LONG_RULE_ONE_TOKEN = "production-openai-chat-completions-error-rate-over-five-minutes";
+
+const longRuleRoutes = (name: string) =>
+  routes([
+    [
+      "/alert-notifications",
+      () => [
+        {
+          id: "note-long-rule",
+          rule_id: "rule-long",
+          channel_id: "chan-1",
+          state: "firing",
+          delivery_status: "delivered",
+          detail: "HTTP 200",
+          sent_at: "2026-08-11T12:00:00Z",
+        } satisfies AlertNotificationRow,
+      ],
+    ],
+    ["/alert-channels", () => CHANNELS],
+    ["/alert-rules", () => [{ ...RULES[0], id: "rule-long", name }]],
+  ]);
+
+async function expectRuleInFull(canvasElement: HTMLElement, tableName: string, name: string) {
+  const table = await within(canvasElement).findByRole("table", { name: tableName });
+  const [header] = within(table).getAllByRole("row");
+  const floor = header.getBoundingClientRect().width;
+  const cell = await within(table).findByText((_, el) => el?.textContent === name);
+  await expect(cell).toHaveAttribute("role", "cell");
+  await expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth);
+  await expect(getComputedStyle(cell).textOverflow).not.toBe("ellipsis");
+  // the rule is a middle column: bring it into the table's frame like a reader scrolling to it
+  cell.scrollIntoView({ inline: "center", block: "nearest" });
+  const text = document.createRange();
+  text.selectNodeContents(cell);
+  await expectInFrame(text, table);
+  await expect(cell.parentElement!.getBoundingClientRect().width).toBe(floor);
+}
+
+const ruleStory = (
+  view: typeof atWide | typeof atMobile,
+  locale: "en" | "ru",
+  name: string,
+): Story => ({
+  ...view,
+  globals: { ...view.globals, locale },
+  render: () => (
+    <Harness fetchStub={longRuleRoutes(name)}>
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const title = locale === "ru" ? ru.screens["alerting-history"].title : "Alert History";
+    await expectRuleInFull(canvasElement, title, name);
+  },
+});
+
+export const HistoryRuleNameIsReadInFullOnADesktop = ruleStory(atWide, "en", LONG_RULE);
+export const HistoryRuleNameIsReadInFullOnAPhone = ruleStory(atMobile, "en", LONG_RULE);
+export const HistoryOneTokenRuleNameBreaksOnAPhone = ruleStory(atMobile, "en", LONG_RULE_ONE_TOKEN);
+export const HistoryRuleNameIsReadInFullInRussianOnADesktop = ruleStory(atWide, "ru", LONG_RULE_RU);
+export const HistoryRuleNameIsReadInFullInRussianOnAPhone = ruleStory(atMobile, "ru", LONG_RULE_RU);
 
 // --- a control plane that answers with a 5xx: LoadError offers a retry --------
 
@@ -1739,7 +1825,7 @@ export const HistoryLoadFailsAndRetries: Story = {
   render: () => {
     historyDown.reset();
     return (
-      <Harness fetchStub={historyDown.stub}>
+      <Harness fetchStub={historyDown.stub} route="/alerting-history">
         <HistoryScreen />
       </Harness>
     );
@@ -1815,7 +1901,7 @@ export const RulesRefusedToAViewer: Story = {
 
 export const HistoryRefusedToAnAdmin: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="admin">
+    <Harness fetchStub={loaded} role="admin" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1824,9 +1910,160 @@ export const HistoryRefusedToAnAdmin: Story = {
 
 export const HistoryRefusedToAViewer: Story = {
   render: () => (
-    <Harness fetchStub={loaded} role="viewer">
+    <Harness fetchStub={loaded} role="viewer" route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
+};
+
+// the comparison and the no-data policy (#2423)
+const BELOW: AlertRuleRow = {
+  ...RULES[3],
+  id: "rule-6",
+  name: "traffic stopped",
+  threshold: 0,
+  comparison: "below",
+};
+const SILENT: AlertRuleRow = {
+  ...RULES[0],
+  id: "rule-7",
+  name: "silent errors",
+  no_data: "fire",
+  state: "ok",
+  last_value: null,
+};
+const withComparisons = routes([
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => [...RULES, BELOW, SILENT]],
+  ["/alert-notifications", () => HISTORY],
+  ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
+]);
+
+export const RuleCardShowsTheComparisonAndNoData: Story = {
+  render: () => (
+    <Harness fetchStub={withComparisons}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const below = await canvas.findByRole("article", { name: "traffic stopped" });
+    await expect(stat(below, "Threshold")).toHaveTextContent(/^below 0 requests in 5m$/);
+    // evaluated, but the window held nothing to measure
+    const silent = await canvas.findByRole("article", { name: "silent errors" });
+    await expect(stat(silent, "Last value")).toHaveTextContent(/^No data$/);
+    // a rule never evaluated has no reading yet, which is not "no data"
+    const fresh = within(canvasElement).getByRole("article", { name: "high error rate" });
+    await expect(stat(fresh, "Last value")).toHaveTextContent(/^11%$/);
+  },
+};
+
+const comparisonWrites = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[0], 201);
+    return loaded(input, init);
+  }),
+);
+
+export const ComparisonAndNoDataAreChosenInTheForm: Story = {
+  render: () => (
+    <Harness fetchStub={comparisonWrites.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "errors gone quiet");
+    const comparison = form.getByRole("radiogroup", { name: "Comparison" });
+    await expect(within(comparison).getByRole("radio", { name: "Above or equal" })).toBeChecked();
+    await expect(form.getByText(/threshold is inclusive/)).toBeVisible();
+    const noData = form.getByRole("radiogroup", { name: "When there is no data" });
+    await expect(within(noData).getByRole("radio", { name: "Keep current state" })).toBeChecked();
+
+    await userEvent.click(within(comparison).getByRole("radio", { name: "Below or equal" }));
+    await userEvent.click(within(noData).getByRole("radio", { name: "Fire" }));
+    await expect(within(noData).getByRole("radio", { name: "Fire" })).toBeChecked();
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    const body = await comparisonWrites.expectSentBody<RuleBody>("POST", "/alert-rules");
+    await expect(body).toMatchObject({
+      signal: "error_rate",
+      comparison: "below",
+      no_data: "fire",
+    });
+    await expectSheetClosed();
+  },
+};
+
+const volumeWrites = recording(
+  scoped(async (input, init) => {
+    if (init?.method === "POST") return json(RULES[3], 201);
+    return loaded(input, init);
+  }),
+);
+
+export const NoDataIsOfferedOnlyToSignalsThatHaveIt: Story = {
+  render: () => (
+    <Harness fetchStub={volumeWrites.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "traffic stopped");
+    await expect(form.getByRole("radiogroup", { name: "When there is no data" })).toBeVisible();
+    await userEvent.click(
+      within(form.getByRole("radiogroup", { name: "When there is no data" })).getByRole("radio", {
+        name: "Resolve",
+      }),
+    );
+
+    await pickOption(form.getByLabelText("Signal"), /^Request volume/);
+    await waitFor(() =>
+      expect(form.queryByRole("radiogroup", { name: "When there is no data" })).toBeNull(),
+    );
+    // the traffic-stopped help appears for Below with a threshold of 0
+    await expect(form.queryByText(/alerts when traffic stops/)).toBeNull();
+    await userEvent.click(
+      within(form.getByRole("radiogroup", { name: "Comparison" })).getByRole("radio", {
+        name: "Below or equal",
+      }),
+    );
+    const threshold = form.getByLabelText("Threshold (requests per window)");
+    await userEvent.clear(threshold);
+    await userEvent.type(threshold, "0");
+    await expect(await form.findByText(/alerts when traffic stops/)).toBeVisible();
+
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    const body = await volumeWrites.expectSentBody<RuleBody>("POST", "/alert-rules");
+    await expect(body.comparison).toBe("below");
+    await expect(body).not.toHaveProperty("no_data");
+    await expectSheetClosed();
+  },
+};
+
+const editsNoData = editsRules([SILENT, ...RULES.slice(1)]);
+
+export const AnEditOpensOnTheStoredComparisonAndNoData: Story = {
+  render: () => (
+    <Harness fetchStub={editsNoData.stub}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit rule silent errors");
+    const form = within(
+      await within(document.body).findByRole("dialog", { name: "Edit rule silent errors" }),
+    );
+    await waitFor(() => expect(form.getByLabelText("Name")).toHaveValue("silent errors"));
+    const noData = form.getByRole("radiogroup", { name: "When there is no data" });
+    await expect(within(noData).getByRole("radio", { name: "Fire" })).toBeChecked();
+    await userEvent.click(within(noData).getByRole("radio", { name: "Resolve" }));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await editsNoData.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-7");
+    await expect(body).toMatchObject({ comparison: "above", no_data: "ok" });
+    await expectSheetClosed();
+  },
 };

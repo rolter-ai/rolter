@@ -3,8 +3,13 @@ import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { GettingStarted } from "./GettingStarted";
+import { CreateProjectHost } from "./ScopeSwitcher";
 import {
   Harness,
+  ORG,
+  TEAM,
+  confirmation,
+  expectAllowed,
   effectiveFor,
   expectEmptyState,
   expectGateAnswered,
@@ -17,6 +22,7 @@ import {
   recording,
   routes,
   scoped,
+  StaleSession,
   type FetchStub,
   type Recorder,
   type StoryRole,
@@ -85,6 +91,30 @@ const noProject: FetchStub = async (input) => {
   return json([]);
 };
 
+/**
+ * An org and a team, and no project under the team: the case the card can offer
+ * to fix, since a project is created under the team in scope (#2611). A POST to
+ * the team's projects answers with the new row, the way the server does.
+ */
+const noProjectInTeam: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/orgs") return json([ORG]);
+  if (path === `/api/v1/orgs/${ORG.id}/teams`) return json([TEAM]);
+  if (path === `/api/v1/teams/${TEAM.id}/projects`) {
+    if (init?.method === "POST") {
+      const { name } = JSON.parse(String(init.body)) as { name: string };
+      return json({
+        id: "project-new",
+        team_id: TEAM.id,
+        name,
+        created_at: "2026-01-01T00:00:00Z",
+      });
+    }
+    return json([]);
+  }
+  return json([]);
+};
+
 function render(stub: FetchStub, props: { requests?: number } = {}, role?: StoryRole) {
   return (
     <MemoryRouter>
@@ -114,8 +144,8 @@ const state = (canvasElement: HTMLElement, step: string) =>
   within(canvasElement).getByTestId(`getting-started-state-${step}`).textContent;
 
 /**
- * An empty deployment: four steps, none of them done, and the curl a client
- * would send once there is a key to send it with.
+ * An empty deployment: four steps, none of them done, and, with no base URL to
+ * read, the prompt to save one rather than a request through `/gw` (#2486).
  */
 export const Loaded: Story = {
   render: () => render(empty),
@@ -131,11 +161,10 @@ export const Loaded: Story = {
     await expect(
       canvas.getByRole("link", { name: new RegExp(en.pages.gettingStarted.steps.provider.action) }),
     ).toHaveAttribute("href", "/providers");
-    // no public base URL to read, so the request goes through the dashboard's
-    // own /gw proxy — the bare origin would be a 404 (#2075)
-    await expect(canvasElement.textContent ?? "").toContain(
-      `${window.location.origin}/gw/v1/chat/completions`,
-    );
+    // no public base URL to read: the /gw proxy needs a dashboard session, so
+    // it is no address for a client, and the card asks for a base URL instead
+    await expect(await canvas.findByRole("note")).toHaveTextContent(en.common.gatewayBasePrompt);
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
   },
 };
 
@@ -165,6 +194,42 @@ export const UsesTheSavedBaseUrl: Story = {
       ),
     );
     await expect(canvasElement.textContent ?? "").not.toContain("/gw/v1");
+  },
+};
+
+/**
+ * An org admin cannot read client settings, but the saved public base URL
+ * reaches the card through `/auth/me` (#2512).
+ */
+export const AnAdminGetsTheSavedBaseUrl: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness
+        role="admin"
+        fetchStub={scoped(async (input) =>
+          String(input).includes("/auth/me")
+            ? json({
+                user: { id: "u1", email: "anya@acme.co", is_superadmin: false },
+                memberships: [],
+                display_name_managed: false,
+                gateway_base_url: "https://gateway.example.com",
+              })
+            : json([]),
+        )}
+      >
+        <StaleSession>
+          <GettingStarted />
+        </StaleSession>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.textContent ?? "").toContain(
+        "curl https://gateway.example.com/v1/chat/completions",
+      ),
+    );
+    await expect(canvasElement.textContent ?? "").not.toContain("/gw/");
   },
 };
 
@@ -202,11 +267,115 @@ export const LoadFailed: Story = {
     expectLoadError(canvasElement, new RegExp(en.errors.resources.gettingStarted)),
 };
 
-/** no project in scope, so there is nothing whose real state could be reflected */
+/**
+ * No org or team exists, so step 1 has nothing to run in and nothing to pick
+ * (#2609), and a project has no team to be created under: the card says what
+ * comes first, and offers no create control that could not open anything.
+ */
 export const NoProjectSelected: Story = {
   render: () => render(noProject),
-  play: async ({ canvasElement }) =>
-    expectEmptyState(canvasElement, new RegExp(en.pages.gettingStarted.noScopeTitle)),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, new RegExp(en.pages.gettingStarted.noProjectTitle));
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(en.pages.gettingStarted.noTeamBody)).toBeInTheDocument();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectBody)).toBeNull();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectDenied)).toBeNull();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noScopeBody)).toBeNull();
+    await expect(
+      canvas.queryByRole("button", { name: en.pages.gettingStarted.createProject }),
+    ).toBeNull();
+  },
+};
+
+/** the recorder `CreateProjectOpensTheDialog` installed, read back by its play */
+let created: Recorder;
+
+/**
+ * A team with no project: the card opens the shell's create-project dialog
+ * itself rather than describing the + in the sidebar (#2611). Cancelling hands
+ * focus back to the button, and creating sends the project to the team in scope.
+ */
+export const CreateProjectOpensTheDialog: Story = {
+  render: () => {
+    const recorder = recording(noProjectInTeam);
+    created = recorder;
+    return (
+      <MemoryRouter>
+        <Harness fetchStub={recorder.stub}>
+          <GettingStarted />
+          <CreateProjectHost />
+        </Harness>
+      </MemoryRouter>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectEmptyState(canvasElement, new RegExp(en.pages.gettingStarted.noProjectTitle));
+    await expect(canvas.getByText(en.pages.gettingStarted.noProjectBody)).toBeInTheDocument();
+    const name = en.pages.gettingStarted.createProject;
+    const open = await canvas.findByRole("button", { name });
+
+    await userEvent.click(open);
+    let dialog = within(await confirmation());
+    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: en.common.cancel }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(canvas.getByRole("button", { name })).toHaveFocus());
+
+    await userEvent.click(canvas.getByRole("button", { name }));
+    dialog = within(await confirmation());
+    await userEvent.type(dialog.getByLabelText(en.scope.name), "Search");
+    await userEvent.click(dialog.getByRole("button", { name: en.common.create }));
+    const body = await created.expectSentBody("POST", `/teams/${TEAM.id}/projects`);
+    await expect(body).toEqual({ name: "Search" });
+  },
+};
+
+/** an admin of the org reaches `project:create`, so the control is live */
+export const CreateProjectAllowedForAnAdmin: Story = {
+  render: () => render(noProjectInTeam, {}, "admin"),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, en.pages.gettingStarted.createProject);
+    await expect(
+      within(canvasElement).getByText(en.pages.gettingStarted.noProjectBody),
+    ).toBeInTheDocument();
+  },
+};
+
+// a caller who holds a setup step but not the project one
+const noProjectNoCreate: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/rbac/effective") {
+    const member = effectiveFor("member");
+    return json({ ...member, allowed: [...member.allowed, "route:create"] });
+  }
+  if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
+  return noProjectInTeam(input, init);
+};
+
+/**
+ * Without the project-create capability the card names the role instead, and
+ * the create control is the house refusal: present, disabled, and saying which
+ * role it takes (#1183).
+ */
+export const NoProjectAndCannotCreateOne: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={noProjectNoCreate}>
+        <CapabilityProvider>
+          <GettingStarted />
+        </CapabilityProvider>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRefused(canvasElement, en.pages.gettingStarted.createProject);
+    await waitFor(() =>
+      expect(canvas.getByText(en.pages.gettingStarted.noProjectDenied)).toBeInTheDocument(),
+    );
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectBody)).toBeNull();
+  },
 };
 
 /**

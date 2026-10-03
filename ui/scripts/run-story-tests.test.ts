@@ -1,8 +1,13 @@
+import { mkdtempSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, it, expect } from "bun:test";
 
 import {
+  claimFreePort,
+  claimPort,
   declaredStories,
   findFreePort,
   foreignServer,
@@ -13,6 +18,8 @@ import {
   parseListeningPids,
   parseWorkingDirectory,
   portIsFree,
+  stopChild,
+  warmupStories,
   type StorybookIndex,
 } from "./run-story-tests";
 
@@ -51,6 +58,43 @@ describe("indexedPaths", () => {
     // would make every file look absent from its own index
     const paths = indexedPaths(index([["screens-keys--empty", "./src/pages/Keys.stories.tsx"]]));
     expect(paths.has("src/pages/Keys.stories.tsx")).toBe(true);
+  });
+});
+
+describe("warmupStories", () => {
+  it("opens the first story of each file, and only of the files asked for", () => {
+    const served = index([
+      ["screens-keys--empty", "./src/pages/Keys.stories.tsx"],
+      ["screens-keys--loaded", "./src/pages/Keys.stories.tsx"],
+      ["screens-users--loaded", "./src/pages/Users.stories.tsx"],
+      ["screens-rbac--loaded", "./src/pages/Rbac.stories.tsx"],
+    ]);
+    const files = [{ path: "src/pages/Keys.stories.tsx" }, { path: "src/pages/Users.stories.tsx" }];
+    expect(warmupStories(served, files)).toEqual(["screens-keys--empty", "screens-users--loaded"]);
+  });
+
+  it("never picks a docs entry, which renders no story", () => {
+    const served: StorybookIndex = {
+      entries: {
+        "screens-keys--docs": {
+          id: "screens-keys--docs",
+          importPath: "./src/pages/Keys.stories.tsx",
+          type: "docs",
+        },
+        "screens-keys--empty": {
+          id: "screens-keys--empty",
+          importPath: "./src/pages/Keys.stories.tsx",
+          type: "story",
+        },
+      },
+    };
+    expect(warmupStories(served, [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([
+      "screens-keys--empty",
+    ]);
+  });
+
+  it("skips a file the index has no story for", () => {
+    expect(warmupStories(index([]), [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([]);
   });
 });
 
@@ -195,5 +239,97 @@ describe("who is serving the port", () => {
     } finally {
       squatter.stop(true);
     }
+  });
+});
+
+describe("claimPort / claimFreePort (#2323)", () => {
+  const dir = () => mkdtempSync(join(tmpdir(), "story-port-test-"));
+  const always = async () => true;
+
+  it("hands two concurrent claims different ports", async () => {
+    const d = dir();
+    try {
+      const [a, b, c] = await Promise.all([
+        claimFreePort(6700, 10, d, always),
+        claimFreePort(6700, 10, d, always),
+        claimFreePort(6700, 10, d, always),
+      ]);
+      expect(new Set([a.port, b.port, c.port]).size).toBe(3);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a port a live run holds, and frees it on release", () => {
+    const d = dir();
+    try {
+      const first = claimPort(6710, d);
+      expect(first).not.toBeNull();
+      expect(claimPort(6710, d)).toBeNull();
+      first?.release();
+      expect(existsSync(join(d, "6710.lock"))).toBe(false);
+      expect(claimPort(6710, d)).not.toBeNull();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("takes over a lock whose run is dead", () => {
+    const d = dir();
+    try {
+      writeFileSync(join(d, "6720.lock"), "2147483646");
+      expect(claimPort(6720, d)).not.toBeNull();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a port the machine says is taken and releases its lock", async () => {
+    const d = dir();
+    try {
+      const claim = await claimFreePort(6730, 5, d, async (port) => port !== 6730);
+      expect(claim.port).toBe(6731);
+      expect(existsSync(join(d, "6730.lock"))).toBe(false);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stopChild", () => {
+  /** A child that exits on the named signal only, or never. */
+  function fakeChild(diesOn: NodeJS.Signals | null) {
+    const listeners: (() => void)[] = [];
+    const child = {
+      pid: 1,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      once: (_: string, fn: () => void) => void listeners.push(fn),
+    };
+    const sent: string[] = [];
+    const signal = (sig: NodeJS.Signals) => {
+      sent.push(sig);
+      if (sig === diesOn) setTimeout(() => listeners.forEach((fn) => fn()), 5);
+    };
+    return { child: child as never, sent, signal };
+  }
+
+  it("resolves after SIGTERM when the child exits", async () => {
+    const { child, sent, signal } = fakeChild("SIGTERM");
+    await stopChild(child, signal, 200, 200);
+    expect(sent).toEqual(["SIGTERM"]);
+  });
+
+  it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    const { child, sent, signal } = fakeChild("SIGKILL");
+    await stopChild(child, signal, 20, 200);
+    expect(sent).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+
+  it("does nothing for a child that already exited", async () => {
+    const { child, sent, signal } = fakeChild(null);
+    (child as { exitCode: number | null }).exitCode = 0;
+    await stopChild(child, signal);
+    expect(sent).toEqual([]);
   });
 });

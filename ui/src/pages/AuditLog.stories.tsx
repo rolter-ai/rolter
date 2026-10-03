@@ -1,19 +1,22 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { MemoryRouter } from "react-router";
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AuditLog from "./AuditLog";
 import {
   Harness,
   expectEmptyState,
+  expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
   expectTableStateInFrame,
   json,
   pending,
+  recording,
   routes,
   scoped,
+  withCapabilities,
   type FetchStub,
 } from "./story-harness";
 import type { AuditLogEntry } from "@/lib/api";
@@ -143,7 +146,22 @@ export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectEmptyState(canvasElement, /No audit entries yet/);
-    await expect(canvas.queryByRole("button", { name: /Clear search/i })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: /Clear (search|filters)/i }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// a narrowed window that matches nothing is a filter answer, and its button
+// says what it clears: every filter, not only a search (#2294)
+export const NoMatch: Story = {
+  render: () => <Screen fetchStub={routes([["/audit-log", () => page([])]])} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("radio", { name: "Last 24h" }));
+    await expectEmptyState(canvasElement, /No entries match these filters/);
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expectEmptyState(canvasElement, /No audit entries yet/);
   },
 };
 
@@ -191,5 +209,130 @@ export const Forbidden: Story = {
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /You do not have access to the audit log/);
     await expectNoFalseEmpty(canvasElement, /No audit entries yet/);
+  },
+};
+
+// the deployment-wide read (#2398): a superadmin switches scope and sees the
+// rows no per-org view carries, marked rather than left blank
+const wideEntries = [
+  entry({ id: "w-1", org_id: null, action: "auth.login", target_type: null }),
+  entry({
+    id: "w-2",
+    org_id: null,
+    actor_user_id: null,
+    action: "auth.login_failed",
+    target_type: null,
+  }),
+];
+
+const wideStub = (calls: { urls: string[] }) =>
+  withCapabilities(
+    "superadmin",
+    scoped(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/audit-log")) {
+        calls.urls.push(url);
+        return json(page(wideEntries));
+      }
+      if (url.includes("/audit-log")) return json(page([entry()]));
+      return json([]);
+    }),
+  );
+
+export const DeploymentWideAsSuperadmin: Story = {
+  render: () => {
+    const calls = { urls: [] as string[] };
+    return (
+      <MemoryRouter>
+        <Harness fetchStub={wideStub(calls)} role="superadmin">
+          <AuditLog />
+        </Harness>
+      </MemoryRouter>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await waitFor(() => expect(canvas.getByText("auth.login_failed")).toBeVisible());
+    await expect(canvas.getAllByText("No org")).toHaveLength(2);
+    await expect(canvas.getByText("Unknown address")).toBeVisible();
+    await expect(canvas.getByRole("columnheader", { name: "Org" })).toBeVisible();
+  },
+};
+
+export const DeploymentWideIsHiddenFromAnAdmin: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={loaded} role="admin">
+        <AuditLog />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    await expectGateAnswered();
+    await expect(canvas.queryByRole("radiogroup", { name: "Audit log scope" })).toBeNull();
+  },
+};
+
+// the filters offer every action the control plane audits (#2127), grouped and
+// type-to-filter; picking an identity action sends it and links the row to the
+// screen that owns the target
+export const FilterToASsoProviderChange: Story = {
+  render: () => {
+    const rec = recording(
+      scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/audit-log")) {
+          return json(
+            url.includes("action=sso_provider.update")
+              ? page([
+                  entry({
+                    id: "s-1",
+                    action: "sso_provider.update",
+                    target_type: "sso_provider",
+                    target_id: "5a5a5a5a-0000-0000-0000-000000000000",
+                  }),
+                ])
+              : page([entry()]),
+          );
+        }
+        return json([]);
+      }),
+    );
+    return <Screen fetchStub={rec.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("provider.create")).toBeVisible());
+    const action = canvas.getByRole("combobox", { name: "Filter by action" });
+    await userEvent.type(action, "sso_provider.up");
+    const option = await within(document.body).findByRole("option", {
+      name: "sso_provider.update",
+    });
+    await expect(
+      within(document.body).getByRole("group", { name: "Identity and access" }),
+    ).toBeVisible();
+    await userEvent.click(option);
+    const row = await canvas.findByText("sso_provider/5a5a5a5a");
+    await expect(row.closest("a")).toHaveAttribute("href", "/sso");
+    await expect(canvas.queryByText("provider.create")).toBeNull();
+  },
+};
+
+export const TargetFilterOffersIdentityTypes: Story = {
+  render: () => <Screen fetchStub={loaded} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const target = await canvas.findByRole("combobox", { name: "Filter by target type" });
+    await userEvent.click(target);
+    for (const kind of ["sso_provider", "scim_token", "custom_role", "invitation", "team", "org"]) {
+      await expect(
+        await within(document.body).findByRole("option", { name: kind }),
+      ).toBeInTheDocument();
+    }
   },
 };

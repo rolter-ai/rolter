@@ -11,7 +11,14 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardStack,
+  CardTitle,
+} from "@/components/ui/card";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -41,6 +48,9 @@ import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { RowCapabilityScope, type RowScope } from "@/lib/can";
+import { capGateScope } from "@/lib/limit-scope";
+import { useOrgScope } from "@/components/OrgScopePicker";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 
@@ -63,6 +73,7 @@ export default function Limits() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const scope = useScope();
+  const orgScope = useOrgScope(scope.orgId);
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
@@ -102,6 +113,8 @@ export default function Limits() {
 
   useScreenReady(!virtualKeys.isLoading);
 
+  // the key list has no `LoadError` of its own to record a failure, so it is
+  // reported here; budgets and rate limits record theirs (#2444)
   useErrorState(!!virtualKeys.error, "limits");
 
   const budgets = useQuery({
@@ -288,6 +301,7 @@ export default function Limits() {
             error={budgets.error}
             resource={t("errors.resources.budgets")}
             onRetry={() => budgets.refetch()}
+            target="budgets"
           />
         )}
         {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
@@ -314,6 +328,10 @@ export default function Limits() {
               key={budget.id}
               budget={budget}
               scope={scopeName}
+              gateAt={capGateScope(budget, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingBudget(budget);
                 setEditBudgetOpen(true);
@@ -353,6 +371,7 @@ export default function Limits() {
             error={rateLimits.error}
             resource={t("errors.resources.rateLimits")}
             onRetry={() => rateLimits.refetch()}
+            target="rate-limits"
           />
         )}
         {!rateLimits.isLoading && scopeId && rateLimits.data?.length === 0 && (
@@ -379,6 +398,10 @@ export default function Limits() {
               key={limit.id}
               limit={limit}
               scope={scopeName}
+              gateAt={capGateScope(limit, {
+                byTeam: orgScope.byTeam,
+                keyProjectId: scope.projectId,
+              })}
               onEdit={() => {
                 setEditingRateLimit(limit);
                 setEditRateLimitOpen(true);
@@ -554,13 +577,13 @@ function LimitCard({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4">
+    <CardStack>
       <div className="flex items-start gap-2.5">
         <div className="min-w-0 flex-1">{figure}</div>
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
       </div>
       {children}
-    </div>
+    </CardStack>
   );
 }
 
@@ -570,9 +593,11 @@ function BudgetCard({
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   budget: BudgetRow;
   scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -591,7 +616,7 @@ function BudgetCard({
     <LimitCard
       figure={<span className="block truncate font-mono text-xl font-medium">{names.amount}</span>}
       actions={
-        <>
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="budget:update"
             control="budget-edit"
@@ -608,7 +633,7 @@ function BudgetCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </>
+        </RowCapabilityScope>
       }
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -642,9 +667,11 @@ function RateLimitCard({
   onEdit,
   onDelete,
   deleting,
+  gateAt,
 }: {
   limit: RateLimitRow;
   scope: string;
+  gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -673,7 +700,7 @@ function RateLimitCard({
         </div>
       }
       actions={
-        <>
+        <RowCapabilityScope at={gateAt}>
           <RowIconButton
             gate="rate_limit:update"
             control="rate-limit-edit"
@@ -690,7 +717,7 @@ function RateLimitCard({
             pending={deleting}
             onClick={onDelete}
           />
-        </>
+        </RowCapabilityScope>
       }
     />
   );

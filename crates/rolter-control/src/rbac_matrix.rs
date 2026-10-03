@@ -171,9 +171,14 @@ const CAPABILITIES: &[Capability] = &[
         update: ADMIN,
         delete: NA,
     },
+    // a provider or group may be scoped to one project of an org (#1919), whose
+    // admin then manages it. The scope is `project` so the advisory answer
+    // reaches a project role; an org admin still passes there through the
+    // org membership. An org-wide row stays an org admin's: crud.rs checks
+    // the org for it, and that, not this table, is the authority
     Capability {
         resource: "provider",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -189,7 +194,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "provider_group",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -276,9 +281,14 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // budgets and rate limits attach to any scope, so the scope is `project`:
+    // the read answer reaches a project member, who may see the caps that
+    // throttle their own keys (#2527). The writes are unchanged, the guard
+    // still checks the row's own scope, so an org or team row stays an
+    // admin's of that org or team; the list routes narrow what a reader sees
     Capability {
         resource: "budget",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -286,7 +296,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "rate_limit",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         update: ADMIN,
@@ -905,6 +915,18 @@ async fn get_matrix(
         None => Vec::new(),
     };
     Ok(Json(MatrixView {
+        custom_roles,
+        ..builtin_matrix()
+    }))
+}
+
+/// The matrix this build defines, before any org's custom roles are added.
+///
+/// Shared by [`get_matrix`] and the test that writes `rbac-matrix.json`, so the
+/// checked-in artifact the dashboard's fixtures are copied from is the same
+/// value the endpoint serves rather than a second rendering of the table (#1369).
+fn builtin_matrix() -> MatrixView {
+    MatrixView {
         roles: ROLES
             .iter()
             .map(|&role| RoleView {
@@ -913,8 +935,8 @@ async fn get_matrix(
             })
             .collect(),
         resources: CAPABILITIES.iter().map(resource_view).collect(),
-        custom_roles,
-    }))
+        custom_roles: Vec::new(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1244,11 +1266,10 @@ mod tests {
     fn a_team_admin_is_not_promised_org_scoped_capabilities() {
         let ms = [membership(chain().org, chain().team, None, "admin")];
         let allowed = allowed_for(false, &ms, &[], chain());
-        // provider is org-scoped: the guard checks the org alone and a team
+        // org is org-scoped: the guard checks the org alone and a team
         // membership does not reach it
-        assert!(!allowed.contains(&"provider:create".to_string()));
-        assert!(!allowed.contains(&"provider:read".to_string()));
         assert!(!allowed.contains(&"team:create".to_string()));
+        assert!(!allowed.contains(&"custom_role:read".to_string()));
         // route is team-scoped, so the team membership does
         assert!(allowed.contains(&"route:create".to_string()));
     }
@@ -1262,7 +1283,77 @@ mod tests {
             "member",
         )];
         let allowed = allowed_for(false, &ms, &[], chain());
-        assert!(!allowed.contains(&"provider:read".to_string()));
+        assert!(!allowed.contains(&"custom_role:read".to_string()));
+        assert!(!allowed.contains(&"team:read".to_string()));
+    }
+
+    /// the caps that throttle a project's keys are readable by anyone holding
+    /// a role on it, and only readable (#2527)
+    #[test]
+    fn a_project_viewer_reads_budgets_and_rate_limits_but_writes_none() {
+        let c = chain();
+        let viewer = [membership(c.org, c.team, c.project, "viewer")];
+        let allowed = allowed_for(false, &viewer, &[], c);
+        for res in ["budget", "rate_limit"] {
+            assert!(allowed.contains(&format!("{res}:read")), "{res}:read");
+            for action in ["create", "update", "delete"] {
+                assert!(
+                    !allowed.contains(&format!("{res}:{action}")),
+                    "{res}:{action}"
+                );
+            }
+        }
+        // asked at the org alone, or by a caller with no role, nothing is read
+        let org_only = ScopeChain::org(c.org.unwrap_or_default());
+        let allowed = allowed_for(false, &viewer, &[], org_only);
+        assert!(!allowed.contains(&"budget:read".to_string()));
+        let allowed = allowed_for(false, &[], &[], c);
+        assert!(!allowed.contains(&"rate_limit:read".to_string()));
+        // an org viewer still reads at any chain
+        let org_viewer = [membership(c.org, None, None, "viewer")];
+        for chain in [c, org_only] {
+            let allowed = allowed_for(false, &org_viewer, &[], chain);
+            assert!(allowed.contains(&"budget:read".to_string()));
+        }
+    }
+
+    /// a provider or group may be scoped to one project (#1919), so a project
+    /// admin's own project reaches the capability crud.rs grants them, while a
+    /// project viewer and a caller who names no project get no write
+    #[test]
+    fn a_project_admin_is_promised_provider_writes_on_their_project() {
+        let c = chain();
+        let admin = [membership(c.org, c.team, c.project, "admin")];
+        let allowed = allowed_for(false, &admin, &[], c);
+        for res in ["provider", "provider_group"] {
+            for action in ["read", "create", "update", "delete"] {
+                assert!(
+                    allowed.contains(&format!("{res}:{action}")),
+                    "{res}:{action}"
+                );
+            }
+        }
+        // still not an org-scoped capability
+        assert!(!allowed.contains(&"team:create".to_string()));
+
+        let viewer = [membership(c.org, c.team, c.project, "viewer")];
+        let allowed = allowed_for(false, &viewer, &[], c);
+        assert!(allowed.contains(&"provider:read".to_string()));
+        assert!(!allowed.contains(&"provider:create".to_string()));
+        assert!(!allowed.contains(&"provider_group:delete".to_string()));
+
+        // asked at the org alone, a project membership does not reach it
+        let org_only = ScopeChain::org(c.org.unwrap_or_default());
+        let allowed = allowed_for(false, &admin, &[], org_only);
+        assert!(!allowed.contains(&"provider:create".to_string()));
+
+        // an org admin still passes, with or without a project in the query
+        let org_admin = [membership(c.org, None, None, "admin")];
+        for chain in [c, org_only] {
+            let allowed = allowed_for(false, &org_admin, &[], chain);
+            assert!(allowed.contains(&"provider:create".to_string()));
+            assert!(allowed.contains(&"provider_group:update".to_string()));
+        }
     }
 
     fn grant(
@@ -1286,9 +1377,9 @@ mod tests {
 
     #[test]
     fn a_team_custom_grant_is_trimmed_like_a_membership() {
-        let g = [grant(chain().org, chain().team, "provider", "create")];
+        let g = [grant(chain().org, chain().team, "team", "create")];
         let allowed = allowed_for(false, &[], &g, chain());
-        assert!(!allowed.contains(&"provider:create".to_string()));
+        assert!(!allowed.contains(&"team:create".to_string()));
     }
 
     /// `allowed_for` and the guard must not drift: for every row, the answer
@@ -1600,6 +1691,38 @@ mod tests {
         );
     }
 
+    /// Every control-plane mutation body is decoded through `SafeJson`, which
+    /// rejects control characters in every string and answers in the OpenAI
+    /// error envelope (#1968). A plain `Json<T>` extractor skips both, so only
+    /// the modules below, which speak another wire format, may take one.
+    #[test]
+    fn no_handler_takes_a_plain_json_body() {
+        // login / sso exchange run before a session exists and answer their
+        // own envelope; scim speaks rfc 7644 errors; ui_events and mcp_logs
+        // are machine ingest endpoints with their own bounded schemas
+        const EXEMPT: &[&str] = &[
+            "auth.rs",
+            "sso.rs",
+            "scim.rs",
+            "scim_groups.rs",
+            "ui_events.rs",
+            "mcp_logs.rs",
+        ];
+        for (name, source) in MODULES {
+            if EXEMPT.contains(name) {
+                continue;
+            }
+            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+            for line in production.lines() {
+                let line = line.trim_start();
+                assert!(
+                    !(line.starts_with("Json(") && line.contains("): Json<")),
+                    "{name} takes a plain Json body ({line}); use SafeJson",
+                );
+            }
+        }
+    }
+
     /// No handler names a `Role` — every guarded route resolves its requirement
     /// from [`CAPABILITIES`] through `cap!` / `superadmin_cap!`. This is what
     /// makes `GET /api/v1/rbac/matrix` provably the rule set the guard enforces.
@@ -1677,5 +1800,99 @@ mod tests {
         // guard look it up among a caller's explicit custom grants
         assert_eq!(cap!("provider", Delete).resource, "provider");
         assert_eq!(cap!("provider", Delete).action, Action::Delete);
+    }
+
+    /// `rbac-matrix.json` at the crate root: the published matrix minus the
+    /// per-tenant custom roles, checked in so the dashboard's story fixtures
+    /// can be copied from it without a running control plane (#1369)
+    const MATRIX_ARTIFACT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/rbac-matrix.json");
+
+    /// set to rewrite the artifact instead of comparing against it; the
+    /// `ROLTER_TEST_` prefix marks it test-only, which keeps it out of the
+    /// operator env-var reference `env_var_names.rs` holds every other name to
+    const UPDATE_ARTIFACT: &str = "ROLTER_TEST_UPDATE_RBAC_MATRIX";
+
+    #[derive(Serialize)]
+    struct MatrixArtifact {
+        #[serde(rename = "$comment")]
+        comment: &'static str,
+        roles: Vec<RoleView>,
+        resources: Vec<ResourceView>,
+        /// the chain fields `chain_at` clears for a row of each scope the
+        /// table uses, so the dashboard's port of `allowed_for` can be pinned
+        /// to the rule without re-parsing this file (#2376)
+        chain_at: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
+    }
+
+    /// `chain_at` asked at a chain naming all three parts, once per scope the
+    /// table uses, as the parts it leaves out
+    fn chain_trims() -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+        let whole = ScopeChain {
+            org: Some(Uuid::nil()),
+            team: Some(Uuid::nil()),
+            project: Some(Uuid::nil()),
+        };
+        CAPABILITIES
+            .iter()
+            .map(|cap| {
+                let at = chain_at(cap.scope, whole);
+                let cleared = [("org", at.org), ("team", at.team), ("project", at.project)]
+                    .into_iter()
+                    .filter_map(|(field, id)| id.is_none().then_some(field))
+                    .collect();
+                (cap.scope, cleared)
+            })
+            .collect()
+    }
+
+    fn render_artifact() -> String {
+        let MatrixView {
+            roles, resources, ..
+        } = builtin_matrix();
+        let artifact = MatrixArtifact {
+            comment: "written by the rolter-control test suite from CAPABILITIES in \
+                      src/rbac_matrix.rs (`just gen-rbac`) — do not edit by hand",
+            roles,
+            resources,
+            chain_at: chain_trims(),
+        };
+        let mut json = serde_json::to_string_pretty(&artifact).expect("the matrix serializes");
+        json.push('\n');
+        json
+    }
+
+    #[test]
+    fn the_checked_in_matrix_artifact_is_what_the_endpoint_publishes() {
+        let rendered = render_artifact();
+        if std::env::var_os(UPDATE_ARTIFACT).is_some() {
+            std::fs::write(MATRIX_ARTIFACT, &rendered).expect("write rbac-matrix.json");
+            return;
+        }
+        // compared as text rather than as parsed json: the artifact is copied
+        // byte for byte into the dashboard, so a reformatted file is drift too
+        let checked_in = std::fs::read_to_string(MATRIX_ARTIFACT).unwrap_or_default();
+        assert!(
+            checked_in == rendered,
+            "crates/rolter-control/rbac-matrix.json is out of date with CAPABILITIES; \
+             run `just gen-rbac` (or `{UPDATE_ARTIFACT}=1 cargo test -p rolter-control \
+             --features postgres the_checked_in_matrix_artifact` then `bun run gen:rbac` \
+             in ui/) and commit both files",
+        );
+    }
+
+    #[test]
+    fn the_matrix_artifact_omits_only_the_custom_roles() {
+        // the dashboard serves the artifact as `GET /api/v1/rbac/matrix` with
+        // an empty `custom_roles`, so every other field the endpoint carries
+        // has to be in it; `chain_at` is the one field it adds, for the port
+        // of `allowed_for` rather than for the matrix payload
+        let endpoint = serde_json::to_value(builtin_matrix()).expect("the matrix serializes");
+        let mut artifact: serde_json::Value =
+            serde_json::from_str(&render_artifact()).expect("the artifact parses");
+        let artifact = artifact.as_object_mut().expect("an object");
+        artifact.remove("$comment");
+        artifact.remove("chain_at");
+        artifact.insert("custom_roles".into(), serde_json::json!([]));
+        assert_eq!(serde_json::Value::Object(artifact.clone()), endpoint);
     }
 }
