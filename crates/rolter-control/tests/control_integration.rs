@@ -19259,7 +19259,7 @@ async fn a_scim_resource_echoes_the_raw_display_name_the_account_stores_it_sanit
 async fn scim_org_with_token(client: &reqwest::Client, base: &str, slug: &str) -> (String, String) {
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": slug, "slug": slug}))
         .send()
         .await
@@ -19270,7 +19270,7 @@ async fn scim_org_with_token(client: &reqwest::Client, base: &str, slug: &str) -
     let org_id = org["id"].as_str().unwrap().to_string();
     let minted: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "okta"}))
         .send()
         .await
@@ -19289,9 +19289,10 @@ async fn scim_patch_syncs_display_name_and_a_refused_deactivation_writes_nothing
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -19398,7 +19399,7 @@ async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it()
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let addr = serve_with_public_url(pool.clone(), Some("admintok".to_string())).await;
+    let addr = serve_with_public_url(pool.clone(), Some(admin_token().to_string())).await;
     std::env::set_var("ROLTER_KEK", TEST_KEK);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -19409,7 +19410,7 @@ async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it()
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "SsoNameOrg", "slug": "sso-name-org"}))
         .send()
         .await
@@ -19420,7 +19421,7 @@ async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it()
     let org_id = org["id"].as_str().unwrap().to_string();
     let created = client
         .post(format!("{base}/api/v1/orgs/{org_id}/sso-providers"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({
             "name": "Stub IdP", "slug": "names", "issuer": issuer,
             "client_id": "rolter", "client_secret": "s3cret",
