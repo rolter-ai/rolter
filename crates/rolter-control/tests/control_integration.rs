@@ -19266,7 +19266,7 @@ async fn scim_mapping_sole_admin(
 ) -> (uuid::Uuid, uuid::Uuid, String) {
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": slug, "slug": slug}))
         .send()
         .await
@@ -19277,7 +19277,7 @@ async fn scim_mapping_sole_admin(
     let org_id = org["id"].as_str().unwrap().to_string();
     let minted: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-tokens"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"name": "okta"}))
         .send()
         .await
@@ -19302,7 +19302,7 @@ async fn scim_mapping_sole_admin(
     let scim_id = created["id"].as_str().unwrap().to_string();
     let mapping: Value = client
         .post(format!("{base}/api/v1/orgs/{org_id}/scim-group-mappings"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .json(&json!({"group_name": "owners", "role": "admin"}))
         .send()
         .await
@@ -19336,9 +19336,10 @@ async fn superadmin_scim_mapping_delete_revokes_the_last_admin_grant() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -19346,7 +19347,7 @@ async fn superadmin_scim_mapping_delete_revokes_the_last_admin_grant() {
 
     let res = client
         .delete(format!("{base}/api/v1/scim-group-mappings/{mapping_id}"))
-        .bearer_auth("admintok")
+        .bearer_auth(admin_token())
         .send()
         .await
         .unwrap();
@@ -19362,9 +19363,10 @@ async fn org_admin_scim_mapping_delete_keeps_the_last_admin_grant() {
     skip_without_db!();
     let db = fresh_db().await;
     let pool = db.pool().clone();
-    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("admintok".to_string()))
-        .await
-        .unwrap();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
