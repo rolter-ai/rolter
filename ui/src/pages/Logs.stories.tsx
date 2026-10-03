@@ -253,6 +253,24 @@ export const Loaded: Story = {
   },
 };
 
+// a row's chevron is a 15px glyph; its button must still be a 24px target (WCAG 2.5.8, #2573)
+export const RowChevronHasA24pxHitArea: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [chevron] = await canvas.findAllByRole("button", {
+      name: en.analytics.openDetails.replace("{{model}}", "gpt-4o"),
+    });
+    const box = chevron.getBoundingClientRect();
+    await expect(box.width).toBeGreaterThanOrEqual(24);
+    await expect(box.height).toBeGreaterThanOrEqual(24);
+  },
+};
+
 // a burst: three requests a few hundred ms apart, then two that landed inside
 // the same millisecond. the tie is real traffic, not a fixture mistake
 const BURST_AT = Date.parse("2026-10-05T00:02:22.061Z");

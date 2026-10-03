@@ -25,7 +25,7 @@ The dashboard reads the rows back through the control plane, which needs its own
 
 ## What gets logged
 
-Every proxied request writes one row to the `request_logs` table with the following fields. With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, and every total read from the table shrinks with them.
+Every proxied request writes one row to the `request_logs` table with the following fields. With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, each stamped with a `sample_weight`; a raw `count()` or `sum()` over the table shrinks with the rate, and `sum(sample_weight)` or `sum(cost_usd * sample_weight)` restores it.
 
 | Field                | Type          | Description                                                                                                                           |
 | -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,6 +51,7 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | `cache_write_tokens` | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                 |
 | `error`              | String        | Error message if the request failed; empty on success                                                                                 |
 | `variant`            | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
+| `sample_weight`      | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column     |
 
 A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
 

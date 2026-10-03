@@ -65,14 +65,14 @@ The interaction id comes back as the response `id`. Send it on the next request 
 
 ```bash
 # first turn
-curl -H "Authorization: Bearer $ROLTER_KEY" \
+curl -H "Authorization: Bearer $ROLTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gemini-3.6-flash","input":"Hi, my name is Phil."}' \
   https://gateway.example.com/v1/responses
 # -> {"id": "int_123", ...}
 
 # second turn, resuming the same interaction
-curl -H "Authorization: Bearer $ROLTER_KEY" \
+curl -H "Authorization: Bearer $ROLTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gemini-3.6-flash","previous_response_id":"int_123","input":"What is my name?"}' \
   https://gateway.example.com/v1/responses

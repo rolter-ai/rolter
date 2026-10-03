@@ -36,13 +36,12 @@ export interface ComboboxProps {
   placeholder?: string;
   /** offer an × that resets the selection — for an optional field */
   clearable?: boolean;
+  disabled?: boolean;
   /**
-   * accept a value that is not in `options`: the typed text is offered as a
-   * last row, and a `value` outside the list reads as itself — for a field
-   * whose addresses are open-ended, like `group-slug/model`
+   * accept a value that is not in `options`: typing one that matches no option
+   * exactly adds a "Use …" row, and a value outside the list reads as itself
    */
   allowCustom?: boolean;
-  disabled?: boolean;
   /**
    * control height. `default` matches Input; `sm` is the compact toolbar
    * variant the dashboard wrote as `h-8 text-xs` on the native select
@@ -203,7 +202,6 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     onChange,
     placeholder,
     clearable = false,
-    allowCustom = false,
     disabled = false,
     size = "default",
     id,
@@ -211,6 +209,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     title,
     className,
     listClassName,
+    allowCustom,
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
@@ -244,7 +243,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
   const filtered = React.useMemo(() => {
     const found = query ? options.filter((o) => matches(o, query)) : options;
     const typed = query?.trim();
-    if (!allowCustom || !typed || options.some((o) => o.value === typed)) return found;
+    if (!allowCustom || !typed || options.some((o) => fold(o.value) === fold(typed))) return found;
     return [...found, { value: typed, label: t("common.combobox.use", { value: typed }) }];
   }, [options, query, allowCustom, t]);
   const sections = React.useMemo(() => layout(filtered), [filtered]);

@@ -136,6 +136,19 @@ impl ContentPolicy {
         })
     }
 
+    /// Follow the session's key into the team or project its meter re-scoped
+    /// it to (#2384), so the webhook and plugins are told the tenant the
+    /// session now bills to.
+    ///
+    /// The meter only re-scopes within the organization and when the move
+    /// selects the same plugins, so the org this policy was built for and its
+    /// plugin set still hold; only the attribution changes.
+    pub(crate) fn rescope(&mut self, scope: &ScopeIds) {
+        debug_assert_eq!(self.org, scope.org, "a session never re-scopes across orgs");
+        self.project = (!scope.project.is_empty()).then(|| scope.project.clone());
+        self.tenant = crate::handlers::plugin_tenant(scope);
+    }
+
     /// Apply the input stage to one client text frame.
     pub(crate) async fn client_event(&mut self, metrics: &Metrics, frame: &str) -> ClientVerdict {
         // audio arrives in frames of tens of kilobytes. skipped only when the

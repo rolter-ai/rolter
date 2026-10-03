@@ -36,6 +36,7 @@ import {
   recordUxEvents,
   uxEvents,
   type Recorder,
+  withDocsBase,
 } from "./story-harness";
 import type {
   MeResponse,
@@ -1084,20 +1085,6 @@ export const MintRejectionLeadsInRussian: Story = {
     await expect(within(form).getByLabelText(ru.keyMint.name)).toBeInTheDocument();
   },
 };
-
-/**
- * Sets the control plane's injected documentation base for one story and puts
- * it back afterwards, so the two states below cannot leak into each other.
- */
-function withDocsBase(base: string | undefined) {
-  return () => {
-    const before = window.__ROLTER_CONFIG__;
-    window.__ROLTER_CONFIG__ = base === undefined ? {} : { ...before, docsBaseUrl: base };
-    return () => {
-      window.__ROLTER_CONFIG__ = before;
-    };
-  };
-}
 
 /** The explainer carries a link into `security/which-key` when docs exist (#1164). */
 export const ExplainerLinksToTheDocs: Story = {
