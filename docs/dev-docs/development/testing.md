@@ -381,6 +381,17 @@ black-box harness can only approximate with sleeps:
   request-log and health-event rows must still reach a ClickHouse stand-in
   before the child exits, proving the shutdown sink drain (#1924).
 
+The SIGTERM tests assert request-log and health-event rows but not an MCP
+tool-call row, deliberately. The MCP proxy authenticates with a database virtual
+key, and a TOML config cannot define one, so a child process started from a
+config file cannot reach `/mcp/{server}` without also standing up Postgres and a
+snapshot source. The in-process test
+`mcp_events_are_flushed_by_the_shutdown_drain` (`tests/integration.rs`, #2431)
+covers the MCP row's drain instead. It runs the same shutdown sink drain the
+child process runs, and the child-process tests already prove the signal reaches
+it, so the only untested seam is the signal wiring, which MCP rows share with the
+others.
+
 All three use a mock upstream that blocks on a semaphore the test owns, so every step
 is driven by a signal rather than by elapsed time — there are no sleeps to race.
 Run them with:

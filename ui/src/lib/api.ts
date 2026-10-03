@@ -3602,7 +3602,7 @@ export function collectorConfigUrl(base: string): string {
 // ---------------------------------------------------------------------------
 // mcp tool-call logs (clickhouse-backed; 503 → AnalyticsUnavailableError)
 
-export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse"] as const;
+export const MCP_TRANSPORTS = ["stdio", "streamable_http", "sse", "websocket"] as const;
 export const MCP_STATUSES = [
   "success",
   "error",
