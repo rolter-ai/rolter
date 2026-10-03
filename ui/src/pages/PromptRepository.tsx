@@ -1819,6 +1819,7 @@ function MakeLiveDialog({
               <Skeleton width="100%" height={36} radius={6} />
             </LoadingRegion>
           ) : scopesError ? (
+            // load-error-allow: a scope summary inside the publish dialog; nothing to be empty
             <LoadError
               error={scopesError}
               resource={t("errors.resources.promptTemplateScopes")}

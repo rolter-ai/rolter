@@ -171,6 +171,7 @@
               "api/attribution-listings",
               "api/project-settings",
               "api/budgets-and-rate-limits",
+              "api/dashboard-analytics",
               "api/control-plane-openapi"
             ]
           }

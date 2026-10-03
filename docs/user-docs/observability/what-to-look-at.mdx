@@ -187,6 +187,12 @@ that came back empty or failed, and an empty state and the alert for the same
 list carry the same region, so one row reads both. A screen that shows several
 alerts at once records one row for each.
 
+A region ending in `-stale` (`dashboard-spend-stale`) is a different thing: the
+card still shows its earlier data, and a refresh of it failed. There is no alert,
+so the figures are going out of date unseen. Each appearance of the "refresh
+failed" line records one `error_state` under the card's region with `-stale`
+added, and polls that keep failing under the same line add nothing.
+
 Sustained `error_impressions` on one screen is a bug report nobody filed. High
 `empty_impressions` on a screen that should have data usually means a scope or
 permission problem, not an authoring one.

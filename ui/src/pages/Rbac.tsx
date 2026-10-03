@@ -234,6 +234,7 @@ export default function Rbac() {
   if (matrix.error) {
     return (
       <PageBody>
+        {/* load-error-allow: the permission matrix is fixed content, never empty */}
         <LoadError
           error={matrix.error}
           resource={t("errors.resources.rbacMatrix")}

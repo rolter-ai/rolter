@@ -40,3 +40,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+  # `uvx` tools run in CI (zizmor, maturin) are pinned in this requirements file
+  # rather than inline, because dependabot cannot read a version out of a command
+  # line. scripts/check-tool-pins.sh keeps the commands reading it (#2185)
+  - package-ecosystem: pip
+    directory: /.github/tool-pins
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Check, Compass, Rocket, X } from "lucide-react";
+import { ArrowRight, Check, Compass, Plus, Rocket, X } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { fetchProviders, fetchRoutes, fetchVirtualKeys } from "@/lib/api";
 import { splitCapability, useCan, useCapabilities, useGate, type Capability } from "@/lib/can";
 import { classifyLoadError } from "@/lib/load-error";
-import { useScope } from "@/lib/scope";
+import { openCreateProject, useScope } from "@/lib/scope";
 import { KEY_ENV } from "@/lib/snippets";
 import { useGatewayBase } from "@/lib/use-gateway-base";
 import { cn } from "@/lib/utils";
@@ -191,7 +191,7 @@ export function GettingStarted({ requests }: GettingStartedProps) {
   const can = useCan();
   const capabilities = useCapabilities();
   // use-gate-allow: picks which sentence the no-project state shows; the
-  // creation itself is the scope switcher's own gated control
+  // control that creates one is a `GatedButton`, which records the reach
   const { denied: projectCreateDenied } = useGate("project:create");
   const [dismissed, setDismissed] = React.useState(readDismissed);
 
@@ -336,8 +336,8 @@ export function GettingStarted({ requests }: GettingStartedProps) {
         ) : !scope.projectId ? (
           // nothing below can reflect real state without a project to read it
           // from, and a checklist of four unknowns is worse than none. where
-          // no project exists at all there is nothing to pick, so say how one
-          // comes to exist instead of sending the operator to an empty list
+          // no project exists at all there is nothing to pick, so offer to
+          // create one instead of sending the operator to an empty list
           <EmptyState
             uxTarget="getting-started"
             title={t(
@@ -350,8 +350,29 @@ export function GettingStarted({ requests }: GettingStartedProps) {
                 ? "pages.gettingStarted.noScopeBody"
                 : projectCreateDenied
                   ? "pages.gettingStarted.noProjectDenied"
-                  : "pages.gettingStarted.noProjectBody",
+                  : !scope.teamId
+                    ? "pages.gettingStarted.noTeamBody"
+                    : "pages.gettingStarted.noProjectBody",
             )}
+            actions={
+              // the shell's create-project dialog (#2611), the one the + beside
+              // Project raises. a project is created under the team in scope,
+              // so without one there is nothing it could open. refused, it is
+              // the house disabled control naming the role it takes (#1183)
+              noProjectExists && scope.teamId ? (
+                <GatedButton
+                  gate="project:create"
+                  control="getting-started-create-project"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={openCreateProject}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t("pages.gettingStarted.createProject")}
+                </GatedButton>
+              ) : undefined
+            }
           />
         ) : (
           <div className="flex flex-col gap-5">

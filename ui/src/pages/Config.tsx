@@ -75,6 +75,7 @@ export default function Config() {
         </div>
 
         {config.isError && (
+          // load-error-allow: one read feeds both tables (config-providers, config-routes); neither owns it
           <LoadError
             error={config.error}
             resource={t("errors.resources.config")}
