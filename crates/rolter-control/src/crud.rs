@@ -2590,11 +2590,24 @@ async fn send_provider_probe(
     req.send().await
 }
 
+/// A provider as the API returns it: the row plus whether a sealed key is
+/// stored for it.
+///
+/// The flag is derived from `provider_keys` and says nothing else about the
+/// credential; the key, its ciphertext and its nonce never leave the store.
+#[derive(Serialize)]
+struct ProviderView {
+    #[serde(flatten)]
+    provider: Provider,
+    /// a row exists in `provider_keys`; an `api_key_env` is not a stored key
+    has_stored_key: bool,
+}
+
 async fn list_providers(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Provider>>> {
+) -> ApiResult<Json<Vec<ProviderView>>> {
     let rows = ProviderRepo(pool(&state)).list(org_id).await?;
     let visible = visible_in_scope(
         &state,
@@ -2605,7 +2618,17 @@ async fn list_providers(
         |row| row.project_id,
     )
     .await?;
-    Ok(Json(visible))
+    // after the scope filter so only rows the caller may see are looked up
+    let ids: Vec<Uuid> = visible.iter().map(|row| row.id).collect();
+    let stored = ProviderKeyRepo(pool(&state)).stored_among(&ids).await?;
+    let views = visible
+        .into_iter()
+        .map(|provider| ProviderView {
+            has_stored_key: stored.contains(&provider.id),
+            provider,
+        })
+        .collect();
+    Ok(Json(views))
 }
 
 /// The rows of an org listing the caller may see, where a row may be scoped to
@@ -3046,7 +3069,7 @@ async fn create_provider(
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
     SafeJson(body): SafeJson<CreateProvider>,
-) -> ApiResult<Json<Provider>> {
+) -> ApiResult<Json<ProviderView>> {
     // a project-scoped provider is authorised at its project, so a project admin
     // may create one for their own project. Naming an environment variable is
     // a read of the control plane's environment, which is an org admin's call
@@ -3092,6 +3115,7 @@ async fn create_provider(
             body.project_id,
         )
         .await?;
+    let has_stored_key = sealed.is_some();
     if let Some((ciphertext, nonce)) = sealed {
         ProviderKeyRepo(pool(&state))
             .set(row.id, &ciphertext, &nonce)
@@ -3110,7 +3134,10 @@ async fn create_provider(
         }),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -3159,7 +3186,7 @@ async fn update_provider(
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
     SafeJson(body): SafeJson<UpdateProvider>,
-) -> ApiResult<Json<Provider>> {
+) -> ApiResult<Json<ProviderView>> {
     let existing = ProviderRepo(pool(&state)).get(id).await?;
     let org_id = existing.org_id;
     // an org-wide provider is an org admin's, and so is any change of scope or
@@ -3239,6 +3266,8 @@ async fn update_provider(
                 .await?
         }
     }
+    // read back after the write so an omitted `api_key` reports what is stored
+    let has_stored_key = ProviderKeyRepo(pool(&state)).exists(id).await?;
     publish_config_change(&state).await?;
     log_audit(
         &state,
@@ -3250,7 +3279,10 @@ async fn update_provider(
         serde_json::json!({"slug": row.slug, "project_id": row.project_id}),
     )
     .await;
-    Ok(Json(row))
+    Ok(Json(ProviderView {
+        provider: row,
+        has_stored_key,
+    }))
 }
 
 async fn delete_provider(

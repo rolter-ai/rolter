@@ -166,6 +166,7 @@
               "api/version",
               "api/public-url",
               "api/org-projects",
+              "api/providers",
               "api/project-settings",
               "api/budgets-and-rate-limits",
               "api/control-plane-openapi"
