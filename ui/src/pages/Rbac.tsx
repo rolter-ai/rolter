@@ -3,6 +3,7 @@ import { KeySquare, Lock, Pencil, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { IconFrame } from "@/components/ui/icon-frame";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
@@ -686,9 +687,9 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
               key={role.id}
               className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
-              <span className="mt-0.5 flex h-[34px] w-[34px] flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[color:var(--text-secondary)]">
+              <IconFrame className="mt-0.5">
                 <KeySquare className="h-4 w-4" />
-              </span>
+              </IconFrame>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{role.name}</span>

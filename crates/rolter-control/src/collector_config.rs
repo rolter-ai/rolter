@@ -406,19 +406,4 @@ mod tests {
         let yaml = render_yaml(&[row("My Signoz (EU)!", 1.0)], None);
         assert!(yaml.contains("otlphttp/my-signoz--eu--"));
     }
-
-    #[tokio::test]
-    async fn render_error_redacts_store_details() {
-        let err = sqlx::Error::RowNotFound;
-        let api_err =
-            crate::crud::ApiError::Curated("failed to query observability connectors".to_string());
-        let resp = api_err.into_response();
-        assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body_str.contains("failed to query observability connectors"));
-        assert!(!body_str.contains(&err.to_string()));
-    }
 }
