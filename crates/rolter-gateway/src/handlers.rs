@@ -908,7 +908,8 @@ fn upstream_error_response(message: &str) -> Response {
             .with_code(code)
             .into_response();
     }
-    error_json(StatusCode::BAD_GATEWAY, message)
+    let sanitized = rolter_core::redact::redact_urls_in_text(message);
+    error_json(StatusCode::BAD_GATEWAY, &sanitized)
 }
 
 /// Request-translation failures the caller can fix, paired with the OpenAI-style
@@ -3598,7 +3599,8 @@ fn body_read_failed(
     log.usage_unknown = 1;
     sink.metrics().upstream_errors_total.fetch_add(1, Relaxed);
     sink.log(log);
-    error_json(StatusCode::BAD_GATEWAY, &message)
+    let sanitized = rolter_core::redact::redact_urls_in_text(&message);
+    error_json(StatusCode::BAD_GATEWAY, &sanitized)
 }
 
 /// Convert an upstream response into a streaming axum response, teeing the body
@@ -4292,6 +4294,19 @@ mod tests {
         assert_eq!(dropped.status(), StatusCode::SERVICE_UNAVAILABLE);
         let upstream = upstream_error_response("connection refused");
         assert_eq!(upstream.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn upstream_error_response_redacts_urls_with_credentials() {
+        let secret_msg = "error sending request for url (http://admin:secret123@upstream.internal/v1/chat/completions): connection refused";
+        let resp = upstream_error_response(secret_msg);
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_str.contains("secret123"));
+        assert!(body_str.contains("http://***@upstream.internal/v1/chat/completions"));
     }
 
     #[test]
