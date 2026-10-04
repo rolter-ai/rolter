@@ -29,6 +29,7 @@ import {
   Toolbar,
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -327,34 +328,21 @@ export default function Models() {
       </Toolbar>
 
       <div className="flex flex-wrap items-center gap-2.5">
-        {(
-          [
-            ["all", t("pages.models.origin.all")],
-            ["db", t("pages.models.origin.db")],
-            // a deployment with nothing in rolter.toml has no config tier to
-            // filter by; the chip and its legend appear once one exists
-            ...(counts.config > 0 ? [["config", t("pages.models.origin.config")]] : []),
-          ] as [Origin, string][]
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setOrigin(key)}
-            className={cn(
-              "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              origin === key
-                ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)] text-foreground"
-                : "border-[color:var(--border-subtle)] text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-            {models.data && (
-              <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
-                {counts[key]}
-              </span>
-            )}
-          </button>
-        ))}
+        <Segmented<Origin>
+          ariaLabel={t("pages.models.originFilterAria")}
+          value={origin}
+          options={(
+            [
+              ["all", t("pages.models.origin.all")],
+              ["db", t("pages.models.origin.db")],
+              ...(counts.config > 0 ? [["config", t("pages.models.origin.config")]] : []),
+            ] as [Origin, string][]
+          ).map(([key, label]) => ({
+            value: key,
+            label: models.data ? `${label} ${counts[key]}` : label,
+          }))}
+          onChange={setOrigin}
+        />
         {unpricedCount > 0 && (
           <button
             type="button"
