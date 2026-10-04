@@ -881,6 +881,18 @@ Request and cost logs are written asynchronously in batches, off the hot request
   The maximum number of log records buffered in-flight. Records are dropped when this queue is full.
 </ParamField>
 
+<ParamField path="sample_rate" default="1.0" type="float">
+  Request-log sampling rate in `[0, 1]` applied before write. `1.0` keeps every record; `0.0` disables request-log rows entirely.
+</ParamField>
+
+<ParamField path="payload_capture" type="table">
+  Optional raw request and response payload capture configuration.
+</ParamField>
+
+<ParamField path="ui_events" default="true" type="boolean">
+  Ingest dashboard UX events (screen views, error states, time-to-interactive) into ClickHouse.
+</ParamField>
+
 ```toml
 [logging]
 clickhouse_url = "http://localhost:8123"

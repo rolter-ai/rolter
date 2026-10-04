@@ -291,6 +291,48 @@ fn virtual_key_config_fields() -> BTreeSet<String> {
         .collect()
 }
 
+/// Find every field name declared in `LoggingConfig` struct in `crates/rolter-core/src/config.rs`.
+fn logging_config_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct LoggingConfig {")
+        .expect("config.rs declares `pub struct LoggingConfig {`");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n}")
+        .expect("LoggingConfig closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_logging_config_fields_are_documented_in_config_file_reference() {
+    let fields = logging_config_fields();
+    assert!(!fields.is_empty(), "no LoggingConfig fields were found");
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these LoggingConfig fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Find every field name declared in `CacheConfig` struct in `crates/rolter-core/src/config.rs`.
 fn cache_config_fields() -> BTreeSet<String> {
     let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
