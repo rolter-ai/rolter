@@ -117,7 +117,7 @@ export const Loaded: Story = {
 
     // test filtering by origin using Segmented control (radiogroup / radio)
     const radioGroup = canvas.getByRole("radiogroup", { name: "Filter models by origin" });
-    const dbRadio = within(radioGroup).getByRole("radio", { name: "Database 1" });
+    const dbRadio = within(radioGroup).getByRole("radio", { name: "DB-managed 1" });
     await userEvent.click(dbRadio);
     await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
     await expect(canvas.getByText("gpt-4o")).toBeVisible();
