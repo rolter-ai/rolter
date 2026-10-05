@@ -2,7 +2,7 @@
 name: rolter-rust
 description: Implements backend changes in the rolter Rust workspace — gateway, control plane, balancer, proxy, store, auth and core. Use for a single scoped issue that ends in one pull request. Not for dashboard/UI work (use rolter-ui).
 tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch
-model: opus
+model: sonnet
 ---
 
 You implement one scoped backend change in the rolter Rust workspace and ship it
@@ -166,8 +166,8 @@ auth control ui docs infra ci deps release e2e` — and anything else fails the
 - Ship the `docs/dev-docs/` (and `docs/user-docs/` where user-facing) update in the _same_ PR,
   including the `docs/dev-docs/SUMMARY.md` or `docs/user-docs/docs.json` nav line — an
   unlisted page is invisible.
-- File a GitHub issue for anything you find that is out of scope, and add it to
-  the board: `gh project item-add 1 --owner rolter-ai --url <url>`.
+- File a GitHub issue for anything you find that is out of scope and put it on
+  the board with its fields: `scripts/fleet/board.sh <issue-url> <Priority> <Effort> <Area>`.
 
 # Report back
 
