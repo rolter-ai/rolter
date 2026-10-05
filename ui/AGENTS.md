@@ -43,9 +43,14 @@ listening before the agent session starts — a session that begins with port
 does not attach them on its own; reconnect the server from `/mcp` or start a
 new session. The `post-start` hook in `.config/wt.toml` starts it for every new
 worktree and tears it down with the worktree, so this is handled as long as
-hooks are approved (`wt config approvals add`). Outside a Worktrunk worktree,
-start it yourself in `ui/` before launching the session, detached so it
-outlives the session: `nohup bun run storybook --ci --no-open --exact-port &`.
+hooks are approved (`wt config approvals add`). The project `SessionStart` hook
+in `.claude/settings.json` (`.claude/hooks/start-storybook.sh`) covers the rest:
+when nothing listens on 6006 and `ui/node_modules` exists it starts the server
+detached, logging to `.claude/storybook-session.log`, and returns at once; it
+says nothing when the server is already up. Because MCP servers attach while a
+session starts, that server is there for the next session, not the one that
+started it. To do it by hand, run in `ui/` before launching the session:
+`nohup bun run storybook --ci --no-open --exact-port &`.
 
 Only one checkout can hold port 6006 at a time; the first worktree to start
 takes it and the hook fails fast in the others. The docs tools describe the

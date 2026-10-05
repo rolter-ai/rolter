@@ -1,0 +1,13 @@
+# paths ripgrep skips in this checkout. rg reads this file like .gitignore, and
+# a path named on the command line (`rg x docs/book`) is still searched, as is
+# everything with `--no-ignore`.
+
+# vendored mermaid bundle for the mdBook build: one 2.5 MB line that matches
+# almost any short pattern and floods the output
+docs/dev-docs/mermaid.min.js
+
+# local-only trees that are not part of the repository: the generated mdBook
+# html (the source is docs/dev-docs/) and loose research notes. rg would
+# otherwise search the minified js and search index in the html
+docs/book/
+docs/research/

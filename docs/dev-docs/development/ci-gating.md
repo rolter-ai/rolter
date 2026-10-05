@@ -519,7 +519,7 @@ The convention, for a human or an agent opening a PR:
    url. Do not assume the body you submitted is the body that was stored.
 2. If the tooling injected one, strip **just that line** with a direct
    `PATCH /repos/{owner}/{repo}/pulls/{n}` (for example
-   `gh api -X PATCH repos/rolter-ai/rolter/pulls/<n> -f body=@body.md`), not
+   `gh api -X PATCH repos/rolter-ai/rolter/pulls/<n> -F body=@body.md`), not
    another pass through the authoring tool. The footer is appended on the
    creation path only, so a direct `PATCH` does not re-trigger it and the edit
    sticks. Strip it as soon as you see it: `ci-ok` reads the live body after

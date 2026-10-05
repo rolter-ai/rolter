@@ -21,6 +21,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - `cd ui && bun install` then `bun run dev` / `bun run test` / `bun run build` — UI deps, dev server, unit tests (`bun test src`), production build
 - `cd ui && bun run format` / `bun run format:check` — prettier over `ui/`. The style is `ui/.prettierrc` (`printWidth: 100`, everything else prettier's defaults), derived from the tree rather than imposed on it; `format:check` is a merge gate, so never run prettier with ad-hoc flags
 - `just fmt-docs` / `just fmt-docs-check` — prettier over the markdown, MDX, JSON and YAML _outside_ `ui/`. The style is the root `.prettierrc` (`printWidth: 100`, `embeddedLanguageFormatting: off`, prose wrapping left to the author) and the exclusions are `.prettierignore`; also a merge gate, same rule about ad-hoc flags. See `docs/dev-docs/development/formatting.md`
+- `rg` skips `docs/dev-docs/mermaid.min.js` (one 2.5 MB line that matches almost any pattern) and the local-only `docs/book/` and `docs/research/` through `.rgignore`; pass `--no-ignore` to search them anyway
 - `docker compose -f docker/docker-compose.yml up -d` — bring up Postgres, Redis, ClickHouse and rolter
 
 ## Parallel agent worktrees
@@ -34,6 +35,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - Worktrunk is the lifecycle layer only. Commit and push with standard Git, publish and merge with `gh`/GitHub, and keep hosted `ci-ok` authoritative.
 - Do not use `wt merge`, `wt step commit`, `wt step squash`, or `wt step push`. Do not use `--force` or `--force-delete` in automated cleanup.
 - Preserve branches with `wt remove --no-delete-branch` whenever merge state is uncertain. Never clean another agent's dirty worktree.
+- `scripts/fleet/` holds the helpers a batch of agents shares, each with `--help`: `claim.sh <issue> <Priority> <Effort> <Area>` sets an issue In Progress on the board before you branch, `board.sh` puts an issue or PR on the board with its fields, and `land.sh <pr>` prints one verdict line (behind `master`, unresolved review threads, required check, in-flight runs) and, with `--merge`, squash-merges, closes what the PR closes and removes the worktree and branch. `.claude/agents/` has the agents that use them: `rolter-fleet-ui` (one issue of a dashboard batch, fixed report format), `rolter-ui`, `rolter-rust` and the read-only `rolter-reviewer`. All run on Sonnet, so a batch does not burn the Opus usage limit.
 
 ## Code standards
 
@@ -126,8 +128,9 @@ docs(architecture): document reload-free config propagation
   gets a carve-out for it. See
   [`docs/dev-docs/development/ci-gating.md#agent-session-urls`](docs/dev-docs/development/ci-gating.md#agent-session-urls).
 - Include a co-author trailer identifying the agent that made the commit, using
-  that agent's own name and email (for example,
-  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
+  that agent's own name and email. Name the model that actually made the commit
+  rather than copying a fixed one (for example,
+  `Co-Authored-By: Claude <model name> <noreply@anthropic.com>`).
 
 Commit hygiene is enforced by `commitlint` (PR titles) and the `conventional-pre-commit` hook in `prek.toml`.
 
@@ -144,6 +147,14 @@ combination was dequeued. Details, and the admin steps that would turn the queue
 on, are in
 [`docs/dev-docs/development/merge-protection.md`](docs/dev-docs/development/merge-protection.md).
 Tracked in #2029.
+
+Merges are squash merges, and the repository takes the squash commit's title and
+message from the **PR title and PR body** (`squash_merge_commit_title=PR_TITLE`,
+`squash_merge_commit_message=PR_BODY`), not from the branch's commits. So the
+`Closes #123` in the PR body is what lands on `master` and what closes the issue,
+and the commit trailers on the branch do not survive the squash. Check an issue
+you meant to close after the merge: `scripts/fleet/land.sh --merge <pr>` does
+that and closes any the merge left open.
 
 ### Merging a stacked PR
 
@@ -178,6 +189,12 @@ they are broken, and the loss is silent and irreversible.
   stack."_ Merging the parent through `merge-async` auto-retargets the child
   onto `master`, so merge parents first, bottom of the stack upward, and let
   GitHub move the children.
+
+## Picking up an issue
+
+- Read the issue's comments and its linked issues and PRs, not just the description: requirements and decisions live in comments, and the Linear migration left relations (parent, sub-issue, blocks) that the description never mentions. `gh issue view <n> --comments` shows the comments, and the board shows the relations.
+- Set it In Progress before you branch (`scripts/fleet/claim.sh`). An issue whose work already merged but that is still open or In Progress is stale: close it rather than starting over.
+- Refer to issues as `#NN`. Migrated issue bodies still carry their old `ROL-XXX` keys; map them to `#NN` instead of copying them forward.
 
 ## Scope discipline: file an issue for everything you find
 

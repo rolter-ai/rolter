@@ -109,6 +109,50 @@ CI status, duplicate branches, and prunable registrations. Activity markers
 from Worktrunk plugins are advisory: a crashed or disconnected agent may leave
 a stale marker.
 
+## Fleet helpers
+
+A batch of agents repeats the same few steps on every issue, so they live in
+`scripts/fleet/`. All three need an authenticated `gh` (with the `project`
+scope) and `jq`, take `--help`, and are safe to run twice.
+
+| Script                                          | What it does                                                                                                          |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `claim.sh <issue> <Priority> <Effort> <Area>`   | puts the issue on the board as In Progress with its fields, before the branch exists                                  |
+| `board.sh <issue-or-pr-url> <P> <E> <Area> [S]` | adds an issue or PR to the board and sets Status, Priority, Effort and Area; option ids come from the live project    |
+| `land.sh [--merge] <pr>`                        | one verdict line for a PR; with `--merge` it also squash-merges, closes what the PR closes and cleans up its worktree |
+
+`board.sh` reads the fields back after writing them and rewrites any the board
+automation overwrote in the seconds after an issue was created (see
+[issue-tracking.md](issue-tracking.md)).
+
+`land.sh` answers with `READY`, `PENDING` or `NOT READY` and an exit code of 0, 2
+or 1. It checks, in order: draft state, whether the PR is part of a stack, how
+far the head is behind `master`, unresolved review threads, the required `ci-ok`
+check, and any `ci.yml` run still going on the head sha. Behind-`master` is
+reported but does not block, because `master` requires no up-to-date branch and
+moves every few minutes, so demanding it would mean no PR ever lands; pass
+`--require-up-to-date` to block on it. Unresolved threads do block, since `master`
+requires every conversation to be resolved. A stacked PR is never landed from the
+script: merge it with `merge-async` as described under
+[Merge dependent work](#merge-dependent-work).
+
+With `--merge` it runs `gh pr merge --squash` only on a `READY` verdict and
+never waits for one. It never passes `--delete-branch`, closes issues without
+posting a comment, removes the worktree with `wt remove` (no `--force`, so a
+dirty one stays) and deletes the local branch only when its tip is the merged
+head. A re-run on an already merged PR finishes whatever is left. The squash
+commit takes its title and message from the PR title and body, so `Closes #N`
+must be in the PR body.
+
+`scripts/test-fleet-scripts.sh` drives all three against a fake `gh` and a
+throwaway repository; it runs as the `fleet-scripts` prek hook.
+
+The agents that use them are in `.claude/agents/`: `rolter-fleet-ui` (one issue
+of a dashboard batch, with the fleet rules in its prompt and a fixed seven-line
+report), `rolter-ui` and `rolter-rust` (a single scoped change) and the read-only
+`rolter-reviewer`. They run on Sonnet, so a batch of them stays inside the usage
+limit that a batch of Opus agents exhausts mid-task.
+
 ## Commit and publish
 
 Worktrunk manages worktree lifecycle only. Use normal repository commands for

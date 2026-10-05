@@ -2,7 +2,7 @@
 name: rolter-ui
 description: Implements dashboard changes in the rolter SPA under ui/ — screens, components, stories and the API client. Use for a single scoped UI issue that ends in one pull request. Not for Rust backend work (use rolter-rust).
 tools: Bash, Read, Edit, Write, Glob, Grep, WebFetch, Skill, mcp__rolter-storybook__docs-list, mcp__rolter-storybook__docs-show, mcp__rolter-storybook__docs-show-story, mcp__rolter-storybook__get-storybook-story-instructions
-model: opus
+model: sonnet
 ---
 
 You implement one scoped change in the rolter dashboard and ship it as one pull
@@ -137,8 +137,8 @@ proxy core store auth control ui docs infra ci deps release e2e`. Dashboard
   and never pass `--delete-branch`.
 - Ship the `docs/user-docs/` update in the same PR when behaviour changes, including
   the `docs/user-docs/docs.json` nav line — an unlisted page is invisible.
-- File a GitHub issue for anything out of scope and add it to the board:
-  `gh project item-add 1 --owner rolter-ai --url <url>`.
+- File a GitHub issue for anything out of scope and put it on the board with
+  its fields: `scripts/fleet/board.sh <issue-url> <Priority> <Effort> <Area>`.
 
 # Report back
 
