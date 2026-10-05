@@ -1196,7 +1196,10 @@ pub(crate) async fn refresh_session(
     let material = repo
         .open_refresh(&kek, session_id, Utc::now())
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "mcp oauth refresh store error");
+            TokenError::Transient("internal server error".to_string())
+        })?
         .ok_or_else(|| {
             // no refresh token, or the consent is gone: nothing to renew, and
             // nothing to retry either
@@ -1208,7 +1211,10 @@ pub(crate) async fn refresh_session(
     let server = McpServerRepo(pool(state))
         .get(material.server_id)
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "mcp oauth refresh server lookup error");
+            TokenError::Transient("internal server error".to_string())
+        })?;
     let resource = ResourceUri::parse(&server.url).map_err(|e| {
         // the row would have been refused at registration, so this is a URL
         // that changed under a live session: a permanent answer, not a blip
@@ -1227,7 +1233,10 @@ pub(crate) async fn refresh_session(
     let secret = McpServerRepo(pool(state))
         .client_secret(&kek, server.id)
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "mcp oauth refresh client secret lookup error");
+            TokenError::Transient("internal server error".to_string())
+        })?;
 
     let form = vec![
         ("grant_type", "refresh_token".to_string()),
@@ -1279,7 +1288,10 @@ pub(crate) async fn refresh_session(
         },
     )
     .await
-    .map_err(|e| TokenError::Transient(e.to_string()))
+    .map_err(|e| {
+        tracing::error!(error = %e, "mcp oauth refresh rotate session error");
+        TokenError::Transient("internal server error".to_string())
+    })
 }
 
 /// Spawn the background renewer. Sessions near expiry are refreshed without the
@@ -1962,5 +1974,22 @@ mod tests {
         // the sweep interval must be shorter than the skew, or a session can
         // expire in the gap between two passes
         assert!((REFRESH_SWEEP_SECS as i64) < REFRESH_SKEW_SECS);
+    }
+
+    #[tokio::test]
+    async fn internal_store_errors_are_redacted_in_mcp_oauth_refresh() {
+        std::env::set_var("ROLTER_KEK", "test-kek-value-32-bytes-minimum!");
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://secret_user:secret_pass@127.0.0.1:1/invalid_db")
+                .expect("lazy connect");
+        let mut state = crate::tests::state_with_token(None);
+        state.pool = Some(pool);
+        let err = refresh_session(&state, Uuid::new_v4())
+            .await
+            .expect_err("store query on invalid pool must fail");
+        let message = err.message();
+        assert!(!message.contains("secret_user"));
+        assert!(!message.contains("secret_pass"));
+        assert_eq!(message, "internal server error");
     }
 }
