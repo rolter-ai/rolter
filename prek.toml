@@ -263,13 +263,14 @@ pass_filenames = false
 
 # scripts/fleet/ is what the fleet agents run to claim, board and land a pull
 # request. this drives land.sh, claim.sh and board.sh against a fake gh and a
-# throwaway git repo, so no change to them reaches a real merge untested
+# throwaway git repo, so no change to them reaches a real merge untested. it
+# also drives the SessionStart storybook hook in .claude/hooks/
 [[repos.hooks]]
 id = "fleet-scripts"
 name = "fleet scripts against a fake gh"
 entry = "bash scripts/test-fleet-scripts.sh"
 language = "system"
-files = "^scripts/(fleet/.*\\.sh|test-fleet-scripts\\.sh)$"
+files = "^(scripts/(fleet/.*\\.sh|test-fleet-scripts\\.sh)|\\.claude/hooks/.*\\.sh)$"
 pass_filenames = false
 
 [[repos.hooks]]
