@@ -660,6 +660,7 @@
       "viewAria": "Посмотреть {{model}}",
       "editAria": "Изменить {{model}}",
       "deleteAria": "Удалить модель {{model}}",
+      "originFilterAria": "Фильтр моделей по происхождению",
       "searchPlaceholder": "Поиск моделей",
       "modelTally_one": "{{count}} модель",
       "modelTally_few": "{{count}} модели",
