@@ -97,11 +97,11 @@
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-web": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
-    "@tanstack/react-query": "^5.104.0",
+    "@tanstack/react-query": "^5.104.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "i18next": "^26.4.2",
-    "lucide-react": "^1.49.0",
+    "lucide-react": "^1.51.0",
     "marked": "^18.0.14",
     "qrcode-generator": "^2.0.4",
     "react": "^19.3.0",
@@ -128,7 +128,7 @@
     "storybook": "10.6.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.2"
   },
   "resolutions": {
     "uuid": "^11.1.1"
