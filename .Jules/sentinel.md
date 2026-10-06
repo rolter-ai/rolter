@@ -39,3 +39,8 @@
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.
 **Prevention:** Always log detailed internal error messages via `tracing::warn!` or `tracing::error!` and return a sanitized, static error message (such as `"control plane unreachable"`) in 502 HTTP error response bodies.
+
+## 2026-10-18 - Redact Internal URLs in Upstream Gateway 502 Responses
+
+**Learning:** `upstream_error_response` in `crates/rolter-gateway/src/handlers.rs` previously echoed raw `err.to_string()` into 502 `BAD_GATEWAY` JSON error responses when forwarding requests failed. If the error was a transport or connection failure, this could expose internal upstream URLs or credentials embedded in authority strings to external callers.
+**Prevention:** Always pass upstream or transport error messages through `rolter_core::redact::redact_urls_in_text` before rendering them into HTTP response bodies.
