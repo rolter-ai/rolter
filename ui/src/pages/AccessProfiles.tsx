@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Shield, Trash2, Users } from "lucide-react";
+import { Pencil, Shield, Users } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EditorSheet } from "@/components/EditorSheet";
 import {
   ORG_TARGET,
@@ -161,22 +162,13 @@ function ProfileCard({
           >
             <Pencil className="size-4" />
           </GatedButton>
-          <GatedButton
+          <DeleteIconButton
             gate="access_profile:delete"
             control="access-profile-delete"
-            variant="ghost"
-            size="icon"
-            title={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
-            aria-label={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
-            disabled={deleting}
+            label={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
+            pending={deleting}
             onClick={() => onDelete(profile)}
-          >
-            {deleting ? (
-              <Loader2 className="size-4 motion-safe:animate-spin" />
-            ) : (
-              <Trash2 className="size-4" />
-            )}
-          </GatedButton>
+          />
         </div>
       </div>
     </div>
