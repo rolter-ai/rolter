@@ -630,6 +630,26 @@ request_secs = 60
 
 ---
 
+### \[compatibility\]
+
+Cross-dialect compatibility settings applied when a request is translated between the OpenAI and Anthropic wire formats.
+
+<ParamField path="anthropic_version" default="2023-06-01" type="string">
+  The `anthropic-version` header sent to Anthropic upstreams.
+</ParamField>
+
+<ParamField path="default_max_tokens" default="1024" type="u32">
+  The `max_tokens` value injected when translating an OpenAI request that set neither `max_tokens` nor `max_completion_tokens`, as the Anthropic Messages API requires a token cap.
+</ParamField>
+
+```toml
+[compatibility]
+anthropic_version = "2023-06-01"
+default_max_tokens = 1024
+```
+
+---
+
 ### \[queue\]
 
 Rolter keeps a bounded dispatch queue and a worker set for each provider. A
