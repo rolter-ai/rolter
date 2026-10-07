@@ -128,6 +128,10 @@ impl QueryParam {
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
 
+/// the `409` a password change answers for an account with no local password
+const NO_LOCAL_PASSWORD_409: &str =
+    "error.code `no_local_password`: the account signs in through single sign-on only, so there is no local password to change";
+
 /// the `409` a provider delete answers while something still references it
 const PROVIDER_IN_USE_409: &str = "a route target or a provider group member still references the provider; the message names each route and group, and the provider is left in place";
 
@@ -432,6 +436,15 @@ const SCOPE_QUERY: &[QueryParam] = &[
 /// The time window the analytics, health and usage summaries share.
 const WINDOW_QUERY: &[QueryParam] = &[SINCE, UNTIL];
 
+/// what the users list can be widened by (#2804)
+const USERS_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include_unassigned",
+    "boolean",
+    "also list the accounts that hold no membership anywhere, such as the superadmin \
+     `rolter-seed --admin-email` creates. Only a superadmin is shown them; for any other \
+     caller the flag changes nothing. Defaults to false",
+)];
+
 const SAVED_VIEW_QUERY: &[QueryParam] = &[QueryParam::new(
     "surface",
     "string",
@@ -731,8 +744,20 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/auth/me",
                 "authMe",
-                "The account behind the current session",
+                "The account behind the current session, with `has_local_password` \
+                 (false for an account that signs in through single sign-on only)",
             ),
+            Op::post(
+                "/api/v1/auth/password",
+                "changeMyPassword",
+                "Change the calling account's own password: proves the current one \
+                 (a wrong one counts as a failed sign-in and is throttled with it, \
+                 `400` `invalid_field` on `current_password`), ends the account's \
+                 other sessions and answers how many (any role)",
+            )
+            .body(Payload::Ref("ChangePassword"))
+            .ok(Payload::Ref("PasswordChanged"))
+            .conflict(NO_LOCAL_PASSWORD_409),
             Op::get(
                 "/api/v1/auth/methods",
                 "authMethods",
@@ -876,6 +901,7 @@ fn operations() -> Vec<Op> {
                 "listUsers",
                 "List accounts with a membership in this organization",
             )
+            .query(USERS_QUERY)
             .ok(Payload::List("User")),
             Op::post(
                 "/api/v1/orgs/{org_id}/users",
@@ -2635,6 +2661,25 @@ fn identity_schemas(p: &Prim) -> Value {
                 "deactivated": {"type": ["boolean", "null"]}
             },
             "additionalProperties": false
+        },
+        "ChangePassword": {
+            "type": "object",
+            "required": ["current_password", "new_password"],
+            "properties": {
+                "current_password": {"type": "string"},
+                "new_password": {"type": "string", "minLength": 8}
+            },
+            "additionalProperties": false
+        },
+        "PasswordChanged": {
+            "type": "object",
+            "required": ["sessions_revoked"],
+            "properties": {
+                "sessions_revoked": {
+                    "type": "integer",
+                    "description": "the account's other sessions that ended; the caller's own is kept"
+                }
+            }
         },
         "CreatedUser": {
             "type": "object",

@@ -3510,6 +3510,31 @@ impl UserRepo<'_> {
         .map_err(store_err)
     }
 
+    /// [`Self::list_in_org`] plus every account that holds no membership
+    /// anywhere, in one email-ordered list.
+    ///
+    /// The seeded superadmin (`rolter-seed --admin-email`) belongs to no org, so
+    /// the plain listing never shows it: nobody can find the account to edit,
+    /// deactivate or delete it. An account with a membership in a *different*
+    /// org is not added, since another org's people are not this org's to list.
+    pub async fn list_in_org_with_unassigned(&self, org_id: Uuid) -> Result<Vec<User>> {
+        sqlx::query_as(
+            "select distinct u.id, u.email, u.password_hash, u.is_superadmin,
+                    u.deactivated_at, u.created_at, u.display_name, u.bio
+             from users u
+             left join memberships m on m.user_id = u.id
+             left join teams t on t.id = m.team_id
+             left join projects p on p.id = m.project_id
+             left join teams pt on pt.id = p.team_id
+             where m.id is null or m.org_id = $1 or t.org_id = $1 or pt.org_id = $1
+             order by u.email",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// create a local account. `password_hash` is a pre-computed argon2id digest
     /// (the repo never sees plaintext); pass `None` for an sso-only shell account
     pub async fn create(

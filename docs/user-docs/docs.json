@@ -166,6 +166,7 @@
               "api/ui-events",
               "api/version",
               "api/public-url",
+              "api/change-password",
               "api/org-projects",
               "api/providers",
               "api/attribution-listings",
