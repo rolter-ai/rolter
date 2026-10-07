@@ -76,6 +76,8 @@ Everything lives under one of these groups. Screens you cannot read with your ro
 
 The effective config viewer also exports the deployment's configuration as an importable `rolter.toml` — see [Config Export](/configuration/config-export).
 
+When the rail is folded to icons, select a group's icon (or press Enter, or the right or down arrow, on it) to open a small panel beside it listing the group's screens. Pick a screen to go there; Escape, a click elsewhere, or tabbing past the last screen closes the panel, and Escape puts focus back on the icon. The group that holds the screen you are on is marked with the same red thread the screen itself carries on the full rail. The panel lists only the screens your role may read, as the full rail does.
+
 The search box at the top of the rail filters the entries by name; press `/` from anywhere to jump into it. Matching a group's own name keeps everything filed under it, and a query that matches nothing says so rather than leaving the rail blank.
 
 ### Experimental entries
@@ -233,7 +235,7 @@ Replies are never treated as markup. HTML tags in a reply show as the characters
 | Screen width   | Navigation                                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Below 768 px   | The rail is a drawer. Open it with the **☰** button in the screen header; close it with the scrim, the Escape key, or by picking a screen. |
-| 768 – 1023 px  | The rail starts folded to icons. Hover or focus an icon for its name; the collapse toggle expands it.                                       |
+| 768 – 1023 px  | The rail starts folded to icons. Hover or focus an icon for its name; a group's icon opens its screens; the collapse toggle expands it.     |
 | 1024 px and up | The full rail, collapsible, and resizable by dragging its right edge. The width you choose is remembered.                                   |
 
 Tables that are wider than the screen scroll inside their own frame, and forms that open as side sheets take the full width on a phone. On a phone a side sheet's buttons stack: Cancel and the main action share the bottom line, and any other action, such as testing a provider's connection, sits above them. The screen area below the header is a scroll region you can Tab to, so a long screen can be read with the keyboard alone.

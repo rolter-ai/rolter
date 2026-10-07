@@ -88,6 +88,49 @@ the same contract `ListTable` and `CodeBlock` already sign.
 52px icon-only strip. Labels, the search box, group headings and the version
 become titles or disappear; the active item keeps its folk-red thread.
 
+### A group on the folded rail
+
+A group's children are drawn under it only when the rail has the width for it,
+so folded to the 52px strip a group has nowhere to unfold in place. Until #2803
+the click still toggled the group's expanded state, which nothing drew, and the
+group did nothing at all. Folded, a group opens a flyout (`GroupFlyout` in
+`nav-sidebar.tsx`) instead:
+
+- **What it is.** A `fixed` panel beside the rail, level with the icon,
+  headed by the group's label and listing its screens with the same item styles
+  the full rail uses (the experimental badge and the count included). It is
+  `fixed` rather than absolute because the rail's list is a scroll container and
+  would clip it; the position comes from the icon's rectangle, nudged up when the
+  viewport is too short to hold it below. It follows the icon while the list
+  scrolls and goes once the icon has scrolled out of view. There is no popover,
+  dropdown or tooltip primitive under `ui/src/components/ui/` to build on; the
+  surface classes are the ones the account menu and the locale picker already
+  use (`surface-elevated`, `border-default`, `shadow-lg`).
+- **A disclosure, not an ARIA menu.** The icon is a button with
+  `aria-expanded`, the flyout a `role="group"` named by its heading, and the
+  entries are the same navigation buttons the full rail has, so they sit in the
+  tab order right after the icon and `aria-current="page"` marks the screen
+  you are on.
+- **Keyboard.** Enter or Space (the button's click), or the right or down
+  arrow, opens it and moves focus to the screen you are on, else to the first.
+  Up and down arrows move through the screens and wrap; Home and End jump to the
+  ends. Escape or the left arrow closes it and returns focus to the icon, as does
+  picking a screen. A press outside, Tab past either end, the rail unfolding, or
+  a route change closes it without moving focus. One flyout is open at a time.
+- **The current section.** The screen you are on is out of sight when folded, so
+  its group carries the active thread and `aria-current="true"` (not `"page"`:
+  the group is not the page). The full rail is unchanged.
+- **Gating.** The flyout renders `item.children` as handed in, and `visibleNav`
+  has already dropped the screens a role cannot read and the groups left
+  empty, so a refused screen is neither in the flyout nor behind an icon.
+
+Stories: the `FoldedGroup…` set in `nav-sidebar.stories.tsx` (open, current
+section, keyboard, navigate, outside press, focus leaving, one at a time, the
+experimental marker, following the list's scroll), `NavAsViewerFlyout` and
+`NavAsSuperadminFlyout` in `CapabilityGating.stories.tsx`, and
+`FoldedRailOpensAGroup` and `FoldedRailFlyoutLeavesOutRefusedScreens` in
+`App.stories.tsx` for the assembled shell.
+
 ## Resize
 
 `resizable` turns the right edge into a splitter. It exists because a fixed

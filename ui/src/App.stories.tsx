@@ -232,6 +232,64 @@ export const Tablet: Story = {
 };
 
 /**
+ * A group on the folded rail used to do nothing when pressed: the click flipped
+ * state that only the full-width rail draws (#2803). It opens a flyout of the
+ * group's screens beside the icon; picking one goes there, puts the flyout away
+ * and leaves the group marked as the section you are in.
+ */
+export const FoldedRailOpensAGroup: Story = {
+  ...atTablet,
+  render: () => <AppShell route="/providers" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rail = await railOf(canvasElement);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    const group = await within(rail).findByRole("button", { name: nav.models });
+    // the screen is out of sight on the folded rail, so its group says so
+    await expect(group).toHaveAttribute("aria-current", "true");
+
+    await userEvent.click(group);
+    const flyout = within(await within(rail).findByRole("group", { name: nav.models }));
+    await expect(flyout.getByRole("button", { name: nav.providers })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await userEvent.click(flyout.getByRole("button", { name: nav["routing-rules"] }));
+
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("heading", { level: 1, name: screens["routing-rules"].title }),
+      ).toBeVisible(),
+    );
+    await waitFor(() => expect(within(rail).queryByRole("group", { name: nav.models })).toBeNull());
+    await waitFor(() => expect(group).toHaveFocus());
+    await expect(group).toHaveAttribute("aria-current", "true");
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * The flyout lists what the rail would: a screen the role may not read stays
+ * out of it, as it stays out of the full-width rail (#1183).
+ */
+export const FoldedRailFlyoutLeavesOutRefusedScreens: Story = {
+  ...atTablet,
+  render: () => <AppShell route="/dashboard" fetchStub={withCapabilities("viewer", shellStub())} />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    await waitFor(() =>
+      expect(within(rail).queryByRole("button", { name: nav.alerting })).toBeNull(),
+    );
+    await userEvent.click(within(rail).getByRole("button", { name: nav.governance }));
+    const flyout = within(await within(rail).findByRole("group", { name: nav.governance }));
+    await expect(flyout.getByRole("button", { name: nav["gov-teams"] })).toBeVisible();
+    await expect(flyout.queryByRole("button", { name: nav["audit-logs"] })).toBeNull();
+    await expect(flyout.queryByRole("button", { name: nav.sso })).toBeNull();
+  },
+};
+
+/**
  * Below `md` the rail is out of the flow entirely until the header asks for
  * it. The half neither #1238 story could cover on its own is the last one
  * here: picking an entry has to navigate *and* put the drawer away, or the
