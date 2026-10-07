@@ -4161,6 +4161,89 @@ async fn provider_dto_reports_whether_a_sealed_key_is_stored() {
     assert_eq!(cleared["has_stored_key"], false);
 }
 
+/// #2806: "Test connection" presents each kind's key the way its API reads it.
+///
+/// The stub is the Anthropic API in miniature: it lists models only for a
+/// request carrying the key in `x-api-key` and a version header, and answers
+/// 401 to a bearer token. The probe used to send the bearer form, so every
+/// Anthropic provider reported a valid key as rejected on its first test.
+#[tokio::test]
+async fn provider_test_sends_the_anthropic_key_as_x_api_key() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let sealed_secret = random_password();
+    let expected = sealed_secret.clone();
+    let stub = axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(move |headers: axum::http::HeaderMap| {
+            let expected = expected.clone();
+            async move {
+                let keyed = headers.get("x-api-key").and_then(|v| v.to_str().ok())
+                    == Some(expected.as_str());
+                if keyed && headers.contains_key("anthropic-version") {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(json!({"data": [{"id": "claude-test"}]})),
+                    )
+                } else {
+                    (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        axum::Json(json!({"error": "invalid x-api-key"})),
+                    )
+                }
+            }
+        }),
+    );
+    let upstream = serve(stub).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let created: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+        .json(&json!({
+            "name": "claude",
+            "kind": "anthropic",
+            "api_base": format!("http://{upstream}"),
+            "api_key": sealed_secret,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = created["id"].as_str().expect("provider id");
+
+    let tested: Value = client
+        .post(format!("{base}/api/v1/providers/{provider_id}/test"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tested["reachable"], true, "{tested}");
+    assert_eq!(tested["status"], 200, "{tested}");
+    assert_eq!(tested["credential"], "stored", "{tested}");
+    assert_eq!(tested["models_found"], 1, "{tested}");
+    assert!(!tested.to_string().contains(&sealed_secret), "leaked key");
+}
+
 /// With an admin token configured, the CRUD API and snapshot endpoint reject
 /// unauthenticated calls and accept the bearer token.
 #[tokio::test]

@@ -170,6 +170,13 @@ The catalogue comes from the probe the health sweep already sends. For every
 provider kind whose liveness endpoint is a model list — everything except TEI,
 and except a provider whose `health.path` was overridden — the sweep now parses
 that response instead of discarding it, and caches the model ids per provider.
+The probe carries the provider's key, presented the way the provider kind
+expects it (`x-api-key` for Anthropic, a bearer token for OpenAI, and so on; see
+[How the provider key is presented](../deployment/configuration.md#how-the-provider-key-is-presented)).
+An `openai` or `anthropic` provider answers a keyless model list with `401`,
+which still counts as healthy but has no catalogue to read, so these two kinds
+listed no extra models until the sweep sent their key (#2806).
+
 Two consequences follow from reusing the probe:
 
 - **The wider listing needs `[health] enabled = true`.** Without active probing

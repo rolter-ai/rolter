@@ -24,6 +24,27 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `role_profile` (`openai` | `system_only` | `anthropic`, optional) — explicit instruction-role semantics. The default is `openai` for `kind = "openai"`, `anthropic` for `kind = "anthropic"`, and conservative `system_only` for every OpenAI-compatible kind. `system_only` converts leading `developer` messages to `system` in place; it rejects a `system` or `developer` message after a user/assistant/tool turn with `role_capability_unsupported` rather than silently changing it.
 - `model_role_profiles` (table, optional) — upstream-model-specific `role_profile` overrides. Use this only for a custom template whose developer-role support is explicitly known; rolter never probes a vLLM template at runtime.
 
+#### How the provider key is presented
+
+A provider's key goes out in the header its API reads, and there is one
+function that decides which: `ProviderKind::auth_header` in `rolter-core`.
+
+| Kind                                         | Header                        |
+| -------------------------------------------- | ----------------------------- |
+| `anthropic`                                  | `x-api-key: <key>`            |
+| `azure_openai`                               | `api-key: <key>`              |
+| `gemini_native`, `gemini_interactions`       | `x-goog-api-key: <key>`       |
+| every other kind (including Bedrock, Vertex) | `Authorization: Bearer <key>` |
+
+The proxy authenticates every forwarded request through it, and so do the two
+probes: the gateway's health sweep (the free probe and the `also_track_via_llm_call`
+check) and the control plane's **Test connection**. The probes cannot present a
+key the proxy would not, which is the failure #2806 fixed: **Test connection**
+sent every key as a bearer token, Anthropic's API ignores one, and a valid key
+read as rejected. A new kind that authenticates differently from a bearer token
+is added to `auth_header` and to the test beside it that names each non-bearer
+kind.
+
 #### Role-capability profiles
 
 `openai_compatible` describes the HTTP surface only. vLLM, in particular,

@@ -720,34 +720,18 @@ fn apply_provider_auth_with(
     compat: &CompatibilityConfig,
     passthrough_headers: &[(&str, &str)],
 ) -> RequestBuilder {
-    match provider.kind {
-        ProviderKind::Anthropic => {
-            if let Some(key) = api_key {
-                request = request.header("x-api-key", key);
-            }
-            let version = passthrough_value(passthrough_headers, "anthropic-version")
-                .unwrap_or(compat.anthropic_version.as_str());
-            request.header("anthropic-version", version)
-        }
-        ProviderKind::AzureOpenai => {
-            if let Some(key) = api_key {
-                request = request.header("api-key", key);
-            }
-            request
-        }
-        ProviderKind::GeminiNative | ProviderKind::GeminiInteractions => {
-            if let Some(key) = api_key {
-                request = request.header("x-goog-api-key", key);
-            }
-            request
-        }
-        _ => {
-            if let Some(key) = api_key {
-                request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
-            }
-            request
-        }
+    // the scheme per kind lives in rolter-core so the probes authenticate the
+    // way this does (#2806)
+    if let Some(key) = api_key {
+        let (name, value) = provider.kind.auth_header(key);
+        request = request.header(name, value.as_ref());
     }
+    if provider.kind == ProviderKind::Anthropic {
+        let version = passthrough_value(passthrough_headers, "anthropic-version")
+            .unwrap_or(compat.anthropic_version.as_str());
+        request = request.header("anthropic-version", version);
+    }
+    request
 }
 
 fn provider_url(provider: &ProviderConfig, path: &str) -> String {
@@ -1397,6 +1381,38 @@ mod tests {
                 provider_url(&provider, plan.upstream_path(path)),
                 "https://generativelanguage.googleapis.com/v1beta/interactions"
             );
+        }
+    }
+
+    /// #2806: the probes in the gateway and the control plane authenticate
+    /// through `ProviderKind::auth_header`, so the proxy has to be sending
+    /// exactly that, for every kind, or a green probe proves nothing.
+    #[test]
+    fn every_kind_authenticates_with_the_header_the_probes_use() {
+        for kind in ProviderKind::ALL {
+            let provider = provider(kind, "https://example.com".to_string());
+            let request = apply_provider_auth(
+                Client::new().post("https://example.com/v1/chat/completions"),
+                &provider,
+                Some("sk-secret"),
+            )
+            .build()
+            .unwrap();
+            let (name, value) = kind.auth_header("sk-secret");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(name)
+                    .and_then(|value| value.to_str().ok()),
+                Some(&*value),
+                "{kind:?}"
+            );
+            // one credential header, never the same key presented twice
+            let credential_headers = ["authorization", "x-api-key", "api-key", "x-goog-api-key"]
+                .into_iter()
+                .filter(|header| request.headers().contains_key(*header))
+                .count();
+            assert_eq!(credential_headers, 1, "{kind:?}");
         }
     }
 

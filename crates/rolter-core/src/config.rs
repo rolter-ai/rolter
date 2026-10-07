@@ -412,6 +412,34 @@ impl ProviderKind {
         }
     }
 
+    /// The header that carries this kind's credential, and the value to put in it.
+    ///
+    /// The one place the scheme is written down, for the same reason as
+    /// [`Self::resolve_upstream_url`]. `rolter_proxy` authenticates every
+    /// forwarded request through it, and the gateway's health sweep and the
+    /// control plane's "Test connection" authenticate their probes through it
+    /// too, so a probe can never be rejected for presenting the key in a way the
+    /// proxy would not (#2806: the connection test sent Anthropic's key as a
+    /// bearer token, which that API does not read, and reported a valid key as
+    /// rejected).
+    ///
+    /// The name is lowercase. Only the bearer form allocates; the raw schemes
+    /// borrow the key, which matters on the request path.
+    pub fn auth_header(self, key: &str) -> (&'static str, std::borrow::Cow<'_, str>) {
+        use std::borrow::Cow;
+        match self {
+            ProviderKind::Anthropic => ("x-api-key", Cow::Borrowed(key)),
+            ProviderKind::AzureOpenai => ("api-key", Cow::Borrowed(key)),
+            // native gemini authenticates its generativelanguage endpoints with
+            // an api-key header, not a bearer token (unlike the openai-compat
+            // `gemini` shim)
+            ProviderKind::GeminiNative | ProviderKind::GeminiInteractions => {
+                ("x-goog-api-key", Cow::Borrowed(key))
+            }
+            _ => ("authorization", Cow::Owned(format!("Bearer {key}"))),
+        }
+    }
+
     /// The doubled-prefix defect, or `None` when the base is well-formed.
     ///
     /// Only reported for kinds that append `/v1` themselves: for the rest a
@@ -4379,6 +4407,44 @@ mod tests {
             assert!(!named.is_empty());
         }
         assert_eq!(ProviderKind::ALL.len(), 48);
+    }
+
+    /// #2806: the scheme per kind, checked across every kind so a new variant
+    /// that needs a raw header instead of the bearer default has to be named.
+    #[test]
+    fn every_kind_presents_its_key_the_way_its_api_reads_it() {
+        for kind in ProviderKind::ALL {
+            let (name, value) = kind.auth_header("sk-secret");
+            match kind {
+                ProviderKind::Anthropic => {
+                    assert_eq!((name, &*value), ("x-api-key", "sk-secret"), "{kind:?}")
+                }
+                ProviderKind::AzureOpenai => {
+                    assert_eq!((name, &*value), ("api-key", "sk-secret"), "{kind:?}")
+                }
+                ProviderKind::GeminiNative | ProviderKind::GeminiInteractions => {
+                    assert_eq!((name, &*value), ("x-goog-api-key", "sk-secret"), "{kind:?}")
+                }
+                _ => assert_eq!(
+                    (name, &*value),
+                    ("authorization", "Bearer sk-secret"),
+                    "{kind:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn a_raw_scheme_borrows_the_key_and_only_bearer_allocates() {
+        let key = "sk-secret";
+        assert!(matches!(
+            ProviderKind::Anthropic.auth_header(key).1,
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            ProviderKind::Openai.auth_header(key).1,
+            std::borrow::Cow::Owned(_)
+        ));
     }
 
     #[test]
