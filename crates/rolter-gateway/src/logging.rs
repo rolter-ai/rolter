@@ -1158,6 +1158,18 @@ impl LogSink {
         self.enqueue(record);
     }
 
+    /// Enqueue the row for a request the gateway answered itself, with no
+    /// upstream behind it: the built-in `fake-llm` model.
+    ///
+    /// The latency histograms and the ClickHouse row are written as for any
+    /// request. What is skipped is the per-target outcome and the passive
+    /// health event, because there is no target to attribute them to and a
+    /// health series for a thing that cannot be unhealthy would only be noise.
+    pub fn log_builtin(&self, record: RequestLog) {
+        self.observe(&record, false);
+        self.enqueue(record);
+    }
+
     /// Enqueue a record without blocking. Drops (and counts) the record if the
     /// queue is full or the writer has stopped.
     pub fn log(&self, record: RequestLog) {
@@ -1169,7 +1181,8 @@ impl LogSink {
     }
 
     /// The metrics half of [`LogSink::log`]. `attribute_target` is false when
-    /// the attempt this row describes was already counted against its target.
+    /// the attempt this row describes was already counted against its target,
+    /// or when there is no target to count it against.
     fn observe(&self, record: &RequestLog, attribute_target: bool) {
         self.metrics.observe_request(
             &record.provider,

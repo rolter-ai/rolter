@@ -34,7 +34,7 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | `log_id`             | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                 |
 | `trace_id`           | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                          |
 | `model`              | String        | The public model name the client requested                                                                                            |
-| `provider`           | String        | The upstream provider that served the request                                                                                         |
+| `provider`           | String        | The upstream provider that served the request (`builtin` for the built-in `fake-llm` model)                                           |
 | `target`             | String        | The specific upstream target within the provider                                                                                      |
 | `status`             | UInt16        | HTTP status code returned to the client                                                                                               |
 | `prompt_tokens`      | UInt32        | Prompt / input token count reported by the upstream                                                                                   |
@@ -52,6 +52,8 @@ Every proxied request writes one row to the `request_logs` table with the follow
 | `error`              | String        | Error message if the request failed; empty on success                                                                                 |
 | `variant`            | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
 | `sample_weight`      | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column     |
+
+The built-in `fake-llm` model is logged like any provider. It has no upstream, so its rows carry `provider = builtin` and `target = fake-llm`, and the token counts are the ones the fake response reports (a streamed chat completion included, though its stream carries no usage object). Its `cost_usd` is exactly `0`, and its rows are never marked `unpriced` or `usage_unknown`: a model that costs nothing is not an accounting gap. They show up on **LLM Logs** and in the analytics screens with no special casing, which makes `fake-llm` a quick way to check that logging works end to end. Requests it refuses, for example a `400` for a missing `input`, are logged with that status. Requests to `fake-llm` are not charged against token-per-minute limits or budgets, and its rows carry no captured payload.
 
 A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
 

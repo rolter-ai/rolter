@@ -1330,19 +1330,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
     if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        return match path {
-            "/v1/chat/completions" => fake_llm::chat_completions(&parsed),
-            "/v1/responses" => fake_llm::responses(&parsed),
-            "/v1/messages" => fake_llm::messages(&parsed),
-            "/v1/embeddings" => fake_llm::embeddings(&parsed),
-            "/v1/rerank" => fake_llm::rerank(&parsed),
-            "/v1/images/generations" => fake_llm::images(&parsed),
-            "/v1/audio/speech" => fake_llm::speech(&parsed),
-            _ => error_json(
-                StatusCode::NOT_FOUND,
-                &format!("'{model}' is not served on {path}"),
-            ),
-        };
+        let ctx = RequestLogCtx::new(&headers, &scope, &model, snap.logging.sample_rate, started);
+        return log_builtin(&state.log, ctx, fake_llm::respond(path, &parsed));
     }
 
     // route-name-first: a named route wins, even one whose name contains '/'.
@@ -1931,7 +1920,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             return cached_response(
                 hit,
                 &state.log,
-                CacheHitLog {
+                RequestLogCtx {
                     request_id: request_id.clone(),
                     trace_id: trace_id.clone(),
                     vk_id: vk_id.clone(),
@@ -1997,7 +1986,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     return cached_response(
                         hit,
                         &state.log,
-                        CacheHitLog {
+                        RequestLogCtx {
                             request_id: request_id.clone(),
                             trace_id: trace_id.clone(),
                             vk_id: vk_id.clone(),
@@ -2734,7 +2723,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
     if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        return fake_llm::transcription(response_format.as_deref());
+        let ctx = RequestLogCtx::new(&headers, &scope, &model, snap.logging.sample_rate, started);
+        let reply =
+            fake_llm::Reply::untokenized(fake_llm::transcription(response_format.as_deref()));
+        return log_builtin(&state.log, ctx, reply);
     }
 
     // the same resolution as the JSON pipeline: a named route in the caller's
@@ -3920,8 +3912,15 @@ fn withheld_response(
     refusal
 }
 
-/// Log context captured on the request path for a response served from cache.
-struct CacheHitLog {
+/// Who asked for what, captured once a request is authenticated: enough to
+/// write its request-log row on any path that answers without running the
+/// forwarding pipeline that builds one for a provider request.
+///
+/// A response served from cache and the built-in `fake-llm` model both answer
+/// that way, and start from the same row ([`RequestLogCtx::into_log`]) so the
+/// attribution they stamp cannot drift apart. A path that refuses a request
+/// before it reaches a provider can start from it too.
+struct RequestLogCtx {
     request_id: String,
     trace_id: String,
     vk_id: String,
@@ -3933,6 +3932,101 @@ struct CacheHitLog {
     model: String,
     sample_rate: f64,
     started: Instant,
+}
+
+impl RequestLogCtx {
+    /// Capture the identity of an authenticated request. `scope` is the key's
+    /// attribution (empty for an anonymous request), `model` the name the
+    /// caller asked for.
+    fn new(
+        headers: &HeaderMap,
+        scope: &ScopeIds,
+        model: &str,
+        sample_rate: f64,
+        started: Instant,
+    ) -> Self {
+        Self {
+            // the ensure_request_id middleware guarantees this header is present
+            request_id: headers
+                .get(crate::trace::REQUEST_ID_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+            // adopts the caller's distributed trace when one was propagated inbound
+            trace_id: crate::trace::request_trace_id(headers),
+            vk_id: scope.key.clone(),
+            org_id: scope.org.clone(),
+            team_id: scope.team.clone(),
+            project_id: scope.project.clone(),
+            business_unit_id: scope.business_unit.clone(),
+            customer_id: scope.customer.clone(),
+            model: model.to_string(),
+            sample_rate,
+            started,
+        }
+    }
+
+    /// The row this request starts from: its own start time and attribution,
+    /// with the latency measured now and time to first token equal to it. The
+    /// caller sets what only its path knows (status, provider, tokens).
+    fn into_log(self) -> RequestLog {
+        let latency_ms = self.started.elapsed().as_millis() as u32;
+        RequestLog {
+            ts: crate::logging::started_at(self.started),
+            request_id: self.request_id,
+            trace_id: self.trace_id,
+            virtual_key_id: self.vk_id,
+            org_id: self.org_id,
+            team_id: self.team_id,
+            project_id: self.project_id,
+            business_unit_id: self.business_unit_id,
+            customer_id: self.customer_id,
+            model: self.model,
+            latency_ms,
+            ttft_ms: latency_ms,
+            sample_rate: self.sample_rate,
+            ..Default::default()
+        }
+    }
+}
+
+/// Write the request-log row for an answer the built-in `fake-llm` model gave
+/// and hand the answer back.
+///
+/// The built-in answers before the pipeline that builds a row for every
+/// provider request, so without this its traffic is missing from LLM Logs and
+/// from every usage roll-up, and the first smoke test an operator runs looks
+/// like logging is broken (#2802).
+///
+/// The row is the one a provider request would leave, labelled
+/// [`fake_llm::PROVIDER_LABEL`] and carrying the tokens the fake body reports.
+/// Cost stays zero and the row is not flagged `unpriced` or `usage_unknown`:
+/// the model costs nothing by definition, so the zero is exact rather than the
+/// absence of a price that those flags exist to expose. The row is written when
+/// the answer is built, not when a stream is drained, which for a body that is
+/// generated in memory and sent whole is the same moment to within a
+/// millisecond.
+fn log_builtin(
+    sink: &crate::logging::LogSink,
+    ctx: RequestLogCtx,
+    reply: fake_llm::Reply,
+) -> Response {
+    let fake_llm::Reply {
+        response,
+        usage,
+        stream,
+    } = reply;
+    sink.log_builtin(RequestLog {
+        provider: fake_llm::PROVIDER_LABEL.to_string(),
+        target: fake_llm::MODEL_NAME.to_string(),
+        status: response.status().as_u16(),
+        stream: u8::from(stream),
+        prompt_tokens: usage.prompt,
+        completion_tokens: usage.completion,
+        total_tokens: usage.total,
+        ..ctx.into_log()
+    });
+    response
 }
 
 /// Apply the unpriced-traffic policy before any upstream tokens are spent
@@ -4072,7 +4166,7 @@ async fn semantic_embedding(
 async fn cached_response(
     hit: CachedResponse,
     sink: &crate::logging::LogSink,
-    ctx: CacheHitLog,
+    ctx: RequestLogCtx,
     policy: DeliveryPolicy<'_, '_>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
@@ -4080,24 +4174,10 @@ async fn cached_response(
         Delivery::Send(body) => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
-    let latency_ms = ctx.started.elapsed().as_millis() as u32;
     let log = RequestLog {
-        ts: crate::logging::started_at(ctx.started),
-        request_id: ctx.request_id,
-        trace_id: ctx.trace_id,
-        virtual_key_id: ctx.vk_id,
-        org_id: ctx.org_id,
-        team_id: ctx.team_id,
-        project_id: ctx.project_id,
-        business_unit_id: ctx.business_unit_id,
-        customer_id: ctx.customer_id,
-        model: ctx.model,
         status: hit.status,
         cache_hit: 1,
-        latency_ms,
-        ttft_ms: latency_ms,
-        sample_rate: ctx.sample_rate,
-        ..Default::default()
+        ..ctx.into_log()
     };
     // a withheld hit still gets its row, so a refusal is visible, but with zero
     // tokens and cost: nothing was generated upstream for this request (#1478)
