@@ -14,7 +14,87 @@ use bytes::Bytes;
 use futures_util::stream;
 use serde_json::{json, Value};
 
+use crate::logging::Usage;
+
 pub const MODEL_NAME: &str = rolter_core::FAKE_LLM_MODEL;
+
+/// The `provider` a built-in answer carries on its request-log row.
+///
+/// There is no configured provider behind `fake-llm`, but a row with an empty
+/// one reads as "no provider was resolved" and drops out of every per-provider
+/// view. A label says what actually answered, so LLM Logs and the analytics
+/// screens group the built-in like any other provider with no special case.
+pub const PROVIDER_LABEL: &str = "builtin";
+
+/// A built-in answer together with what the request log records about it.
+///
+/// The token counts come from the same numbers the body is built from, because
+/// reading them back out of the body would lose them for the dialects that
+/// stream no usage object (OpenAI chat completions without
+/// `stream_options.include_usage`).
+pub struct Reply {
+    pub response: Response,
+    pub usage: Usage,
+    /// whether the answer is an SSE stream, which is not the same as the
+    /// request asking for one: embeddings ignore `stream`
+    pub stream: bool,
+}
+
+impl Reply {
+    /// An answer with no token accounting: audio, images and every refusal.
+    pub fn untokenized(response: Response) -> Self {
+        Self {
+            response,
+            usage: Usage::default(),
+            stream: false,
+        }
+    }
+}
+
+/// Answer a JSON request for `fake-llm` on `path`.
+///
+/// A path the built-in does not serve is a 404, kept here with the endpoints it
+/// is the complement of so the request log describes it like any other answer.
+pub fn respond(path: &str, body: &Value) -> Reply {
+    let (response, tokens, streams) = match path {
+        "/v1/chat/completions" => (chat_completions(body), Some(chat_tokens(body)), true),
+        "/v1/responses" => (responses(body), Some(responses_tokens(body)), true),
+        "/v1/messages" => (messages(body), Some(chat_tokens(body)), true),
+        "/v1/embeddings" => (embeddings(body), Some(embeddings_tokens(body)), false),
+        "/v1/rerank" => (rerank(body), Some(rerank_tokens(body)), false),
+        // no tokens exist for these, which is not the same as zero tokens
+        "/v1/images/generations" => (images(body), None, false),
+        "/v1/audio/speech" => (speech(body), None, false),
+        _ => {
+            return Reply::untokenized(
+                crate::error::ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    format!("'{MODEL_NAME}' is not served on {path}"),
+                )
+                .into_response(),
+            )
+        }
+    };
+    // a refusal generated nothing, so it reports nothing
+    let Some((prompt, completion)) = tokens.filter(|_| response.status().is_success()) else {
+        return Reply::untokenized(response);
+    };
+    Reply {
+        response,
+        usage: Usage {
+            prompt: saturate(prompt),
+            completion: saturate(completion),
+            total: saturate(prompt.saturating_add(completion)),
+            reported: true,
+            ..Usage::default()
+        },
+        stream: streams && is_streaming(body),
+    }
+}
+
+fn saturate(tokens: u64) -> u32 {
+    u32::try_from(tokens).unwrap_or(u32::MAX)
+}
 
 const LOREM: &[&str] = &[
     "Lorem",
@@ -63,6 +143,21 @@ fn unix_now() -> u64 {
 /// present and internally consistent, matching the spec's requirement.
 fn approx_tokens(text: &str) -> u64 {
     text.split_whitespace().count().max(1) as u64
+}
+
+/// Tokens in the one completion every chat-style answer returns.
+fn lorem_tokens() -> u64 {
+    approx_tokens(&lorem_text())
+}
+
+/// `(prompt, completion)` tokens of a chat completions or messages answer.
+fn chat_tokens(body: &Value) -> (u64, u64) {
+    (extract_prompt_len(body), lorem_tokens())
+}
+
+/// `(prompt, completion)` tokens of a Responses answer.
+fn responses_tokens(body: &Value) -> (u64, u64) {
+    (extract_response_prompt_len(body), lorem_tokens())
 }
 
 fn is_streaming(body: &Value) -> bool {
@@ -127,9 +222,8 @@ fn extract_response_prompt_len(body: &Value) -> u64 {
 /// object and event names. It accepts arbitrary supported Responses input/tool
 /// fields, which are deliberately ignored by the deterministic local model.
 pub fn responses(body: &Value) -> Response {
-    let input_tokens = extract_response_prompt_len(body);
+    let (input_tokens, output_tokens) = responses_tokens(body);
     let text = lorem_text();
-    let output_tokens = approx_tokens(&text);
     let id = next_id("resp-fake");
     let response = json!({
         "id": id,
@@ -183,9 +277,8 @@ pub fn responses(body: &Value) -> Response {
 
 /// Handle a `/v1/chat/completions` request for `fake-llm` (OpenAI-compatible).
 pub fn chat_completions(body: &Value) -> Response {
-    let prompt_tokens = extract_prompt_len(body);
+    let (prompt_tokens, completion_tokens) = chat_tokens(body);
     let text = lorem_text();
-    let completion_tokens = approx_tokens(&text);
 
     if !is_streaming(body) {
         let payload = json!({
@@ -238,8 +331,7 @@ pub fn chat_completions(body: &Value) -> Response {
 /// Handle a `/v1/messages` request for `fake-llm` (Anthropic-compatible).
 pub fn messages(body: &Value) -> Response {
     let text = lorem_text();
-    let output_tokens = approx_tokens(&text);
-    let input_tokens = extract_prompt_len(body);
+    let (input_tokens, output_tokens) = chat_tokens(body);
 
     if !is_streaming(body) {
         let payload = json!({
@@ -321,6 +413,18 @@ fn embedding_inputs(body: &Value) -> Vec<String> {
     }
 }
 
+/// prompt tokens of an embeddings answer, which has no completion side
+fn embedding_tokens(inputs: &[String]) -> u64 {
+    inputs.iter().map(|s| approx_tokens(s)).sum()
+}
+
+/// `(prompt, completion)` tokens of an embeddings answer; a request the model
+/// refuses (no `input`) is not asked about here, since [`respond`] only reads
+/// tokens from a successful answer
+fn embeddings_tokens(body: &Value) -> (u64, u64) {
+    (embedding_tokens(&embedding_inputs(body)), 0)
+}
+
 /// deterministic unit-norm-ish vector derived from the input bytes so repeated
 /// calls with the same text return identical embeddings (stable smoke tests)
 fn fake_vector(text: &str) -> Vec<f64> {
@@ -354,7 +458,7 @@ pub fn embeddings(body: &Value) -> Response {
         .into_response();
     }
 
-    let prompt_tokens: u64 = inputs.iter().map(|s| approx_tokens(s)).sum();
+    let prompt_tokens = embedding_tokens(&inputs);
     let data: Vec<Value> = inputs
         .iter()
         .enumerate()
@@ -397,6 +501,21 @@ fn rerank_documents(body: &Value) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// prompt tokens of a rerank answer: the query plus every document it scored
+fn rerank_prompt_tokens(query: &str, documents: &[String]) -> u64 {
+    approx_tokens(query) + documents.iter().map(|d| approx_tokens(d)).sum::<u64>()
+}
+
+/// `(prompt, completion)` tokens of a rerank answer. [`respond`] only reads
+/// tokens from a successful answer, which always had a `query`
+fn rerank_tokens(body: &Value) -> (u64, u64) {
+    let query = body
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    (rerank_prompt_tokens(query, &rerank_documents(body)), 0)
 }
 
 /// deterministic relevance score in (0, 1) derived from query+document bytes so
@@ -461,8 +580,7 @@ pub fn rerank(body: &Value) -> Response {
         })
         .collect();
 
-    let prompt_tokens: u64 =
-        approx_tokens(query) + documents.iter().map(|d| approx_tokens(d)).sum::<u64>();
+    let prompt_tokens = rerank_prompt_tokens(query, &documents);
     let payload = json!({
         "model": MODEL_NAME,
         "results": results,
@@ -845,5 +963,96 @@ mod tests {
             {"role": "user", "content": "four five"},
         ]});
         assert_eq!(extract_prompt_len(&body), 5);
+    }
+    /// The usage a non-streamed body reports, which `respond` has to agree with
+    /// because the request log is written from the latter.
+    async fn reported_by_body(reply: Reply) -> crate::logging::Usage {
+        let body = to_bytes(reply.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        crate::logging::parse_usage(false, &body)
+    }
+
+    #[tokio::test]
+    async fn respond_reports_the_usage_the_body_carries() {
+        for (path, request) in [
+            (
+                "/v1/chat/completions",
+                json!({"messages": [{"role": "user", "content": "one two three"}]}),
+            ),
+            (
+                "/v1/messages",
+                json!({"messages": [{"role": "user", "content": "one two three"}]}),
+            ),
+            ("/v1/responses", json!({"input": "one two three"})),
+            ("/v1/embeddings", json!({"input": ["one two", "three"]})),
+            (
+                "/v1/rerank",
+                json!({"query": "one", "documents": ["two three", "four"]}),
+            ),
+        ] {
+            let reply = respond(path, &request);
+            let logged = reply.usage;
+            assert!(logged.reported, "{path}");
+            assert_eq!(logged.total, logged.prompt + logged.completion, "{path}");
+            assert_eq!(reported_by_body(reply).await, logged, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_reports_the_usage_its_body_does_not_carry() {
+        let request = json!({"messages": [{"role": "user", "content": "one two three"}]});
+        let plain = respond("/v1/chat/completions", &request);
+        let mut streamed = request;
+        streamed["stream"] = json!(true);
+        let reply = respond("/v1/chat/completions", &streamed);
+
+        assert!(reply.stream);
+        assert_eq!(reply.usage, plain.usage);
+        let body = to_bytes(reply.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // the reason `respond` carries usage at all: reading it back from the
+        // body would log nothing for this stream
+        assert!(!crate::logging::parse_usage(true, &body).reported);
+    }
+
+    #[test]
+    fn only_endpoints_that_stream_report_a_stream() {
+        let request = json!({"input": "one two", "query": "q", "documents": ["d"], "stream": true});
+        for (path, streams) in [
+            ("/v1/chat/completions", true),
+            ("/v1/messages", true),
+            ("/v1/responses", true),
+            ("/v1/embeddings", false),
+            ("/v1/rerank", false),
+        ] {
+            assert_eq!(respond(path, &request).stream, streams, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_or_an_untokenized_answer_reports_no_usage() {
+        // embeddings with no input is a 400 that generated nothing
+        let refused = respond("/v1/embeddings", &json!({}));
+        assert_eq!(refused.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(refused.usage, Usage::default());
+
+        for (path, request) in [
+            ("/v1/images/generations", json!({"prompt": "a square"})),
+            ("/v1/audio/speech", json!({"input": "hello"})),
+        ] {
+            let reply = respond(path, &request);
+            assert_eq!(reply.response.status(), StatusCode::OK, "{path}");
+            assert_eq!(reply.usage, Usage::default(), "{path}");
+            assert!(!reply.stream, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_path_the_builtin_does_not_serve_is_a_404() {
+        let reply = respond("/v1/completions", &json!({"prompt": "hi"}));
+        assert_eq!(reply.response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(reply.usage, Usage::default());
     }
 }
