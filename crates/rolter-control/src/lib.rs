@@ -175,13 +175,14 @@ pub struct Args {
     /// cannot resolve, which is what an air-gapped deployment with no
     /// documentation host wants. Point it at an internal mirror to turn the
     /// links back on
-    #[arg(long, env = "ROLTER_UI_DOCS_BASE_URL")]
+    #[arg(long, env = "ROLTER_UI_DOCS_BASE_URL", hide_env_values = true)]
     pub ui_docs_base_url: Option<String>,
     /// base URL of the rolter-gateway data plane; the dashboard Playground's
     /// `/gw/*` calls are reverse-proxied here (see `crate::proxy`)
     #[arg(
         long,
         env = "ROLTER_GATEWAY_URL",
+        hide_env_values = true,
         default_value = "http://localhost:4000"
     )]
     pub gateway_url: String,
@@ -194,7 +195,7 @@ pub struct Args {
     /// postgres connection string; when set, the control plane reads/serves
     /// its config from the database instead of the bootstrap toml
     #[cfg(feature = "postgres")]
-    #[arg(long, env = "ROLTER_DATABASE_URL")]
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
     pub database_url: Option<String>,
     /// upper bound on open postgres connections. One pool serves everything:
     /// `/internal/snapshot` (polled by every gateway in the fleet), the whole
@@ -229,7 +230,7 @@ pub struct Args {
     /// redis connection url; when set, config-version bumps are published on
     /// the `rolter.config` channel so gateways refetch immediately instead of
     /// waiting for their poll interval
-    #[arg(long, env = "ROLTER_REDIS_URL")]
+    #[arg(long, env = "ROLTER_REDIS_URL", hide_env_values = true)]
     pub redis_url: Option<String>,
     /// turn failed-login throttling off. Only for a deployment that fronts the
     /// control plane with its own rate limiter; without it
@@ -273,17 +274,17 @@ pub struct Args {
     pub login_trust_forwarded_for: bool,
     /// clickhouse http url; when set, the dashboard usage/cost analytics
     /// endpoints (`/api/v1/analytics/*`) query the `request_logs` table
-    #[arg(long, env = "CLICKHOUSE_URL")]
+    #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
     pub clickhouse_url: Option<String>,
     /// bearer token required on the CRUD API and `/internal/snapshot`; when
     /// unset those endpoints are open (a warning is logged at startup)
-    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN", hide_env_values = true)]
     pub admin_token: Option<String>,
     /// bearer token required on `/internal/*` — the control↔data-plane channel,
     /// which carries decrypted provider credentials. When set, the operator
     /// admin token no longer opens that channel; when unset it falls back to
     /// `--admin-token` (the historical behavior)
-    #[arg(long, env = "ROLTER_INTERNAL_TOKEN")]
+    #[arg(long, env = "ROLTER_INTERNAL_TOKEN", hide_env_values = true)]
     pub internal_token: Option<String>,
     /// when set (e.g. `127.0.0.1:4002`), `/internal/*` moves off the public API
     /// listener onto its own socket, so the plaintext-credential channel is not
@@ -4246,5 +4247,20 @@ mod tests {
         if let Err(problems) = snapshot.validate() {
             panic!("the snapshot no longer builds: {problems:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use clap::CommandFactory;
+
+    /// `--help` prints `[env: NAME=value]` for every flag backed by a variable,
+    /// so a token or a url with a password in it must opt out (#2793). Walks the
+    /// whole command, so a flag added later is caught without anyone extending a
+    /// list
+    #[test]
+    fn secret_env_values_stay_out_of_help() {
+        let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&crate::Args::command());
+        assert!(checked > 0, "the walk found no secret-looking env flags");
     }
 }

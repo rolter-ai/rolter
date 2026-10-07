@@ -6,6 +6,8 @@ description: "All environment variables that configure the Rolter gateway, contr
 
 Environment variables override their corresponding `rolter.toml` values, and CLI flags override both. Use environment variables for secrets and for anything that changes between deployments — such as ports, database URLs, and provider API keys — so you can keep a single `rolter.toml` across environments without embedding sensitive values in it.
 
+`--help` lists the variable behind each flag as `[env: NAME]` but never prints the value of a secret or a URL that can carry a password: the admin and internal tokens, and the database, Redis, ClickHouse, snapshot, admin and gateway URLs. It is safe to run in an environment that has them set, and to paste into an issue.
+
 ---
 
 ## Gateway variables

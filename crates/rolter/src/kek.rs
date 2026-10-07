@@ -27,7 +27,7 @@ pub struct KekArgs {
     command: KekCommand,
 
     /// postgres connection string for the control-plane store
-    #[arg(long, env = "ROLTER_DATABASE_URL")]
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
     database_url: String,
 }
 

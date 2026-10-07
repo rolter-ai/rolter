@@ -31,6 +31,8 @@ serde_json.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+# `cli_guard`: every secret-bearing env flag must hide its value in `--help` (#2793)
+rolter-core = { workspace = true, features = ["cli-guard"] }
 # parsing the generated config back to prove it is usable
 toml.workspace = true
 # sending the signal to the spawned `easy-up` (#1963)

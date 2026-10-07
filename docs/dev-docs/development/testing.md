@@ -349,6 +349,7 @@ no-ops.
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.
 - Keep the pure crates (`rolter-core`, `rolter-balancer`, `rolter-auth`) fully unit-testable without I/O.
+- **Command-line guard**: each binary has a `secret_env_values_stay_out_of_help` test that hands its clap `Command` to `rolter_core::cli_guard::assert_secret_envs_hidden`, which fails on any `env =` argument named like a secret (`TOKEN`, `KEY`, `PEPPER`, `KEK`, `SECRET`, `PASSWORD`, `_URL`, …) that does not set `hide_env_values = true` (#2793). Use it for any new binary. clap reads an argument's environment variable when the `Arg` is built, so a rendered-help test that needs the variable set either runs the binary as a child process with the variable on the child's environment, as `crates/rolter/tests/help_hides_env_values.rs` does, or installs a variable unique to the test before building the `Command`; never export a real `ROLTER_*` name from a test.
 
 ## Strategy as the project grows
 

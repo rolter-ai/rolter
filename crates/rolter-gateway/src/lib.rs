@@ -93,7 +93,7 @@ pub struct Args {
     /// control-plane snapshot endpoint to poll for reload-free config
     /// updates, e.g. `http://control:4001/internal/snapshot`; polling is
     /// disabled when unset
-    #[arg(long, env = "ROLTER_SNAPSHOT_URL")]
+    #[arg(long, env = "ROLTER_SNAPSHOT_URL", hide_env_values = true)]
     pub snapshot_url: Option<String>,
     /// how often to poll the snapshot endpoint, in seconds
     #[arg(long, env = "ROLTER_SNAPSHOT_POLL_SECS", default_value_t = 5)]
@@ -101,22 +101,22 @@ pub struct Args {
     /// redis connection url; when set (together with --snapshot-url), config
     /// bumps published by the control plane trigger an immediate refetch
     /// instead of waiting for the poll interval
-    #[arg(long, env = "ROLTER_REDIS_URL")]
+    #[arg(long, env = "ROLTER_REDIS_URL", hide_env_values = true)]
     pub redis_url: Option<String>,
     /// control-plane base url (e.g. `http://control:4001`); when set, the
     /// gateway serves `/admin/*` by proxying to the control plane's
     /// `/api/v1/*` management API, so providers/models/keys can be managed
     /// through the gateway port
-    #[arg(long, env = "ROLTER_ADMIN_URL")]
+    #[arg(long, env = "ROLTER_ADMIN_URL", hide_env_values = true)]
     pub admin_url: Option<String>,
     /// bearer token sent on snapshot polls (and required by the control
     /// plane's management API when it sets the same `ROLTER_ADMIN_TOKEN`)
-    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN", hide_env_values = true)]
     pub admin_token: Option<String>,
     /// bearer token sent on snapshot polls when the control plane gates
     /// `/internal/*` on a distinct internal token (`ROLTER_INTERNAL_TOKEN`
     /// there). Falls back to `--admin-token` when unset
-    #[arg(long, env = "ROLTER_INTERNAL_TOKEN")]
+    #[arg(long, env = "ROLTER_INTERNAL_TOKEN", hide_env_values = true)]
     pub internal_token: Option<String>,
 }
 
@@ -572,5 +572,20 @@ mod startup_log_tests {
             );
         }
         assert!(seen.contains("ch:8123"), "{seen}");
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use clap::CommandFactory;
+
+    /// `--help` prints `[env: NAME=value]` for every flag backed by a variable,
+    /// so a token or a url with a password in it must opt out (#2793). Walks the
+    /// whole command, so a flag added later is caught without anyone extending a
+    /// list
+    #[test]
+    fn secret_env_values_stay_out_of_help() {
+        let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&super::Args::command());
+        assert!(checked > 0, "the walk found no secret-looking env flags");
     }
 }

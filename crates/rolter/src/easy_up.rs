@@ -68,11 +68,11 @@ pub struct EasyUpArgs {
     pub ui_dir: PathBuf,
     /// redis url; when set, control publishes config bumps and the gateway
     /// refetches immediately instead of waiting for its poll interval
-    #[arg(long, env = "ROLTER_REDIS_URL")]
+    #[arg(long, env = "ROLTER_REDIS_URL", hide_env_values = true)]
     pub redis_url: Option<String>,
     /// bearer token protecting the management API and snapshot endpoint;
     /// shared by the control plane (enforces) and gateway (sends)
-    #[arg(long, env = "ROLTER_ADMIN_TOKEN")]
+    #[arg(long, env = "ROLTER_ADMIN_TOKEN", hide_env_values = true)]
     pub admin_token: Option<String>,
     /// acknowledge serving an unauthenticated management API on a non-loopback
     /// `--host`. Without it that combination refuses to start (#970). Accepts
@@ -85,12 +85,12 @@ pub struct EasyUpArgs {
     )]
     pub allow_open_mode: bool,
     /// clickhouse http url; enables the dashboard usage/cost analytics
-    #[arg(long, env = "CLICKHOUSE_URL")]
+    #[arg(long, env = "CLICKHOUSE_URL", hide_env_values = true)]
     pub clickhouse_url: Option<String>,
     /// postgres url; when set, runs migrations + seed and serves config from
     /// the database instead of the bootstrap toml
     #[cfg(feature = "postgres")]
-    #[arg(long, env = "ROLTER_DATABASE_URL")]
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
     pub database_url: Option<String>,
     /// admin email to create on seed (with --admin-password); database mode only
     #[cfg(feature = "postgres")]
