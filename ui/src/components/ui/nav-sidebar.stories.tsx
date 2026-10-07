@@ -1,7 +1,7 @@
 import { Boxes, KeyRound, Play, ScrollText } from "lucide-react";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { NAV_MAX_WIDTH, NAV_MIN_WIDTH, NavSidebar, type NavSidebarProps } from "./nav-sidebar";
 import en from "@/lib/i18n/locales/en.json";
@@ -437,5 +437,322 @@ export const SearchMatchesNothing: Story = {
     await userEvent.click(canvas.getByRole("button", { name: en.common.clearSearch }));
     await expect(await canvas.findByRole("button", { name: "Playground" })).toBeVisible();
     await expect(canvas.queryByText(en.shell.noNavMatches)).toBeNull();
+  },
+};
+
+// the folded rail has no room to unfold a group in place, so a click on a
+// group's icon used to flip state nothing drew (#2803). it opens a flyout
+// beside the icon instead, listing the group's screens
+const openGroup = async (canvasElement: HTMLElement, name = "Analytics") => {
+  const trigger = within(canvasElement).getByRole("button", { name });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(trigger);
+  const flyout = await within(canvasElement).findByRole("group", { name });
+  await waitFor(() => expect(flyout).toBeVisible());
+  return { trigger, flyout };
+};
+
+export const FoldedGroupOpensAFlyout: Story = {
+  args: { defaultCollapsed: true, activeKey: "costs" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 52);
+    await expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull();
+
+    const { trigger, flyout } = await openGroup(canvasElement);
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    // the group's screens, with the one you are on marked as the page
+    const inside = within(flyout);
+    await expect(inside.getByRole("button", { name: "Usage" })).toBeVisible();
+    await expect(inside.getByRole("button", { name: "Costs" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(inside.getByRole("button", { name: "Usage" })).not.toHaveAttribute("aria-current");
+    // keyboard focus goes to where the reader already is
+    await waitFor(() => expect(inside.getByRole("button", { name: "Costs" })).toHaveFocus());
+
+    // the flyout sits beside the icon, over the screen, not inside the 52px rail
+    const rail = nav.getBoundingClientRect();
+    const box = flyout.getBoundingClientRect();
+    await expect(box.left).toBeGreaterThanOrEqual(rail.right);
+    await expect(Math.abs(box.top - trigger.getBoundingClientRect().top)).toBeLessThan(2);
+    await expectNoHorizontalOverflow();
+
+    // a second press on the icon puts it away again
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  },
+};
+
+// the screen itself is out of sight on the folded rail, so the group that
+// holds it says "this is the section you are in" — the same thread the active
+// leaf carries, and `aria-current="true"` since the group is not the page
+export const FoldedGroupMarksTheCurrentSection: Story = {
+  args: { defaultCollapsed: true, activeKey: "usage" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const parent = canvas.getByRole("button", { name: "Analytics" });
+    await expect(parent).toHaveAttribute("aria-current", "true");
+    await expect(getComputedStyle(parent, "::before").content).not.toBe("none");
+    // a group that holds nothing current, and a leaf that is not, carry neither
+    const other = canvas.getByRole("button", { name: "Models" });
+    await expect(other).not.toHaveAttribute("aria-current");
+    await expect(getComputedStyle(other, "::before").content).toBe("none");
+  },
+};
+
+export const FoldedGroupHoldingNothingCurrentIsUnmarked: Story = {
+  args: { defaultCollapsed: true, activeKey: "models" },
+  play: async ({ canvasElement }) => {
+    const parent = within(canvasElement).getByRole("button", { name: "Analytics" });
+    await expect(parent).not.toHaveAttribute("aria-current");
+    await expect(getComputedStyle(parent, "::before").content).toBe("none");
+    // a leaf that is current is still `page`
+    await expect(within(canvasElement).getByRole("button", { name: "Models" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  },
+};
+
+// a flyout a mouse can open and a keyboard cannot would be the same gap again:
+// Enter, Space or an arrow on the icon opens it, arrows walk its screens and
+// wrap, and Escape closes it with focus back on the icon it came from
+export const FoldedGroupFlyoutFromTheKeyboard: Story = {
+  args: { defaultCollapsed: true, activeKey: "models" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Analytics" });
+    trigger.focus();
+    await expect(trigger).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
+    const flyout = await canvas.findByRole("group", { name: "Analytics" });
+    const inside = within(flyout);
+    // nothing in this group is current, so focus starts on its first screen
+    await waitFor(() => expect(inside.getByRole("button", { name: "Usage" })).toHaveFocus());
+
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(inside.getByRole("button", { name: "Costs" })).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(inside.getByRole("button", { name: "Usage" })).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect(inside.getByRole("button", { name: "Costs" })).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    await expect(inside.getByRole("button", { name: "Usage" })).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    await expect(inside.getByRole("button", { name: "Costs" })).toHaveFocus();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    // an arrow opens it too, and the left arrow takes it back
+    await userEvent.keyboard("{ArrowRight}");
+    await canvas.findByRole("group", { name: "Analytics" });
+    await userEvent.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await userEvent.keyboard("{ArrowDown}");
+    await canvas.findByRole("group", { name: "Analytics" });
+  },
+};
+
+// picking a screen from the flyout is a navigation like any other leaf: it
+// reports the key, puts the flyout away and leaves focus on the group's icon
+export const FoldedGroupFlyoutNavigates: Story = {
+  args: { defaultCollapsed: true, activeKey: "models", onNavigate: fn() },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const { trigger, flyout } = await openGroup(canvasElement);
+    await userEvent.click(within(flyout).getByRole("button", { name: "Costs" }));
+    await expect(args.onNavigate).toHaveBeenCalledTimes(1);
+    await expect(args.onNavigate).toHaveBeenCalledWith("costs");
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+// a press anywhere else is the reader moving on: the flyout closes and focus
+// stays where they put it rather than jumping back to the icon
+export const FoldedGroupFlyoutClosesOnAnOutsidePress: Story = {
+  args: { defaultCollapsed: true, activeKey: "models" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openGroup(canvasElement);
+    const elsewhere = canvas.getByRole("button", { name: "Keys" });
+    await userEvent.click(elsewhere);
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await waitFor(() => expect(elsewhere).toHaveFocus());
+    await expect(canvas.getByRole("button", { name: "Analytics" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  },
+};
+
+// Tab runs on from the last screen into the rest of the rail, and the flyout
+// does not stay open behind a focus that has left it
+export const FoldedGroupFlyoutClosesWhenFocusLeaves: Story = {
+  args: { defaultCollapsed: true, activeKey: "models" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { flyout } = await openGroup(canvasElement);
+    await waitFor(() =>
+      expect(within(flyout).getByRole("button", { name: "Usage" })).toHaveFocus(),
+    );
+    await userEvent.tab();
+    await expect(within(flyout).getByRole("button", { name: "Costs" })).toHaveFocus();
+    await userEvent.tab();
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+  },
+};
+
+// only one group's flyout is showing at a time, and unfolding the rail puts it
+// away rather than leaving it over a rail that now shows the children itself
+export const FoldedGroupFlyoutIsOneAtATime: Story = {
+  args: {
+    defaultCollapsed: true,
+    activeKey: "playground",
+    groups: [
+      {
+        items: [
+          { key: "playground", label: "Playground", icon: <Play /> },
+          {
+            key: "analytics",
+            label: "Analytics",
+            icon: <Boxes />,
+            children: [
+              { key: "usage", label: "Usage" },
+              { key: "costs", label: "Costs" },
+            ],
+          },
+          {
+            key: "governance",
+            label: "Governance",
+            icon: <KeyRound />,
+            children: [{ key: "teams", label: "Teams" }],
+          },
+        ],
+      },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openGroup(canvasElement, "Analytics");
+    await userEvent.click(canvas.getByRole("button", { name: "Governance" }));
+    await canvas.findByRole("group", { name: "Governance" });
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await expect(canvas.getAllByRole("group")).toHaveLength(1);
+
+    await userEvent.click(canvas.getByRole("button", { name: en.shell.expandSidebar }));
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Governance" })).toBeNull());
+    // unfolded, the group's own toggle is back
+    await expect(canvas.getByRole("button", { name: "Governance" })).toBeVisible();
+  },
+};
+
+// experimental entries keep their marker inside the flyout, which has the room
+// for the word the folded rail itself does not
+export const FoldedGroupFlyoutKeepsTheExperimentalMarker: Story = {
+  args: {
+    defaultCollapsed: true,
+    activeKey: "playground",
+    groups: [
+      {
+        items: [
+          { key: "playground", label: "Playground", icon: <Play /> },
+          {
+            key: "mcp",
+            label: "MCP",
+            icon: <Boxes />,
+            children: [
+              { key: "mcp-catalog", label: "Catalog" },
+              {
+                key: "tool-groups",
+                label: "Tool groups",
+                experimental: true,
+                experimentalNote: EXPERIMENTAL_NOTE,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const { flyout } = await openGroup(canvasElement, "MCP");
+    const marked = within(flyout).getByRole("button", {
+      name: `Tool groups ${en.shell.experimental}`,
+    });
+    await expect(within(marked).getByText(en.shell.experimental)).toHaveAttribute(
+      "title",
+      EXPERIMENTAL_NOTE,
+    );
+    await expect(within(flyout).getAllByText(en.shell.experimental)).toHaveLength(1);
+  },
+};
+
+// the rail's list scrolls on a short screen. the flyout is drawn over the page,
+// not inside that list, so it has to follow its icon as the list moves and go
+// once the icon has scrolled out of sight
+const manyLeaves = Array.from({ length: 20 }, (_, i) => ({
+  key: `leaf-${i}`,
+  label: `Leaf ${i}`,
+  icon: <Boxes />,
+}));
+
+export const FoldedGroupFlyoutFollowsTheRailScroll: Story = {
+  args: {
+    defaultCollapsed: true,
+    activeKey: "leaf-0",
+    groups: [
+      {
+        items: [
+          ...manyLeaves,
+          {
+            key: "analytics",
+            label: "Analytics",
+            icon: <Boxes />,
+            children: [
+              { key: "usage", label: "Usage" },
+              { key: "costs", label: "Costs" },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  render: (args) => (
+    <div className="h-[300px]">
+      <NavSidebar {...args} />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Analytics" });
+    const list = trigger.closest(".overflow-y-auto") as HTMLElement;
+    list.scrollTop = list.scrollHeight;
+    await waitFor(() => expect(list.scrollTop).toBeGreaterThan(0));
+    await userEvent.click(trigger);
+    const flyout = await canvas.findByRole("group", { name: "Analytics" });
+    const levelWithIcon = () =>
+      Math.abs(flyout.getBoundingClientRect().top - trigger.getBoundingClientRect().top);
+    await waitFor(() => expect(levelWithIcon()).toBeLessThan(2));
+
+    // a little scroll moves the icon, and the flyout stays beside it
+    list.scrollTop -= 24;
+    await waitFor(() => expect(levelWithIcon()).toBeLessThan(2));
+    await expect(canvas.getByRole("group", { name: "Analytics" })).toBeVisible();
+
+    // all the way up, the icon is out of the list's view and so is the flyout
+    list.scrollTop = 0;
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
   },
 };

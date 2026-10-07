@@ -25,7 +25,8 @@ import { cn } from "@/lib/utils";
 //
 // three shapes by viewport (#959) — below `md` an off-canvas drawer over a
 // scrim, between `md` and `lg` an icon rail, at `lg` and up the full resizable
-// rail. see docs/dev-docs/development/dashboard-navigation.md.
+// rail. folded, a group opens its screens in a flyout beside the icon (#2803).
+// see docs/dev-docs/development/dashboard-navigation.md.
 export interface NavItem {
   key: string;
   label: string;
@@ -145,12 +146,190 @@ function readStoredWidth(key: string): number | null {
 const itemBase =
   "relative flex w-full items-center gap-2 rounded-md border-none bg-transparent px-2 py-1.5 text-left text-sm transition-colors [&>svg]:h-4 [&>svg]:w-4 [&>svg]:flex-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const itemIdle = "text-muted-foreground hover:bg-muted hover:text-foreground";
+// a group whose flyout is showing, kept lit while the pointer is elsewhere
+const itemOpen = "bg-muted text-foreground";
 const itemActive =
   "bg-[color:var(--surface-subtle)] text-foreground before:absolute before:-left-px before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[color:var(--red-folk)] before:content-['']";
 
 function matches(it: NavItem, q: string): boolean {
   if (it.label.toLowerCase().includes(q)) return true;
   return (it.children ?? []).some((c) => matches(c, q));
+}
+
+/** whether `key` is one of the entry's descendants, at any depth */
+function holds(it: NavItem, key: string | undefined): boolean {
+  if (key === undefined) return false;
+  return (it.children ?? []).some((c) => c.key === key || holds(c, key));
+}
+
+/** space between the rail's edge and the flyout, and between the flyout and the viewport's */
+const FLYOUT_GAP = 6;
+const FLYOUT_MARGIN = 8;
+
+/**
+ * A group's screens, opened beside its icon on the folded rail (#2803).
+ *
+ * The rail's list scrolls, and a scroll container clips an absolutely
+ * positioned child, so the flyout is `fixed` and placed from the icon's
+ * rectangle: against the rail's right edge, level with the icon, nudged up
+ * when the viewport is too short to hold it below. It is a disclosure, not an
+ * ARIA menu: the entries are navigation buttons, so they stay in the tab order
+ * right after the icon that opened them, and arrows are an addition rather than
+ * the only way in. Escape closes and hands focus back to the icon; a pointer
+ * press outside, focus leaving, or the rail scrolling out from under it closes
+ * it without taking focus.
+ *
+ * Rendered only for a group the caller may see: `visibleNav` has already
+ * dropped the screens a role cannot read, so a refused screen is not in
+ * `item.children` to be listed here.
+ */
+function GroupFlyout({
+  item,
+  anchor,
+  activeKey,
+  onSelect,
+  onClose,
+}: {
+  item: NavItem;
+  anchor: HTMLElement;
+  activeKey?: string;
+  onSelect: (key: string) => void;
+  onClose: (restoreFocus: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const ref = React.useRef<HTMLDivElement>(null);
+  const headingId = React.useId();
+  const [pos, setPos] = React.useState({ left: 0, top: 0 });
+  // read at event time, so a new `onClose` each render does not re-bind the
+  // document listeners below
+  const close = React.useEffectEvent(onClose);
+
+  const place = React.useCallback(() => {
+    const icon = anchor.getBoundingClientRect();
+    const edge = (anchor.closest("nav") ?? anchor).getBoundingClientRect().right;
+    const height = ref.current?.offsetHeight ?? 0;
+    const lowest = window.innerHeight - FLYOUT_MARGIN - height;
+    setPos({
+      left: edge + FLYOUT_GAP,
+      top: Math.max(FLYOUT_MARGIN, Math.min(icon.top, lowest)),
+    });
+  }, [anchor]);
+
+  // measured before paint, so the flyout never shows at the corner first
+  React.useLayoutEffect(() => {
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [place]);
+
+  const entries = () => Array.from(ref.current?.querySelectorAll<HTMLElement>("button") ?? []);
+
+  // keyboard focus lands on where the reader already is in this group, or on
+  // its first screen
+  React.useEffect(() => {
+    const all = entries();
+    const here = all.find((el) => el.getAttribute("aria-current") === "page");
+    (here ?? all[0])?.focus({ preventScroll: true });
+  }, []);
+
+  React.useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || anchor.contains(target)) return;
+      close(false);
+    };
+    // Escape works from the icon too, once focus has gone back to it
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      close(true);
+    };
+    // the icon moves when the rail's list scrolls: the flyout follows it, and
+    // goes once the icon has scrolled out of sight
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Element) || !e.target.contains(anchor)) return;
+      const view = e.target.getBoundingClientRect();
+      const icon = anchor.getBoundingClientRect();
+      if (icon.bottom < view.top || icon.top > view.bottom) close(false);
+      else place();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("scroll", onScroll, true);
+    };
+  }, [anchor, place]);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const all = entries();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    let next: number | null = null;
+    if (e.key === "ArrowDown") next = (at + 1) % all.length;
+    else if (e.key === "ArrowUp") next = (at - 1 + all.length) % all.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = all.length - 1;
+    else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      onClose(true);
+      return;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    all[next]?.focus();
+  };
+
+  // Tab past either end leaves the flyout open behind a focus that has moved
+  // on; a null target (the press landed on plain text) is not leaving
+  const onBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    const to = e.relatedTarget;
+    if (to instanceof Node && !e.currentTarget.contains(to) && !anchor.contains(to)) {
+      onClose(false);
+    }
+  };
+
+  return (
+    <div
+      ref={ref}
+      role="group"
+      aria-labelledby={headingId}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      style={{ left: pos.left, top: pos.top }}
+      className="fixed z-50 flex max-h-[calc(100vh-1rem)] w-max min-w-[11rem] max-w-[min(20rem,calc(100vw-4.5rem))] flex-col gap-0.5 overflow-y-auto rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] p-1 shadow-lg"
+    >
+      <div
+        id={headingId}
+        className="px-2 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]"
+      >
+        {item.label}
+      </div>
+      {(item.children ?? []).map((c) => (
+        <button
+          key={c.key}
+          type="button"
+          aria-current={c.key === activeKey ? "page" : undefined}
+          onClick={() => onSelect(c.key)}
+          className={cn(itemBase, c.key === activeKey ? itemActive : itemIdle)}
+        >
+          {c.icon}
+          <span className="min-w-0 truncate">{c.label}</span>
+          {c.experimental && (
+            <Badge tone="warning" title={c.experimentalNote} className="ml-auto flex-none">
+              {t("shell.experimental")}
+            </Badge>
+          )}
+          {c.count != null && (
+            <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+              {c.count}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -193,6 +372,10 @@ export function NavSidebar({
   const [query, setQuery] = React.useState("");
   // parents stay open once toggled; the one holding the active child opens itself
   const [open, setOpen] = React.useState<Record<string, boolean>>({});
+  // the group whose flyout is showing on the folded rail, and the icons that
+  // opened them so Escape and a pick can hand focus back
+  const [flyout, setFlyout] = React.useState<string | null>(null);
+  const triggers = React.useRef(new Map<string, HTMLButtonElement>());
   const [userOpen, setUserOpen] = React.useState(false);
   const userRef = React.useRef<HTMLDivElement>(null);
   const navRef = React.useRef<HTMLElement>(null);
@@ -308,6 +491,13 @@ export function NavSidebar({
   // the drawer has room for labels whatever the rail was folded to before the
   // viewport shrank, so it always shows them
   const folded = collapsed && !isDrawer;
+
+  // a flyout belongs to the folded rail and to the screen it was opened on:
+  // unfolding, or arriving somewhere by any other route, puts it away
+  React.useEffect(() => {
+    setFlyout(null);
+  }, [folded, activeKey]);
+
   // one accessible name for the hint in both shapes of the rail
   const updateHint = update ? t("shell.updateAvailableHint", { latest: update.latest }) : undefined;
 
@@ -331,6 +521,14 @@ export function NavSidebar({
     const hasKids = (it.children?.length ?? 0) > 0;
     const active = it.key === activeKey;
     const expanded = hasKids && isOpen(it);
+    // folded, a group has no room to unfold in place: it opens a flyout, and
+    // the expanded state the button reports is the flyout's. the group holding
+    // the screen you are on carries the active thread too, since the screen
+    // itself is out of sight (`aria-current="true"` rather than `"page"`: the
+    // group is not the page)
+    const foldedGroup = folded && hasKids;
+    const flyoutOpen = foldedGroup && flyout === it.key;
+    const holdsCurrent = foldedGroup && holds(it, activeKey);
     // folded the button has no text, so `title` is what names it; the marker
     // has to ride in there or a screen reader on the icon rail hears only the
     // screen's name. expanded the badge is real text inside the button, so the
@@ -341,10 +539,18 @@ export function NavSidebar({
     return (
       <React.Fragment key={it.key}>
         <button
-          aria-current={active ? "page" : undefined}
-          aria-expanded={hasKids ? expanded : undefined}
+          ref={(el) => {
+            if (el) triggers.current.set(it.key, el);
+            else triggers.current.delete(it.key);
+          }}
+          aria-current={active ? "page" : holdsCurrent ? "true" : undefined}
+          aria-expanded={hasKids ? (foldedGroup ? flyoutOpen : expanded) : undefined}
           title={folded ? foldedTitle : undefined}
           onClick={() => {
+            if (foldedGroup) {
+              setFlyout((k) => (k === it.key ? null : it.key));
+              return;
+            }
             if (hasKids) {
               setOpen((o) => ({ ...o, [it.key]: !isOpen(it) }));
               return;
@@ -353,9 +559,17 @@ export function NavSidebar({
             // the drawer covers the screen it just navigated to
             if (isDrawer) closeDrawer();
           }}
+          onKeyDown={(e) => {
+            // the way a submenu opens from a vertical list; Enter and Space
+            // already click
+            if (foldedGroup && (e.key === "ArrowRight" || e.key === "ArrowDown")) {
+              e.preventDefault();
+              setFlyout(it.key);
+            }
+          }}
           className={cn(
             itemBase,
-            active ? itemActive : itemIdle,
+            active || holdsCurrent ? itemActive : flyoutOpen ? itemOpen : itemIdle,
             folded && "justify-center px-0",
             // a touch target, not a pointer one, once the rail is a drawer
             isDrawer && "py-2.5",
@@ -396,6 +610,22 @@ export function NavSidebar({
           <div className="ml-[15px] flex flex-col gap-0.5 border-l border-[color:var(--border-subtle)] pl-1.5">
             {it.children!.map((c) => renderItem(c, depth + 1, selfMatch))}
           </div>
+        )}
+        {flyoutOpen && triggers.current.get(it.key) && (
+          <GroupFlyout
+            item={it}
+            anchor={triggers.current.get(it.key)!}
+            activeKey={activeKey}
+            onSelect={(key) => {
+              onNavigate?.(key);
+              setFlyout(null);
+              triggers.current.get(it.key)?.focus();
+            }}
+            onClose={(restoreFocus) => {
+              setFlyout(null);
+              if (restoreFocus) triggers.current.get(it.key)?.focus();
+            }}
+          />
         )}
       </React.Fragment>
     );

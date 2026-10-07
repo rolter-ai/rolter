@@ -29,6 +29,7 @@ import type {
   VirtualKeyRow,
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
+import en from "@/lib/i18n/locales/en.json";
 import { visibleNav, type NavDef } from "@/lib/nav";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -290,7 +291,7 @@ export const SecurityAsSuperadmin: Story = {
 
 // the rail, built exactly as the shell builds it: `visibleNav` over the same
 // `useCan` the screens ask
-function GatedNav() {
+function GatedNav({ folded = false }: { folded?: boolean }) {
   const { t } = useTranslation();
   const can = useCan();
   const toItem = (def: NavDef): NavItem => ({
@@ -306,6 +307,7 @@ function GatedNav() {
         groups={[{ items: visibleNav(can).map(toItem) }]}
         activeKey="dashboard"
         searchable
+        defaultCollapsed={folded}
       />
     </div>
   );
@@ -549,5 +551,47 @@ export const PriceRowsAsSuperadmin: Story = {
   play: async ({ canvasElement }) => {
     await expectRowOffered(canvasElement, "button", "Edit the price for gpt-4o");
     await expectRowOffered(canvasElement, "button", "Delete the price for gpt-4o");
+  },
+};
+
+// folded, a group opens in a flyout, and the flyout lists what `visibleNav`
+// left the group with: a screen the role may not read is not offered there
+// either, and a group with nothing left has no icon to open (#2803)
+const nav = en.nav as Record<string, string>;
+
+export const NavAsViewerFlyout: Story = {
+  render: () => (
+    <Harness fetchStub={empty} role="viewer">
+      <GatedNav folded />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.queryByRole("button", { name: nav.alerting })).toBeNull());
+    await userEvent.click(canvas.getByRole("button", { name: nav.governance }));
+    const flyout = within(await canvas.findByRole("group", { name: nav.governance }));
+    await expect(flyout.getByRole("button", { name: nav["gov-teams"] })).toBeVisible();
+    await expect(flyout.getByRole("button", { name: nav["virtual-keys"] })).toBeVisible();
+    // admin-only screens, the same ones the expanded rail leaves out
+    await expect(flyout.queryByRole("button", { name: nav["user-provisioning"] })).toBeNull();
+    await expect(flyout.queryByRole("button", { name: nav["audit-logs"] })).toBeNull();
+    await expect(flyout.queryByRole("button", { name: nav.sso })).toBeNull();
+  },
+};
+
+export const NavAsSuperadminFlyout: Story = {
+  render: () => (
+    <Harness fetchStub={empty} role="superadmin">
+      <GatedNav folded />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole("button", { name: nav.alerting })).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: nav.governance }));
+    const flyout = within(await canvas.findByRole("group", { name: nav.governance }));
+    await expect(flyout.getByRole("button", { name: nav["user-provisioning"] })).toBeVisible();
+    await expect(flyout.getByRole("button", { name: nav["audit-logs"] })).toBeVisible();
+    await expect(flyout.getByRole("button", { name: nav.sso })).toBeVisible();
   },
 };
