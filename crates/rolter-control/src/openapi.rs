@@ -1036,6 +1036,12 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Empty),
             Op::get(
+                "/api/v1/providers/{id}/models",
+                "listProviderModels",
+                "List the models a provider's upstream serves (needs provider:update, like the test)",
+            )
+            .ok(Payload::Open),
+            Op::get(
                 "/api/v1/orgs/{org_id}/provider-groups",
                 "listProviderGroups",
                 "List provider groups",

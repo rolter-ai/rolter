@@ -3924,6 +3924,238 @@ async fn skills_crud_and_publish_round_trip() {
     assert_eq!(delete_skill.status(), 204);
 }
 
+/// A provider's upstream catalogue comes back as the ids a route target can
+/// name as its upstream model (#2810): sorted and without duplicates. An
+/// upstream that does not answer is an empty list rather than an error, since
+/// the list only ever suggests, and a provider that does not exist is a 404.
+/// The credential goes out the way the provider's own API reads it, as the test
+/// sends it: an Anthropic provider's key is `x-api-key`, so its listing works.
+#[tokio::test]
+async fn a_provider_lists_the_models_its_upstream_serves() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // an upstream whose catalogue is out of order and repeats an id
+    let upstream = serve(axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(|| async {
+            axum::Json(json!({"data": [
+                {"id": "llama-3.1-8b"},
+                {"id": "gemma-2-9b"},
+                {"id": "llama-3.1-8b"},
+            ]}))
+        }),
+    ))
+    .await;
+    // one that lists only for the header Anthropic's API reads its key from
+    let anthropic = serve(axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(|headers: axum::http::HeaderMap| async move {
+            if headers.get("x-api-key").and_then(|v| v.to_str().ok()) == Some("sk-ant-test") {
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({"data": [{"id": "claude-sonnet"}, {"id": "claude-haiku"}]})),
+                )
+            } else {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(json!({"error": "missing x-api-key"})),
+                )
+            }
+        }),
+    ))
+    .await;
+    // an address nothing is listening on
+    let silent = {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    };
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let mut provider_ids = Vec::new();
+    for (name, kind, api_base, key) in [
+        (
+            "serving",
+            "openai_compatible",
+            format!("http://{upstream}"),
+            None,
+        ),
+        (
+            "silent",
+            "openai_compatible",
+            format!("http://{silent}"),
+            None,
+        ),
+        (
+            "claude",
+            "anthropic",
+            format!("http://{anthropic}"),
+            Some("sk-ant-test"),
+        ),
+    ] {
+        let mut body = json!({"name": name, "kind": kind, "api_base": api_base});
+        if let Some(key) = key {
+            body["api_key"] = json!(key);
+        }
+        let provider: Value = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        provider_ids.push(provider["id"].as_str().expect("provider id").to_string());
+    }
+
+    for (provider, expected) in [
+        (&provider_ids[0], json!(["gemma-2-9b", "llama-3.1-8b"])),
+        // answered nothing: the same empty list a catalogue-less upstream gives
+        (&provider_ids[1], json!([])),
+        (&provider_ids[2], json!(["claude-haiku", "claude-sonnet"])),
+    ] {
+        let listed = client
+            .get(format!("{base}/api/v1/providers/{provider}/models"))
+            .send()
+            .await
+            .unwrap();
+        let status = listed.status();
+        let listed: Value = listed.json().await.unwrap();
+        assert_eq!(status, 200, "{listed}");
+        assert_eq!(listed, json!({ "models": expected }));
+    }
+
+    let missing = client
+        .get(format!(
+            "{base}/api/v1/providers/00000000-0000-0000-0000-000000000000/models"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+}
+
+/// The listing spends the provider's credential, so it takes the permission the
+/// connection test takes, `provider:update` in the provider's scope (#2810): a
+/// viewer who may see a provider is refused, an org admin and the admin of the
+/// project a provider is scoped to are allowed, and a provider the caller
+/// cannot see at all is a 404.
+#[tokio::test]
+async fn listing_a_providers_models_takes_the_permission_the_test_takes() {
+    skip_without_db!();
+
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("scoped".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let upstream = serve(axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(|| async { axum::Json(json!({"data": [{"id": "gemma-2-9b"}]})) }),
+    ))
+    .await;
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut projects = Vec::new();
+    for name in ["one", "two"] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into projects (team_id, name) values ($1, $2) returning id")
+                .bind(team)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        projects.push(id);
+    }
+    let (p1, p2) = (projects[0], projects[1]);
+    let mut provider_ids = std::collections::HashMap::new();
+    for (name, project) in [("shared", None), ("priv-one", Some(p1))] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base, project_id)
+             values ($1, $2, $2, 'openai_compatible', $3, $4) returning id",
+        )
+        .bind(org)
+        .bind(name)
+        .bind(format!("http://{upstream}"))
+        .bind(project)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        provider_ids.insert(name, id);
+    }
+
+    let org_admin = seed_user(&pool, "owner@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(org), None, None, "admin").await;
+    let org_viewer = seed_user(&pool, "viewer@acme.test", false).await;
+    seed_membership(&pool, org_viewer, Some(org), None, None, "viewer").await;
+    let one_admin = seed_user(&pool, "one-admin@acme.test", false).await;
+    seed_membership(&pool, one_admin, None, None, Some(p1), "admin").await;
+    let two_member = seed_user(&pool, "two@acme.test", false).await;
+    seed_membership(&pool, two_member, None, None, Some(p2), "member").await;
+    let owner = seed_session(&pool, org_admin, "models_owner").await;
+    let viewer = seed_session(&pool, org_viewer, "models_viewer").await;
+    let one = seed_session(&pool, one_admin, "models_one").await;
+    let two = seed_session(&pool, two_member, "models_two").await;
+
+    let listed = |provider: &str, token: &str| {
+        let url = format!("{base}/api/v1/providers/{}/models", provider_ids[provider]);
+        let (client, token) = (client.clone(), token.to_string());
+        async move {
+            let resp = client.get(url).bearer_auth(token).send().await.unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+
+    // allowed: whoever may update the provider where it lives
+    for (token, provider) in [(&owner, "shared"), (&owner, "priv-one"), (&one, "priv-one")] {
+        let (status, body) = listed(provider, token).await;
+        assert_eq!(status, 200, "{provider}: {body}");
+        assert_eq!(body, json!({"models": ["gemma-2-9b"]}), "{provider}");
+    }
+    // refused: it can see the provider, and may not spend its credential. the
+    // admin of one project does not own an org-wide provider
+    for (token, provider) in [(&viewer, "shared"), (&viewer, "priv-one"), (&one, "shared")] {
+        let (status, body) = listed(provider, token).await;
+        assert_eq!(status, 403, "{provider}: {body}");
+        assert!(body.get("models").is_none(), "{provider}: {body}");
+    }
+    // not visible at all: a role in another project of the org sees no sign of
+    // a provider scoped to this one
+    let (status, body) = listed("priv-one", &two).await;
+    assert_eq!(status, 404, "{body}");
+}
+
 /// Provider credentials posted to the API must be sealed at rest, decrypted
 /// into the gateway snapshot, and never leak through the dashboard config
 /// endpoint.

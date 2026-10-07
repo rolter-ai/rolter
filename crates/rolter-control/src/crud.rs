@@ -128,6 +128,7 @@ pub fn router() -> Router<ControlState> {
             put(update_provider).delete(delete_provider),
         )
         .route("/api/v1/providers/{id}/test", post(test_provider))
+        .route("/api/v1/providers/{id}/models", get(list_provider_models))
         .route(
             "/api/v1/orgs/{org_id}/provider-groups",
             get(list_provider_groups).post(create_provider_group),
@@ -2520,6 +2521,151 @@ fn judge_probe(
     }
 }
 
+/// How a stored provider's credential is resolved for a probe, and the secret
+/// itself when there is one.
+///
+/// The same precedence the snapshot uses: a sealed key wins over the env var.
+/// The second half names where the credential came from, so a refused probe is
+/// distinguishable from a missing key without reading the provider row.
+async fn resolve_probe_credential(
+    state: &ControlState,
+    id: Uuid,
+    api_key_env: Option<&str>,
+) -> ApiResult<(Option<String>, &'static str)> {
+    let sealed: Option<(Vec<u8>, Vec<u8>)> =
+        sqlx::query_as("select ciphertext, nonce from provider_keys where provider_id=$1")
+            .bind(id)
+            .fetch_optional(pool(state))
+            .await
+            .map_err(|e| Error::Store(e.to_string()))?;
+    Ok(match sealed {
+        Some((ciphertext, nonce)) => match Kek::from_env() {
+            Some(kek) => match kek.decrypt(&ciphertext, &nonce) {
+                Ok(plaintext) => (Some(plaintext), "stored"),
+                // the operator needs to know this is a KEK problem, not a
+                // provider problem — the upstream is never even contacted
+                Err(_) => (None, "stored (undecryptable)"),
+            },
+            None => (None, "stored (KEK unset)"),
+        },
+        None => match api_key_env.map(std::env::var) {
+            Some(Ok(value)) => (Some(value), "env"),
+            Some(Err(_)) => (None, "env (unset)"),
+            None => (None, "none"),
+        },
+    })
+}
+
+/// The model ids a stored provider's upstream lists.
+#[derive(Serialize)]
+struct ProviderModelList {
+    /// sorted and without duplicates; empty when the upstream is down, answered
+    /// with something other than a catalogue, or has no catalogue to read
+    models: Vec<String>,
+}
+
+/// Most ids one listing returns. An aggregator can list thousands, and the
+/// caller offers these as suggestions, not as the catalogue.
+const MAX_LISTED_MODELS: usize = 2000;
+
+/// Largest probe body read for a listing, the cap the gateway's own catalogue
+/// read holds, so an upstream answering with something enormous costs a bounded
+/// amount of memory.
+const MAX_LISTING_BYTES: usize = 1 << 20;
+
+/// Sorted, de-duplicated and capped ids, the shape a listing is returned in.
+fn tidy_model_ids(mut ids: Vec<String>) -> Vec<String> {
+    ids.sort();
+    ids.dedup();
+    ids.truncate(MAX_LISTED_MODELS);
+    ids
+}
+
+/// Ask a stored provider's upstream which models it serves.
+///
+/// The connection test counts the same catalogue and drops the ids, so the
+/// route sheet had nothing to suggest for a target's upstream model and the id
+/// had to be retyped to the letter (#2810). The ids are what the gateway lists
+/// under `provider-slug/model` (`rolter_core::probe::catalogue_ids`).
+///
+/// Gated like the test, not like the provider listing: it sends the provider's
+/// own credential to the upstream, authenticated the way the test does and
+/// through the same egress policy, so a role that may not spend the credential
+/// on a test may not spend it here either. That is `provider:update`, in the
+/// provider's own scope. A provider the caller cannot see at all is answered as
+/// one that does not exist. A failure at the upstream is an empty list — the
+/// list only ever suggests, and "Test connection" is the call that says why a
+/// provider does not answer.
+async fn list_provider_models(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ProviderModelList>> {
+    let provider = ProviderRepo(pool(&state)).get(id).await?;
+    let org_id = provider.org_id;
+    // the listing's own rule: an org-wide provider is visible to anyone with a
+    // role in the org, a project-scoped one to those holding a role there. one
+    // that is not visible is answered as one that does not exist
+    let visible = visible_in_scope(
+        &state,
+        &principal,
+        cap!("provider", Read),
+        org_id,
+        vec![provider.clone()],
+        |row| row.project_id,
+    )
+    .await?;
+    if visible.is_empty() {
+        return Err(Error::NotFound(format!("provider {id}")).into());
+    }
+    // seeing it is not enough: the credential is spent on the call. a provider
+    // scoped to a project is its project admin's to change, an org-wide one the
+    // org admin's, as for an edit of the row (#1919)
+    let chain = match provider.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider", Update)).await?;
+
+    // the base was checked when it was stored, but the egress policy may have
+    // been tightened since; a stored row is not a standing permission to egress
+    require_allowed_egress(&state, &provider.api_base, "api_base")?;
+    let kind: rolter_core::ProviderKind =
+        serde_json::from_value(serde_json::Value::String(provider.kind.clone()))
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{}'", provider.kind)))?;
+    let (secret, credential) =
+        resolve_probe_credential(&state, id, provider.api_key_env.as_deref()).await?;
+    if credential == "stored (undecryptable)" || credential == "stored (KEK unset)" {
+        return Ok(Json(ProviderModelList { models: Vec::new() }));
+    }
+
+    let (url, headers) = rolter_core::probe_request(kind, &provider.api_base, "/");
+    let models =
+        match send_provider_probe(&state.egress, kind, &url, headers, secret.as_deref()).await {
+            Ok(resp) if resp.status().is_success() => read_listing(resp).await,
+            _ => Vec::new(),
+        };
+    Ok(Json(ProviderModelList {
+        models: tidy_model_ids(models),
+    }))
+}
+
+/// The model ids in a probe response, chunk by chunk against
+/// [`MAX_LISTING_BYTES`]; none when it is not a catalogue or is too large.
+async fn read_listing(mut resp: reqwest::Response) -> Vec<String> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if body.len() + chunk.len() > MAX_LISTING_BYTES {
+            return Vec::new();
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|parsed| rolter_core::probe::catalogue_ids(&parsed))
+        .unwrap_or_default()
+}
+
 /// Probe a stored provider and report whether it actually answers.
 ///
 /// Configuring a provider is otherwise a write with no feedback: the row saves,
@@ -2563,29 +2709,7 @@ async fn test_provider(
         serde_json::from_value(serde_json::Value::String(kind.clone()))
             .map_err(|_| ApiError::Curated(format!("unknown provider kind '{kind}'")))?;
 
-    // same precedence the snapshot uses: a sealed key wins over the env var
-    let sealed: Option<(Vec<u8>, Vec<u8>)> =
-        sqlx::query_as("select ciphertext, nonce from provider_keys where provider_id=$1")
-            .bind(id)
-            .fetch_optional(pool(&state))
-            .await
-            .map_err(|e| Error::Store(e.to_string()))?;
-    let (secret, credential) = match sealed {
-        Some((ciphertext, nonce)) => match Kek::from_env() {
-            Some(kek) => match kek.decrypt(&ciphertext, &nonce) {
-                Ok(plaintext) => (Some(plaintext), "stored"),
-                // the operator needs to know this is a KEK problem, not a
-                // provider problem — the upstream is never even contacted
-                Err(_) => (None, "stored (undecryptable)"),
-            },
-            None => (None, "stored (KEK unset)"),
-        },
-        None => match api_key_env.as_deref().map(std::env::var) {
-            Some(Ok(value)) => (Some(value), "env"),
-            Some(Err(_)) => (None, "env (unset)"),
-            None => (None, "none"),
-        },
-    };
+    let (secret, credential) = resolve_probe_credential(&state, id, api_key_env.as_deref()).await?;
 
     if credential == "stored (undecryptable)" || credential == "stored (KEK unset)" {
         return Ok(Json(ProviderTestResult {
@@ -2909,6 +3033,41 @@ fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
         ))));
     };
     Ok(kek.encrypt(api_key)?)
+}
+
+#[cfg(test)]
+mod provider_model_listing_tests {
+    use super::*;
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// A catalogue arrives in the upstream's order and may repeat an id; the
+    /// route sheet offers them as suggestions, so each shows once and in a
+    /// stable place (#2810).
+    #[test]
+    fn a_listing_is_sorted_and_without_duplicates() {
+        let tidy = tidy_model_ids(ids(&["llama-3.1-8b", "gemma-2-9b", "llama-3.1-8b"]));
+        assert_eq!(tidy, ids(&["gemma-2-9b", "llama-3.1-8b"]));
+    }
+
+    /// An aggregator lists thousands of models, and a suggestion list that long
+    /// is not one: the cap is a bound on the response, not a ranking.
+    #[test]
+    fn a_listing_is_capped() {
+        let many: Vec<String> = (0..MAX_LISTED_MODELS + 500)
+            .map(|n| format!("model-{n:05}"))
+            .collect();
+        let tidy = tidy_model_ids(many);
+        assert_eq!(tidy.len(), MAX_LISTED_MODELS);
+        assert_eq!(tidy.first().map(String::as_str), Some("model-00000"));
+    }
+
+    #[test]
+    fn an_empty_catalogue_is_an_empty_listing() {
+        assert!(tidy_model_ids(Vec::new()).is_empty());
+    }
 }
 
 #[cfg(test)]
