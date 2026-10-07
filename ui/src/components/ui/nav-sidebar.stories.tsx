@@ -1,9 +1,16 @@
-import { Boxes, KeyRound, Play, ScrollText } from "lucide-react";
+import { Boxes, KeyRound, LogOut, Play, ScrollText, UserCog } from "lucide-react";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
-import { NAV_MAX_WIDTH, NAV_MIN_WIDTH, NavSidebar, type NavSidebarProps } from "./nav-sidebar";
+import { MenuItem, MenuSeparator } from "./menu";
+import {
+  NAV_MAX_WIDTH,
+  NAV_MIN_WIDTH,
+  NavSidebar,
+  type NavSidebarProps,
+  type NavUserMenu,
+} from "./nav-sidebar";
 import en from "@/lib/i18n/locales/en.json";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
@@ -754,5 +761,245 @@ export const FoldedGroupFlyoutFollowsTheRailScroll: Story = {
     list.scrollTop = 0;
     await waitFor(() => expect(canvas.queryByRole("group", { name: "Analytics" })).toBeNull());
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  },
+};
+
+// the account card's menu (#2805): a real `menu` about the person, opening above
+// the card on the full rail and beside it on the folded one. the entries are the
+// shell's own; what the story pins is the menu's shape and keyboard
+const accountMenu = (over: { keys?: () => void; signOut?: () => void } = {}): NavUserMenu => ({
+  header: (
+    <div className="border-b border-[color:var(--border-subtle)] px-3 py-2.5">
+      <p className="text-sm font-medium">Anya Petrova</p>
+      <p className="text-xs">anya@acme.co</p>
+      <p className="text-xs">Admin · org acme</p>
+    </div>
+  ),
+  items: (close) => (
+    <>
+      <MenuItem
+        icon={<KeyRound />}
+        onSelect={() => {
+          close();
+          over.keys?.();
+        }}
+      >
+        Account &amp; keys
+      </MenuItem>
+      <MenuItem icon={<UserCog />} onSelect={close}>
+        Preferences
+      </MenuItem>
+      <MenuSeparator />
+      <MenuItem
+        icon={<LogOut />}
+        tone="danger"
+        onSelect={() => {
+          close();
+          over.signOut?.();
+        }}
+      >
+        Sign out
+      </MenuItem>
+    </>
+  ),
+});
+
+const CARD = /admin@rolter\.dev/;
+const USER_MENU = en.shell.userMenuLabel;
+
+const openAccountMenu = async (canvasElement: HTMLElement, name: string | RegExp = CARD) => {
+  const card = within(canvasElement).getByRole("button", { name });
+  await userEvent.click(card);
+  const menu = await within(canvasElement).findByRole("menu", { name: USER_MENU });
+  return { card, menu };
+};
+
+export const UserMenuOpens: Story = {
+  args: { userMenu: accountMenu() },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = canvas.getByRole("button", { name: CARD });
+    await expect(card).toHaveAttribute("aria-haspopup", "menu");
+    await expect(card).toHaveAttribute("aria-expanded", "false");
+    await expect(canvas.queryByRole("menu")).toBeNull();
+
+    const { menu } = await openAccountMenu(canvasElement);
+    await expect(card).toHaveAttribute("aria-expanded", "true");
+    // the entries, in order, and nothing else: no scope pickers, no creating
+    // or deleting an org here
+    const entries = within(menu).getAllByRole("menuitem");
+    await expect(entries.map((el) => el.textContent)).toEqual([
+      "Account & keys",
+      "Preferences",
+      "Sign out",
+    ]);
+    await expect(within(menu).getByRole("separator")).toBeInTheDocument();
+    await expect(canvas.queryByRole("combobox")).toBeNull();
+    // the identity block is read with the menu but is not one of its entries:
+    // a `menu` may own entries, groups and separators, and nothing else
+    await expect(canvas.getByText("anya@acme.co")).toBeVisible();
+    await expect(within(menu).queryByText("anya@acme.co")).toBeNull();
+
+    // above the card, as wide as the card
+    const box = menu.parentElement!.getBoundingClientRect();
+    const cardBox = card.getBoundingClientRect();
+    await expect(box.bottom).toBeLessThanOrEqual(cardBox.top);
+    await expect(Math.abs(box.width - cardBox.width)).toBeLessThan(1.5);
+    await expect(Math.abs(box.left - cardBox.left)).toBeLessThan(1.5);
+  },
+};
+
+export const UserMenuFromTheKeyboard: Story = {
+  args: { userMenu: accountMenu() },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = canvas.getByRole("button", { name: CARD });
+    card.focus();
+    await userEvent.keyboard("{Enter}");
+    const menu = within(await canvas.findByRole("menu", { name: USER_MENU }));
+    const [keys, prefs, out] = menu.getAllByRole("menuitem");
+    // opening puts the keyboard on the first entry
+    await waitFor(() => expect(keys).toHaveFocus());
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(prefs).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(out).toHaveFocus();
+    // the list wraps at both ends, and Home and End are its two edges
+    await userEvent.keyboard("{ArrowDown}");
+    await expect(keys).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect(out).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    await expect(keys).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    await expect(out).toHaveFocus();
+
+    // Escape closes it and gives focus back to the card
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(card).toHaveFocus());
+    await expect(card).toHaveAttribute("aria-expanded", "false");
+
+    // Tab closes it too, rather than walking into the page behind an open menu
+    await userEvent.keyboard("{Enter}");
+    await canvas.findByRole("menu", { name: USER_MENU });
+    await userEvent.tab();
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+  },
+};
+
+const onKeys = fn();
+
+export const UserMenuEntryClosesAndRuns: Story = {
+  args: { userMenu: accountMenu({ keys: onKeys }) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    onKeys.mockClear();
+    const { card, menu } = await openAccountMenu(canvasElement);
+    await userEvent.click(within(menu).getByRole("menuitem", { name: "Account & keys" }));
+    await expect(onKeys).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    // the entry took the menu with it, and focus went to where the menu opened
+    await waitFor(() => expect(card).toHaveFocus());
+  },
+};
+
+export const UserMenuClosesOnAnOutsidePress: Story = {
+  args: { userMenu: accountMenu() },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openAccountMenu(canvasElement);
+    await userEvent.click(canvasElement);
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    // a second press on the card puts it away too
+    const card = canvas.getByRole("button", { name: CARD });
+    await userEvent.click(card);
+    await canvas.findByRole("menu", { name: USER_MENU });
+    await userEvent.click(card);
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+  },
+};
+
+/**
+ * Folded, the card is the initials alone: the menu opens beside the rail with
+ * its bottom edge on the card's, so it grows upward from the foot of the rail.
+ */
+export const UserMenuFolded: Story = {
+  args: { userMenu: accountMenu(), defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 52);
+    const { card, menu } = await openAccountMenu(canvasElement, "admin@rolter.dev");
+    const box = menu.parentElement!.getBoundingClientRect();
+    await expect(box.left).toBeGreaterThanOrEqual(nav.getBoundingClientRect().right);
+    await expect(Math.abs(box.bottom - card.getBoundingClientRect().bottom)).toBeLessThan(2);
+    await expect(within(canvasElement).getByText("anya@acme.co")).toBeVisible();
+    await expect(within(menu).getAllByRole("menuitem")).toHaveLength(3);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(card).toHaveFocus());
+  },
+};
+
+/**
+ * Inside the drawer the menu owns Escape while it is up: the first press puts
+ * the menu away, and only the second closes the drawer.
+ */
+export const UserMenuInsideTheDrawerOwnsEscape: Story = {
+  ...atMobile,
+  args: { userMenu: accountMenu() },
+  render: (args) => <Shell {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Open navigation" }));
+    const drawer = await canvas.findByRole("dialog", { name: /navigation/i });
+    await userEvent.click(within(drawer).getByRole("button", { name: CARD }));
+    await within(drawer).findByRole("menu", { name: USER_MENU });
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    await expect(canvas.getByRole("dialog", { name: /navigation/i })).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
+  },
+};
+
+// a card with no menu behind it is still a button that does one thing
+export const UserCardWithoutAMenuRunsItsHandler: Story = {
+  args: { user: { name: "admin@rolter.dev", role: "Admin", initials: "A", onClick: fn() } },
+  play: async ({ canvasElement, args }) => {
+    const card = within(canvasElement).getByRole("button", { name: CARD });
+    await expect(card).not.toHaveAttribute("aria-haspopup");
+    await userEvent.click(card);
+    await expect(args.user?.onClick).toHaveBeenCalledTimes(1);
+  },
+};
+
+// the slot under the brand and above the search box (#2805): the scope switcher
+// sits here, on the full rail and the folded one alike, and is told which
+const scopeSlot = (folded: boolean) => (
+  <button type="button">{folded ? "scope icon" : "scope path"}</button>
+);
+
+const expectBefore = (first: Element, second: Element) =>
+  expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+export const HeaderSlotSitsUnderTheBrand: Story = {
+  args: { headerExtra: scopeSlot },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const slot = canvas.getByRole("button", { name: "scope path" });
+    await expectBefore(canvas.getByText("rolter"), slot);
+    await expectBefore(slot, canvas.getByRole("textbox", { name: /search/i }));
+    await expectBefore(slot, canvas.getByRole("button", { name: "Playground" }));
+  },
+};
+
+export const HeaderSlotFollowsTheFold: Story = {
+  args: { headerExtra: scopeSlot, defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: "scope icon" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "scope path" })).toBeNull();
   },
 };

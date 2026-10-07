@@ -9,21 +9,127 @@ The left rail (`ui/src/components/ui/nav-sidebar.tsx`) is the dashboard's
 primary navigation. It has three shapes, one per breakpoint, and two
 independent size controls within them.
 
-## The scope switcher and the create-project dialog
+## The rail's header and card (#2805)
 
-`ScopeSwitcher` (`ui/src/components/ScopeSwitcher.tsx`) sits in the rail's
-account menu, and that menu is only in the document while it is open. Anything
-another screen has to reach therefore cannot live in the switcher. The
-create-project dialog is the one case so far: `CreateProjectHost`, from the same
-file, is mounted once by the shell in `App.tsx` and registers itself with
-`useCreateProjectOpener`, and any screen opens it with `openCreateProject()` from
-`ui/src/lib/scope.ts` (#2611). It is the dialog the **+** beside Project raises,
-under the team in scope, and does nothing when no team is in scope, the same
-condition that hides that **+**. A broadcast rather than a `?create=project`
-query parameter, because there is nothing to keep in the url or strip from it
-afterwards. The Getting started card is the first caller; the
+Two things used to share one menu behind the user card: the scope switcher, which
+changes what every screen shows, and the person's own entries (their account, and
+Sign out). The scope sat under a "Scope" heading between the identity block and
+Account, with three identical unlabelled pickers and a **+** and a trash can on
+each, so creating and deleting an org lived next to Sign out. They are now two
+controls with one job each:
+
+| control                       | where                                              | what it is about                             |
+| ----------------------------- | -------------------------------------------------- | -------------------------------------------- |
+| `ScopeSwitcher`               | the rail header, under the brand, above the search | what the dashboard is looking at             |
+| the account card and its menu | the foot of the rail, as before                    | who is signed in, their screens, signing out |
+
+`NavSidebar` offers the first as a slot, `headerExtra(folded)`, and the second as
+`userMenu: { header, items(close) }`; `App.tsx` fills both.
+
+### The shared overlay
+
+There was no popover primitive, so the folded rail's group flyout (#2803) wrote
+its own placement and dismissal, and the scope popover and both menus would each
+have written a third and fourth copy. They are one now:
+
+- `AnchoredPanel` (`ui/src/components/ui/anchored-panel.tsx`) is the surface. It
+  is `fixed` and placed from the anchor's rectangle (`placePanel`, a pure function
+  with its own tests): beside the rail's edge (`right`), or under (`below`) or over
+  (`above`) the anchor, aligned to its start or end, clamped to the viewport, and
+  turned over when `below` has no room. It is rendered inline, as the anchor's
+  sibling, so it escapes `overflow` without leaving the nav drawer's focus trap,
+  and it follows the anchor when a list it sits in scrolls. A press outside, focus
+  moving elsewhere, and Escape close it; Escape closes only the panel on top, so
+  a menu opened from inside the scope popover does not take the popover with it.
+  `openPanelCount()` is what the nav drawer asks before treating Escape as its own.
+- `Menu`, `MenuItem` and `MenuSeparator` (`ui/src/components/ui/menu.tsx`) are the
+  WAI-ARIA menu on top of it: a `role="menu"` of `menuitem`s, focus on the first
+  entry that can be chosen, Up and Down wrapping, Home and End, Tab closing the
+  menu and carrying on to the control after its anchor, Escape handing focus back.
+  `header` renders above the `menu` element rather than inside it, since a menu
+  may own entries, groups and separators and an identity block is none of those.
+- `GroupFlyout` stays a disclosure of navigation buttons, not a menu, and keeps
+  its own keyboard on top of `AnchoredPanel`'s placement and dismissal.
+
+`LocalePicker` still carries its own copy of the menu keyboard and dismissal; it
+is the one remaining and moves to `Menu` separately.
+
+### The account menu
+
+The card opens a menu about the person and nothing else. Above the entries an
+identity block gives the initials, the name, the email beneath it when the name
+differs, and a **role line** that says where the role applies: _Admin · org acme_,
+_Member · team platform_, _Viewer · project default_, _Superadmin · whole
+deployment_. `ui/src/lib/account-role.ts` derives it from `user`, `memberships` and
+the scope in view: a superadmin is one thing everywhere, and anyone else shows the
+strongest grant that reaches the current org, team or project (the broader one
+when two are equally strong). Each shape is one catalog string,
+`shell.roleLine.{superadmin,org,team,project}`, so a locale can decline the level
+as its grammar wants. The card itself says the role in a word.
+
+The entries are **Account & keys** (`/api-keys`), **Preferences** (`/preferences`),
+a separator and **Sign out**, in the danger tone. The two screens are named with
+the rail's own labels (`nav.api-keys`, `nav.preferences`), so one noun stands for
+one place. There is no theme toggle (the dashboard is dark-only, see `DESIGN.md`),
+and language and shortcuts stay in the rail footer.
+
+The menu opens above the card at the card's width on the full rail, and beside the
+rail with its bottom edge on the card's when folded. The folded card is the
+initials alone, so it is named by the account's name rather than by a lone letter.
+
+### The scope switcher
+
+The trigger shows the path `org / team / project` in the mono face, each level
+truncating on its own with the broadest giving way first, so a long org name does
+not push out the project. Its accessible name is `scope.trigger` ("Scope: <path>")
+and the path is its tooltip. Folded, it is a `Building2` icon button with the same
+name and tooltip. It opens a popover (`role="dialog"`, `AnchoredPanel`) of three
+labelled rows, **Organization**, **Team** and **Project**, each a `Combobox`:
+
+- the first picker takes focus on open; choosing a value keeps the popover open,
+  because the level below usually changes too; Escape closes it and returns to the
+  trigger, and a press outside closes it without taking focus;
+- a row with nothing above it is disabled and says why underneath (`scope.needsOrg`,
+  `scope.needsTeam`); a row with nothing in it keeps its **⋯** button, since
+  creating the first one is the way out; the list failing is said under its row;
+- the first read shows a skeleton of the three rows; a level still arriving after
+  a pick keeps the popover on its rows.
+
+Each row has one overflow button, **Organization / Team / Project actions**, which
+opens a `Menu`: **New organization** and **Delete organization…**; **New team** and
+**Delete team…**; **New project**, **Project settings** and **Delete project…**. A
+delete or settings entry is absent when the level has no row to act on. Picking one
+closes the popover, parks focus on the trigger and raises the dialog, so the
+dialog's return-to-opener lands somewhere that survives the menu unmounting.
+Deleting goes through `ConfirmDialog`, which names the row and the consequence.
+
+Create and delete are gated on the capability the control plane enforces
+(`org:create` is superadmin-only, the rest need admin): a refused entry is a real
+`disabled` button whose `title` and whose visible second line name the role. The
+reason is printed because a menu is walked with the arrow keys and a disabled
+button is not a stop on that walk, so a tooltip alone would not be reachable.
+Project settings is not gated: anyone on the project can open it and read where
+the setting stands, and only its switch is (`project_settings:update`).
+
+`CreateProjectHost`, from the same file, is still mounted once by the shell in
+`App.tsx` and registers itself with `useCreateProjectOpener`, and any screen opens
+it with `openCreateProject()` from `ui/src/lib/scope.ts` (#2611). It is not part
+of the switcher because the rail is out of the document whenever it is a closed
+drawer, so an opener registered inside it would be gone by the time a screen called
+it. It is the dialog **New project** raises, under the team in scope, and does
+nothing when no team is in scope. The Getting started card is the first caller; the
 `GettingStartedOpensCreateProject` story in `ui/src/App.stories.tsx` opens it
-through the whole shell with the menu closed.
+through the whole shell.
+
+Stories: `ui/src/components/ScopeSwitcher.stories.tsx` (the path and the labelled
+rows, folded, loading, no org, no team, failing orgs, keeping the popover open on a
+pick, Escape and an outside press, Tab through the rows, the row menu's keyboard,
+what each level's menu offers, create and delete through the menus, and the gating
+as a viewer, an admin and a superadmin); `UserMenu…` and `HeaderSlot…` in
+`nav-sidebar.stories.tsx` (the menu's shape, keyboard, folded placement, Escape
+inside the drawer); and `AccountMenu…`, `RoleLine…`, `ScopeSwitcherSitsUnderTheBrand`,
+`ScopePopover…` in `App.stories.tsx` through the whole shell, including Russian at
+1024px, a superadmin with no membership, and the folded and drawer shapes.
 
 ## Breakpoints
 
@@ -102,10 +208,9 @@ group did nothing at all. Folded, a group opens a flyout (`GroupFlyout` in
   `fixed` rather than absolute because the rail's list is a scroll container and
   would clip it; the position comes from the icon's rectangle, nudged up when the
   viewport is too short to hold it below. It follows the icon while the list
-  scrolls and goes once the icon has scrolled out of view. There is no popover,
-  dropdown or tooltip primitive under `ui/src/components/ui/` to build on; the
-  surface classes are the ones the account menu and the locale picker already
-  use (`surface-elevated`, `border-default`, `shadow-lg`).
+  scrolls and goes once the icon has scrolled out of view. The surface, its
+  placement and its dismissal are `AnchoredPanel`'s (see "The shared overlay"
+  above), shared with the account menu and the scope popover.
 - **A disclosure, not an ARIA menu.** The icon is a button with
   `aria-expanded`, the flyout a `role="group"` named by its heading, and the
   entries are the same navigation buttons the full rail has, so they sit in the

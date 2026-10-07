@@ -232,25 +232,22 @@ export async function tenancy() {
   };
 }
 
-
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** what the scope switcher (inside the account menu) resolved to, plus its message if any */
-export async function scopeOf(page: Page, email: string) {
-  const trigger = page.getByRole("button", { name: new RegExp(escapeRegExp(email)) }).first();
+/** what the scope switcher (the popover under the rail's brand) resolved to, plus its message if any */
+export async function scopeOf(page: Page, _email: string) {
+  const trigger = page.getByRole("button", { name: /^Scope: / }).first();
+  const footer = (await trigger.innerText().catch(() => "")).replace(/\s+/g, " ");
   await trigger.click();
-  await page.getByRole("combobox", { name: "Org", exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
+  await page.getByRole("combobox", { name: "Organization", exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
   const read = async (name: string) => {
     const box = page.getByRole("combobox", { name, exact: true }).first();
     if (!(await box.count())) return "";
     return (await box.inputValue().catch(() => "")) || "";
   };
-  const org = await read("Org");
+  const org = await read("Organization");
   const team = await read("Team");
   const project = await read("Project");
   const body = await page.locator("body").innerText().catch(() => "");
   const message = /failed to load (orgs|teams|projects)|no (org|team|project) configured[^\n]*/i.exec(body)?.[0] ?? "";
-  const footer = (await trigger.innerText().catch(() => "")).replace(/\s+/g, " ");
   await page.keyboard.press("Escape");
   return { org, team, project, message, footer };
 }

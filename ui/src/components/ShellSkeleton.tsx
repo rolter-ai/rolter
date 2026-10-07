@@ -19,6 +19,8 @@ export function ShellSkeleton() {
     >
       <div className="hidden w-[52px] flex-col gap-3 border-r border-[color:var(--border-subtle)] px-2 py-3 md:flex lg:w-[var(--sidebar-width)]">
         <Skeleton height={28} radius={8} />
+        {/* the scope switcher, under the brand */}
+        <Skeleton height={34} radius={8} />
         <Skeleton height={30} radius={8} />
         <div className="flex flex-col gap-1.5 pt-2">
           {Array.from({ length: 8 }, (_, i) => (

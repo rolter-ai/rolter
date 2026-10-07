@@ -94,21 +94,23 @@ const page = s.page;
 
 await step("A2.1", "create a team from the scope switcher", async () => {
   const name = `platform-${Date.now() % 10000}`;
-  await page.getByRole("button", { name: /orgadmin@rolter\.local/ }).first().click();
-  await page.getByRole("button", { name: "Add team" }).click();
+  await page.getByRole("button", { name: /^Scope: / }).first().click();
+  await page.getByRole("button", { name: "Team actions" }).click();
+  await page.getByRole("menuitem", { name: "New team" }).click();
   await page.getByLabel("Name").fill(name);
   await page.getByRole("button", { name: "Create", exact: true }).click();
   const team = await until(async () => (await api("GET", `/api/v1/orgs/${t.org.id}/teams`, org)).json.find((x: any) => x.name === name) ?? null, 10000);
   await page.keyboard.press("Escape");
   await api("DELETE", `/api/v1/teams/${team.id}`, ADMIN_TOKEN);
-  return ["pass", `team "${name}" created through the switcher's +`];
+  return ["pass", `team "${name}" created through the switcher's team menu`];
 }, page);
 
 await step("A2.2", "the project's gear: let viewers read captured payloads", async () => {
   await goto(page, "/dashboard");
-  await page.getByRole("button", { name: /orgadmin@rolter\.local/ }).first().click();
+  await page.getByRole("button", { name: /^Scope: / }).first().click();
   // the switcher reselects the default project after A2.1
-  await page.getByRole("button", { name: "Project settings" }).click();
+  await page.getByRole("button", { name: "Project actions" }).click();
+  await page.getByRole("menuitem", { name: "Project settings" }).click();
   const sw = page.getByRole("switch", { name: /Viewers can read captured payloads/ });
   await sw.waitFor({ timeout: 8000 });
   const was = await sw.getAttribute("aria-checked");

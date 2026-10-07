@@ -8,13 +8,13 @@ This is the guide to send engineers. It assumes an administrator has made you a 
 
 <Steps>
   <Step title="Sign in">
-    Open the dashboard your administrator gave you and sign in with your company's single sign-on or the invitation you received. The scope switcher at the bottom of the rail shows the org, team and project you are working in. Controls that need a role you do not hold are greyed out and say which role they need.
+    Open the dashboard your administrator gave you and sign in with your company's single sign-on or the invitation you received. The scope switcher at the top of the rail, under the logo, shows the org, team and project you are working in. Controls that need a role you do not hold are greyed out and say which role they need.
   </Step>
   <Step title="See what you can call">
     **Models → Model Catalog** lists the models your project routes. Those public names are what you put in the `model` field.
   </Step>
   <Step title="Mint your own key">
-    **Settings → My Virtual Keys → Generate virtual key**: name it after where it will live, pick the project, optionally narrow it to the models the job needs, and set an expiry. The key is shown **once** — copy it into your secret store. The dialog also gives you the gateway URL and a first request to try, and asks before it closes over a key you have not copied. You can rotate or delete it from the same screen at any time. See [Virtual keys](/concepts/virtual-keys).
+    **Settings → Account & keys → Generate virtual key**: name it after where it will live, pick the project, optionally narrow it to the models the job needs, and set an expiry. The key is shown **once** — copy it into your secret store. The dialog also gives you the gateway URL and a first request to try, and asks before it closes over a key you have not copied. You can rotate or delete it from the same screen at any time. See [Virtual keys](/concepts/virtual-keys).
 
   </Step>
   <Step title="Make your first call">
@@ -78,6 +78,6 @@ Walk it in this order — each step narrows where the problem is:
 
 ## Keep an eye on it
 
-- **Your usage:** **Settings → My Virtual Keys** shows requests and cost per key over the last week.
-- **Your account:** protect it with a second factor under **Settings → My Virtual Keys → Two-factor authentication**.
+- **Your usage:** **Settings → Account & keys** shows requests and cost per key over the last week.
+- **Your account:** protect it with a second factor under **Settings → Account & keys → Two-factor authentication**.
 - **Your MCP connections:** servers that need your consent are under **MCP Gateway → Auth Sessions**. See [MCP OAuth](/security/mcp-oauth).

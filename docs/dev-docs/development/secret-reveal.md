@@ -90,7 +90,7 @@ the clipboard, and a `writeText` that rejects is the plain-http case.
 
 A key is revealed so it can be used, and the dialog used to end at **Done**.
 `KeyNextStep` (`ui/src/components/KeyNextStep.tsx`) sits in the `children` slot
-of both key reveals, on **Governance → Virtual Keys** and **My Virtual Keys**:
+of both key reveals, on **Governance → Virtual Keys** and **Account & keys**:
 
 - the gateway address, from `useGatewayBase()`, so it is the public base URL
   saved on Client Settings when the caller may read it and the dashboard's `/gw`

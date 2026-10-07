@@ -21,7 +21,7 @@ clickhouse_url = "http://localhost:8123"
 
 Logging is disabled when `clickhouse_url` is unset — there's no placeholder or no-op mode.
 
-The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a note that request logs need ClickHouse, **MCP Logs** as a note that tool-call logs need it, and the **Dashboard** as a note that traffic and spend need it, each naming `CLICKHOUSE_URL`. **Cost Attribution** shows the same kind of note in place of its spend figures, and **My Virtual Keys** shows one above your keys (each key reads _usage: unavailable_), while the rest of both screens keeps working. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
+The dashboard reads the rows back through the control plane, which needs its own `CLICKHOUSE_URL` (gateways with no address of their own inherit it). A control plane without one shows **LLM Logs** as a note that request logs need ClickHouse, **MCP Logs** as a note that tool-call logs need it, and the **Dashboard** as a note that traffic and spend need it, each naming `CLICKHOUSE_URL`. **Cost Attribution** shows the same kind of note in place of its spend figures, and **Account & keys** shows one above your keys (each key reads _usage: unavailable_), while the rest of both screens keeps working. It is information about the deployment rather than an error, so it offers no retry: nothing changes until the setting does.
 
 ## What gets logged
 
