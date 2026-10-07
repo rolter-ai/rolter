@@ -57,6 +57,73 @@ because the project directory is the first `-f` file's directory; a
 repository-root `.env` is not read for interpolation unless you pass
 `--env-file .env`. The development setup page has the full error text.
 
+ClickHouse's own diagnostics are off. The image's default server config writes
+`system.text_log`, `asynchronous_metric_log`, `metric_log`, `trace_log` and the
+rest of the `system.*_log` family about the server itself, each with an insert
+every few seconds. rolter reads none of them, and on a small host with a slow
+disk the merges they cause never catch up: two idle servers on a Raspberry Pi 5
+sat at 190% and 320% CPU with every `MergeMutate` thread busy on those tables
+(#2795, found by the #1789 livetest). `docker/clickhouse/system-logs.xml` is
+mounted into the `clickhouse` service as
+`/etc/clickhouse-server/config.d/system-logs.xml` and removes them with
+`remove="1"`, so the team stack and the dogfood stack, which layer over this
+file, inherit it. `system.query_log` stays (the UX-event ingest test and
+[UX telemetry](../development/ux-telemetry.md) read it), and so does
+`crash_log`, which only ever gets a row when the server crashes. Mount a single
+file, never the `config.d` directory: the image keeps its listen-address config
+there, and a directory mount would hide it. A `remove="1"` on a table the
+image's ClickHouse version does not have is a no-op (the file names
+`session_log`, which 24.10's default config leaves commented out), so the list
+can name tables a newer image adds.
+
+The file only stops the tables being created. A volume that ran with the default
+config keeps the ones it already has, and ClickHouse does not drop them. Drop
+them once; the statement list is generated so that the `_0`, `_1` copies
+ClickHouse leaves behind when an upgrade changes a table's schema go too. In the
+team stack add `--user "$ROLTER_CLICKHOUSE_USER" --password
+"$ROLTER_CLICKHOUSE_PASSWORD"` to both `clickhouse-client` calls and the team
+`-f`/`--env-file` flags to `docker compose`:
+
+```bash
+ch() { docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client "$@"; }
+ch -q "select 'drop table if exists system.' || name || ' sync;' from system.tables
+       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
+```
+
+Nothing recreates them on the next start. Only the compose stack gets the file:
+`docker/docker-compose.signoz.yml`'s own ClickHouse (a different image, with its
+own config) and the e2e stack's are untouched.
+
+On a small host also cap ClickHouse's caches, which the default config sizes
+for a large server (`uncompressed_cache_size` 8 GiB, `mark_cache_size` 5 GiB).
+The right figure depends on the host, so rolter does not set it. Put it in a
+file and layer a second compose file that mounts it, the same way the
+system-log file is mounted:
+
+```xml
+<!-- docker/clickhouse/caches.xml -->
+<clickhouse>
+  <mark_cache_size>268435456</mark_cache_size>
+  <uncompressed_cache_size>268435456</uncompressed_cache_size>
+</clickhouse>
+```
+
+```yaml
+# docker/docker-compose.caches.yml
+services:
+  clickhouse:
+    volumes:
+      - ./clickhouse/caches.xml:/etc/clickhouse-server/config.d/caches.xml:ro
+```
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.caches.yml up -d
+```
+
+`select name, value from system.server_settings where name like '%cache_size'`
+shows what the running server picked up. The relative path resolves against
+`docker/` whichever file names it, because that is the project directory.
+
 DB schemas auto-apply on first start, by two different routes. The Postgres
 schema is owned by `sqlx::migrate!`, which `rolter-control` and `rolter-seed`
 both run on startup; Compose deliberately does _not_ mount `migrations/` into

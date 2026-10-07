@@ -1,0 +1,43 @@
+<!--
+  turns off the diagnostic tables ClickHouse writes about itself (#2795).
+
+  the image's default server config enables most of them, and each one is a
+  MergeTree table that takes an insert every few seconds. on a small host with a
+  slow disk (a Raspberry Pi 5 on an SD card was the measured case) the merges
+  those inserts cause never catch up: two idle servers sat at ~190% and ~320% CPU
+  with every MergeMutate thread busy on text_log and asynchronous_metric_log.
+  rolter reads none of them.
+
+  `query_log` is kept on purpose: the control plane's ux_events ingest and the
+  troubleshooting docs read it. it is the one diagnostic table worth its disk.
+  `crash_log` is kept too: it only gets a row when the server crashes.
+
+  `remove="1"` deletes the element from the merged server config, which is how
+  ClickHouse documents turning one of these off. it is a no-op where the image's
+  version has no such table, so the list can name tables a newer image adds.
+
+  mounted as a single file in /etc/clickhouse-server/config.d/, never as the
+  directory: the image ships docker_related_config.xml there (the listen
+  addresses), and a directory mount would hide it.
+
+  this only stops new tables being created. a volume that already ran with the
+  default config keeps the ones it has; docs/dev-docs/deployment/docker.md shows
+  how to drop them.
+-->
+<clickhouse>
+  <asynchronous_insert_log remove="1" />
+  <asynchronous_metric_log remove="1" />
+  <backup_log remove="1" />
+  <blob_storage_log remove="1" />
+  <error_log remove="1" />
+  <metric_log remove="1" />
+  <opentelemetry_span_log remove="1" />
+  <part_log remove="1" />
+  <processors_profile_log remove="1" />
+  <query_metric_log remove="1" />
+  <query_thread_log remove="1" />
+  <query_views_log remove="1" />
+  <session_log remove="1" />
+  <text_log remove="1" />
+  <trace_log remove="1" />
+</clickhouse>
