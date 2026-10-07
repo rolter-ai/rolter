@@ -39,3 +39,8 @@
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.
 **Prevention:** Always log detailed internal error messages via `tracing::warn!` or `tracing::error!` and return a sanitized, static error message (such as `"control plane unreachable"`) in 502 HTTP error response bodies.
+
+## 2026-10-18 - Redact Upstream Connection Failures in Realtime 502 Responses
+
+**Learning:** Rejection of WebSocket upgrade requests on `/v1/realtime` in `crates/rolter-gateway/src/realtime.rs` echoed raw upstream connection failure messages (e.g., `format!("upstream realtime connection failed: {error}")`) directly into HTTP 502 response bodies, disclosing internal infrastructure and upstream socket details.
+**Prevention:** Log detailed upstream connection errors internally via `tracing::warn!` and return a sanitized static error message (such as `"upstream realtime connection failed"`) in 502 HTTP error response bodies.

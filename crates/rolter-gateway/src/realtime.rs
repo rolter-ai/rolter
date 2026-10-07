@@ -224,7 +224,13 @@ pub async fn realtime(
     .await
     {
         Ok(selected) => selected,
-        Err(message) => return api_error(StatusCode::BAD_GATEWAY, &message),
+        Err(message) => {
+            tracing::warn!(error = %message, "realtime upstream connection failed");
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream realtime connection failed",
+            );
+        }
     };
 
     // the ensure_request_id middleware guarantees this header is present
