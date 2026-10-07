@@ -19,6 +19,8 @@ By default (`path = "/"`), the probe targets each provider kind's **free, non-in
 
 Set an explicit `path` (e.g. `/healthz`) to override this for every provider and probe that exact route instead.
 
+When the provider has a key, the probe sends it the way that provider's API reads it (`x-api-key` for Anthropic, `api-key` for Azure OpenAI, `x-goog-api-key` for native Gemini, a bearer token for the rest), the same as a forwarded request. A `401` still counts as healthy, but only an authenticated model list can be read, so a provider whose probe is rejected contributes no models to `/v1/models`.
+
 **Fail-open guarantee:** when every target of a route is marked unhealthy, Rolter does not return an error. It fails open and still forwards the request, preferring a potential upstream error over a guaranteed 503 from the gateway.
 
 ## Configuration

@@ -73,42 +73,23 @@ fn build_probe_plan(
         let key = provider.resolve_api_key();
         if let Some(model) = &provider.llm_probe_model {
             if key.is_some() || provider.kind == ProviderKind::Ollama {
-                let (path, headers) = match provider.kind {
-                    ProviderKind::Anthropic => (
-                        "/v1/messages",
-                        vec![
-                            ("x-api-key".to_string(), key.unwrap_or_default()),
-                            (
-                                "anthropic-version".to_string(),
-                                ANTHROPIC_VERSION.to_string(),
-                            ),
-                        ],
-                    ),
-                    ProviderKind::Openrouter => {
-                        let headers = key
-                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
-                            .unwrap_or_default();
-                        ("/chat/completions", headers)
-                    }
-                    ProviderKind::AzureOpenai => {
-                        let headers = key
-                            .map(|key| vec![("api-key".to_string(), key)])
-                            .unwrap_or_default();
-                        ("/chat/completions", headers)
-                    }
-                    ProviderKind::Bedrock | ProviderKind::Vertex => {
-                        let headers = key
-                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
-                            .unwrap_or_default();
-                        ("/chat/completions", headers)
-                    }
-                    _ => {
-                        let headers = key
-                            .map(|key| vec![("authorization".to_string(), format!("Bearer {key}"))])
-                            .unwrap_or_default();
-                        ("/v1/chat/completions", headers)
-                    }
+                // the path is the only thing that differs per kind; the
+                // credential goes out the way the proxy would send it
+                let path = match provider.kind {
+                    ProviderKind::Anthropic => "/v1/messages",
+                    ProviderKind::Openrouter
+                    | ProviderKind::AzureOpenai
+                    | ProviderKind::Bedrock
+                    | ProviderKind::Vertex => "/chat/completions",
+                    _ => "/v1/chat/completions",
                 };
+                let mut headers = credential_headers(provider.kind, key.as_deref());
+                if provider.kind == ProviderKind::Anthropic {
+                    headers.push((
+                        "anthropic-version".to_string(),
+                        ANTHROPIC_VERSION.to_string(),
+                    ));
+                }
                 let body = format!(
                     "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1}}",
                     serde_json::Value::String(model.clone())
@@ -130,25 +111,28 @@ fn build_probe_plan(
         );
     }
     let (url, mut headers) = probe_request(provider.kind, &provider.api_base, configured_path);
-    if let Some(key) = provider.resolve_api_key() {
-        match provider.kind {
-            ProviderKind::AzureOpenai => headers.push(("api-key".to_string(), key)),
-            // native gemini authenticates its generativelanguage endpoints with
-            // an api-key header, not a bearer token (unlike the openai-compat
-            // `gemini` shim)
-            ProviderKind::GeminiNative | ProviderKind::GeminiInteractions => {
-                headers.push(("x-goog-api-key".to_string(), key))
-            }
-            kind if kind.requires_env_api_key()
-                || kind == ProviderKind::Bedrock
-                || kind == ProviderKind::Vertex =>
-            {
-                headers.push(("authorization".to_string(), format!("Bearer {key}")));
-            }
-            _ => {}
-        }
-    }
+    headers.extend(credential_headers(
+        provider.kind,
+        provider.resolve_api_key().as_deref(),
+    ));
     (ProbePlan::Free { url, headers }, HealthSource::Probe)
+}
+
+/// The headers that authenticate a probe to `kind`, empty without a key.
+///
+/// Every kind gets its key, not only the ones that insist on an env var: the
+/// free probe lists models, and an upstream answers that list only to a caller
+/// it can authenticate. Without the key an `openai` or `anthropic` provider
+/// answers 401, which still reads as healthy but records no catalogue, so the
+/// provider's models never reach `/v1/models` (#2806). The scheme is the
+/// proxy's own, from [`ProviderKind::auth_header`].
+fn credential_headers(kind: ProviderKind, key: Option<&str>) -> Vec<(String, String)> {
+    key.map(|key| {
+        let (name, value) = kind.auth_header(key);
+        (name.to_string(), value.into_owned())
+    })
+    .into_iter()
+    .collect()
 }
 
 /// What a single probe observed.
@@ -898,6 +882,92 @@ mod tests {
                 );
             }
             _ => panic!("expected a free probe"),
+        }
+    }
+
+    fn free_probe_headers(p: &rolter_core::ProviderConfig) -> Vec<(String, String)> {
+        match build_probe_plan(p, "/").0 {
+            ProbePlan::Free { headers, .. } => headers,
+            _ => panic!("expected a free probe"),
+        }
+    }
+
+    /// #2806: the sweep sent no credential to `anthropic` or `openai` at all, so
+    /// the upstream answered 401. That still counted as healthy, but a 401 has
+    /// no catalogue to record, so the provider's models never reached
+    /// `/v1/models`.
+    #[test]
+    fn anthropic_free_probe_carries_the_key_as_x_api_key() {
+        let mut p = provider(ProviderKind::Anthropic);
+        p.api_key = Some("sk-ant".to_string());
+        assert_eq!(
+            free_probe_headers(&p),
+            vec![
+                (
+                    "anthropic-version".to_string(),
+                    ANTHROPIC_VERSION.to_string()
+                ),
+                ("x-api-key".to_string(), "sk-ant".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_free_probe_carries_the_key_as_a_bearer_token() {
+        let mut p = provider(ProviderKind::Openai);
+        p.api_key = Some("sk-test".to_string());
+        assert_eq!(
+            free_probe_headers(&p),
+            vec![("authorization".to_string(), "Bearer sk-test".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_free_probe_without_a_key_sends_no_credential() {
+        for kind in [ProviderKind::Openai, ProviderKind::Ollama] {
+            assert!(free_probe_headers(&provider(kind)).is_empty(), "{kind:?}");
+        }
+        // only the version header Anthropic's API insists on
+        let headers = free_probe_headers(&provider(ProviderKind::Anthropic));
+        assert_eq!(
+            headers,
+            vec![(
+                "anthropic-version".to_string(),
+                ANTHROPIC_VERSION.to_string()
+            )]
+        );
+    }
+
+    /// the sweep, the connection test and the proxy share one scheme per kind,
+    /// so no kind can be probed with a credential its API does not read
+    #[test]
+    fn every_kind_probes_with_the_header_the_proxy_sends() {
+        for kind in ProviderKind::ALL {
+            let mut p = provider(kind);
+            p.api_key = Some("sk-secret".to_string());
+            let (name, value) = kind.auth_header("sk-secret");
+            let headers = free_probe_headers(&p);
+            assert!(
+                headers
+                    .iter()
+                    .any(|(k, v)| k == name && v.as_str() == &*value),
+                "{kind:?}: {headers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn llm_call_probes_authenticate_the_same_way() {
+        let mut p = provider(ProviderKind::GeminiNative);
+        p.also_track_via_llm_call = true;
+        p.llm_probe_model = Some("gemini-2.5-flash".to_string());
+        p.api_key = Some("gem-secret".to_string());
+        match build_probe_plan(&p, "/").0 {
+            ProbePlan::LlmCall { headers, .. } => assert_eq!(
+                headers,
+                vec![("x-goog-api-key".to_string(), "gem-secret".to_string())]
+            ),
+            _ => panic!("expected an llm-call plan"),
         }
     }
 

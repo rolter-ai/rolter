@@ -2604,7 +2604,8 @@ async fn test_provider(
 
     let (url, headers) = rolter_core::probe_request(parsed_kind, &api_base, "/");
     let started = std::time::Instant::now();
-    let outcome = send_provider_probe(&state.egress, &url, headers, secret.as_deref()).await;
+    let outcome =
+        send_provider_probe(&state.egress, parsed_kind, &url, headers, secret.as_deref()).await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     let result = match outcome {
@@ -2651,8 +2652,15 @@ async fn test_provider(
 /// answering `302 Location: http://169.254.169.254/`, would reach a denied
 /// address. The probe has never used the provider's `egress_proxy`, and still
 /// does not, so there is no proxy path to keep.
+///
+/// The credential goes out the way `kind`'s API reads it (`x-api-key` for
+/// Anthropic, `api-key` for Azure, bearer for most), through the same function
+/// the proxy authenticates with. A bearer token to an API that ignores it reads
+/// as a rejected key, and every Anthropic provider failed its first test that
+/// way (#2806).
 async fn send_provider_probe(
     egress: &std::sync::Arc<rolter_core::EgressPolicy>,
+    kind: rolter_core::ProviderKind,
     url: &str,
     headers: impl IntoIterator<Item = (String, String)>,
     secret: Option<&str>,
@@ -2665,7 +2673,8 @@ async fn send_provider_probe(
         req = req.header(k, v);
     }
     if let Some(secret) = secret {
-        req = req.bearer_auth(secret);
+        let (name, value) = kind.auth_header(secret);
+        req = req.header(name, value.as_ref());
     }
     req.send().await
 }
@@ -6313,6 +6322,7 @@ mod probe_egress_tests {
         let listener = crate::egress_client::testing::Counter::start().await;
         let outcome = send_provider_probe(
             &crate::egress_client::testing::deny_loopback(),
+            rolter_core::ProviderKind::Openai,
             &listener.url("/v1/models"),
             Vec::new(),
             None,
@@ -6320,6 +6330,71 @@ mod probe_egress_tests {
         .await;
         assert!(outcome.is_err_and(|e| e.is_connect()));
         assert_eq!(listener.accepted(), 0);
+    }
+
+    /// a stub that answers a model list only to a request presenting `secret`
+    /// in the header `header`, and 401 to everything else, as the real APIs do
+    async fn serve_keyed_catalogue(header: &'static str, secret: String) -> String {
+        let app = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+            let secret = secret.clone();
+            async move {
+                let presented = headers.get(header).and_then(|v| v.to_str().ok());
+                // anthropic rejects a version-less request even when the key is good
+                let versioned = header != "x-api-key" || headers.contains_key("anthropic-version");
+                if presented == Some(secret.as_str()) && versioned {
+                    (
+                        StatusCode::OK,
+                        axum::Json(serde_json::json!({"data": [{"id": "m"}]})),
+                    )
+                } else {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        axum::Json(serde_json::json!({"error": "unauthorized"})),
+                    )
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a local port");
+        let base = format!("http://{}", listener.local_addr().expect("an address"));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        base
+    }
+
+    /// #2806: Anthropic reads the key from `x-api-key` and ignores a bearer
+    /// token, so a probe that sent the bearer form reported every valid key as
+    /// rejected.
+    #[tokio::test]
+    async fn an_anthropic_probe_presents_its_key_as_x_api_key() {
+        let secret = format!("sk-{}", uuid::Uuid::new_v4());
+        let base = serve_keyed_catalogue("x-api-key", secret.clone()).await;
+        let kind = rolter_core::ProviderKind::Anthropic;
+        let (url, headers) = rolter_core::probe_request(kind, &base, "/");
+
+        let response = send_provider_probe(&Default::default(), kind, &url, headers, Some(&secret))
+            .await
+            .expect("the upstream answers");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// every kind presents its key in the header its own API reads: the stub
+    /// only opens for the header the shared mapping names
+    #[tokio::test]
+    async fn every_kind_is_probed_with_the_credential_its_api_reads() {
+        for kind in rolter_core::ProviderKind::ALL {
+            let secret = format!("sk-{}", uuid::Uuid::new_v4());
+            let (name, value) = kind.auth_header(&secret);
+            let base = serve_keyed_catalogue(name, value.into_owned()).await;
+            let (url, headers) = rolter_core::probe_request(kind, &base, "/");
+            let response =
+                send_provider_probe(&Default::default(), kind, &url, headers, Some(&secret))
+                    .await
+                    .expect("the upstream answers");
+            // the stub opens for the exact header and value auth_header gives
+            // this kind, so it is that header that has to be on the wire
+            assert_eq!(response.status(), StatusCode::OK, "{kind:?}");
+        }
     }
 
     /// #2392: an upstream that passes the check cannot bounce the probe on.
@@ -6345,9 +6420,15 @@ mod probe_egress_tests {
         );
         tokio::spawn(async move { axum::serve(listener, app).await });
 
-        let response = send_provider_probe(&Default::default(), &base, Vec::new(), None)
-            .await
-            .expect("the upstream answers");
+        let response = send_provider_probe(
+            &Default::default(),
+            rolter_core::ProviderKind::Openai,
+            &base,
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("the upstream answers");
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(target.accepted(), 0);
     }
