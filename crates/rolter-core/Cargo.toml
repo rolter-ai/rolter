@@ -24,6 +24,9 @@ url.workspace = true
 # `gethostname`, the only portable way to ask the host its own name; there is
 # no std wrapper and a shell-launched process has no `HOSTNAME` to read (#1644)
 libc.workspace = true
+# only for `cli_guard`, the `--help` hygiene check the binaries run in their own
+# tests (#2793); no production build enables the feature that pulls it in
+clap = { workspace = true, optional = true }
 
 # opentelemetry otlp export, behind the default `otlp` feature so a build can
 # opt out of the tonic/prost/reqwest exporter stack when it is not needed
@@ -47,6 +50,10 @@ otlp = [
   "dep:opentelemetry-appender-tracing",
   "dep:tokio",
 ]
+# `rolter_core::cli_guard`: walks a clap `Command` and names every argument that
+# prints a secret from the environment in `--help`. Enabled by the binary
+# crates' dev-dependencies, so it is test support and never in a release build
+cli-guard = ["dep:clap"]
 
 [dev-dependencies]
 criterion.workspace = true

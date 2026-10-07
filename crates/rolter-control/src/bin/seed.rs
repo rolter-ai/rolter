@@ -16,7 +16,7 @@ use rolter_store::postgres::{connect, run_migrations};
 #[derive(Parser, Debug)]
 #[command(name = "rolter-seed", version, about = "bootstrap a rolter database")]
 struct Args {
-    #[arg(long, env = "ROLTER_DATABASE_URL")]
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
     database_url: String,
     /// org display name; created if no org with the derived slug exists yet
     #[arg(long, default_value = "default")]
@@ -62,4 +62,17 @@ async fn main() -> anyhow::Result<()> {
         summary.org_name, summary.org_slug
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    /// `--help` prints `[env: NAME=value]` for every flag backed by a variable,
+    /// so the database url, password and all, must opt out (#2793)
+    #[test]
+    fn secret_env_values_stay_out_of_help() {
+        let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&super::Args::command());
+        assert!(checked > 0, "the walk found no secret-looking env flags");
+    }
 }

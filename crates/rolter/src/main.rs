@@ -90,3 +90,18 @@ async fn main() -> anyhow::Result<()> {
         Command::Mfa(args) => mfa::run(args).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    /// `--help` prints `[env: NAME=value]` for every flag backed by a variable,
+    /// so a token or a url with a password in it must opt out (#2793). Walks
+    /// every subcommand, `gateway` and `control` included, so a flag added
+    /// anywhere under the launcher is caught without anyone extending a list
+    #[test]
+    fn secret_env_values_stay_out_of_help() {
+        let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&super::Cli::command());
+        assert!(checked > 0, "the walk found no secret-looking env flags");
+    }
+}

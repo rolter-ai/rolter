@@ -34,7 +34,7 @@ enum MfaCommand {
 #[derive(Args, Debug)]
 struct ResetArgs {
     /// postgres connection string for the control-plane store
-    #[arg(long, env = "ROLTER_DATABASE_URL")]
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
     database_url: String,
     /// the account to clear
     #[arg(long)]

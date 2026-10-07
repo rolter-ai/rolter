@@ -2959,6 +2959,7 @@ name = "rolter-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "clap",
  "criterion",
  "libc",
  "opentelemetry",

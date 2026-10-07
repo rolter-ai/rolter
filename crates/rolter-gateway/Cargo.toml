@@ -44,6 +44,8 @@ scalar_api_reference = { version = "0.2.2", default-features = false }
 
 [dev-dependencies]
 libc.workspace = true
+# `cli_guard`: every secret-bearing env flag must hide its value in `--help` (#2793)
+rolter-core = { workspace = true, features = ["cli-guard"] }
 criterion.workspace = true
 # a capturing layer, so the tenant attributes are asserted to land on the span
 # rather than assumed from the call site (#836)
