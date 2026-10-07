@@ -61,7 +61,7 @@ of them.
    state), and read the live state back with `rolter config export`. What the
    file cannot carry — keys, budgets, SSO, policy — stays in the dashboard or the
    API. ([platform-admin A3-d](journeys/platform-admin.md#a3--connect-models))
-4. **An engineer's first call.** Sign in, **Settings → My Virtual Keys → Generate virtual key**,
+4. **An engineer's first call.** Sign in, **Settings → Account & keys → Generate virtual key**,
    point the OpenAI or Anthropic SDK (or a coding agent) at the gateway with that
    key. ([engineer E1–E4](journeys/engineer.md)) A project invitation is enough:
    the scope switcher, the personal key and the Playground work for someone with

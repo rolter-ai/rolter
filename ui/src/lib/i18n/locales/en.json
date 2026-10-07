@@ -528,7 +528,7 @@
     "compatibility": "Compatibility",
     "effective-config": "Effective config",
     "security": "Security",
-    "api-keys": "My Virtual Keys",
+    "api-keys": "Account & keys",
     "performance": "Performance Tuning",
     "feature-flags": "Feature Flags",
     "preferences": "Preferences"
@@ -3527,26 +3527,41 @@
   },
   "scope": {
     "loading": "Loading scope…",
+    "trigger": "Scope: {{path}}",
+    "rows": {
+      "org": "Organization",
+      "team": "Team",
+      "project": "Project"
+    },
+    "needsOrg": "Available once an organization is selected.",
+    "needsTeam": "Available once a team is selected.",
+    "actions": {
+      "org": "Organization actions",
+      "team": "Team actions",
+      "project": "Project actions"
+    },
     "org": "Org",
     "team": "Team",
     "project": "Project",
     "noOrg": "no org",
     "noTeam": "no team",
     "noProject": "no project",
-    "addOrg": "Add org",
-    "addTeam": "Add team",
-    "addProject": "Add project",
-    "deleteOrg": "Delete org",
+    "deleteOrg": "Delete organization",
     "deleteTeam": "Delete team",
     "deleteProject": "Delete project",
+    "menu": {
+      "deleteOrg": "Delete organization…",
+      "deleteTeam": "Delete team…",
+      "deleteProject": "Delete project…"
+    },
     "confirm": {
-      "orgTitle": "Delete org {{name}}?",
+      "orgTitle": "Delete organization {{name}}?",
       "teamTitle": "Delete team {{name}}?",
       "projectTitle": "Delete project {{name}}?",
       "cascadeBody": "Everything under it is removed with it. This cannot be undone.",
       "body": "Everything scoped to it is removed with it, routes and virtual keys included. This cannot be undone."
     },
-    "newOrg": "New org",
+    "newOrg": "New organization",
     "newTeam": "New team",
     "newProject": "New project",
     "name": "Name",
@@ -3793,7 +3808,7 @@
       "subtitle": "Configure security and access-control settings for the gateway."
     },
     "api-keys": {
-      "title": "My Virtual Keys",
+      "title": "Account & keys",
       "subtitle": "Your own virtual keys for calling the gateway from code."
     },
     "performance": {
@@ -3823,7 +3838,13 @@
     "updateAvailable": "v{{latest}} available",
     "updateAvailableHint": "rolter v{{latest}} is available — open the release notes",
     "role": "Admin",
-    "roleWithOrg": "{{role}} · {{org}}",
+    "superadmin": "Superadmin",
+    "roleLine": {
+      "superadmin": "Superadmin · whole deployment",
+      "org": "{{role}} · org {{name}}",
+      "team": "{{role}} · team {{name}}",
+      "project": "{{role}} · project {{name}}"
+    },
     "roles": {
       "admin": "Admin",
       "member": "Member",
@@ -3831,7 +3852,6 @@
     },
     "checkingSession": "Checking your session…",
     "scope": "Scope",
-    "accountAndKeys": "Account & virtual keys",
     "signOut": "Sign out",
     "gateway": {
       "checking": "checking gateway",
@@ -3858,7 +3878,7 @@
       "body": "No admin token is set, so every request to this control plane is served as superadmin — anyone who can reach it can read keys and change providers, routing and budgets. Set ROLTER_ADMIN_TOKEN to close it."
     },
     "navLabel": "Main navigation",
-    "userMenuLabel": "Account and scope",
+    "userMenuLabel": "Account menu",
     "skipToContent": "Skip to content",
     "noNavMatches": "No screens match",
     "palette": {

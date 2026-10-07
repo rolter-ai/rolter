@@ -10,18 +10,19 @@ import {
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnchoredPanel, moveFocus, openPanelCount } from "@/components/ui/anchored-panel";
 import { Badge } from "@/components/ui/badge";
 import { KbdChord } from "@/components/ui/kbd";
+import { Menu } from "@/components/ui/menu";
 import { useModalA11y } from "@/lib/modal-a11y";
 import { shortcutChord } from "@/lib/shortcuts";
 import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
-// left rail: brand + collapse toggle, nav search, nav groups (flat items or
-// collapsible parents with sub-items), footer links + version, org/user block
-// pinned to the bottom. collapses to an icon-only rail. the active item carries
-// the folk-red вышивка thread on its left edge. mirrors the Rolter Design
-// System navigation/NavSidebar.
+// left rail: brand + collapse toggle, a slot for the scope switcher, nav search,
+// nav groups (flat items or collapsible parents with sub-items), footer links +
+// version, the account card pinned to the bottom. collapses to an icon-only
+// rail. the active item carries the folk-red вышивка thread on its left edge.
 //
 // three shapes by viewport (#959) — below `md` an off-canvas drawer over a
 // scrim, between `md` and `lg` an icon rail, at `lg` and up the full resizable
@@ -56,6 +57,21 @@ export interface NavUser {
   onClick?: () => void;
 }
 
+/**
+ * What the account card opens: a menu about the person (#2805).
+ *
+ * The card is the one place the rail names who is signed in, so the menu is
+ * about them and nothing else — their identity above, their own screens and
+ * signing out below. What the whole dashboard is looking at (the scope) is the
+ * header's `headerExtra`, not part of this.
+ */
+export interface NavUserMenu {
+  /** the identity block above the entries; not a menu entry itself */
+  header?: React.ReactNode;
+  /** the entries — `MenuItem`s and `MenuSeparator`s. `close` dismisses the menu */
+  items: (close: () => void) => React.ReactNode;
+}
+
 export interface NavFooterLink {
   key: string;
   icon: React.ReactNode;
@@ -80,11 +96,14 @@ export interface NavSidebarProps extends React.HTMLAttributes<HTMLElement> {
   activeKey?: string;
   onNavigate?: (key: string) => void;
   user?: NavUser;
-  /* when provided, the user block becomes a menu trigger: clicking it opens a
-     popover above the block rendering this content (scope switcher, account,
-     sign out). `close` dismisses the popover. takes precedence over
-     user.onClick. */
-  userMenu?: (close: () => void) => React.ReactNode;
+  /* when provided, the user block becomes a menu trigger: clicking it opens an
+     actions menu beside the block, above it on the full rail and to its right
+     on the folded one. takes precedence over user.onClick. */
+  userMenu?: NavUserMenu;
+  /* rendered under the brand and above the search box, on every rail shape.
+     receives whether the rail is folded, so it can drop to an icon. the scope
+     switcher sits here (#2805) */
+  headerExtra?: (folded: boolean) => React.ReactNode;
   /* optional rail chrome, each piece off unless asked for so a bare call site
      renders just brand, groups and user block */
   /* a filter box under the brand that narrows the groups to matching items.
@@ -162,22 +181,17 @@ function holds(it: NavItem, key: string | undefined): boolean {
   return (it.children ?? []).some((c) => c.key === key || holds(c, key));
 }
 
-/** space between the rail's edge and the flyout, and between the flyout and the viewport's */
-const FLYOUT_GAP = 6;
-const FLYOUT_MARGIN = 8;
-
 /**
  * A group's screens, opened beside its icon on the folded rail (#2803).
  *
- * The rail's list scrolls, and a scroll container clips an absolutely
- * positioned child, so the flyout is `fixed` and placed from the icon's
- * rectangle: against the rail's right edge, level with the icon, nudged up
- * when the viewport is too short to hold it below. It is a disclosure, not an
- * ARIA menu: the entries are navigation buttons, so they stay in the tab order
- * right after the icon that opened them, and arrows are an addition rather than
- * the only way in. Escape closes and hands focus back to the icon; a pointer
- * press outside, focus leaving, or the rail scrolling out from under it closes
- * it without taking focus.
+ * The panel is `AnchoredPanel`'s: `fixed` and placed from the icon's rectangle,
+ * against the rail's right edge and level with the icon, because the rail's list
+ * scrolls and a scroll container clips an absolutely positioned child. It is a
+ * disclosure, not an ARIA menu: the entries are navigation buttons, so they stay
+ * in the tab order right after the icon that opened them, and arrows are an
+ * addition rather than the only way in. Escape closes and hands focus back to
+ * the icon; a pointer press outside, focus leaving, or the rail scrolling out
+ * from under it closes it without taking focus.
  *
  * Rendered only for a group the caller may see: `visibleNav` has already
  * dropped the screens a role cannot read, so a refused screen is not in
@@ -199,28 +213,6 @@ function GroupFlyout({
   const { t } = useTranslation();
   const ref = React.useRef<HTMLDivElement>(null);
   const headingId = React.useId();
-  const [pos, setPos] = React.useState({ left: 0, top: 0 });
-  // read at event time, so a new `onClose` each render does not re-bind the
-  // document listeners below
-  const close = React.useEffectEvent(onClose);
-
-  const place = React.useCallback(() => {
-    const icon = anchor.getBoundingClientRect();
-    const edge = (anchor.closest("nav") ?? anchor).getBoundingClientRect().right;
-    const height = ref.current?.offsetHeight ?? 0;
-    const lowest = window.innerHeight - FLYOUT_MARGIN - height;
-    setPos({
-      left: edge + FLYOUT_GAP,
-      top: Math.max(FLYOUT_MARGIN, Math.min(icon.top, lowest)),
-    });
-  }, [anchor]);
-
-  // measured before paint, so the flyout never shows at the corner first
-  React.useLayoutEffect(() => {
-    place();
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [place]);
 
   const entries = () => Array.from(ref.current?.querySelectorAll<HTMLElement>("button") ?? []);
 
@@ -232,73 +224,24 @@ function GroupFlyout({
     (here ?? all[0])?.focus({ preventScroll: true });
   }, []);
 
-  React.useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (ref.current?.contains(target) || anchor.contains(target)) return;
-      close(false);
-    };
-    // Escape works from the icon too, once focus has gone back to it
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      close(true);
-    };
-    // the icon moves when the rail's list scrolls: the flyout follows it, and
-    // goes once the icon has scrolled out of sight
-    const onScroll = (e: Event) => {
-      if (!(e.target instanceof Element) || !e.target.contains(anchor)) return;
-      const view = e.target.getBoundingClientRect();
-      const icon = anchor.getBoundingClientRect();
-      if (icon.bottom < view.top || icon.top > view.bottom) close(false);
-      else place();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("scroll", onScroll, true);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("scroll", onScroll, true);
-    };
-  }, [anchor, place]);
-
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const all = entries();
-    const at = all.indexOf(document.activeElement as HTMLElement);
-    let next: number | null = null;
-    if (e.key === "ArrowDown") next = (at + 1) % all.length;
-    else if (e.key === "ArrowUp") next = (at - 1 + all.length) % all.length;
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = all.length - 1;
-    else if (e.key === "ArrowLeft") {
+    if (moveFocus(e, entries())) return;
+    if (e.key === "ArrowLeft") {
       e.preventDefault();
       onClose(true);
-      return;
-    }
-    if (next === null) return;
-    e.preventDefault();
-    all[next]?.focus();
-  };
-
-  // Tab past either end leaves the flyout open behind a focus that has moved
-  // on; a null target (the press landed on plain text) is not leaving
-  const onBlur = (e: React.FocusEvent<HTMLDivElement>) => {
-    const to = e.relatedTarget;
-    if (to instanceof Node && !e.currentTarget.contains(to) && !anchor.contains(to)) {
-      onClose(false);
     }
   };
 
   return (
-    <div
+    <AnchoredPanel
       ref={ref}
+      anchor={anchor}
+      side="right"
+      onClose={onClose}
       role="group"
       aria-labelledby={headingId}
       onKeyDown={onKeyDown}
-      onBlur={onBlur}
-      style={{ left: pos.left, top: pos.top }}
-      className="fixed z-50 flex max-h-[calc(100vh-1rem)] w-max min-w-[11rem] max-w-[min(20rem,calc(100vw-4.5rem))] flex-col gap-0.5 overflow-y-auto rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] p-1 shadow-lg"
+      className="flex w-max min-w-[11rem] max-w-[min(20rem,calc(100vw-4.5rem))] flex-col gap-0.5 overflow-y-auto p-1"
     >
       <div
         id={headingId}
@@ -328,7 +271,7 @@ function GroupFlyout({
           )}
         </button>
       ))}
-    </div>
+    </AnchoredPanel>
   );
 }
 
@@ -349,6 +292,7 @@ export function NavSidebar({
   onNavigate,
   user,
   userMenu,
+  headerExtra,
   searchable,
   collapsible,
   defaultCollapsed,
@@ -377,7 +321,7 @@ export function NavSidebar({
   const [flyout, setFlyout] = React.useState<string | null>(null);
   const triggers = React.useRef(new Map<string, HTMLButtonElement>());
   const [userOpen, setUserOpen] = React.useState(false);
-  const userRef = React.useRef<HTMLDivElement>(null);
+  const cardRef = React.useRef<HTMLButtonElement>(null);
   const navRef = React.useRef<HTMLElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
   const [width, setWidth] = React.useState(NAV_DEFAULT_WIDTH);
@@ -386,13 +330,13 @@ export function NavSidebar({
   const closeDrawer = React.useCallback(() => onOpenChange?.(false), [onOpenChange]);
 
   // the drawer is a modal: it covers the screen it navigates, so it owes the
-  // same focus trap, Escape and scroll lock a Sheet does (#1181). the user
-  // menu opens *inside* it and owns Escape while it is up
+  // same focus trap, Escape and scroll lock a Sheet does (#1181). a menu or
+  // popover opens *inside* it and owns Escape while it is up
   const drawerOpen = isDrawer && drawerRequested;
   const a11y = useModalA11y(panelRef, {
     open: drawerOpen,
     onEscape: () => {
-      if (userOpen) return;
+      if (openPanelCount() > 0) return;
       closeDrawer();
     },
   });
@@ -464,38 +408,16 @@ export function NavSidebar({
     e.preventDefault();
   };
 
-  React.useEffect(() => {
-    if (!userOpen) return;
-    // the scope switcher's create/delete dialogs are portaled to the body, so
-    // a click inside one lands "outside" the menu; treat any open *modal* as
-    // part of the menu, or the first keystroke in the name field closes both.
-    // the popover itself is a (non-modal) dialog, and Escape inside it must
-    // still close it, hence the aria-modal test rather than the role
-    const inDialog = (target: EventTarget | null) =>
-      target instanceof Element && target.closest('[aria-modal="true"]') != null;
-    const onDoc = (e: MouseEvent) => {
-      if (inDialog(e.target)) return;
-      if (userRef.current && !userRef.current.contains(e.target as Node)) setUserOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !inDialog(e.target)) setUserOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [userOpen]);
-
   // the drawer has room for labels whatever the rail was folded to before the
   // viewport shrank, so it always shows them
   const folded = collapsed && !isDrawer;
 
   // a flyout belongs to the folded rail and to the screen it was opened on:
-  // unfolding, or arriving somewhere by any other route, puts it away
+  // unfolding, or arriving somewhere by any other route, puts it away. the
+  // account menu goes with it, since it is placed for one shape of the rail
   React.useEffect(() => {
     setFlyout(null);
+    setUserOpen(false);
   }, [folded, activeKey]);
 
   // one accessible name for the hint in both shapes of the rail
@@ -735,6 +657,8 @@ export function NavSidebar({
         )}
       </div>
 
+      {headerExtra?.(folded)}
+
       {/* the focus ring lives on the wrapper, not the input: the input is
           borderless inside a bordered box, so a ring on it would draw inside
           that box rather than around the control a keyboard user sees (#963) */}
@@ -850,36 +774,29 @@ export function NavSidebar({
       )}
 
       {user && (
-        <div
-          ref={userRef}
-          className={cn("relative mt-auto flex flex-col gap-1.5", folded && "items-center")}
-        >
-          {userMenu && userOpen && (
-            <div
-              role="dialog"
-              aria-label={t("shell.userMenuLabel")}
-              className={cn(
-                "absolute bottom-[calc(100%+6px)] z-40 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] py-1.5 shadow-lg",
-                folded ? "left-0 w-[min(260px,calc(100vw_-_1.5rem))]" : "inset-x-0",
-              )}
-            >
-              {userMenu(() => setUserOpen(false))}
-            </div>
-          )}
+        <div className={cn("mt-auto flex flex-col gap-1.5", folded && "items-center")}>
           <button
+            ref={cardRef}
+            type="button"
             onClick={() => (userMenu ? setUserOpen((v) => !v) : user.onClick?.())}
-            aria-haspopup={userMenu ? "dialog" : undefined}
+            aria-haspopup={userMenu ? "menu" : undefined}
             aria-expanded={userMenu ? userOpen : undefined}
             title={folded && typeof user.name === "string" ? user.name : undefined}
+            // folded, the initials are all the button says: the name is what a
+            // reader hears, not a lone letter
+            aria-label={folded && typeof user.name === "string" ? user.name : undefined}
             className={cn(
               "flex items-center gap-2 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               folded
                 ? "justify-center p-0.5 hover:bg-muted"
-                : "border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 hover:border-[color:var(--border-default)]",
+                : "w-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 text-left hover:border-[color:var(--border-default)]",
               userOpen && !folded && "border-[color:var(--border-default)]",
             )}
           >
-            <span className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-full bg-[color:var(--red-folk)] text-xs font-semibold text-white">
+            <span
+              aria-hidden="true"
+              className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-full bg-[color:var(--red-folk)] text-xs font-semibold text-white"
+            >
               {user.initials}
             </span>
             {!folded && (
@@ -894,10 +811,29 @@ export function NavSidebar({
                     </span>
                   )}
                 </span>
-                <ChevronsUpDown className="ml-auto h-3.5 w-3.5 text-[color:var(--text-subtle)]" />
+                <ChevronsUpDown className="ml-auto h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]" />
               </>
             )}
           </button>
+          {userMenu && userOpen && cardRef.current && (
+            <Menu
+              anchor={cardRef.current}
+              label={t("shell.userMenuLabel")}
+              header={userMenu.header}
+              side={folded ? "right" : "above"}
+              align={folded ? "end" : "start"}
+              matchWidth={!folded}
+              onClose={(restoreFocus) => {
+                setUserOpen(false);
+                if (restoreFocus) cardRef.current?.focus();
+              }}
+            >
+              {userMenu.items(() => {
+                setUserOpen(false);
+                cardRef.current?.focus();
+              })}
+            </Menu>
+          )}
         </div>
       )}
     </nav>

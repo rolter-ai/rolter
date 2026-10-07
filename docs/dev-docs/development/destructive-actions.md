@@ -339,7 +339,7 @@ Two things follow for a call site:
   it.
 
 A confirmation rendered outside any `UxScreenProvider`, such as the scope
-switcher in the user menu, has no screen key and stays silent.
+switcher's in the rail header, has no screen key and stays silent.
 
 ## Dismissing a dirty editor
 

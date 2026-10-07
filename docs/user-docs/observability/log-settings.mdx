@@ -50,7 +50,7 @@ The dashboard states all of this at the point of decision: the switch that turns
 
 ### Who can read captured payloads
 
-A captured body is shown to the **members and admins** of the project the request belongs to — not to everyone who can see the request-log row. A viewer sees the row, its tokens, cost and status, with both bodies withheld. A project admin can let that project's viewers read the bodies too, from the project's settings (the gear next to the project in the scope switcher) or with [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). The deployment-wide switch above still decides whether anything is captured at all. See [who sees which request logs](/security/rbac#who-sees-which-request-logs).
+A captured body is shown to the **members and admins** of the project the request belongs to — not to everyone who can see the request-log row. A viewer sees the row, its tokens, cost and status, with both bodies withheld. A project admin can let that project's viewers read the bodies too, from the project's settings (**Project settings** in the project's **⋯** menu in the scope switcher) or with [`PUT /api/v1/projects/{id}/settings`](/api/project-settings). The deployment-wide switch above still decides whether anything is captured at all. See [who sees which request logs](/security/rbac#who-sees-which-request-logs).
 
 ### Why a payload panel is empty
 

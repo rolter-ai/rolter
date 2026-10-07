@@ -9,10 +9,13 @@ import {
   shellStubWithStability,
 } from "./pages/shell-harness";
 import {
+  ORG,
+  PROJECT,
   TEAM,
   confirmation,
   expectForbidden,
   json,
+  pickOption,
   recording,
   withCapabilities,
   type FetchStub,
@@ -23,7 +26,12 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { SHORTCUTS, chordText, shortcutChord } from "@/lib/shortcuts";
 import { withPageA11y } from "@/lib/story-a11y";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atTablet,
+  expectInViewport,
+  expectNoHorizontalOverflow,
+} from "@/lib/story-viewport";
 
 // The assembled shell (#1239): rail + header + screen, signed in.
 //
@@ -94,43 +102,65 @@ export const Desktop: Story = {
   },
 };
 
+/** `/auth/me` as `user` holding `memberships`, for the shell stub's first route */
+const me = (
+  user: { is_superadmin: boolean; display_name?: string | null },
+  memberships: Record<string, unknown>[] = [],
+): [string, () => unknown] => [
+  "/api/v1/auth/me",
+  () => ({
+    user: {
+      id: "user-1",
+      email: "anya@acme.co",
+      display_name: null,
+      bio: null,
+      created_at: "2026-01-01T00:00:00Z",
+      ...user,
+    },
+    memberships: memberships.map((m) => ({
+      id: "membership-1",
+      user_id: "user-1",
+      source: "manual",
+      created_at: "2026-01-01T00:00:00Z",
+      ...m,
+    })),
+    display_name_managed: false,
+  }),
+];
+
+const menuLabel = en.shell.userMenuLabel;
+
+/** Open the account card's menu from the rail, wherever the rail is. */
+async function openAccountMenu(rail: HTMLElement, name: string | RegExp) {
+  const card = await within(rail).findByRole("button", { name });
+  await userEvent.click(card);
+  const menu = await within(rail).findByRole("menu", { name: menuLabel });
+  return { card, menu };
+}
+
 /**
  * The rail's account block goes by the display name when the account has one and
  * by the email when it has not; the email is never lost, it moves under the name
- * in the account menu (#2434).
+ * in the account menu (#2434). The menu is about the person alone (#2805): who
+ * they are, the role they hold and where, their own two screens, and the way out.
  */
 export const AccountMenuShowsTheDisplayName: Story = {
   render: () => (
-    <AppShell
-      fetchStub={shellStub([
-        [
-          "/api/v1/auth/me",
-          () => ({
-            user: {
-              id: "user-1",
-              email: "anya@acme.co",
-              display_name: "Anya Petrova",
-              bio: null,
-              is_superadmin: true,
-              created_at: "2026-01-01T00:00:00Z",
-            },
-            memberships: [],
-            display_name_managed: false,
-          }),
-        ],
-      ])}
-    />
+    <AppShell fetchStub={shellStub([me({ is_superadmin: true, display_name: "Anya Petrova" })])} />
   ),
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     const account = await within(rail).findByText("Anya Petrova");
     await expect(account).toBeVisible();
     await expect(within(rail).queryByText("anya@acme.co")).toBeNull();
-    await userEvent.click(account);
+    // the card says the role in a word; the level belongs to the menu
+    await expect(within(rail).getByText(en.shell.superadmin)).toBeVisible();
+    const { menu } = await openAccountMenu(rail, /Anya Petrova/);
     // the menu names the person and keeps the address as the second line
-    const menu = within(document.body);
-    await expect((await menu.findAllByText("Anya Petrova")).length).toBeGreaterThan(1);
-    await expect(await menu.findByText("anya@acme.co")).toBeVisible();
+    const panel = menu.parentElement!;
+    await expect(within(panel).getByText("Anya Petrova")).toBeVisible();
+    await expect(within(panel).getByText("anya@acme.co")).toBeVisible();
+    await expect(within(panel).getByText(en.shell.roleLine.superadmin)).toBeVisible();
   },
 };
 
@@ -140,6 +170,202 @@ export const AccountMenuFallsBackToTheEmail: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     await expect(await within(rail).findByText("anya@acme.co")).toBeVisible();
+  },
+};
+
+/**
+ * What the menu holds, and what it no longer does: the entries are the person's
+ * own screens and Sign out, in that order, named the way the rail names them —
+ * and no scope pickers, no creating or deleting an org beside Sign out.
+ */
+export const AccountMenuHoldsThePersonOnly: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    // the rail's own leaves, found through its search box, which opens a group
+    const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
+    await userEvent.type(search, "account");
+    await expect(within(rail).getByRole("button", { name: nav["api-keys"] })).toBeVisible();
+    await userEvent.clear(search);
+    await userEvent.type(search, "preferences");
+    await expect(within(rail).getByRole("button", { name: nav.preferences })).toBeVisible();
+    await userEvent.clear(search);
+
+    const { menu } = await openAccountMenu(rail, /anya@acme.co/);
+    const entries = within(menu)
+      .getAllByRole("menuitem")
+      .map((el) => el.textContent);
+    await expect(entries).toEqual([nav["api-keys"], nav.preferences, en.shell.signOut]);
+    await expect(within(menu.parentElement!).queryByRole("combobox")).toBeNull();
+    await expect(
+      within(rail).queryByRole("menuitem", { name: en.scope.menu.deleteOrg }),
+    ).toBeNull();
+  },
+};
+
+/** Each entry goes where its name says, and takes the menu with it. */
+export const AccountMenuEntriesNavigate: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rail = await railOf(canvasElement);
+    const { card, menu } = await openAccountMenu(rail, /anya@acme.co/);
+    await userEvent.click(within(menu).getByRole("menuitem", { name: nav["api-keys"] }));
+    await canvas.findByRole("heading", { level: 1, name: screens["api-keys"].title });
+    await expect(within(rail).getByRole("button", { name: nav["api-keys"] })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await waitFor(() => expect(within(rail).queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(card).toHaveFocus());
+
+    await userEvent.click(card);
+    await userEvent.click(await within(rail).findByRole("menuitem", { name: nav.preferences }));
+    await canvas.findByRole("heading", { level: 1, name: screens.preferences.title });
+  },
+};
+
+/**
+ * The role line names the level the role applies at, read off the membership
+ * that reaches the scope in view (#2805): an org grant, a team grant and a
+ * project grant each say so, with the name of the thing they were made on.
+ */
+export const RoleLineNamesAnOrgGrant: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([me({ is_superadmin: false }, [{ org_id: ORG.id, role: "admin" }])])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const { menu } = await openAccountMenu(rail, /anya@acme.co/);
+    await expect(within(menu.parentElement!).getByText(`Admin · org ${ORG.name}`)).toBeVisible();
+  },
+};
+
+export const RoleLineNamesATeamGrant: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([
+        me({ is_superadmin: false }, [{ org_id: ORG.id, team_id: TEAM.id, role: "member" }]),
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const { menu } = await openAccountMenu(rail, /anya@acme.co/);
+    await expect(within(menu.parentElement!).getByText(`Member · team ${TEAM.name}`)).toBeVisible();
+  },
+};
+
+export const RoleLineNamesAProjectGrant: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([
+        me({ is_superadmin: false }, [
+          {
+            project_id: PROJECT.id,
+            scope_org_id: ORG.id,
+            scope_team_id: TEAM.id,
+            role: "viewer",
+          },
+        ]),
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const { menu } = await openAccountMenu(rail, /anya@acme.co/);
+    await expect(
+      within(menu.parentElement!).getByText(`Viewer · project ${PROJECT.name}`),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * A superadmin holds no membership at all and is still a superadmin
+ * everywhere: the line says the whole deployment, and the scope path still
+ * renders for the rest of the dashboard to read.
+ */
+export const SuperadminWithNoMembership: Story = {
+  render: () => <AppShell fetchStub={shellStub([me({ is_superadmin: true }, [])])} />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const { menu } = await openAccountMenu(rail, /anya@acme.co/);
+    await expect(within(menu.parentElement!).getByText(en.shell.roleLine.superadmin)).toBeVisible();
+    await expect(
+      await within(rail).findByRole("button", {
+        name: en.scope.trigger.replace("{{path}}", `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`),
+      }),
+    ).toBeVisible();
+  },
+};
+
+/**
+ * The scope switcher is the rail's header, under the brand and above the search
+ * box (#2805), on its own and not behind the account card: what the whole
+ * dashboard shows is not a property of who is signed in. It shows the path in
+ * view, and the popover changes it.
+ */
+export const ScopeSwitcherSitsUnderTheBrand: Story = {
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    const path = `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`;
+    const trigger = await within(rail).findByRole("button", {
+      name: en.scope.trigger.replace("{{path}}", path),
+    });
+    const brand = within(rail).getByText("rolter");
+    const search = within(rail).getByRole("textbox", { name: en.shell.searchNav });
+    const follows = (a: Element, b: Element) =>
+      a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    await expect(follows(brand, trigger)).toBeTruthy();
+    await expect(follows(trigger, search)).toBeTruthy();
+
+    await userEvent.click(trigger);
+    const popover = within(await within(rail).findByRole("dialog", { name: en.shell.scope }));
+    await expect(popover.getByLabelText(en.scope.rows.org)).toHaveValue(ORG.name);
+    await expect(popover.getByLabelText(en.scope.rows.team)).toHaveValue(TEAM.name);
+    await expect(popover.getByLabelText(en.scope.rows.project)).toHaveValue(PROJECT.name);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+/** A pick in the popover reaches the shell's own copy of the scope, not just its own. */
+export const ScopePopoverChangesTheScope: Story = {
+  render: () => (
+    <AppShell
+      fetchStub={async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (/^\/api\/v1\/orgs\/[^/]+\/teams$/.test(path)) {
+          return json([TEAM, { ...TEAM, id: "team-2", name: "Research" }]);
+        }
+        if (path === "/api/v1/teams/team-2/projects") {
+          return json([{ ...PROJECT, id: "project-2", team_id: "team-2", name: "Search" }]);
+        }
+        return shellStub()(input, init);
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await userEvent.click(
+      await within(rail).findByRole("button", {
+        name: en.scope.trigger.replace("{{path}}", `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`),
+      }),
+    );
+    const popover = within(await within(rail).findByRole("dialog", { name: en.shell.scope }));
+    await pickOption(popover.getByLabelText(en.scope.rows.team), "Research");
+    await waitFor(() =>
+      expect(
+        within(rail).getByRole("button", {
+          name: en.scope.trigger.replace("{{path}}", `${ORG.name} / Research / Search`),
+        }),
+      ).toBeVisible(),
+    );
+    // still open: the project under the new team is usually the next pick
+    await expect(popover.getByLabelText(en.scope.rows.project)).toHaveValue("Search");
   },
 };
 
@@ -191,9 +417,9 @@ function withoutProjects(): FetchStub {
 
 /**
  * Getting started opens the create-project dialog from the Dashboard with the
- * account menu closed (#2611). The scope switcher lives in that menu and is not
- * in the document while it is shut, so this is the story that fails if the
- * dialog ever moves back into it.
+ * scope popover closed (#2611). The switcher's own **New project** entry is only
+ * in the document while its menu is open, so this is the story that fails if the
+ * dialog ever moves back into the switcher.
  */
 export const GettingStartedOpensCreateProject: Story = {
   // the dismissal is persisted per browser, and a card another story put away
@@ -205,8 +431,8 @@ export const GettingStartedOpensCreateProject: Story = {
     const create = await canvas.findByRole("button", {
       name: en.pages.gettingStarted.createProject,
     });
-    // the switcher, and its own + beside Project, are not mounted
-    await expect(canvas.queryByRole("button", { name: en.scope.addProject })).toBeNull();
+    // the switcher's own entry for it is not on screen: its menu is shut
+    await expect(canvas.queryByRole("menuitem", { name: en.scope.newProject })).toBeNull();
     await userEvent.click(create);
     const dialog = within(await confirmation());
     await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
@@ -286,6 +512,167 @@ export const FoldedRailFlyoutLeavesOutRefusedScreens: Story = {
     await expect(flyout.getByRole("button", { name: nav["gov-teams"] })).toBeVisible();
     await expect(flyout.queryByRole("button", { name: nav["audit-logs"] })).toBeNull();
     await expect(flyout.queryByRole("button", { name: nav.sso })).toBeNull();
+  },
+};
+
+/**
+ * Folded to the icon strip the card is the initials alone, and its menu opens
+ * beside the rail with the same entries and the same keyboard (#2805): Enter
+ * opens it onto the first entry, the arrows walk it, Enter takes one.
+ */
+export const AccountMenuOnTheFoldedRail: Story = {
+  ...atTablet,
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rail = await railOf(canvasElement);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    const card = await within(rail).findByRole("button", { name: "anya@acme.co" });
+    card.focus();
+    await userEvent.keyboard("{Enter}");
+    const menu = within(await within(rail).findByRole("menu", { name: menuLabel }));
+    await waitFor(() =>
+      expect(menu.getByRole("menuitem", { name: nav["api-keys"] })).toHaveFocus(),
+    );
+    const box = within(rail).getByRole("menu", { name: menuLabel }).parentElement!;
+    await expect(box.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      rail.getBoundingClientRect().right,
+    );
+    await expect(within(box).getByText(en.shell.roleLine.superadmin)).toBeVisible();
+    await expectNoHorizontalOverflow();
+
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+    await canvas.findByRole("heading", { level: 1, name: screens.preferences.title });
+    await waitFor(() => expect(card).toHaveFocus());
+  },
+};
+
+/**
+ * The scope switcher folds to a building: no text, the path in its name, and its
+ * popover opens beside the rail with the three pickers in it.
+ */
+export const ScopePopoverOnTheFoldedRail: Story = {
+  ...atTablet,
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    const trigger = await within(rail).findByRole("button", {
+      name: en.scope.trigger.replace("{{path}}", `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`),
+    });
+    await expect(within(rail).queryByText(ORG.name)).toBeNull();
+    await userEvent.click(trigger);
+    const dialog = await within(rail).findByRole("dialog", { name: en.shell.scope });
+    await expect(dialog.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      rail.getBoundingClientRect().right,
+    );
+    await expect(within(dialog).getByLabelText(en.scope.rows.project)).toHaveValue(PROJECT.name);
+    await expectNoHorizontalOverflow();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+/**
+ * Inside the drawer the popover and the menu own Escape while they are up: the
+ * first press puts them away, and only a press with nothing open closes the
+ * drawer.
+ */
+export const ScopePopoverInsideTheDrawerOwnsEscape: Story = {
+  ...atMobile,
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: OPEN_NAV }));
+    const drawer = within(await canvas.findByRole("dialog", { name: NAV_LABEL }));
+    await userEvent.click(
+      await drawer.findByRole("button", {
+        name: en.scope.trigger.replace("{{path}}", `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`),
+      }),
+    );
+    await drawer.findByRole("dialog", { name: en.shell.scope });
+    await expectNoHorizontalOverflow();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(drawer.queryByRole("dialog", { name: en.shell.scope })).toBeNull());
+    await expect(canvas.getByRole("dialog", { name: NAV_LABEL })).toBeVisible();
+
+    await userEvent.click(await drawer.findByRole("button", { name: /anya@acme.co/ }));
+    await drawer.findByRole("menu", { name: menuLabel });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(drawer.queryByRole("menu")).toBeNull());
+    await expect(canvas.getByRole("dialog", { name: NAV_LABEL })).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("dialog", { name: NAV_LABEL })).toBeNull());
+  },
+};
+
+// the longest copy the new rail pieces carry is Russian: the role line names a
+// level and a name, the trigger a whole path. at the narrowest full rail, 1024px,
+// and folded, the card, the trigger and both panels have to stay inside the page
+const RU_1024 = {
+  parameters: { viewportSize: { width: 1024, height: 768 } },
+  globals: { locale: "ru" },
+} as const;
+
+export const AccountMenuAndScopeFitInRussian: Story = {
+  ...RU_1024,
+  render: () => (
+    <AppShell
+      fetchStub={shellStub([
+        me({ is_superadmin: false }, [{ org_id: ORG.id, team_id: TEAM.id, role: "member" }]),
+      ])}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement, ru.shell.navLabel);
+    const path = `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`;
+    await userEvent.click(
+      await within(rail).findByRole("button", { name: ru.scope.trigger.replace("{{path}}", path) }),
+    );
+    const popover = await within(rail).findByRole("dialog", { name: ru.shell.scope });
+    await expect(within(popover).getByLabelText(ru.scope.rows.org)).toHaveValue(ORG.name);
+    await expect(within(popover).getAllByText(/./).length).toBeGreaterThan(0);
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(await within(rail).findByRole("button", { name: /anya@acme.co/ }));
+    const menu = await within(rail).findByRole("menu", { name: ru.shell.userMenuLabel });
+    await expect(
+      within(menu.parentElement!).getByText(`Участник · команда ${TEAM.name}`),
+    ).toBeVisible();
+    // each entry is whole: no label is cut by the panel's own edge
+    for (const entry of within(menu).getAllByRole("menuitem")) {
+      await expect(entry.scrollWidth).toBeLessThanOrEqual(entry.clientWidth + 1);
+    }
+    const box = menu.parentElement!.getBoundingClientRect();
+    await expect(box.right).toBeLessThanOrEqual(window.innerWidth);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/** The same two panels beside the folded rail, in Russian, stay inside the window. */
+export const AccountMenuAndScopeFitInRussianFolded: Story = {
+  parameters: atTablet.parameters,
+  globals: { ...atTablet.globals, locale: "ru" },
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement, ru.shell.navLabel);
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    const path = `${ORG.name} / ${TEAM.name} / ${PROJECT.name}`;
+    await userEvent.click(
+      await within(rail).findByRole("button", { name: ru.scope.trigger.replace("{{path}}", path) }),
+    );
+    await expectInViewport(await within(rail).findByRole("dialog", { name: ru.shell.scope }));
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(await within(rail).findByRole("button", { name: "anya@acme.co" }));
+    const menu = await within(rail).findByRole("menu", { name: ru.shell.userMenuLabel });
+    await expectInViewport(menu.parentElement!);
+    for (const entry of within(menu).getAllByRole("menuitem")) {
+      await expect(entry.scrollWidth).toBeLessThanOrEqual(entry.clientWidth + 1);
+    }
+    await expectNoHorizontalOverflow();
   },
 };
 

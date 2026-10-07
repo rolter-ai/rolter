@@ -1,4 +1,4 @@
-import { Bug, Keyboard, KeyRound, LogOut, Search } from "lucide-react";
+import { Bug, Keyboard, KeyRound, LogOut, Search, UserCog } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -14,6 +14,7 @@ import { CreateProjectHost, ScopeSwitcher } from "@/components/ScopeSwitcher";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { ShortcutHelp } from "@/components/ShortcutHelp";
 import { ShellSkeleton } from "@/components/ShellSkeleton";
+import { MenuItem, MenuSeparator } from "@/components/ui/menu";
 import {
   NAV_SEARCH_ID,
   NavSidebar,
@@ -24,12 +25,11 @@ import { readRecentScreens, rememberScreen } from "@/lib/command-palette";
 import { useDocumentTitle } from "@/lib/document-title";
 import { chordText, dispatchShortcut, shortcutChord, type ShortcutHandlers } from "@/lib/shortcuts";
 import { findLeaf, leafKeys, useScreenMeta, visibleNav, type NavDef } from "@/lib/nav";
-import { logout, ROLES, type MeMembership } from "@/lib/api";
-import { useAuth, type SessionUser } from "@/lib/auth";
+import { accountRole, accountRoleLine, accountRoleName } from "@/lib/account-role";
+import { logout } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { CapabilityProvider, useCan } from "@/lib/can";
-import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
-import { cn } from "@/lib/utils";
 import {
   stabilityNoteKey,
   useStability,
@@ -190,59 +190,6 @@ function toNavItem(def: NavDef, t: TFunction, marked: ExperimentalNavKeys): NavI
       id === undefined ? undefined : t(stabilityNoteKey(id), { defaultValue: "" }) || undefined,
     children: def.children?.map((child) => toNavItem(child, t, marked)),
   };
-}
-
-function MenuRow({
-  icon,
-  onClick,
-  danger,
-  children,
-}: {
-  icon: React.ReactNode;
-  onClick: () => void;
-  danger?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-[color:var(--surface-hover)] [&>svg]:h-4 [&>svg]:w-4 [&>svg]:flex-none",
-        danger
-          ? "text-[color:var(--text-secondary)] hover:text-[color:var(--status-danger-text)]"
-          : "text-foreground",
-      )}
-    >
-      {icon}
-      {children}
-    </button>
-  );
-}
-
-/**
- * What to call the signed-in account in the rail.
- *
- * The server's answer, not the client's guess: `is_superadmin` comes from
- * `/auth/me` (falling back to the blob cached at login), and a plain account
- * is named by its membership role in the org currently in scope. Before #1196
- * every session read "Admin", including the ones that were not.
- */
-function accountRoleLabel(
-  t: TFunction,
-  user: SessionUser | null,
-  memberships: MeMembership[],
-  orgId: string | undefined,
-): string {
-  if (user && !user.is_superadmin) {
-    const membership = memberships.find((m) => m.org_id && m.org_id === orgId) ?? memberships[0];
-    // an unknown role string from a newer control plane has no label here, so
-    // it falls through rather than rendering a raw key
-    if (membership && (ROLES as readonly string[]).includes(membership.role)) {
-      return roleLabel(t, membership.role);
-    }
-  }
-  return t("shell.role");
 }
 
 function Screen({ screen, onOpenNav }: { screen: string; onOpenNav: () => void }) {
@@ -415,11 +362,17 @@ function Shell() {
   }
 
   const redirect = LEGACY[key];
-  const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
   const visible = visibleNav(can);
   const navGroups: NavGroup[] = [{ items: visible.map((def) => toNavItem(def, t, experimental)) }];
-  const roleName = accountRoleLabel(t, user, memberships, scope.orgId);
-  const role = orgName ? t("shell.roleWithOrg", { role: roleName, org: orgName }) : roleName;
+  // what the account is where the dashboard is looking: the card says the role,
+  // the menu says the role and the level it was granted at (#2805)
+  const role = accountRole(user, memberships, scope);
+  const roleName = accountRoleName(t, role);
+  const roleLine = accountRoleLine(t, role, {
+    org: scope.orgs.find((o) => o.id === scope.orgId)?.name,
+    team: scope.teams.find((x) => x.id === scope.teamId)?.name,
+    project: scope.projects.find((p) => p.id === scope.projectId)?.name,
+  });
   // the name the account goes by, else its email (#2434)
   const shownName = user?.display_name?.trim() || email;
   const initials = (shownName.trim()[0] ?? "?").toUpperCase();
@@ -460,8 +413,8 @@ function Shell() {
       />
       <ShortcutHelp open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       {/* the dialog `openCreateProject()` raises from any screen (#2611). here
-          and not in the switcher, which only exists while the account menu
-          is open */}
+          and not in the switcher, which is in the rail and so out of the
+          document whenever that is a closed drawer */}
       <CreateProjectHost />
       <div className="flex min-h-0 flex-1">
         <NavSidebar
@@ -510,55 +463,68 @@ function Shell() {
           footerExtra={(collapsed) => <LocalePicker collapsed={collapsed} />}
           version={`v${version}`}
           update={update}
+          headerExtra={(folded) => <ScopeSwitcher folded={folded} />}
           user={{
             name: shownName,
-            role,
+            role: roleName,
             initials,
             onClick: handleSignOut,
           }}
-          userMenu={(close) => (
-            <div>
-              <div className="flex items-center gap-2 px-3 pb-2 pt-1">
+          userMenu={{
+            header: (
+              <div className="flex items-start gap-2.5 border-b border-[color:var(--border-subtle)] px-3 py-2.5">
                 <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-[color:var(--red-folk)] text-xs font-semibold text-white">
                   {initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">{shownName}</p>
+                  <p className="truncate text-sm font-medium text-foreground" title={shownName}>
+                    {shownName}
+                  </p>
                   {shownName !== email && (
-                    <p className="truncate text-[0.6875rem] text-muted-foreground">{email}</p>
+                    <p className="truncate text-xs text-muted-foreground" title={email}>
+                      {email}
+                    </p>
                   )}
-                  <p className="truncate text-[0.6875rem] text-muted-foreground">{role}</p>
+                  <p className="text-xs text-muted-foreground">{roleLine}</p>
                 </div>
               </div>
-              <div className="border-t border-[color:var(--border-subtle)] py-1.5">
-                <p className="px-3 pb-1 text-[0.625rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
-                  {t("shell.scope")}
-                </p>
-                <ScopeSwitcher />
-              </div>
-              <div className="border-t border-[color:var(--border-subtle)] pt-1">
-                <MenuRow
+            ),
+            // the person's own screens and the way out. both screens are named
+            // as the rail names them, so one noun stands for one place
+            items: (close) => (
+              <>
+                <MenuItem
                   icon={<KeyRound />}
-                  onClick={() => {
-                    navigate("/api-keys");
+                  onSelect={() => {
                     close();
+                    navigate("/api-keys");
                   }}
                 >
-                  {t("shell.accountAndKeys")}
-                </MenuRow>
-                <MenuRow
+                  {t("nav.api-keys")}
+                </MenuItem>
+                <MenuItem
+                  icon={<UserCog />}
+                  onSelect={() => {
+                    close();
+                    navigate("/preferences");
+                  }}
+                >
+                  {t("nav.preferences")}
+                </MenuItem>
+                <MenuSeparator />
+                <MenuItem
                   icon={<LogOut />}
-                  danger
-                  onClick={() => {
+                  tone="danger"
+                  onSelect={() => {
                     close();
                     handleSignOut();
                   }}
                 >
                   {t("shell.signOut")}
-                </MenuRow>
-              </div>
-            </div>
-          )}
+                </MenuItem>
+              </>
+            ),
+          }}
         />
         <main
           id={MAIN_CONTENT_ID}

@@ -29,10 +29,10 @@ say clearly enough that it is read-only.
 
 ## V2 — own the account
 
-| #    | step                         | where                                                      | expect                                                                                                                      | status                        |
-| ---- | ---------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| V2.1 | set a display name and a bio | **Account → Profile**                                      | the rail's account menu and **Governance → Users** show the name (the email beneath it); the bio says who to ask about what | verified (#1823, #2434)       |
-| V2.2 | enrol a second factor        | **Settings → My Virtual Keys → Two-factor authentication** | TOTP and recovery codes, same as any role                                                                                   | verified (as a member, E10.4) |
+| #    | step                         | where                                                     | expect                                                                                                                      | status                        |
+| ---- | ---------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| V2.1 | set a display name and a bio | **Account → Profile**                                     | the rail's account menu and **Governance → Users** show the name (the email beneath it); the bio says who to ask about what | verified (#1823, #2434)       |
+| V2.2 | enrol a second factor        | **Settings → Account & keys → Two-factor authentication** | TOTP and recovery codes, same as any role                                                                                   | verified (as a member, E10.4) |
 
 ## V3 — preferences
 

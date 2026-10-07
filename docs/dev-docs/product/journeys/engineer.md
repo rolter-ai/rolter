@@ -35,11 +35,11 @@ is the finding.
 
 ## E2 — get a key
 
-| #    | step                                  | where                                                                                                | expect                                                     | status   |
-| ---- | ------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------- |
-| E2.1 | mint a personal key                   | **Settings → My Virtual Keys → Generate virtual key** · `POST /api/v1/me/projects/{id}/virtual-keys` | the key once, a name, an expiry; a viewer would be refused | verified |
-| E2.2 | narrow it to the models the job needs | the mint form's model list                                                                           | `/v1/models` with that key lists only those                | verified |
-| E2.3 | rotate or delete it                   | the key card · `POST /api/v1/me/virtual-keys/{id}/rotate`                                            | a new secret; the old one refused                          | verified |
+| #    | step                                  | where                                                                                               | expect                                                     | status   |
+| ---- | ------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------- |
+| E2.1 | mint a personal key                   | **Settings → Account & keys → Generate virtual key** · `POST /api/v1/me/projects/{id}/virtual-keys` | the key once, a name, an expiry; a viewer would be refused | verified |
+| E2.2 | narrow it to the models the job needs | the mint form's model list                                                                          | `/v1/models` with that key lists only those                | verified |
+| E2.3 | rotate or delete it                   | the key card · `POST /api/v1/me/virtual-keys/{id}/rotate`                                           | a new secret; the old one refused                          | verified |
 
 ## E3 — make the first call
 
@@ -93,16 +93,16 @@ The debugging loop, in the order an engineer should be able to walk it.
 
 ## E9 — "what have I spent?"
 
-| #    | step                             | where                                               | expect                              | status      |
-| ---- | -------------------------------- | --------------------------------------------------- | ----------------------------------- | ----------- |
-| E9.1 | usage per key over the last week | **Settings → My Virtual Keys** (`/api/v1/me/usage`) | requests and cost per key           | verified    |
-| E9.2 | how much of my allowance is left | —                                                   | a personal budget and its remainder | gap — #1830 |
+| #    | step                             | where                                              | expect                              | status      |
+| ---- | -------------------------------- | -------------------------------------------------- | ----------------------------------- | ----------- |
+| E9.1 | usage per key over the last week | **Settings → Account & keys** (`/api/v1/me/usage`) | requests and cost per key           | verified    |
+| E9.2 | how much of my allowance is left | —                                                  | a personal budget and its remainder | gap — #1830 |
 
 ## E10 — make the dashboard mine
 
-| #     | step                                        | where                                                                 | expect                                                                                                             | status                                 |
-| ----- | ------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
-| E10.1 | set a display name and a short bio          | **Settings → My Virtual Keys → Profile** · `PATCH /api/v1/me/profile` | other people see the name instead of an e-mail                                                                     | verified (#1823, #2433; V2.1 walks it) |
-| E10.2 | language, default project, Playground model | **Settings → Preferences**; the language picker; the scope switcher   | kept on the server, so a new browser opens on the same language, scope and model — and on the same chart time zone | done (#2448)                           |
-| E10.3 | save "my errors this week" as a view        | **LLM Logs → Saved views** · `POST /api/v1/me/saved-views`            | a named filter on LLM Logs                                                                                         | verified (#1825, #2451; V5.1 walks it) |
-| E10.4 | protect the account with a second factor    | **Settings → My Virtual Keys → Two-factor authentication**            | TOTP and recovery codes                                                                                            | verified                               |
+| #     | step                                        | where                                                                | expect                                                                                                             | status                                 |
+| ----- | ------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| E10.1 | set a display name and a short bio          | **Settings → Account & keys → Profile** · `PATCH /api/v1/me/profile` | other people see the name instead of an e-mail                                                                     | verified (#1823, #2433; V2.1 walks it) |
+| E10.2 | language, default project, Playground model | **Settings → Preferences**; the language picker; the scope switcher  | kept on the server, so a new browser opens on the same language, scope and model — and on the same chart time zone | done (#2448)                           |
+| E10.3 | save "my errors this week" as a view        | **LLM Logs → Saved views** · `POST /api/v1/me/saved-views`           | a named filter on LLM Logs                                                                                         | verified (#1825, #2451; V5.1 walks it) |
+| E10.4 | protect the account with a second factor    | **Settings → Account & keys → Two-factor authentication**            | TOTP and recovery codes                                                                                            | verified                               |

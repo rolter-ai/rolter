@@ -31,7 +31,7 @@ A fresh deployment opens the Dashboard on a **Getting started** card: the four s
 3. **Add a route** — the model name your clients ask for, and where it lands.
 4. **Mint a virtual key.** Clients authenticate with it rather than with your provider key, which is what makes per-key budgets and logs possible.
 
-Every step runs inside a project. When the team selected in the scope switcher has no project yet, the card shows a **Create project** button that opens the same dialog as the **+** beside Project in the switcher, and selects the new project once it is created. With no team yet, the card asks you to add an organisation and a team in the switcher first. Creating a project takes the admin role, so for other roles the button is disabled and names the role it needs.
+Every step runs inside a project. When the team selected in the scope switcher has no project yet, the card shows a **Create project** button that opens the same dialog as **New project** in the switcher's project menu, and selects the new project once it is created. With no team yet, the card asks you to add an organisation and a team in the switcher first. Creating a project takes the admin role, so for other roles the button is disabled and names the role it needs.
 
 Each step is ticked from the deployment itself, not from a checklist kept in your browser: a step reads as done when the row exists, so work another administrator did shows up on reload. A step whose form your role may not open is shown as a disabled button naming the role it needs, rather than a link into a screen that would refuse you.
 
@@ -124,9 +124,26 @@ full-text search over logs or requests. An id is looked up exactly, not searched
 
 ## The scope switcher
 
-Most screens show data for one **organization → team → project** chain. Open the account menu at the bottom of the rail to change any of the three, create a new one with the **+** button, or delete the selected one. The choice is remembered per browser; a fresh browser starts on the first organization you belong to.
+Most screens show data for one **organization → team → project** chain. The switcher sits at the top of the rail, directly under the logo, and shows the chain you are on as `org / team / project`; a long name is shortened and the full path is its tooltip. Open it to change any of the three: each level has its own labelled picker, and picking one keeps the switcher open, since the level below it usually changes too. Press **Escape**, or click away, to close it.
+
+A level you cannot choose yet is greyed out and says what it waits for: a team needs an organization, a project needs a team. A level with nothing in it says so, and its **⋯** button still offers to create the first one.
+
+The **⋯** button at the end of each row holds what can be done to that level: **New organization**, **New team** or **New project**; **Project settings**; and the matching **Delete…**, which asks for confirmation and names what it removes. An entry your role may not use is greyed out and names the role it needs. Creating an organization is for superadmins.
+
+The choice is remembered per browser; a fresh browser starts on the first organization you belong to. On the folded rail (and between `md` and `lg`, where the rail is always folded) the switcher is a building icon whose popover opens beside the rail; below `md` it is the same control inside the navigation drawer.
 
 Screens that are deployment-wide (feature flags, security, performance, cluster) ignore the scope.
+
+## The account menu
+
+The card at the bottom of the rail shows your name, or your e-mail when you have not set one, and your role. Open it for a menu about you and nothing else:
+
+- who you are signed in as, and the role you hold **and where it applies** — _Admin · org acme_, _Member · team platform_, _Viewer · project default_, or _Superadmin · whole deployment_. A person with several grants sees the strongest one that reaches the scope the switcher is on;
+- **Account & keys**, the screen with your profile, two-factor authentication and your own virtual keys;
+- **Preferences**, for your language, default scope, Playground model and time zone;
+- **Sign out**.
+
+The menu is a real menu: the arrow keys move through it, **Home** and **End** jump to its ends, **Escape** closes it and returns to the card, and **Tab** leaves it. The scope is not here; it has its own control above (see [the scope switcher](#the-scope-switcher)).
 
 ## What a disabled control means
 
@@ -195,7 +212,7 @@ The Playground authenticates to the gateway like any other client, with a virtua
 - It is scoped by the control plane to the models that project routes, so it can never reach a model you could not already reach. A project with no routes yet gets a key for the built-in `fake-llm` alone, so the first message gets an answer before any provider or route exists. The bar says so and links to **Routing Rules**; once the project routes a model, **Renew key** mints a key that reaches it.
 - It lives 30 minutes. The bar shows when it expires, and **Renew key** mints a fresh one rather than extending it. When there is no key to renew, the same button reads **Mint key**.
 - It is held in your browser's memory only. Closing the tab ends it; nothing is written to browser storage.
-- It appears on **Virtual Keys** and in **Settings → My Virtual Keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
+- It appears on **Virtual Keys** and in **Settings → Account & keys** labelled _Playground_, so a key with a half-hour life is recognisable as one the screen issued. It expires on its own — there is nothing to clean up.
 
 A new key takes a few seconds to reach the gateway, which learns about keys on its next config poll (every 5 seconds by default, `ROLTER_SNAPSHOT_POLL_SECS`). Until then the model picker says it is waiting and keeps the built-in `fake-llm` selected, asking again with a growing pause for about ten seconds. Once the gateway accepts the key, the picker lists what the gateway serves and selects the first route in it.
 

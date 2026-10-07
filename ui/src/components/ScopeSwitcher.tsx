@@ -1,9 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus, Settings, Trash2 } from "lucide-react";
+import {
+  Building2,
+  ChevronsUpDown,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { AnchoredPanel } from "@/components/ui/anchored-panel";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import {
@@ -16,7 +25,9 @@ import {
 import { LoadError } from "@/components/LoadError";
 import { FormSkeleton } from "@/components/LoadingState";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
+import { Menu, MenuItem } from "@/components/ui/menu";
 import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createOrg,
@@ -30,17 +41,24 @@ import {
 } from "@/lib/api";
 import { useCreateProjectOpener, useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 type Level = "org" | "team" | "project";
 
-// org → team → project switcher, persisted to localStorage via useScope.
-// mounted in the app shell sidebar so every page shares one selection.
-export function ScopeSwitcher() {
+// the scope the whole dashboard is looking at — org → team → project —
+// persisted to localStorage through `useScope`, so every screen shares one
+// selection. it lives at the top of the rail, under the brand (#2805), because
+// it changes what every screen shows and is not part of anyone's account.
+//
+// the rail shows the path it is on and opens a popover of three labelled
+// pickers. creating and deleting a level is one overflow button per row, not
+// six bare icons on its surface.
+export function ScopeSwitcher({ folded = false }: { folded?: boolean }) {
   const { t } = useTranslation();
   const scope = useScope();
-  // the scope hook names a catalog key rather than carrying english copy
-  const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
   const queryClient = useQueryClient();
+  const trigger = React.useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = React.useState(false);
 
   const [createLevel, setCreateLevel] = React.useState<Level | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<{
@@ -56,81 +74,229 @@ export function ScopeSwitcher() {
     queryClient.invalidateQueries({ queryKey: ["scope"] });
   };
 
-  if (scope.isLoading) {
-    return <div className="px-3 py-1 text-xs text-muted-foreground">{t("scope.loading")}</div>;
-  }
+  const orgName = scope.orgs.find((o) => o.id === scope.orgId)?.name;
+  const teamName = scope.teams.find((x) => x.id === scope.teamId)?.name;
+  const projectName = scope.projects.find((p) => p.id === scope.projectId)?.name;
 
-  return (
-    <div className="space-y-1.5 px-2">
-      <ScopeRow
-        level="org"
-        value={scope.orgId ?? ""}
-        options={scope.orgs.map((o) => ({ id: o.id, name: o.name }))}
-        onChange={scope.setOrgId}
-        onAdd={() => setCreateLevel("org")}
-        onDelete={
-          scope.orgId
-            ? () =>
-                setDeleteTarget({
-                  level: "org",
-                  id: scope.orgId as string,
-                  name: scope.orgs.find((o) => o.id === scope.orgId)?.name ?? "",
-                })
-            : undefined
-        }
-      />
-      <ScopeRow
-        level="team"
-        value={scope.teamId ?? ""}
-        options={scope.teams.map((t) => ({ id: t.id, name: t.name }))}
-        onChange={scope.setTeamId}
-        onAdd={scope.orgId ? () => setCreateLevel("team") : undefined}
-        onDelete={
-          scope.teamId
-            ? () =>
-                setDeleteTarget({
-                  level: "team",
-                  id: scope.teamId as string,
-                  name: scope.teams.find((t) => t.id === scope.teamId)?.name ?? "",
-                })
-            : undefined
-        }
-        disabled={!scope.orgId}
-      />
-      <ScopeRow
-        level="project"
-        value={scope.projectId ?? ""}
-        options={scope.projects.map((p) => ({ id: p.id, name: p.name }))}
-        onChange={scope.setProjectId}
-        onSettings={
-          scope.projectId
-            ? () =>
-                setSettingsTarget({
-                  id: scope.projectId as string,
-                  name: scope.projects.find((p) => p.id === scope.projectId)?.name ?? "",
-                })
-            : undefined
-        }
-        onAdd={scope.teamId ? () => setCreateLevel("project") : undefined}
-        onDelete={
-          scope.projectId
-            ? () =>
+  // a level that is still arriving after a pick keeps the popover on its rows;
+  // only the very first read, with nothing to show yet, stands in for them
+  const firstRead = scope.isLoading && scope.orgs.length === 0;
+  // the broadest level gives way first
+  const levels: { name: string | undefined; shrink: string }[] = [
+    { name: orgName, shrink: "shrink-[4]" },
+    { name: teamName, shrink: "shrink-[2]" },
+    { name: projectName, shrink: "shrink" },
+  ];
+  const segments = levels.flatMap(({ name, shrink }) => (name ? [{ name, shrink }] : []));
+  const path = segments.map((segment) => segment.name).join(PATH_SEPARATOR);
+  const shown = firstRead ? t("scope.loading") : path || t("scope.noOrg");
+  const name = firstRead ? shown : t("scope.trigger", { path: shown });
+
+  // a dialog is raised from a menu inside the popover, which goes with the pick:
+  // focus is parked on the trigger first, so the dialog's own "return to the
+  // opener" lands somewhere that survives the menu unmounting
+  const raise = (action: () => void) => () => {
+    setOpen(false);
+    trigger.current?.focus();
+    action();
+  };
+
+  // what each row's overflow button holds. written out as elements rather than
+  // built from data, because a gated entry names itself for the UX stream with a
+  // literal `control` slug that the source guard reads off the tag
+  const menus: Record<Level, React.ReactNode> = {
+    org: (
+      <>
+        <MenuItem
+          icon={<Plus />}
+          gate="org:create"
+          control="scope-org-new"
+          onSelect={raise(() => setCreateLevel("org"))}
+        >
+          {t("scope.newOrg")}
+        </MenuItem>
+        {scope.orgId && (
+          <MenuItem
+            icon={<Trash2 />}
+            tone="danger"
+            gate="org:delete"
+            control="scope-org-delete"
+            onSelect={raise(() =>
+              setDeleteTarget({ level: "org", id: scope.orgId as string, name: orgName ?? "" }),
+            )}
+          >
+            {t("scope.menu.deleteOrg")}
+          </MenuItem>
+        )}
+      </>
+    ),
+    team: (
+      <>
+        <MenuItem
+          icon={<Plus />}
+          gate="team:create"
+          control="scope-team-new"
+          onSelect={raise(() => setCreateLevel("team"))}
+        >
+          {t("scope.newTeam")}
+        </MenuItem>
+        {scope.teamId && (
+          <MenuItem
+            icon={<Trash2 />}
+            tone="danger"
+            gate="team:delete"
+            control="scope-team-delete"
+            onSelect={raise(() =>
+              setDeleteTarget({ level: "team", id: scope.teamId as string, name: teamName ?? "" }),
+            )}
+          >
+            {t("scope.menu.deleteTeam")}
+          </MenuItem>
+        )}
+      </>
+    ),
+    project: (
+      <>
+        <MenuItem
+          icon={<Plus />}
+          gate="project:create"
+          control="scope-project-new"
+          onSelect={raise(() => setCreateLevel("project"))}
+        >
+          {t("scope.newProject")}
+        </MenuItem>
+        {scope.projectId && (
+          <>
+            <MenuItem
+              icon={<Settings />}
+              onSelect={raise(() =>
+                setSettingsTarget({ id: scope.projectId as string, name: projectName ?? "" }),
+              )}
+            >
+              {t("scope.projectSettings")}
+            </MenuItem>
+            <MenuItem
+              icon={<Trash2 />}
+              tone="danger"
+              gate="project:delete"
+              control="scope-project-delete"
+              onSelect={raise(() =>
                 setDeleteTarget({
                   level: "project",
                   id: scope.projectId as string,
-                  name: scope.projects.find((p) => p.id === scope.projectId)?.name ?? "",
-                })
-            : undefined
-        }
-        disabled={!scope.teamId}
-      />
-      {scopeMessage && <p className="px-1 text-xs text-muted-foreground">{scopeMessage}</p>}
+                  name: projectName ?? "",
+                }),
+              )}
+            >
+              {t("scope.menu.deleteProject")}
+            </MenuItem>
+          </>
+        )}
+      </>
+    ),
+  };
+
+  // the reason a row is unavailable, or what is wrong with its list. one
+  // sentence under the row it belongs to, rather than one under all three
+  const failure = scope.errorKey ? t(scope.errorKey) : undefined;
+  const failed = (...keys: string[]) =>
+    failure && keys.includes(scope.errorKey ?? "") ? failure : undefined;
+  // a level waiting on the one above it says so only once nothing is arriving:
+  // right after a pick the level below is empty for a moment, and that is not
+  // "waiting for a selection"
+  const waiting = (key: string) => (scope.isLoading ? undefined : t(key));
+  const hints: Record<Level, string | undefined> = {
+    org: failed("scope.errors.orgsFailed", "scope.errors.noOrg"),
+    team: scope.orgId
+      ? failed("scope.errors.teamsFailed", "scope.errors.noTeam")
+      : waiting("scope.needsOrg"),
+    project: scope.teamId
+      ? failed("scope.errors.projectsFailed", "scope.errors.noProject")
+      : waiting("scope.needsTeam"),
+  };
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={name}
+        title={folded ? name : shown}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex items-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          folded
+            ? "w-full justify-center py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            : "w-full gap-2 border border-[color:var(--border-subtle)] bg-[color:var(--surface-base)] px-2 py-1.5 text-left hover:border-[color:var(--border-default)]",
+          open && (folded ? "bg-muted text-foreground" : "border-[color:var(--border-default)]"),
+        )}
+      >
+        {folded ? (
+          <Building2 aria-hidden className="h-4 w-4 flex-none" />
+        ) : (
+          <>
+            {/* each level truncates on its own, the broadest first, so a long
+                org name does not push the project — the level the reader is
+                working in — out of sight */}
+            <span
+              className={cn(
+                "flex min-w-0 flex-1 items-center gap-0.5 text-xs text-foreground",
+                segments.length > 0 && !firstRead && "font-mono",
+              )}
+            >
+              {firstRead || segments.length === 0 ? (
+                <span className="min-w-0 truncate">{shown}</span>
+              ) : (
+                segments.map((segment, i) => (
+                  <React.Fragment key={segment.name + i}>
+                    {i > 0 && (
+                      <span
+                        aria-hidden="true"
+                        className="flex-none text-[color:var(--text-subtle)]"
+                      >
+                        /
+                      </span>
+                    )}
+                    <span className={cn("min-w-0 truncate", segment.shrink)}>{segment.name}</span>
+                  </React.Fragment>
+                ))
+              )}
+            </span>
+            <ChevronsUpDown
+              aria-hidden
+              className="h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]"
+            />
+          </>
+        )}
+      </button>
+
+      {open && trigger.current && (
+        <AnchoredPanel
+          anchor={trigger.current}
+          side={folded ? "right" : "below"}
+          role="dialog"
+          aria-label={t("shell.scope")}
+          onClose={(restoreFocus) => {
+            setOpen(false);
+            if (restoreFocus) trigger.current?.focus();
+          }}
+          className="w-[min(20rem,calc(100vw-1rem))] p-3"
+        >
+          {firstRead ? (
+            <FormSkeleton fields={3} className="gap-3" />
+          ) : (
+            <ScopeRows scope={scope} menus={menus} hints={hints} loading={scope.isLoading} />
+          )}
+        </AnchoredPanel>
+      )}
 
       <CreateScopeDialog
         level={createLevel}
         orgId={scope.orgId}
         teamId={scope.teamId}
-        onOpenChange={(open) => !open && setCreateLevel(null)}
+        onOpenChange={(next) => !next && setCreateLevel(null)}
         onCreated={(level, id) => {
           invalidateScope();
           if (level === "org") scope.setOrgId(id);
@@ -142,7 +308,7 @@ export function ScopeSwitcher() {
 
       <DeleteScopeDialog
         target={deleteTarget}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onOpenChange={(next) => !next && setDeleteTarget(null)}
         onDeleted={() => {
           invalidateScope();
           setDeleteTarget(null);
@@ -151,7 +317,63 @@ export function ScopeSwitcher() {
 
       <ProjectSettingsDialog
         target={settingsTarget}
-        onOpenChange={(open) => !open && setSettingsTarget(null)}
+        onOpenChange={(next) => !next && setSettingsTarget(null)}
+      />
+    </>
+  );
+}
+
+/** what the trigger puts between the levels of the path it shows */
+const PATH_SEPARATOR = " / ";
+
+/** the three pickers, each named, with the first field taking focus on open */
+function ScopeRows({
+  scope,
+  menus,
+  hints,
+  loading,
+}: {
+  scope: ReturnType<typeof useScope>;
+  menus: Record<Level, React.ReactNode>;
+  hints: Record<Level, string | undefined>;
+  loading: boolean;
+}) {
+  const box = React.useRef<HTMLDivElement>(null);
+  // a popover of form controls opens onto its first one, so the keyboard does
+  // not have to find the way in
+  React.useEffect(() => {
+    box.current?.querySelector<HTMLElement>("input:not(:disabled)")?.focus({ preventScroll: true });
+  }, []);
+  return (
+    <div ref={box} className="flex flex-col gap-3">
+      <ScopeRow
+        level="org"
+        value={scope.orgId ?? ""}
+        options={scope.orgs.map((o) => ({ id: o.id, name: o.name }))}
+        onChange={scope.setOrgId}
+        hint={hints.org}
+        loading={loading}
+        menu={menus.org}
+      />
+      <ScopeRow
+        level="team"
+        value={scope.teamId ?? ""}
+        options={scope.teams.map((x) => ({ id: x.id, name: x.name }))}
+        onChange={scope.setTeamId}
+        disabled={!scope.orgId}
+        hint={hints.team}
+        loading={loading}
+        menu={menus.team}
+      />
+      <ScopeRow
+        level="project"
+        value={scope.projectId ?? ""}
+        options={scope.projects.map((p) => ({ id: p.id, name: p.name }))}
+        onChange={scope.setProjectId}
+        disabled={!scope.teamId}
+        hint={hints.project}
+        loading={loading}
+        menu={menus.project}
       />
     </div>
   );
@@ -162,10 +384,12 @@ export function ScopeSwitcher() {
  * (#2611), such as the Getting started card when no project exists yet.
  *
  * Mounted once in the shell rather than inside `ScopeSwitcher`: the switcher
- * lives in the rail's account menu, which is only in the document while that
- * menu is open, so an opener registered there was gone by the time any screen
- * could call it. It is the same dialog the + beside Project raises, under the
- * same team, and it selects the project it creates the way the switcher does.
+ * lives in the rail, which below `md` is a drawer that is out of the document
+ * until it is opened (and was once an account menu that was only in it while
+ * open), so an opener registered there was gone by the time any screen could
+ * call it. It is the same dialog **New project** raises from the switcher,
+ * under the same team, and it selects the project it creates the way the
+ * switcher does.
  */
 export function CreateProjectHost() {
   const scope = useScope();
@@ -173,7 +397,7 @@ export function CreateProjectHost() {
   const [open, setOpen] = React.useState(false);
 
   // a project is created under the team in scope, so with no team there is
-  // nothing to open — the same condition that hides the + beside Project
+  // nothing to open — the same condition that disables the Project row
   useCreateProjectOpener(() => {
     if (scope.teamId) setOpen(true);
   });
@@ -194,20 +418,25 @@ export function CreateProjectHost() {
 }
 
 // every label is looked up by an explicit per-level key: interpolating a noun
-// into "no {{level}}" / "Add {{level}}" cannot be declined correctly in
+// into "no {{level}}" / "Delete {{level}}" cannot be declined correctly in
 // russian (and most inflected languages), so the catalog spells each one out
-const ROW_KEYS: Record<Level, { label: string; empty: string; add: string; remove: string }> = {
-  org: { label: "scope.org", empty: "scope.noOrg", add: "scope.addOrg", remove: "scope.deleteOrg" },
+const ROW_KEYS: Record<Level, { label: string; empty: string; actions: string; remove: string }> = {
+  org: {
+    label: "scope.rows.org",
+    empty: "scope.noOrg",
+    actions: "scope.actions.org",
+    remove: "scope.deleteOrg",
+  },
   team: {
-    label: "scope.team",
+    label: "scope.rows.team",
     empty: "scope.noTeam",
-    add: "scope.addTeam",
+    actions: "scope.actions.team",
     remove: "scope.deleteTeam",
   },
   project: {
-    label: "scope.project",
+    label: "scope.rows.project",
     empty: "scope.noProject",
-    add: "scope.addProject",
+    actions: "scope.actions.project",
     remove: "scope.deleteProject",
   },
 };
@@ -226,71 +455,92 @@ const DELETE_KEYS: Record<Level, string> = {
   project: "scope.confirm.projectTitle",
 };
 
+/**
+ * One level: its name above, the picker, and the one button that holds what
+ * can be done to the level (create, settings, delete).
+ *
+ * A level with nothing above it to belong to is disabled, picker and button
+ * both, and says why underneath. A level with nothing in it is disabled too —
+ * there is nothing to pick — but keeps its button, since creating the first one
+ * is the way out.
+ */
 function ScopeRow({
   level,
   value,
   options,
   onChange,
-  onSettings,
-  onAdd,
-  onDelete,
   disabled,
+  hint,
+  loading,
+  menu,
 }: {
   level: Level;
   value: string;
   options: { id: string; name: string }[];
   onChange: (id: string) => void;
-  onSettings?: () => void;
-  onAdd?: () => void;
-  onDelete?: () => void;
   disabled?: boolean;
+  hint?: string;
+  loading: boolean;
+  /** the entries of the row's overflow menu */
+  menu: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const keys = ROW_KEYS[level];
+  const id = React.useId();
+  const hintId = React.useId();
+  const button = React.useRef<HTMLButtonElement>(null);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const empty = options.length === 0;
   return (
-    <div className="flex items-center gap-1">
-      <Combobox
-        aria-label={t(keys.label)}
-        value={value}
-        disabled={disabled || options.length === 0}
-        onChange={onChange}
-        size="sm"
-        className="min-w-0 flex-1"
-        placeholder={options.length === 0 ? t(keys.empty) : undefined}
-        options={options.map((o) => ({ value: o.id, label: o.name }))}
-      />
-      {onSettings && (
+    <div className="space-y-1.5">
+      <FieldLabel label={t(keys.label)} htmlFor={id} />
+      <div className="flex items-center gap-1.5">
+        <Combobox
+          id={id}
+          aria-describedby={hint ? hintId : undefined}
+          value={value}
+          disabled={disabled || empty}
+          onChange={onChange}
+          size="sm"
+          className="min-w-0 flex-1"
+          placeholder={empty ? t(loading ? "scope.loading" : keys.empty) : undefined}
+          options={options.map((o) => ({ value: o.id, label: o.name }))}
+        />
         <button
+          ref={button}
           type="button"
-          aria-label={t("scope.projectSettings")}
-          title={t("scope.projectSettings")}
-          onClick={onSettings}
-          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-label={t(keys.actions)}
+          title={t(keys.actions)}
+          disabled={disabled}
+          onClick={() => setMenuOpen((v) => !v)}
+          className={cn(
+            "flex h-8 w-8 flex-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+            menuOpen && "bg-muted text-foreground",
+          )}
         >
-          <Settings className="h-3.5 w-3.5" />
+          <MoreHorizontal aria-hidden className="h-4 w-4" />
         </button>
-      )}
-      {onAdd && (
-        <button
-          type="button"
-          aria-label={t(keys.add)}
-          title={t(keys.add)}
-          onClick={onAdd}
-          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      )}
-      {onDelete && (
-        <button
-          type="button"
-          aria-label={t(keys.remove)}
-          title={t(keys.remove)}
-          onClick={onDelete}
-          className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-[color:var(--status-danger-text)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+        {menuOpen && button.current && (
+          <Menu
+            anchor={button.current}
+            label={t(keys.actions)}
+            side="below"
+            align="end"
+            onClose={(restoreFocus) => {
+              setMenuOpen(false);
+              if (restoreFocus) button.current?.focus();
+            }}
+          >
+            {menu}
+          </Menu>
+        )}
+      </div>
+      {hint && (
+        <p id={hintId} className="text-xs text-muted-foreground">
+          {hint}
+        </p>
       )}
     </div>
   );
