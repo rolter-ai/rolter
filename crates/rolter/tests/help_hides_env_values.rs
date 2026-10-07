@@ -65,30 +65,36 @@ fn help(command: &[&str], env: &[(String, String)]) -> String {
 #[test]
 fn no_subcommand_prints_a_secret_from_the_environment() {
     let run = uuid::Uuid::new_v4().simple().to_string();
-    let secrets: Vec<(String, String)> = SECRET_VARS
+    // the sentinels are kept apart from the names they are exported under, and
+    // a failure reports an index into `SECRET_VARS` rather than any text that
+    // came from a secret-bearing variable
+    let sentinels: Vec<String> = SECRET_VARS
         .iter()
-        .map(|name| {
-            (
-                name.to_string(),
-                format!("sentinel-{run}-{}", name.to_lowercase()),
-            )
-        })
+        .map(|name| format!("sentinel-{run}-{}", name.to_lowercase()))
         .collect();
-    let visible = (VISIBLE_VAR.to_string(), format!("visible-{run}"));
-    let mut env = secrets.clone();
-    env.push(visible.clone());
+    let visible = format!("visible-{run}");
+    let mut env: Vec<(String, String)> = SECRET_VARS
+        .iter()
+        .zip(&sentinels)
+        .map(|(name, sentinel)| (name.to_string(), sentinel.clone()))
+        .collect();
+    env.push((VISIBLE_VAR.to_string(), visible.clone()));
 
     let mut saw_visible = false;
     for command in commands() {
         let text = help(&command, &env);
-        saw_visible |= text.contains(&visible.1);
-        for (name, value) in &secrets {
-            assert!(
-                !text.contains(value),
-                "`rolter {} --help` printed the value of {name}",
-                command.join(" ")
-            );
-        }
+        saw_visible |= text.contains(&visible);
+        let leaked: Vec<usize> = sentinels
+            .iter()
+            .enumerate()
+            .filter(|(_, sentinel)| text.contains(sentinel.as_str()))
+            .map(|(index, _)| index)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "`rolter {} --help` printed the environment value of SECRET_VARS entries {leaked:?}",
+            command.join(" ")
+        );
     }
     assert!(
         saw_visible,
