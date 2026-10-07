@@ -34,6 +34,7 @@ import {
   deleteRouteTarget,
   fetchCurrencySettings,
   fetchModelPrices,
+  fetchProviderModels,
   fetchRouteTargets,
   fetchTeams,
   fetchUsers,
@@ -50,6 +51,7 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { strategyOptions, usesWeights } from "@/lib/strategies";
@@ -219,13 +221,29 @@ function defaultCaps(modality: Modality): Caps {
   return { streaming: false, tools: false, vision: false, json: false, reasoning: false };
 }
 
-function blankDraft(providerId: string): ModelDraft {
+/**
+ * The provider a new target line starts on: the only one there is, otherwise
+ * none (#2810).
+ *
+ * A line used to start on the first provider alphabetically, so a route for
+ * `llama-3.1-8b` saved without a second look sent its traffic to
+ * `anthropic-direct`. With a choice to make, the operator makes it.
+ */
+function defaultProviderId(providers: ProviderRow[]): string {
+  return providers.length === 1 ? providers[0].id : "";
+}
+
+function blankDraft(
+  providers: ProviderRow[],
+  providerId = defaultProviderId(providers),
+): ModelDraft {
   return {
     name: "",
     strategy: STRATEGIES[0],
-    // one line to start from, on the first provider: the common case is one
-    // model on one provider, and a fleet adds lines from there
-    targets: providerId ? [newTarget(providerId)] : [],
+    // one line to start from: the common case is one provider behind one
+    // route, and a fleet adds lines from there. with no provider to offer there
+    // is no line to fill in, and the note about adding one says why
+    targets: providers.length > 0 ? [newTarget(providerId)] : [],
     modality: "chat",
     baseUrl: "",
     description: "",
@@ -582,6 +600,16 @@ function buildPreview(
 // the route's targets: provider, the model id sent to it, and a weight
 // ---------------------------------------------------------------------------
 
+/** which of the target errors are on screen, as the sheet decided (#2810) */
+interface TargetErrorsShown {
+  /** the route has no target at all */
+  empty: boolean;
+  /** a line has no provider */
+  provider: boolean;
+  /** a line's weight is not a whole number from 1 */
+  weight: boolean;
+}
+
 function TargetEditor({
   targets,
   providers,
@@ -590,9 +618,13 @@ function TargetEditor({
   strategy,
   labelId,
   emptyErrorId,
+  providerErrorId,
   weightErrorId,
+  shown,
+  providerInvalid,
   weightInvalid,
   onChange,
+  onTouch,
 }: {
   targets: DraftTarget[];
   providers: ProviderRow[];
@@ -604,10 +636,16 @@ function TargetEditor({
   labelId: string;
   /** the error saying a target is needed, which the add button points at */
   emptyErrorId: string;
+  /** the error a line with no provider points at */
+  providerErrorId: string;
   /** the error a weight field that fails validation points at */
   weightErrorId: string;
+  shown: TargetErrorsShown;
+  providerInvalid: (target: DraftTarget) => boolean;
   weightInvalid: (target: DraftTarget) => boolean;
   onChange: (next: DraftTarget[]) => void;
+  /** a provider or weight field was visited, so its error may show */
+  onTouch: (field: "provider" | "weight") => void;
 }) {
   const { t } = useTranslation();
   const update = (i: number, patch: Partial<DraftTarget>) =>
@@ -630,8 +668,9 @@ function TargetEditor({
           size="sm"
           variant="outline"
           disabled={providers.length === 0}
-          aria-describedby={targets.length === 0 ? emptyErrorId : undefined}
-          onClick={() => onChange([...targets, newTarget(providers[0]?.id ?? "")])}
+          aria-describedby={shown.empty ? emptyErrorId : undefined}
+          data-error-anchor={shown.empty || undefined}
+          onClick={() => onChange([...targets, newTarget(defaultProviderId(providers))])}
         >
           <Plus className="h-3.5 w-3.5" />
           {t("modelSheet.targets.add")}
@@ -661,44 +700,23 @@ function TargetEditor({
         </div>
       )}
       <ul aria-labelledby={labelId} className="space-y-2">
-        {targets.map((tg, i) => {
-          const n = i + 1;
-          const badWeight = weightInvalid(tg);
-          return (
-            <li key={tg.key} className={row}>
-              <Combobox
-                aria-label={t("modelSheet.targets.providerAria", { n })}
-                className="col-span-3 font-mono sm:col-span-1"
-                value={tg.providerId}
-                onChange={(providerId) => update(i, { providerId })}
-                options={providers.map((p) => ({ value: p.id, label: p.name }))}
-              />
-              <Input
-                aria-label={t("modelSheet.targets.upstreamAria", { n })}
-                className="font-mono"
-                value={tg.upstream}
-                placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
-                onChange={(e) => update(i, { upstream: e.target.value })}
-              />
-              <Input
-                aria-label={t("modelSheet.targets.weightAria", { n })}
-                type="number"
-                min={1}
-                step={1}
-                className="font-mono"
-                value={tg.weight}
-                aria-invalid={badWeight || undefined}
-                aria-describedby={describedBy(badWeight && weightErrorId)}
-                onChange={(e) => update(i, { weight: e.target.value })}
-              />
-              <DeleteIconButton
-                label={t("modelSheet.targets.removeAria", { n })}
-                title={t("common.remove")}
-                onClick={() => onChange(targets.filter((_, idx) => idx !== i))}
-              />
-            </li>
-          );
-        })}
+        {targets.map((tg, i) => (
+          <TargetRow
+            key={tg.key}
+            n={i + 1}
+            target={tg}
+            providers={providers}
+            publicName={publicName}
+            rowClass={row}
+            badProvider={shown.provider && providerInvalid(tg)}
+            badWeight={shown.weight && weightInvalid(tg)}
+            providerErrorId={providerErrorId}
+            weightErrorId={weightErrorId}
+            onChange={(patch) => update(i, patch)}
+            onRemove={() => onChange(targets.filter((_, idx) => idx !== i))}
+            onTouch={onTouch}
+          />
+        ))}
       </ul>
       {targets.length > 1 && !usesWeights(strategy) && (
         <p className="text-xs leading-snug text-muted-foreground">
@@ -710,6 +728,123 @@ function TargetEditor({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * One target line: the provider, the model id sent to it and a weight.
+ *
+ * The model id is free text that suggests what the picked provider's upstream
+ * lists (#2810), so an id is chosen rather than retyped to the letter. The list
+ * is asked for when the operator reaches for it, not for every line the sheet
+ * opens with, and an upstream that lists nothing leaves the field as the text
+ * box it always was.
+ */
+function TargetRow({
+  n,
+  target,
+  providers,
+  publicName,
+  rowClass,
+  badProvider,
+  badWeight,
+  providerErrorId,
+  weightErrorId,
+  onChange,
+  onRemove,
+  onTouch,
+}: {
+  n: number;
+  target: DraftTarget;
+  providers: ProviderRow[];
+  publicName: string;
+  rowClass: string;
+  badProvider: boolean;
+  badWeight: boolean;
+  providerErrorId: string;
+  weightErrorId: string;
+  onChange: (patch: Partial<DraftTarget>) => void;
+  onRemove: () => void;
+  onTouch: (field: "provider" | "weight") => void;
+}) {
+  const { t } = useTranslation();
+  const [asked, setAsked] = React.useState(false);
+  const listed = useQuery({
+    queryKey: ["provider-models", target.providerId],
+    queryFn: () => fetchProviderModels(target.providerId),
+    enabled: asked && target.providerId !== "",
+    // the catalogue is an upstream call, and it rarely moves within a session
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const suggestions = React.useMemo(
+    () => (listed.data?.models ?? []).map((id) => ({ value: id, label: id })),
+    [listed.data],
+  );
+  // a refused or failed listing is not the provider having none: the control
+  // plane answers an upstream that does not answer with an empty list, and
+  // refuses a role that may not spend the provider's credential on it, so the
+  // two read differently and neither stops the id being typed
+  const nothingToOffer = !target.providerId
+    ? t("modelSheet.targets.upstreamNeedsProvider")
+    : listed.isFetching
+      ? t("modelSheet.targets.upstreamLoading")
+      : listed.isError
+        ? t("modelSheet.targets.upstreamUnavailable")
+        : t("modelSheet.targets.upstreamNone");
+
+  return (
+    <li className={rowClass}>
+      <Combobox
+        aria-label={t("modelSheet.targets.providerAria", { n })}
+        className="col-span-3 font-mono sm:col-span-1"
+        value={target.providerId}
+        placeholder={t("modelSheet.targets.providerPlaceholder")}
+        aria-invalid={badProvider || undefined}
+        aria-describedby={describedBy(badProvider && providerErrorId)}
+        onChange={(providerId) => {
+          onChange({ providerId });
+          // the next thing they reach for is this provider's models
+          setAsked(true);
+        }}
+        onBlur={() => onTouch("provider")}
+        options={providers.map((p) => ({ value: p.id, label: p.name }))}
+      />
+      <Combobox
+        allowCustom
+        clearable
+        commitOnBlur
+        aria-label={t("modelSheet.targets.upstreamAria", { n })}
+        className="font-mono"
+        // model ids share long prefixes, so the list is wider than the field:
+        // it grows leftward from the field's edge on the sheet, and fills the
+        // line below it on a phone, where the field is a third of the width
+        listClassName="sm:right-0 sm:w-96 max-sm:w-[calc(100vw-4.5rem)]"
+        value={target.upstream}
+        placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
+        emptyText={nothingToOffer}
+        options={suggestions}
+        onChange={(upstream) => onChange({ upstream })}
+        onFocus={() => setAsked(true)}
+      />
+      <Input
+        aria-label={t("modelSheet.targets.weightAria", { n })}
+        type="number"
+        min={1}
+        step={1}
+        className="font-mono"
+        value={target.weight}
+        aria-invalid={badWeight || undefined}
+        aria-describedby={describedBy(badWeight && weightErrorId)}
+        onChange={(e) => onChange({ weight: e.target.value })}
+        onBlur={() => onTouch("weight")}
+      />
+      <DeleteIconButton
+        label={t("modelSheet.targets.removeAria", { n })}
+        title={t("common.remove")}
+        onClick={onRemove}
+      />
+    </li>
   );
 }
 
@@ -729,6 +864,9 @@ const SECTIONS = [
   "preview",
 ] as const;
 type SectionKey = (typeof SECTIONS)[number];
+
+/** the fields whose error the sheet can show, each one once */
+type FieldKey = "name" | "targets" | "provider" | "weight" | "baseUrl" | "param" | "header";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -774,7 +912,10 @@ export function ModelSheet({
     [orgProviders, routeProject],
   );
 
-  const [draft, setDraft] = React.useState<ModelDraft>(() => blankDraft(""));
+  const [draft, setDraft] = React.useState<ModelDraft>(() => blankDraft([]));
+  // which errors are on screen: none on a pristine sheet, a field's own once it
+  // was visited, all of them once a save was refused (#2810)
+  const visibility = useErrorVisibility<FieldKey>();
   const [secOpen, setSecOpen] = React.useState<Record<SectionKey, boolean>>({
     general: true,
     routing: true,
@@ -844,7 +985,7 @@ export function ModelSheet({
     }
     if (seededRef.current || editLoading) return;
     seededRef.current = true;
-    const d = blankDraft(providers[0]?.id ?? "");
+    const d = blankDraft(providers);
     if (mode === "edit" && route) {
       d.name = route.model;
       d.strategy = route.strategy;
@@ -869,6 +1010,7 @@ export function ModelSheet({
       d.targets = [];
     }
     setDraft(d);
+    visibility.reset();
     setDupFrom("");
     setSecOpen({
       general: true,
@@ -925,9 +1067,12 @@ export function ModelSheet({
 
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? "";
 
-  // -- validation (verbose, blocks save) ------------------------------------
+  // -- validation ------------------------------------------------------------
+  // every error is computed on every render: the summary's count and the
+  // refusal of a save read the same list. which of them are on screen is a
+  // separate question, answered by `visibility` (#2810)
   const publicName = draft.name.trim();
-  const errName = !readonly && !publicName ? t("modelSheet.errors.name") : "";
+  const nameMissing = !readonly && !publicName;
   const nameConflict =
     !readonly &&
     publicName !== "" &&
@@ -936,10 +1081,21 @@ export function ModelSheet({
         m.model.toLowerCase() === publicName.toLowerCase() &&
         (mode !== "edit" || m.model !== route?.model),
     );
-  const errNameTaken = nameConflict ? t("modelSheet.errors.nameTaken", { name: publicName }) : "";
+  const errName = nameMissing
+    ? t("modelSheet.errors.name")
+    : nameConflict
+      ? t("modelSheet.errors.nameTaken", { name: publicName })
+      : "";
   // a route with no target is accepted by the API and answers every request
   // with an error, so the sheet does not create one
   const errTargets = !readonly && draft.targets.length === 0 ? t("modelSheet.errors.targets") : "";
+  // a target with no provider is not a target: the control plane would refuse
+  // it, and a default that picked one for the operator sent traffic to the
+  // wrong provider (#2810). only a blank line counts: a stored target whose
+  // provider this project cannot use is kept as it is
+  const providerRowInvalid = (tg: DraftTarget) => tg.providerId === "";
+  const errProvider =
+    !readonly && draft.targets.some(providerRowInvalid) ? t("modelSheet.errors.provider") : "";
   const weightRowInvalid = (tg: DraftTarget) => !weightValid(tg.weight);
   const errWeight =
     !readonly && draft.targets.some(weightRowInvalid) ? t("modelSheet.errors.weight") : "";
@@ -953,20 +1109,21 @@ export function ModelSheet({
     h.value.trim() !== "" && h.key.trim() === "";
   const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
   const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
-  const errors = [
-    errName,
-    errNameTaken,
-    errTargets,
-    errWeight,
-    errBaseUrl,
-    errParam,
-    errHeader,
-  ].filter(Boolean);
-  const canSave = !readonly && !editLoading && errors.length === 0;
-  // the one the footer repeats beside the disabled button; the summary above it
-  // still lists the rest
-  const blockingError = readonly ? "" : (errors[0] ?? "");
-  const blockingErrorId = React.useId();
+  const found: Record<FieldKey, string> = {
+    name: errName,
+    targets: errTargets,
+    provider: errProvider,
+    weight: errWeight,
+    baseUrl: errBaseUrl,
+    param: errParam,
+    header: errHeader,
+  };
+  const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
+  // what the sheet says under each field: its error, once it may be shown
+  const shownError = (key: FieldKey) => (visibility.shows(key) ? found[key] : "");
+  // a refused save puts one line above the buttons, which counts what is left
+  // to fix; each problem itself is stated once, at its own field
+  const summary = visibility.attempts > 0 && problems.length > 0;
   // one prefix for the ids tying each field to its hint and error
   const fid = React.useId();
   const ids = {
@@ -975,6 +1132,7 @@ export function ModelSheet({
     strategyHint: `${fid}-strategy-hint`,
     targetsLabel: `${fid}-targets-label`,
     targetsErr: `${fid}-targets-err`,
+    providerErr: `${fid}-provider-err`,
     weightErr: `${fid}-weight-err`,
     baseUrlHint: `${fid}-base-url-hint`,
     baseUrlErr: `${fid}-base-url-err`,
@@ -1111,6 +1269,31 @@ export function ModelSheet({
     onOpenChange,
   });
 
+  // a save with something to fix does not go out: it shows every error, opens
+  // the sections that hold one, and the effect below moves focus to the first
+  const bodyRef = React.useRef<HTMLDivElement>(null);
+  const requestSave = () => {
+    if (problems.length > 0) {
+      visibility.attempt();
+      setSecOpen((open) => ({
+        ...open,
+        params: open.params || problems.includes("param"),
+        headers: open.headers || problems.includes("header"),
+      }));
+      return;
+    }
+    ux.submitted();
+    save.mutate();
+  };
+  const attempts = visibility.attempts;
+  React.useEffect(() => {
+    if (attempts === 0) return;
+    const first = bodyRef.current?.querySelector<HTMLElement>(
+      '[aria-invalid="true"], [data-error-anchor="true"]',
+    );
+    first?.focus();
+  }, [attempts]);
+
   // duplicate-from: prefill the draft from an existing db route, then tweak.
   // the source's targets are read first, so the copy starts with the same
   // strategy and the same upstream models behind it
@@ -1133,7 +1316,7 @@ export function ModelSheet({
     // a later pick won the race while this one was reading
     if (dupRequest.current !== routeId) return;
     setDraft((d) => {
-      const next = blankDraft(d.targets[0]?.providerId || providers[0]?.id || "");
+      const next = blankDraft(providers, d.targets[0]?.providerId || defaultProviderId(providers));
       next.name = src.model;
       next.strategy = src.strategy;
       next.enabled = src.enabled;
@@ -1147,6 +1330,9 @@ export function ModelSheet({
       seedParams(next, src.params ?? {}, src.param_policy ?? {});
       return next;
     });
+    // the copy carries a name that is taken until it is renamed, and nobody
+    // typed it: saying so now is the reminder to rename, not a premature error
+    visibility.touch("name");
   };
 
   const title =
@@ -1225,7 +1411,7 @@ export function ModelSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
-      <SheetBody>
+      <SheetBody ref={bodyRef}>
         {readonly && (
           <div className="flex items-start gap-2.5 rounded-md border border-[color:var(--border-default)] bg-[color:var(--surface-subtle)] px-3 py-2.5">
             <Lock className="mt-0.5 h-3.5 w-3.5 flex-none text-[color:var(--text-secondary)]" />
@@ -1280,19 +1466,17 @@ export function ModelSheet({
                 value={draft.name}
                 placeholder="gpt-4o"
                 disabled={readonly || mode === "edit"}
-                aria-invalid={errName || errNameTaken ? true : undefined}
-                aria-describedby={describedBy(
-                  ids.nameHint,
-                  (errName || errNameTaken) && ids.nameErr,
-                )}
+                aria-invalid={shownError("name") ? true : undefined}
+                aria-describedby={describedBy(ids.nameHint, shownError("name") && ids.nameErr)}
                 onChange={(e) => set({ name: e.target.value })}
+                onBlur={() => visibility.touch("name")}
               />
               <p id={ids.nameHint} className="text-xs text-muted-foreground">
                 {mode === "add"
                   ? t("modelSheet.fields.nameHint")
                   : t("modelSheet.fields.nameHintEdit")}
               </p>
-              <FieldError id={ids.nameErr} error={errName || errNameTaken} />
+              <FieldError id={ids.nameErr} error={shownError("name")} />
             </div>
             <div className="space-y-1.5">
               <FieldLabel
@@ -1322,14 +1506,18 @@ export function ModelSheet({
               value={draft.baseUrl}
               placeholder="https://api.provider.com/v1"
               disabled={readonly}
-              aria-invalid={errBaseUrl ? true : undefined}
-              aria-describedby={describedBy(ids.baseUrlHint, errBaseUrl && ids.baseUrlErr)}
+              aria-invalid={shownError("baseUrl") ? true : undefined}
+              aria-describedby={describedBy(
+                ids.baseUrlHint,
+                shownError("baseUrl") && ids.baseUrlErr,
+              )}
               onChange={(e) => set({ baseUrl: e.target.value })}
+              onBlur={() => visibility.touch("baseUrl")}
             />
             <p id={ids.baseUrlHint} className="text-xs text-muted-foreground">
               {t("modelSheet.fields.baseUrlHint")}
             </p>
-            <FieldError id={ids.baseUrlErr} error={errBaseUrl} />
+            <FieldError id={ids.baseUrlErr} error={shownError("baseUrl")} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1412,13 +1600,26 @@ export function ModelSheet({
               strategy={draft.strategy}
               labelId={ids.targetsLabel}
               emptyErrorId={ids.targetsErr}
+              providerErrorId={ids.providerErr}
               weightErrorId={ids.weightErr}
+              shown={{
+                empty: !!shownError("targets"),
+                provider: !!shownError("provider"),
+                weight: !!shownError("weight"),
+              }}
+              providerInvalid={providerRowInvalid}
               weightInvalid={weightRowInvalid}
-              onChange={(next) => set({ targets: next })}
+              onChange={(next) => {
+                set({ targets: next });
+                // emptying the list is what the "add a target" error is about
+                if (next.length < draft.targets.length) visibility.touch("targets");
+              }}
+              onTouch={visibility.touch}
             />
           )}
-          <FieldError id={ids.targetsErr} error={errTargets} />
-          <FieldError id={ids.weightErr} error={errWeight} />
+          <FieldError id={ids.targetsErr} error={shownError("targets")} />
+          <FieldError id={ids.providerErr} error={shownError("provider")} />
+          <FieldError id={ids.weightErr} error={shownError("weight")} />
         </FormSection>
 
         {/* ===== Default parameters ===== */}
@@ -1448,9 +1649,12 @@ export function ModelSheet({
                     placeholder={t("modelSheet.params.namePlaceholder")}
                     disabled={readonly}
                     // the row the param error is about: a value with no name
-                    aria-invalid={paramRowInvalid(p) || undefined}
-                    aria-describedby={describedBy(paramRowInvalid(p) && ids.paramErr)}
+                    aria-invalid={(!!shownError("param") && paramRowInvalid(p)) || undefined}
+                    aria-describedby={describedBy(
+                      !!shownError("param") && paramRowInvalid(p) && ids.paramErr,
+                    )}
                     onChange={(e) => setParamAt(i, { key: e.target.value })}
+                    onBlur={() => visibility.touch("param")}
                   />
                 ) : (
                   <span className="min-w-0 flex-[1.1] truncate font-mono text-sm">{p.key}</span>
@@ -1482,6 +1686,7 @@ export function ModelSheet({
                     }
                     disabled={readonly}
                     onChange={(e) => setParamAt(i, { value: e.target.value })}
+                    onBlur={() => visibility.touch("param")}
                   />
                 )}
                 {p.custom && (
@@ -1518,7 +1723,7 @@ export function ModelSheet({
               </div>
             ))}
           </div>
-          <FieldError id={ids.paramErr} error={errParam} />
+          <FieldError id={ids.paramErr} error={shownError("param")} />
           {!readonly && (
             <Button
               size="sm"
@@ -1730,9 +1935,12 @@ export function ModelSheet({
                     value={h.key}
                     placeholder={t("modelSheet.headers.namePlaceholder")}
                     disabled={readonly}
-                    aria-invalid={headerRowInvalid(h) || undefined}
-                    aria-describedby={describedBy(headerRowInvalid(h) && ids.headerErr)}
+                    aria-invalid={(!!shownError("header") && headerRowInvalid(h)) || undefined}
+                    aria-describedby={describedBy(
+                      !!shownError("header") && headerRowInvalid(h) && ids.headerErr,
+                    )}
                     onChange={(e) => setHeaderAt(i, { key: e.target.value })}
+                    onBlur={() => visibility.touch("header")}
                   />
                   <Input
                     aria-label={t("modelSheet.headers.value")}
@@ -1741,6 +1949,7 @@ export function ModelSheet({
                     placeholder={t("modelSheet.headers.valuePlaceholder")}
                     disabled={readonly}
                     onChange={(e) => setHeaderAt(i, { value: e.target.value })}
+                    onBlur={() => visibility.touch("header")}
                   />
                   {headerManual && (
                     <LockButton
@@ -1764,7 +1973,7 @@ export function ModelSheet({
               ))}
             </div>
           )}
-          <FieldError id={ids.headerErr} error={errHeader} />
+          <FieldError id={ids.headerErr} error={shownError("header")} />
           {!readonly && (
             <Button
               size="sm"
@@ -1893,14 +2102,17 @@ export function ModelSheet({
       </SheetBody>
 
       <SheetFooter>
-        {errors.length > 0 && (
-          <div className="space-y-1 px-[22px] pt-2.5">
-            {errors.map((e) => (
-              <p key={e} className="text-xs leading-snug text-[color:var(--status-danger-text)]">
-                • {e}
-              </p>
-            ))}
-          </div>
+        {summary && (
+          // one line, and the only place the count lives: each problem is
+          // already said at its own field, so this does not say it again. the
+          // primary action stays enabled — it is the press that brings the
+          // errors up, and focus has gone to the first of them (#2810)
+          <p
+            role="alert"
+            className="px-[22px] pt-2.5 text-xs leading-snug text-[color:var(--status-danger-text)]"
+          >
+            {t("modelSheet.errors.summary", { count: problems.length })}
+          </p>
         )}
         <SheetError
           message={
@@ -1915,28 +2127,7 @@ export function ModelSheet({
             it serves this upstream model (#2008, #2009). the provider's own
             test answers "does the provider answer", which beside a model name
             reads as a claim about the model */}
-        <SheetActions
-          start={
-            // the primary action stays where it is and greys out instead of
-            // vanishing (#1265): a footer that reflows tells an operator who
-            // never scrolled to the field errors only that saving is gone, so
-            // the first error travels with the button and names the reason.
-            // below `sm` the summary directly above already opens with that
-            // same line, and a second copy squeezed beside the buttons is what
-            // pushed Save off a phone (#2003), so there it is only announced.
-            // a zero basis lets it give up width to the buttons rather than
-            // wrap the row
-            blockingError && (
-              <p
-                id={blockingErrorId}
-                role="alert"
-                className="text-xs leading-snug text-[color:var(--status-danger-text)] max-sm:sr-only sm:max-w-[52%] sm:flex-[1_1_0] sm:text-right"
-              >
-                {blockingError}
-              </p>
-            )
-          }
-        >
+        <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}
           </Button>
@@ -1946,14 +2137,7 @@ export function ModelSheet({
             </Button>
           )}
           {!readonly && (
-            <Button
-              disabled={!canSave || save.isPending}
-              aria-describedby={blockingError ? blockingErrorId : undefined}
-              onClick={() => {
-                ux.submitted();
-                save.mutate();
-              }}
-            >
+            <Button disabled={editLoading || save.isPending} onClick={requestSave}>
               {cta}
             </Button>
           )}

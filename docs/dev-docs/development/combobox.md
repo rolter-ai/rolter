@@ -32,6 +32,9 @@ const options: ComboboxOption[] = [
 | `value` / `onChange` | controlled; `""` means nothing selected                                                                          |
 | `placeholder`        | shown while nothing is selected; defaults to `common.combobox.placeholder`                                       |
 | `allowCustom`        | accepts a value outside `options`: a typed string with no exact match gets a "Use …" row (`common.combobox.use`) |
+| `commitOnBlur`       | with `allowCustom`, keeps what was typed when focus leaves, instead of dropping it unless "Use …" was picked     |
+| `emptyText`          | said in place of "No options match your filter" when the popup has no option to list at all (#2810)              |
+| `onFocus` / `onBlur` | focus came in / left the control as a whole; a move between its own parts is neither                             |
 | `clearable`          | adds an × that resets the selection — for an optional field                                                      |
 | `size`               | `default` matches `Input`; `sm` is the compact toolbar control the screens wrote as `h-8 text-xs`                |
 | `className`          | wrapper layout only (margins, width) — the control's own height comes from `size`                                |

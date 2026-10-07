@@ -174,13 +174,14 @@ export const Loaded: Story = {
 };
 
 /**
- * "Add route" opens the model sheet, the same one Model Catalog opens (#1979).
+ * "Add route" opens the route sheet, the same one Model Catalog opens (#1979).
  * The two screens used to create the same route through two forms that asked
  * for different things; a route now gets its strategy, its targets and the
- * rest of a model's settings in one place, whichever screen it starts from.
+ * rest of its settings in one place, whichever screen it starts from. The
+ * sheet is called what the button was: a route (#2810).
  */
 let creates: Recorder;
-export const AddRouteOpensTheModelSheet: Story = {
+export const AddRouteOpensTheRouteSheet: Story = {
   render: () => {
     creates = recording(
       scoped(async (input, init) => {
@@ -207,18 +208,21 @@ export const AddRouteOpensTheModelSheet: Story = {
     await waitFor(() => expect(add).toBeEnabled());
     await userEvent.click(add);
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Add model" })).toBeVisible();
-    await waitFor(() =>
-      expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
-    );
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-70b");
+    await expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible();
+    // two providers to choose between, so the target starts on neither: the
+    // first one alphabetically is not where this route's traffic should go
+    await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-70b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "azure-west");
     await pickOption(dialog.getByLabelText("Strategy"), "power_of_two");
-    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
     await expect(await creates.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)).toEqual({
       model: "llama-70b",
       strategy: "power_of_two",
     });
-    await creates.expectSent("POST", "/routes/route-new/targets");
+    await expect(await creates.expectSentBody("POST", "/routes/route-new/targets")).toMatchObject({
+      provider_id: "prov-2",
+    });
   },
 };
 

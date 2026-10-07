@@ -75,7 +75,7 @@ This guide takes a deployment from nothing to "our people and our applications c
 
     1. **Make a call with no credentials** — the Playground answers with `fake-llm`. It mints its own short-lived key, which for a project with no routes yet reaches `fake-llm` alone, so this works before steps 2 and 3. It runs inside a project, so on a deployment with none the card asks you to create one first: its **Create project** button opens the same dialog as the **+** beside Project in the scope switcher.
     2. **Connect a provider** — **Models → Model Providers → + Add provider**. The key is sealed and never shown again; **Test connection** proves it before anything depends on it.
-    3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add model** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on.
+    3. **Add a route** — **Models → Routing Rules → + Add route**, or **+ Add route** on Model Catalog, which opens the same sheet: the public model name your clients will send, its strategy, and the provider it lands on. With more than one provider, pick it yourself; the sheet does not choose for you.
     4. **Mint a virtual key** — **Governance → Virtual Keys**. Applications authenticate with it, never with your provider key.
 
     Connecting more than one model, or a whole self-hosted fleet, is its own guide: [Connecting models](/guides/connecting-models).
