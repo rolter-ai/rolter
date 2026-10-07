@@ -58,6 +58,12 @@ services:
     volumes:
       - chdata:/var/lib/clickhouse
       - ../clickhouse:/docker-entrypoint-initdb.d
+      # one file, not the directory: the image keeps its listen-address config
+      # in config.d, and a directory mount would hide it. switches off the
+      # system.*_log tables ClickHouse writes about itself, which rolter reads
+      # none of and which keep a small host's merge threads busy while idle
+      # (#2795). query_log stays
+      - ./clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
     # 262144 is ClickHouse's production recommendation. a runtime cannot raise
     # a container above its own hard limit, and rootless docker/podman or a
     # sandboxed runner often sits lower, where creating the container fails with

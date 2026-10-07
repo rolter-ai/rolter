@@ -39,6 +39,10 @@ Both shapes need Docker Compose 2.24 or later.
       ClickHouse asks for 262144 open files. If the ClickHouse container fails to start with `error setting rlimit type 7: operation not permitted`, the container runtime (often rootless Docker or Podman) cannot grant that many. Set a lower limit in `docker/.env` and start again: run `echo CLICKHOUSE_NOFILE=20000 >> docker/.env`, then `docker compose -f docker/docker-compose.yml up -d`. Compose reads `docker/.env` because it sits beside the first `-f` file; a `.env` at the repository root does not set this value.
     </Note>
 
+    <Note>
+      The stack turns off the diagnostic tables ClickHouse writes about itself, which keep a small host with a slow disk busy while rolter is idle. A volume created by an earlier version still holds them, and a small host should cap ClickHouse's caches too: see [ClickHouse on a small host](#clickhouse-on-a-small-host).
+    </Note>
+
   </Step>
   <Step title="Give it provider keys (optional)">
     The bundled `rolter.toml` reads `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the gateway's environment. Export them before `up`, or put them in `docker/.env`. A `.env` at the repository root is read only if you pass `--env-file .env`.
@@ -270,6 +274,42 @@ docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
 ```
 
 </CodeGroup>
+
+## ClickHouse on a small host
+
+ClickHouse's default server config writes its own diagnostics into `system.text_log`, `metric_log`, `asynchronous_metric_log`, `trace_log` and the rest of the `system.*_log` family, with an insert every few seconds into each. On a small host with a slow disk (a Raspberry Pi on an SD card was the measured case) the merges those inserts cause never catch up, and an idle ClickHouse measured at 190% to 320% CPU there. Rolter reads none of those tables, so `docker/clickhouse/system-logs.xml` switches them off for the local stack and, because the team stack layers over it, the team stack too. `system.query_log` stays on. Nothing in the file needs editing.
+
+**Drop the tables an existing volume already has.** The file only stops the tables being created; ClickHouse does not drop a table because its logging was disabled. Run this once against a volume created by an earlier version. The statement list is generated, so the numbered copies (`text_log_0`) ClickHouse leaves behind after an upgrade go too. In the team stack add `--user "$ROLTER_CLICKHOUSE_USER" --password "$ROLTER_CLICKHOUSE_PASSWORD"` to both `clickhouse-client` calls, and the team `-f` and `--env-file` flags to `docker compose`:
+
+```bash
+ch() { docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client "$@"; }
+ch -q "select 'drop table if exists system.' || name || ' sync;' from system.tables
+       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
+```
+
+**Cap the caches.** ClickHouse sizes its mark and uncompressed caches for a large server (5 GiB and 8 GiB by default). Rolter does not pick a smaller figure for you, because the right one depends on the host. To set one, put a file in `docker/clickhouse/caches.xml`:
+
+```xml
+<clickhouse>
+  <mark_cache_size>268435456</mark_cache_size>
+  <uncompressed_cache_size>268435456</uncompressed_cache_size>
+</clickhouse>
+```
+
+Mount it with a second Compose file, `docker/docker-compose.caches.yml`, and start the stack with both:
+
+```yaml
+services:
+  clickhouse:
+    volumes:
+      - ./clickhouse/caches.xml:/etc/clickhouse-server/config.d/caches.xml:ro
+```
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.caches.yml up -d
+```
+
+`select name, value from system.server_settings where name like '%cache_size'` shows the values the running server picked up.
 
 ## Database schemas
 
