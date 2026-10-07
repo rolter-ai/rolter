@@ -26,6 +26,7 @@ use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::rate_limits::TokenRecorder;
 use crate::state::{AppState, KeyMeta, Snapshot};
+use crate::upstream_failure::{self, StatusFailure};
 
 /// Liveness probe. Stays `200` while draining: the process is healthy, it is
 /// just no longer taking new traffic.
@@ -1267,15 +1268,26 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             Err(resp) => return resp,
         }
     };
-    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
-        return denial.into_response();
-    }
-
     let scope = request_scope(vk.as_ref());
+    // from here the caller is known, so a refusal is attributable and is
+    // logged. the three answers above are not: they come before any key was
+    // looked up, and a row nobody owns is one anonymous traffic could write
+    // without limit (#2807)
+    let refuse = Refusals {
+        state: &state,
+        headers: &headers,
+        scope: &scope,
+        model: &model,
+        sample_rate: snap.logging.sample_rate,
+        started,
+    };
+    if let Err(denial) = authorize_model(vk.as_ref(), &model) {
+        return refuse.log(denial.into_response());
+    }
 
     // block before spending upstream tokens when any applicable budget is spent
     if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
-        return refusal;
+        return refuse.log(refusal);
     }
 
     // pre_route plugins: consult before the route is resolved, while only the
@@ -1311,12 +1323,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 parsed = content;
             }
             crate::plugin_dispatch::DispatchOutcome::Block(reason) => {
-                return crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
-                )
-                .with_code("plugin_blocked")
-                .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
+                    )
+                    .with_code("plugin_blocked")
+                    .into_response(),
+                );
             }
         }
     }
@@ -1324,7 +1338,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // throughput cap: reject before forwarding when a matching request/token
     // window is already at capacity (admission also counts the request)
     if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
-        return refusal;
+        return refuse.log(refusal);
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
@@ -1353,13 +1367,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let mut entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
-            return crate::error::ApiError::new(
-                StatusCode::NOT_FOUND,
-                format!("no route for model '{model}'"),
+            return refuse.log(
+                crate::error::ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    format!("no route for model '{model}'"),
+                )
+                .with_code("model_not_found")
+                .with_param("model")
+                .into_response(),
             )
-            .with_code("model_not_found")
-            .with_param("model")
-            .into_response()
         }
     };
     // The policy consumes only the request's already-bounded byte count. Its
@@ -1386,10 +1402,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .observe_complexity(&model, &tier, &entry.route.model, fallback);
     }
     if entry.route.targets.is_empty() && !entry.route.has_variants() {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
+        return refuse.log(error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "route has no targets",
+        ));
     }
     if let Err(denial) = authorize_route(vk.as_ref(), entry) {
-        return denial.into_response();
+        return refuse.log(denial.into_response());
     }
     // the route survived every access check: record what was chosen and close
     // the stage, so what follows is not nested under route selection
@@ -1405,13 +1424,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 .and_then(Value::as_u64)
                 .is_some_and(|value| value > u64::from(max_output))
             {
-                return crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("{field} exceeds this model's output token limit of {max_output}"),
-                )
-                .with_code("max_tokens_exceeded")
-                .with_param(field)
-                .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        format!("{field} exceeds this model's output token limit of {max_output}"),
+                    )
+                    .with_code("max_tokens_exceeded")
+                    .with_param(field)
+                    .into_response(),
+                );
             }
         }
     }
@@ -1450,9 +1471,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     .metrics
                     .prompt_template_rejections_total
                     .fetch_add(1, Relaxed);
-                return crate::error::ApiError::new(StatusCode::BAD_REQUEST, err.message())
-                    .with_code("invalid_prompt_template")
-                    .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(StatusCode::BAD_REQUEST, err.message())
+                        .with_code("invalid_prompt_template")
+                        .into_response(),
+                );
             }
         }
     }
@@ -1488,12 +1511,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             }
             Err(rule) => {
                 state.metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
-                return crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("request blocked by guardrail '{rule}'"),
-                )
-                .with_code("guardrail_blocked")
-                .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        format!("request blocked by guardrail '{rule}'"),
+                    )
+                    .with_code("guardrail_blocked")
+                    .into_response(),
+                );
             }
         }
     }
@@ -1519,12 +1544,15 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         {
             crate::guardrail_webhook::WebhookOutcome::Allow => {}
             crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
-                return crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    reason.unwrap_or_else(|| "request blocked by guardrail service".to_string()),
-                )
-                .with_code("guardrail_blocked")
-                .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        reason
+                            .unwrap_or_else(|| "request blocked by guardrail service".to_string()),
+                    )
+                    .with_code("guardrail_blocked")
+                    .into_response(),
+                );
             }
             crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
                 parsed = content;
@@ -1587,9 +1615,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 pii_ticket = ticket;
             }
             crate::pii_sanitizer::SanitizeOutcome::Block(reason) => {
-                return crate::error::ApiError::new(StatusCode::BAD_GATEWAY, reason)
-                    .with_code("pii_sanitizer_unavailable")
-                    .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(StatusCode::BAD_GATEWAY, reason)
+                        .with_code("pii_sanitizer_unavailable")
+                        .into_response(),
+                );
             }
         }
     }
@@ -1631,12 +1661,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 parsed = content;
             }
             crate::plugin_dispatch::DispatchOutcome::Block(reason) => {
-                return crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
-                )
-                .with_code("plugin_blocked")
-                .into_response();
+                return refuse.log(
+                    crate::error::ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        reason.unwrap_or_else(|| "request blocked by plugin".to_string()),
+                    )
+                    .with_code("plugin_blocked")
+                    .into_response(),
+                );
             }
         }
     }
@@ -1707,14 +1739,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .metrics
             .guardrail_stream_rejections_total
             .fetch_add(1, Relaxed);
-        return crate::error::ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "this model applies output guardrails, which cannot be enforced on a streamed \
-             response; retry without \"stream\": true",
-        )
-        .with_code("guardrail_streaming_unsupported")
-        .with_param("stream")
-        .into_response();
+        return refuse.log(
+            crate::error::ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "this model applies output guardrails, which cannot be enforced on a streamed \
+                 response; retry without \"stream\": true",
+            )
+            .with_code("guardrail_streaming_unsupported")
+            .with_param("stream")
+            .into_response(),
+        );
     }
     // a stream that got here is one the operator opted out of masking for
     let output_guard = if stream { None } else { output_guard };
@@ -1732,14 +1766,16 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .metrics
             .pii_stream_rejections_total
             .fetch_add(1, Relaxed);
-        return crate::error::ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "this deployment sanitizes or restores response content, which cannot be applied \
-             to a streamed response; retry without \"stream\": true",
-        )
-        .with_code("pii_streaming_unsupported")
-        .with_param("stream")
-        .into_response();
+        return refuse.log(
+            crate::error::ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "this deployment sanitizes or restores response content, which cannot be applied \
+                 to a streamed response; retry without \"stream\": true",
+            )
+            .with_code("pii_streaming_unsupported")
+            .with_param("stream")
+            .into_response(),
+        );
     }
     // a stream that got here is one the operator opted out of the response leg
     // for; the request leg still ran, so PII still did not reach the provider
@@ -1784,18 +1820,20 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 .metrics
                 .plugin_stream_rejections_total
                 .fetch_add(1, Relaxed);
-            return crate::error::ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "the fail-closed post_response plugin '{}' must approve every response, \
-                     which cannot be done for a streamed response; retry without \
-                     \"stream\": true",
-                    plugin.slug
-                ),
-            )
-            .with_code("plugin_streaming_unsupported")
-            .with_param("stream")
-            .into_response();
+            return refuse.log(
+                crate::error::ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "the fail-closed post_response plugin '{}' must approve every response, \
+                         which cannot be done for a streamed response; retry without \
+                         \"stream\": true",
+                        plugin.slug
+                    ),
+                )
+                .with_code("plugin_streaming_unsupported")
+                .with_param("stream")
+                .into_response(),
+            );
         }
     }
     let post_response_plugins = (!stream && !post_response_plugin_list.is_empty()).then(|| {
@@ -1833,7 +1871,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     if let Some(refused) =
         unpriced_admission(&state, &snap, &scope, &effective_model, price.is_some())
     {
-        return refused;
+        return refuse.log(refused);
     }
     // records this request's cost against its budgets once cost_usd is known
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
@@ -2056,17 +2094,19 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // the successful attempt's span, held past the retry block so token usage
     // can be recorded on it once the response body has been consumed (#808)
     let mut genai_span: Option<tracing::Span> = None;
-    let (
+    let ForwardOutcome {
         outcome,
         last_provider,
         last_target,
-        last_error,
-        inflight_guard,
-        chosen_variant,
-        last_key_fingerprint,
         last_attempt_recorded,
-    ) = if entry.route.has_variants() {
-        let fwd = forward_variants(
+        last_error,
+        last_status,
+        inflight_guard,
+        variant: chosen_variant,
+        provider_key_fingerprint: last_key_fingerprint,
+        attempts,
+    } = if entry.route.has_variants() {
+        forward_variants(
             &state,
             entry,
             &snap,
@@ -2080,17 +2120,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             vk.as_ref(),
             &mut cancel,
         )
-        .await;
-        (
-            fwd.outcome,
-            fwd.last_provider,
-            fwd.last_target,
-            fwd.last_error,
-            fwd.inflight_guard,
-            fwd.variant,
-            fwd.provider_key_fingerprint,
-            fwd.last_attempt_recorded,
-        )
+        .await
     } else {
         let retry = &snap.retry;
         let cooldown = &snap.cooldown;
@@ -2109,6 +2139,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         let mut last_provider = String::new();
         let mut last_target = model.clone();
         let mut last_error: Option<String> = None;
+        // the last retryable status a target answered with, for when the loop
+        // runs out of targets with no response left to hand back (#2807)
+        let mut last_status: Option<StatusFailure> = None;
+        // upstream attempts made, successful one included
+        let mut attempts: u8 = 0;
         let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
         let mut inflight_guard: Option<crate::load::LoadGuard> = None;
         let mut last_key_fingerprint: Option<String> = None;
@@ -2233,6 +2268,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             // per-attempt clock: `started` is the whole request, and a superseded
             // attempt's own duration is what the health funnel records (#1646)
             last_attempt_recorded = false;
+            attempts = attempts.saturating_add(1);
             let attempt_started = Instant::now();
             match state
                 .provider_queues
@@ -2289,13 +2325,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
-                            sleep(Duration::from_millis(retry_delay_ms(
-                                retry,
-                                &response,
-                                attempt + 1,
-                                started,
-                            )))
-                            .await;
+                            // the response is read for its reason and dropped here, so the delay
+                            // is taken from it first; the reason is what the request ends with if
+                            // this was the last target (#2807)
+                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                            let retry_after = retry_after_secs(&response);
+                            last_status = Some(StatusFailure::read(response, retry_after).await);
+                            last_error = None;
+                            sleep(Duration::from_millis(delay)).await;
                             continue;
                         }
                     } else if is_retryable_status(status) {
@@ -2323,13 +2360,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             });
                             last_attempt_recorded = true;
                             state.metrics.retries_total.fetch_add(1, Relaxed);
-                            sleep(Duration::from_millis(retry_delay_ms(
-                                retry,
-                                &response,
-                                attempt + 1,
-                                started,
-                            )))
-                            .await;
+                            // the response is read for its reason and dropped here, so the delay
+                            // is taken from it first; the reason is what the request ends with if
+                            // this was the last target (#2807)
+                            let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                            let retry_after = retry_after_secs(&response);
+                            last_status = Some(StatusFailure::read(response, retry_after).await);
+                            last_error = None;
+                            sleep(Duration::from_millis(delay)).await;
                             continue;
                         }
                     } else if state.breaker.on_success(&model, idx) {
@@ -2393,22 +2431,24 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 }
             }
         }
-        (
+        ForwardOutcome {
             outcome,
             last_provider,
             last_target,
-            last_error,
-            inflight_guard,
-            String::new(),
-            last_key_fingerprint,
             last_attempt_recorded,
-        )
+            last_error,
+            last_status,
+            inflight_guard,
+            variant: String::new(),
+            provider_key_fingerprint: last_key_fingerprint,
+            attempts,
+        }
     };
 
     let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
-    // from here every arm answers the caller: the streamed path hands the row
-    // to `UsageLoggingStream` (which marks it if the client then leaves), the
-    // error arm logs its own, and "no target selected" has never logged one
+    // from here every arm answers the caller and logs its row: the streamed
+    // path hands it to `UsageLoggingStream` (which marks it if the client then
+    // leaves), and each failure arm below writes its own
     cancel.disarm();
     match outcome {
         // token counts, latency and ttft are filled by the stream wrapper once
@@ -2474,6 +2514,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 target: last_target,
                 variant: chosen_variant,
                 status,
+                upstream_status: status,
+                attempts,
                 stream: stream as u8,
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
@@ -2619,11 +2661,44 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
             .await
         }
         None => {
-            // no attempt ever reached an upstream: the balancer had no target
-            if last_error.is_none() {
-                return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
-            }
-            let message = last_error.unwrap_or_default();
+            // which of the three ends this is decides the answer and what the row
+            // says; all three log exactly one row (#2807)
+            let no_target = last_error.is_none() && last_status.is_none();
+            let (response, status, error, upstream_status) = match (last_error, last_status) {
+                // the last attempt never got a response
+                (Some(message), _) => {
+                    let response = upstream_error_response(&message);
+                    // what the caller was given, which is not always a 502: a
+                    // full provider queue answers 429 or 503
+                    let status = response.status().as_u16();
+                    (
+                        response,
+                        status,
+                        rolter_core::redact::redact_urls_in_text(&message),
+                        0,
+                    )
+                }
+                // the last attempt was answered with a retryable status and no
+                // target was left. the response was dropped by the loop, so
+                // this is where its status survives: a 429 stays a rate limit
+                // for the caller instead of becoming "no target selected"
+                (None, Some(failed)) => {
+                    let answer = upstream_failure::exhausted(
+                        &model,
+                        &failed,
+                        attempts,
+                        snap.cooldown.enabled(),
+                    );
+                    (answer.response, answer.status, answer.error, failed.status)
+                }
+                // the balancer had nothing to pick, so no upstream was tried
+                (None, None) => (
+                    error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
+                    StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    "no target selected".to_string(),
+                    0,
+                ),
+            };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
                 request_id,
@@ -2635,26 +2710,39 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                 business_unit_id,
                 customer_id,
                 model,
-                provider: last_provider,
-                target: last_target,
+                provider: if no_target {
+                    String::new()
+                } else {
+                    last_provider
+                },
+                target: if no_target {
+                    String::new()
+                } else {
+                    last_target
+                },
                 variant: chosen_variant,
-                status: StatusCode::BAD_GATEWAY.as_u16(),
+                status,
+                upstream_status,
+                attempts,
                 stream: stream as u8,
                 latency_ms: started.elapsed().as_millis() as u32,
-                error: message.clone(),
+                error,
                 sample_rate: snap.logging.sample_rate,
                 ..Default::default()
             };
-            // the loop ran out of targets after a superseded attempt: that
-            // attempt is already counted against its target, so this row
-            // carries the request only (#1646)
-            if last_attempt_recorded {
+            if no_target {
+                // nothing was tried, so there is no target to charge
+                state.log.log_refusal(row);
+            } else if last_attempt_recorded {
+                // the loop ran out of targets after a superseded attempt: that
+                // attempt is already counted against its target, so this row
+                // carries the request only (#1646)
                 state.log.log_recorded_attempt(row);
             } else {
                 state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
                 state.log.log(row);
             }
-            upstream_error_response(&message)
+            response
         }
     }
 }
@@ -2706,18 +2794,26 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
+    let scope = request_scope(vk.as_ref());
+    // as on the chat path: a refusal of a caller we know is logged (#2807)
+    let refuse = Refusals {
+        state: &state,
+        headers: &headers,
+        scope: &scope,
+        model: &model,
+        sample_rate: snap.logging.sample_rate,
+        started,
+    };
     if let Err(denial) = authorize_model(vk.as_ref(), &model) {
-        return denial.into_response();
+        return refuse.log(denial.into_response());
     }
 
-    let scope = request_scope(vk.as_ref());
-
     if let Some(refusal) = budget_refusal(&state, &snap, &scope).await {
-        return refusal;
+        return refuse.log(refusal);
     }
 
     if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
-        return refusal;
+        return refuse.log(refusal);
     }
 
     // built-in fake-llm answers locally unless a configured route shadows it
@@ -2735,22 +2831,27 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let entry = match resolved.as_deref() {
         Some(entry) => entry,
         None => {
-            return crate::error::ApiError::new(
-                StatusCode::NOT_FOUND,
-                format!("no route for model '{model}'"),
+            return refuse.log(
+                crate::error::ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    format!("no route for model '{model}'"),
+                )
+                .with_code("model_not_found")
+                .with_param("model")
+                .into_response(),
             )
-            .with_code("model_not_found")
-            .with_param("model")
-            .into_response()
         }
     };
     if entry.route.targets.is_empty() {
-        return error_json(StatusCode::SERVICE_UNAVAILABLE, "route has no targets");
+        return refuse.log(error_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "route has no targets",
+        ));
     }
     // the same route gate as the JSON pipeline: an upload must not reach a
     // route the caller could not address with a chat request (#1485)
     if let Err(denial) = authorize_route(vk.as_ref(), entry) {
-        return denial.into_response();
+        return refuse.log(denial.into_response());
     }
 
     let request_id = headers
@@ -2778,7 +2879,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     // see the chat path: refuse unaccountable traffic before spending upstream
     // tokens on it (#974)
     if let Some(refused) = unpriced_admission(&state, &snap, &scope, &model, price.is_some()) {
-        return refused;
+        return refuse.log(refused);
     }
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
@@ -2838,6 +2939,9 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     // attempt the per-attempt funnel already recorded
     let mut last_attempt_recorded = false;
     let mut last_error: Option<String> = None;
+    // see the chat path: what the request ends with when no target is left
+    let mut last_status: Option<StatusFailure> = None;
+    let mut attempts: u8 = 0;
     let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
     let mut inflight_guard: Option<crate::load::LoadGuard> = None;
 
@@ -2887,6 +2991,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         // per-attempt clock: `started` is the whole request, and a superseded
         // attempt's own duration is what the health funnel records (#1646)
         last_attempt_recorded = false;
+        attempts = attempts.saturating_add(1);
         let attempt_started = Instant::now();
         match state
             .provider_queues
@@ -2928,13 +3033,14 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(retry_delay_ms(
-                            retry,
-                            &response,
-                            attempt + 1,
-                            started,
-                        )))
-                        .await;
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        last_status = Some(StatusFailure::read(response, retry_after).await);
+                        last_error = None;
+                        sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -2960,13 +3066,14 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(retry_delay_ms(
-                            retry,
-                            &response,
-                            attempt + 1,
-                            started,
-                        )))
-                        .await;
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        last_status = Some(StatusFailure::read(response, retry_after).await);
+                        last_error = None;
+                        sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&model, idx) {
@@ -3042,6 +3149,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 target: last_target,
                 variant: String::new(),
                 status,
+                upstream_status: status,
+                attempts,
                 stream: 0,
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
@@ -3078,10 +3187,37 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
             .await
         }
         None => {
-            if last_error.is_none() {
-                return error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected");
-            }
-            let message = last_error.unwrap_or_default();
+            // as on the chat path: one row on every arm (#2807)
+            let no_target = last_error.is_none() && last_status.is_none();
+            let (response, status, error, upstream_status) = match (last_error, last_status) {
+                (Some(message), _) => {
+                    let response = upstream_error_response(&message);
+                    // what the caller was given, which is not always a 502: a
+                    // full provider queue answers 429 or 503
+                    let status = response.status().as_u16();
+                    (
+                        response,
+                        status,
+                        rolter_core::redact::redact_urls_in_text(&message),
+                        0,
+                    )
+                }
+                (None, Some(failed)) => {
+                    let answer = upstream_failure::exhausted(
+                        &model,
+                        &failed,
+                        attempts,
+                        snap.cooldown.enabled(),
+                    );
+                    (answer.response, answer.status, answer.error, failed.status)
+                }
+                (None, None) => (
+                    error_json(StatusCode::SERVICE_UNAVAILABLE, "no target selected"),
+                    StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    "no target selected".to_string(),
+                    0,
+                ),
+            };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
                 request_id,
@@ -3093,24 +3229,36 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 business_unit_id,
                 customer_id,
                 model,
-                provider: last_provider,
-                target: last_target,
+                provider: if no_target {
+                    String::new()
+                } else {
+                    last_provider
+                },
+                target: if no_target {
+                    String::new()
+                } else {
+                    last_target
+                },
                 variant: String::new(),
-                status: StatusCode::BAD_GATEWAY.as_u16(),
+                status,
+                upstream_status,
+                attempts,
                 stream: 0,
                 latency_ms: started.elapsed().as_millis() as u32,
-                error: message.clone(),
+                error,
                 sample_rate: snap.logging.sample_rate,
                 ..Default::default()
             };
-            // as on the chat path: a superseded attempt is already counted
-            if last_attempt_recorded {
+            if no_target {
+                state.log.log_refusal(row);
+            } else if last_attempt_recorded {
+                // as on the chat path: a superseded attempt is already counted
                 state.log.log_recorded_attempt(row);
             } else {
                 state.metrics.upstream_errors_total.fetch_add(1, Relaxed);
                 state.log.log(row);
             }
-            upstream_error_response(&message)
+            response
         }
     }
 }
@@ -3123,11 +3271,18 @@ struct ForwardOutcome {
     last_target: String,
     /// whether the last attempt was already recorded against its target
     last_attempt_recorded: bool,
+    /// the last attempt's transport failure, when it never got a response
     last_error: Option<String>,
+    /// the last retryable status an upstream answered with, when the loop ran
+    /// out of targets while holding no response to hand back (#2807)
+    last_status: Option<StatusFailure>,
     inflight_guard: Option<crate::load::LoadGuard>,
     /// chosen variant name for attribution
     variant: String,
     provider_key_fingerprint: Option<String>,
+    /// upstream attempts made, the one that answered included. Saturates, so
+    /// a retry budget past 255 cannot wrap the count to zero
+    attempts: u8,
 }
 
 /// Namespaces the per-target reliability registries (cooldown/breaker/load) by
@@ -3261,9 +3416,11 @@ async fn forward_variants(
         last_target: model.to_string(),
         last_attempt_recorded: false,
         last_error: None,
+        last_status: None,
         inflight_guard: None,
         variant: String::new(),
         provider_key_fingerprint: None,
+        attempts: 0,
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
 
@@ -3334,6 +3491,7 @@ async fn forward_variants(
         // per-attempt clock: `started` is the whole request, and a superseded
         // attempt's own duration is what the health funnel records (#1646)
         out.last_attempt_recorded = false;
+        out.attempts = out.attempts.saturating_add(1);
         let attempt_started = Instant::now();
         match state
             .provider_queues
@@ -3377,13 +3535,14 @@ async fn forward_variants(
                         });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(retry_delay_ms(
-                            retry,
-                            &response,
-                            attempt + 1,
-                            started,
-                        )))
-                        .await;
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        out.last_status = Some(StatusFailure::read(response, retry_after).await);
+                        out.last_error = None;
+                        sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3409,13 +3568,14 @@ async fn forward_variants(
                         });
                         out.last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(retry_delay_ms(
-                            retry,
-                            &response,
-                            attempt + 1,
-                            started,
-                        )))
-                        .await;
+                        // the response is read for its reason and dropped here, so the delay
+                        // is taken from it first; the reason is what the request ends with if
+                        // this was the last target (#2807)
+                        let delay = retry_delay_ms(retry, &response, attempt + 1, started);
+                        let retry_after = retry_after_secs(&response);
+                        out.last_status = Some(StatusFailure::read(response, retry_after).await);
+                        out.last_error = None;
+                        sleep(Duration::from_millis(delay)).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&key, ti) {
@@ -3987,6 +4147,69 @@ impl RequestLogCtx {
             sample_rate: self.sample_rate,
             ..Default::default()
         }
+    }
+}
+
+/// The longest model name a refusal row keeps. A refusal is written before any
+/// route vouches for the name, so it is whatever string the caller sent.
+const REFUSAL_MODEL_MAX_BYTES: usize = 256;
+
+/// The longest `error` a refusal row keeps. Some refusals quote the caller's
+/// own words back, such as `no route for model '…'`, and a body can be large.
+const REFUSAL_ERROR_MAX_BYTES: usize = 512;
+
+/// Writes the request-log row for a request the gateway refused before it
+/// reached an upstream (#2807).
+///
+/// A spent budget, a rate limit, a guardrail, an unknown model and the rest
+/// used to answer the caller and leave nothing behind, so an operator asked
+/// "why did this call fail" had a `4xx` on the client side and an empty LLM
+/// Logs on theirs. The rule now is that **every request from a caller the
+/// gateway has identified leaves one row**, whatever happened to it.
+///
+/// What stays unlogged is what comes before identification: a body that is not
+/// JSON, a missing `model`, a missing or unknown key, and the middleware
+/// refusals ahead of the handler (required headers, body size). No tenant owns
+/// those, and an unauthenticated caller could write rows without limit. They
+/// are counted instead (`rolter_auth_failures_total`).
+///
+/// The row has no provider or target, which is how it reads as "never reached
+/// an upstream", and is written without touching the per-model latency
+/// histograms (see [`crate::logging::LogSink::log_refusal`]).
+struct Refusals<'a> {
+    state: &'a AppState,
+    headers: &'a HeaderMap,
+    scope: &'a ScopeIds,
+    model: &'a str,
+    sample_rate: f64,
+    started: Instant,
+}
+
+impl Refusals<'_> {
+    /// Log `response` as this request's outcome and hand it back. The row's
+    /// `error` is the message the response carries, so the log says what the
+    /// caller was told.
+    fn log(&self, response: Response) -> Response {
+        let mut error = response
+            .extensions()
+            .get::<crate::error::ErrorMessage>()
+            .map(|message| message.0.clone())
+            .unwrap_or_default();
+        error.truncate(error.floor_char_boundary(REFUSAL_ERROR_MAX_BYTES));
+        let model = &self.model[..self.model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
+        let ctx = RequestLogCtx::new(
+            self.headers,
+            self.scope,
+            model,
+            self.sample_rate,
+            self.started,
+        );
+        self.state.log.log_refusal(RequestLog {
+            status: response.status().as_u16(),
+            error,
+            ..ctx.into_log()
+        });
+        response
     }
 }
 

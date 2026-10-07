@@ -826,6 +826,7 @@ fn invocations_sql(status_expr: &str) -> String {
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
+                upstream_status, attempts, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1427,6 +1428,15 @@ mod tests {
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
         assert!(sql.contains("cost_usd, unpriced"));
+    }
+
+    #[test]
+    fn invocations_sql_selects_what_the_request_did_upstream_next_to_its_error() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // `status` is what the caller was told. when the gateway answered with
+        // an error of its own, only these two say which upstream status caused
+        // it and how many attempts it took to get there (#2807)
+        assert!(sql.contains("error, upstream_status, attempts"));
     }
 
     #[test]

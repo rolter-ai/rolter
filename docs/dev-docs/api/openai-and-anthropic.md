@@ -146,6 +146,19 @@ other modalities to a provider whose dialect carries them.
 
 A missing, unknown, disabled or expired virtual key all answer `401` with `type: authentication_error` and `code: invalid_api_key`, as OpenAI does (OpenAI uses the same code for a missing key, with a different message; so does rolter). Unknown, disabled and expired read alike so a caller cannot probe which happened. The realtime close sends the same code in its `error` event (#1881). Every dialect, including `/v1/messages`, gets this one envelope: rolter does not emit Anthropic's `{"type":"error"}` shape, so there is no separate Anthropic field to set.
 
+## Upstream failures
+
+When a request ends because the upstreams failed, the answer says which kind of failure it was and names the last upstream status (#2807). The envelope is the same for every dialect, `/v1/messages` included.
+
+| Situation                                                                         | Status      | `type`             | `code`                                         |
+| --------------------------------------------------------------------------------- | ----------- | ------------------ | ---------------------------------------------- |
+| every target tried answered `429`, none left to fail over to                      | `429`       | `rate_limit_error` | `upstream_rate_limited`                        |
+| every target tried failed with another retryable status (`408`, `5xx`), none left | `503`       | `overloaded_error` | `upstream_unavailable`                         |
+| the last attempt never got a response (refused, reset, timed out)                 | `502`       | `overloaded_error` | none                                           |
+| the provider's queue is full, timed out or dropped the request                    | `429`/`503` | by status          | `queue_full`, `queue_timeout`, `queue_dropped` |
+
+A `429` carries the upstream's `Retry-After` when it sent one. The message names the status and the model (`every upstream target for model 'x' is rate limited (last upstream status 429)`) and never the upstream's own words, which are in the request-log row (`error`, with `upstream_status` and `attempts` beside it; see [Observability](../architecture/observability.md#request--cost-logs)). When the retry budget runs out while an untried target remains, the upstream's own response is handed to the caller as it was. An earlier gateway answered all of these with `503 no target selected`, which points at routing config when the cause was an upstream that said no.
+
 ## Model listing
 
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's
