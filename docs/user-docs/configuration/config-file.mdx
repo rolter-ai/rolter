@@ -891,6 +891,36 @@ queue_capacity = 10000
 
 ---
 
+### \[client\]
+
+Controls header handling on the upstream request leg and configures the base URL advertised in client dashboard connection snippets.
+
+<ParamField path="public_base_url" type="string">
+  Base URL shown to clients in code snippets. Advisory only — the gateway never reads it directly.
+</ParamField>
+
+<ParamField path="forwarded_headers" default="[]" type="list">
+  Inbound client headers forwarded verbatim to the upstream provider, lowercased.
+</ParamField>
+
+<ParamField path="injected_headers" default="{}" type="table">
+  Static headers added to every upstream request.
+</ParamField>
+
+<ParamField path="request_id_header" default="x-request-id" type="string">
+  Header carrying the client-supplied correlation ID.
+</ParamField>
+
+```toml
+[client]
+public_base_url = "https://gateway.example.com"
+forwarded_headers = ["x-custom-header"]
+injected_headers = { "x-organization-id" = "org-123" }
+request_id_header = "x-request-id"
+```
+
+---
+
 <Note>
   The repository ships a fully annotated `rolter.example.toml` that includes every section with inline comments explaining each field. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need.
 </Note>
