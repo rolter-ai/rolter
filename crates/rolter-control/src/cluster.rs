@@ -142,10 +142,7 @@ async fn set_node_drain(
     }
     let desired_state = if body.draining { "draining" } else { "active" };
     let node = repo.set_desired_state(&id, desired_state).await?;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(
             None,
@@ -201,10 +198,7 @@ async fn forget_node(
 ) -> ApiResult<StatusCode> {
     authorize_superadmin(&principal, superadmin_cap!("cluster_node", Delete))?;
     ClusterNodeRepo(pool(&state)).delete(&id).await?;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(
             None,

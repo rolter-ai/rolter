@@ -801,10 +801,7 @@ async fn create_token(
     .await?;
     require_non_empty(&body.name, "name")?;
     let (secret, hash) = generate_scim_token(&session_pepper());
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     let token = ScimTokenRepo(pool(&state))
         .create(org_id, &body.name, &hash, actor)
         .await?;

@@ -560,6 +560,9 @@ pub(crate) async fn publish_config_change(state: &ControlState) -> ApiResult<()>
 
 /// Record an admin/CRUD/auth action to the audit log. Best-effort: a logging
 /// failure is warned about but never fails the request it's attached to.
+///
+/// The actor is [`Principal::account_id`]: the signed-in account, a superadmin
+/// session included, and nobody for the admin token or open mode (#2844).
 pub(crate) async fn log_audit(
     state: &ControlState,
     principal: &Principal,
@@ -569,10 +572,7 @@ pub(crate) async fn log_audit(
     target_id: Uuid,
     detail: serde_json::Value,
 ) {
-    let actor = match principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(state))
         .create(
             org_id,

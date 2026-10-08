@@ -148,10 +148,7 @@ async fn update_security_settings(
     // reload it here rather than at the next restart — an operator who saves an
     // origin expects it to work, which is the whole of #813
     crate::cors::refresh(&state).await;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(
             None,
