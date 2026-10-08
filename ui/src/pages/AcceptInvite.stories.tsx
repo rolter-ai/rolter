@@ -93,7 +93,38 @@ export const Loaded: Story = {
     // the address and the role are stated before a password is chosen: an
     // invite to the wrong account is only catchable here
     await expect(canvas.getByText(PREVIEW.email)).toBeVisible();
-    await expect(canvas.getByText("admin")).toBeVisible();
+    await expect(canvas.getByText("Admin")).toBeVisible();
+  },
+};
+
+/**
+ * The role is named the way the inviter saw it in the invite dialog, from the
+ * same `shell.roles` catalog, and not as the id the control plane stores: the
+ * invitee was told "Member", not `member` (#2813).
+ */
+export const RoleIsNamedAsTheInviterSawIt: Story = {
+  render: () => <Stage stub={invite(() => json({ ...PREVIEW, role: "member" }))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const role = await canvas.findByText("Member");
+    await expect(role).toBeVisible();
+    await expect(canvas.queryByText("member")).not.toBeInTheDocument();
+    await expect(role.closest("p")).toHaveTextContent(
+      "You were invited as anya@acme.co with the Member role.",
+    );
+  },
+};
+
+/**
+ * A role this dashboard has no name for, such as one a newer control plane
+ * added, is shown as the server sent it rather than as a missing key.
+ */
+export const UnknownRoleIsShownAsSent: Story = {
+  render: () => <Stage stub={invite(() => json({ ...PREVIEW, role: "auditor" }))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("auditor")).toBeVisible();
+    await expect(canvas.queryByText(/shell\.roles/)).not.toBeInTheDocument();
   },
 };
 
@@ -207,7 +238,7 @@ export const ExistingAccount: Story = {
     );
     await expect(body).toEqual({});
     await expect(await canvas.findByRole("status")).toHaveTextContent(
-      /now on your account.*usual password/,
+      /The Admin role in Acme is now on your account.*usual password/,
     );
     await expect(canvas.getByRole("button", { name: /continue to sign in/i })).toBeVisible();
     // nothing to sign in with: the answer carried no session
@@ -290,5 +321,43 @@ export const AcceptUnknownErrorInRussian: Story = {
     const canvas = await submitRu(canvasElement);
     await expect(await canvas.findByText(/Сервер отклонил этот запрос/)).toBeVisible();
     await expect(canvas.getByText("invitation seat limit reached")).toBeVisible();
+  },
+};
+
+/**
+ * In Russian the role is «Участник», the word the invite dialog showed the
+ * inviter, in the page the invitee opens and again once the role is granted
+ * to an account that already existed (#2813).
+ */
+export const RoleIsTranslatedInRussian: Story = {
+  render: () => <Stage stub={invite(() => json({ ...PREVIEW, role: "member" }))} />,
+  // the toolbar global is what switches the catalog
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const role = await canvas.findByText("Участник");
+    await expect(role).toBeVisible();
+    await expect(canvas.queryByText("member")).not.toBeInTheDocument();
+    await expect(role.closest("p")).toHaveTextContent(
+      "Вас пригласили как anya@acme.co с ролью Участник.",
+    );
+  },
+};
+
+/** The same for the sentence that follows an accepted invitation to an existing account. */
+export const GrantedRoleIsTranslatedInRussian: Story = {
+  render: () => (
+    <Stage
+      stub={invite(() => json({ ...EXISTING, role: "viewer" }), signInRequired("existing_account"))}
+    />
+  ),
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Принять приглашение" }));
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      "Роль Наблюдатель в Acme добавлена к вашей учётной записи.",
+    );
+    await expect(canvas.queryByText(/viewer/)).not.toBeInTheDocument();
   },
 };

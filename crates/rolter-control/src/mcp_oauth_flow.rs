@@ -1513,7 +1513,7 @@ async fn owned_session(
         return Ok(context);
     }
     match principal {
-        Principal::Superadmin => Ok(context),
+        Principal::Superadmin { .. } => Ok(context),
         Principal::User(user) if user.id == context.user_id => Ok(context),
         Principal::User(_) => Err(ApiError::Forbidden),
     }
@@ -1580,7 +1580,7 @@ async fn log_audit_system(
 ) {
     log_audit(
         state,
-        &Principal::Superadmin,
+        &Principal::Superadmin { account: None },
         Some(org_id),
         action,
         resource,

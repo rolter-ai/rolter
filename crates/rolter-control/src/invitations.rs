@@ -119,10 +119,11 @@ async fn create_invitation(
     authorize(&state, &principal, chain, cap!("invitation", Create)).await?;
 
     let (token, token_hash) = generate_invite_token();
-    let invited_by = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
-    };
+    // the signed-in account, superadmin or not: a superadmin session is not a
+    // `Principal::User`, and an account with no membership is on no org's list,
+    // so matching the variant alone left the sender off every invitation a
+    // superadmin sent (#2813); the admin token and open mode name nobody
+    let invited_by = principal.account_id();
     let (invitation, replaced) = InvitationRepo(pool_ref)
         .create(
             org_id,

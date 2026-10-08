@@ -829,7 +829,7 @@ pub(crate) async fn caller_policy(
     principal: &Principal,
 ) -> ApiResult<MergedPolicy> {
     let user = match principal {
-        Principal::Superadmin => return Ok(MergedPolicy::default()),
+        Principal::Superadmin { .. } => return Ok(MergedPolicy::default()),
         Principal::User(user) => user,
     };
     let policies = AccessProfileRepo(pool(state))

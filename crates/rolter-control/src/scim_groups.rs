@@ -866,7 +866,7 @@ async fn delete_mapping(
     repo.delete(id).await?;
     // the role the mapping granted goes away with it. a superadmin may take an
     // org's last admin grant with it, as delete_membership allows (#2673)
-    let protect = !matches!(principal, Principal::Superadmin);
+    let protect = !matches!(principal, Principal::Superadmin { .. });
     reconcile_group_members(&state, mapping.org_id, &mapping.group_name, protect).await?;
     log_audit(
         &state,
