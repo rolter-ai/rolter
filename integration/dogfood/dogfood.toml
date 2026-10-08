@@ -60,10 +60,10 @@ redact_fields = ["authorization", "api_key", "password"]
 # ── the hosted-shaped half ───────────────────────────────────────────────────
 # every provider below is in the explicit `readonly` tier (ADR-0022): the bare
 # `[[providers]]` array is the deprecated spelling of the same thing, and this
-# file is what a new operator reads before writing their own (#1657). the
-# `default` tier is not an option here — a config file on the *control* plane
-# flips it onto MergedConfigStore, which drops db-created virtual keys from the
-# snapshot (#623) and 401s every key this stack mints (#1650)
+# file is what a new operator reads before writing their own (#1657). this
+# file reaches the database through `rolter-seed --import`, never as the
+# control plane's own config, so every row stays editable in the dashboard
+# (see the provider-groups note below for why, #2834)
 # named and keyed the way each vendor does it, so they can be added through the
 # dashboard as an OpenAI provider and an OpenRouter provider respectively
 
@@ -183,17 +183,16 @@ api_key_env = "DOGFOOD_TEI_EMBED_02"
 # both.
 #
 # the explicit `readonly` tier, not the deprecated bare `[[provider_groups]]`
-# array (ADR-0022). `default` would be the nicer story — seeded to the DB once,
-# then editable from the dashboard — but it is unreachable from here: the
-# default tier is seeded by the *control plane* at boot from its own
-# ROLTER_CONFIG, and handing the control plane a config file switches its store
-# to MergedConfigStore, which drops db-created virtual keys from the snapshot
-# (#623) and 401s every key this stack mints. So the harness runs config-less,
-# exactly as the e2e stack does, and this file reaches the database through
-# `rolter-seed --import` instead. The importer reads the readonly tier and
-# writes those rows to the DB, where the dashboard can edit them — the tier
-# governs what the *gateway* treats as config-owned, not what the importer may
-# write.
+# array (ADR-0022). the harness runs the control plane config-less and this
+# file reaches the database through `rolter-seed --import`. The importer reads
+# the readonly tier and writes those rows to the DB, where the dashboard can
+# edit them — the tier governs what the *gateway* treats as config-owned, not
+# what the importer may write. Handing this file to the control plane as its
+# ROLTER_CONFIG would work (since #623 its MergedConfigStore keeps db-minted
+# virtual keys, checked in #2834), but every readonly row would then be
+# config-owned and locked in the dashboard, and the `default` tier it would
+# unlock is seeded once and then editable, which is what the import does
+# already.
 #
 # Seeding is also the only way to get a group in front of the data plane at all
 # right now: a group created through the dashboard never bumps config_version,

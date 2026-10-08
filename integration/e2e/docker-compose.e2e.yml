@@ -88,11 +88,12 @@ services:
       ROLTER_REDIS_URL: redis://redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
       # run config-less (pure postgres store): the image bakes
-      # ROLTER_CONFIG=/app/rolter.toml, which activates MergedConfigStore — and
-      # that store drops db-created virtual keys from the snapshot (see #623),
-      # so every runtime-minted key would 401 at the gateway. pointing at a
-      # non-existent path makes control skip the bootstrap (Some(path) if
-      # path.exists()) and use the DB as the sole source of truth.
+      # ROLTER_CONFIG=/app/rolter.toml, a copy of rolter.example.toml, whose
+      # providers, routes and example key would become config-owned entries in
+      # every snapshot the suite reads. pointing at a non-existent path makes
+      # control skip the bootstrap (Some(path) if path.exists()) and use the DB
+      # as the sole source of truth, so a test sees only what it created. (a
+      # config file no longer costs db-minted virtual keys: #623, #2834)
       ROLTER_CONFIG: /app/e2e-no-bootstrap.toml
       # RBAC only enforces when an admin token is set; the harness bootstraps as
       # superadmin with this token, then drives per-role users via session tokens.
