@@ -442,22 +442,24 @@ describe("api client", () => {
 // #947: the base-URL field taught operators to include /v1, which for
 // openai-shaped kinds doubles into /v1/v1/chat/completions and 404s.
 describe("api_base resolution", () => {
+  const CHAT = "/v1/chat/completions";
+
   it("appends /v1 for kinds that do not carry it in the base", () => {
-    expect(resolveUpstreamUrl("https://api.openai.com", false)).toBe(
+    expect(resolveUpstreamUrl("https://api.openai.com", false, CHAT)).toBe(
       "https://api.openai.com/v1/chat/completions",
     );
   });
 
   it("reproduces the doubling the old placeholder caused", () => {
     // the literal base from the dogfooding report
-    expect(resolveUpstreamUrl("https://gpustack.localhost/v1", false)).toBe(
+    expect(resolveUpstreamUrl("https://gpustack.localhost/v1", false, CHAT)).toBe(
       "https://gpustack.localhost/v1/v1/chat/completions",
     );
     expect(apiBaseDoublesV1("https://gpustack.localhost/v1", false)).toBe(true);
   });
 
   it("strips the gateway /v1 for kinds whose base carries it", () => {
-    expect(resolveUpstreamUrl("https://api.mistral.ai/v1", true)).toBe(
+    expect(resolveUpstreamUrl("https://api.mistral.ai/v1", true, CHAT)).toBe(
       "https://api.mistral.ai/v1/chat/completions",
     );
     // the same spelling is correct here, so it is not flagged
@@ -465,17 +467,43 @@ describe("api_base resolution", () => {
   });
 
   it("does not double the separator on a trailing slash", () => {
-    expect(resolveUpstreamUrl("https://host/", false)).toBe("https://host/v1/chat/completions");
+    expect(resolveUpstreamUrl("https://host/", false, CHAT)).toBe(
+      "https://host/v1/chat/completions",
+    );
     expect(apiBaseDoublesV1("https://host/v1/", false)).toBe(true);
   });
 
   it("previews nothing for an empty base", () => {
-    expect(resolveUpstreamUrl("", false)).toBe("");
+    expect(resolveUpstreamUrl("", false, CHAT)).toBe("");
     expect(apiBaseDoublesV1("", false)).toBe(false);
   });
 
   it("does not mistake /v1beta for the version prefix", () => {
     expect(apiBaseDoublesV1("https://host/v1beta", false)).toBe(false);
+  });
+
+  // #2811: the kind decides the path, not the dashboard
+  it("previews the path the kind is sent to", () => {
+    expect(resolveUpstreamUrl("https://api.anthropic.com", false, "/v1/messages")).toBe(
+      "https://api.anthropic.com/v1/messages",
+    );
+    expect(resolveUpstreamUrl("http://tei:80", false, "/v1/embeddings")).toBe(
+      "http://tei:80/v1/embeddings",
+    );
+    expect(
+      resolveUpstreamUrl(
+        "https://generativelanguage.googleapis.com/v1beta",
+        false,
+        "/models/{model}:generateContent",
+      ),
+    ).toBe("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+    expect(
+      resolveUpstreamUrl(
+        "https://generativelanguage.googleapis.com/v1beta",
+        false,
+        "/interactions",
+      ),
+    ).toBe("https://generativelanguage.googleapis.com/v1beta/interactions");
   });
 });
 

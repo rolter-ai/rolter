@@ -3645,7 +3645,10 @@
       "doubled": "Базовый URL заканчивается на /v1, и rolter добавляет /v1 сам — запросы будут возвращать 404. Уберите /v1 в конце.",
       "excludesV1": "Не указывайте /v1 — для {{kind}} rolter добавляет его сам",
       "includesV1": "Укажите версию в адресе — {{kind}} ожидает её в базовом URL, например https://api.example.com/v1",
-      "resolvesTo": "Запросы уходят на"
+      "resolvesTo": {
+        "chat": "Чат-запросы уходят на",
+        "embeddings": "Запросы эмбеддингов уходят на"
+      }
     },
     "created": "{{name}} создан, но ещё не проверен",
     "createdNext": "Проверка подключения запрашивает у апстрима список моделей. Выполните её, прежде чем маршрут начнёт зависеть от этого провайдера.",
@@ -3664,21 +3667,23 @@
       "name": "Имя",
       "nameHint": "Нельзя изменить после создания провайдера.",
       "slugOptional": "Слаг (необязательно)",
-      "slugOptionalHint": "URL-безопасный идентификатор для адресации provider-slug/model; выводится из имени, если пусто, и неизменяем после создания",
+      "slugOptionalHint": "URL-безопасный идентификатор для адресации provider-slug/model. Если оставить пустым, выводится из имени; после создания провайдера его нельзя изменить.",
       "slug": "Слаг",
-      "slugHint": "неизменяемый идентификатор для адресации provider-slug/model",
+      "slugHint": "Неизменяемый идентификатор для адресации provider-slug/model.",
       "copyPrefix": "Скопировать префикс адреса",
       "kind": "Тип",
       "apiBase": "Базовый URL API",
       "providerKey": "Ключ провайдера (необязательно)",
-      "providerKeyHintAdd": "учётные данные, выданные этим провайдером для rolter — хранятся зашифрованно и больше не показываются. это не виртуальный ключ rolter",
-      "providerKeyHintEdit": "пустое значение сохраняет текущий ключ провайдера; хранится зашифрованно и не показывается",
+      "providerKeyHintAdd": "Учётные данные, выданные этим провайдером для rolter: хранятся зашифрованно и больше не показываются. Это не виртуальный ключ rolter.",
+      "providerKeyHintEdit": "Оставьте пустым, чтобы сохранить текущий ключ провайдера. Он хранится зашифрованно и не показывается.",
       "providerKeyEnv": "Переменная окружения с ключом провайдера (необязательно)",
-      "providerKeyEnvHint": "читать ключ провайдера из этой переменной окружения",
+      "providerKeyEnvHint": "Читать ключ из этой переменной окружения. Задайте её в окружении шлюза, который читает её при каждом запросе, и в окружении control plane, где выполняется проверка подключения.",
       "egressProxy": "Egress-прокси (необязательно)",
       "egressProxyHint": "Через него идут только запросы к апстриму этого провайдера. Принимает URL со схемой http, https, socks5 или socks5h. Для прокси с учётными данными укажите ссылку вида ${ENV_VAR} целиком, а не пишите их в URL.",
       "apiKeyUnchanged": "без изменений",
-      "providerKeyEnvScoped": "Ключ из переменной окружения для провайдера, привязанного к проекту, может задать только администратор организации: переменная читается из окружения control plane. Вставьте ключ в поле выше."
+      "providerKeyEnvScoped": "Ключ из переменной окружения для провайдера, привязанного к проекту, может задать только администратор организации: переменная читается из окружения control plane. Вставьте ключ в поле выше.",
+      "keySentHeader": "Передаётся апстриму в заголовке {{header}}.",
+      "keySentBearer": "Передаётся апстриму как bearer-токен."
     },
     "title": {
       "add": "Добавить провайдера",
@@ -3690,6 +3695,200 @@
     "cta": {
       "create": "Создать провайдера",
       "save": "Сохранить провайдера"
+    },
+    "kinds": {
+      "openai": {
+        "name": "OpenAI",
+        "description": "Размещённый API OpenAI"
+      },
+      "anthropic": {
+        "name": "Anthropic",
+        "description": "Messages API Anthropic для моделей Claude"
+      },
+      "openai_compatible": {
+        "name": "OpenAI-совместимый",
+        "description": "vLLM, TGI, LM Studio или любой сервер с API, совместимым с OpenAI"
+      },
+      "ollama": {
+        "name": "Ollama",
+        "description": "Собственный демон Ollama"
+      },
+      "ollama_cloud": {
+        "name": "Ollama Cloud",
+        "description": "Облако Ollama"
+      },
+      "llama_cpp": {
+        "name": "llama.cpp",
+        "description": "Собственный llama-server из llama.cpp"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "description": "Размещённый шлюз OpenRouter ко многим провайдерам"
+      },
+      "tei": {
+        "name": "Text Embeddings Inference",
+        "description": "Hugging Face Text Embeddings Inference для моделей эмбеддингов"
+      },
+      "azure_openai": {
+        "name": "Azure OpenAI",
+        "description": "API v1 Azure OpenAI"
+      },
+      "bedrock": {
+        "name": "Amazon Bedrock",
+        "description": "Chat completions Amazon Bedrock, совместимые с OpenAI"
+      },
+      "vertex": {
+        "name": "Google Vertex AI",
+        "description": "Chat completions Google Vertex AI, совместимые с OpenAI"
+      },
+      "gemini": {
+        "name": "Google Gemini (OpenAI-совместимый)",
+        "description": "Google Gemini через эндпоинт, совместимый с OpenAI"
+      },
+      "gemini_native": {
+        "name": "Google Gemini (нативный)",
+        "description": "Google Gemini через собственный API generateContent"
+      },
+      "gemini_interactions": {
+        "name": "Google Gemini Interactions",
+        "description": "Interactions API Google Gemini для диалогов с состоянием"
+      },
+      "mistral": {
+        "name": "Mistral AI",
+        "description": "Размещённый API Mistral AI"
+      },
+      "groq": {
+        "name": "Groq",
+        "description": "Размещённый API Groq"
+      },
+      "xai": {
+        "name": "xAI",
+        "description": "Размещённый API xAI для моделей Grok"
+      },
+      "meta_llama_api": {
+        "name": "Meta Llama API",
+        "description": "Размещённый Llama API от Meta"
+      },
+      "cohere": {
+        "name": "Cohere",
+        "description": "Размещённый API Cohere, совместимый с OpenAI"
+      },
+      "perplexity": {
+        "name": "Perplexity",
+        "description": "Размещённый API Perplexity"
+      },
+      "together": {
+        "name": "Together AI",
+        "description": "Размещённый API Together AI"
+      },
+      "fireworks": {
+        "name": "Fireworks AI",
+        "description": "Размещённый API Fireworks AI"
+      },
+      "databricks": {
+        "name": "Databricks",
+        "description": "Foundation Model APIs Databricks"
+      },
+      "aleph_alpha": {
+        "name": "Aleph Alpha",
+        "description": "Размещённый API Aleph Alpha"
+      },
+      "nebius": {
+        "name": "Nebius AI Studio",
+        "description": "Размещённый API Nebius AI Studio"
+      },
+      "ovhcloud": {
+        "name": "OVHcloud AI Endpoints",
+        "description": "OVHcloud AI Endpoints"
+      },
+      "scaleway": {
+        "name": "Scaleway Generative APIs",
+        "description": "Scaleway Generative APIs"
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "description": "Размещённый API DeepSeek"
+      },
+      "qwen": {
+        "name": "Alibaba Qwen",
+        "description": "Модели Qwen от Alibaba Cloud через DashScope"
+      },
+      "zhipu": {
+        "name": "Zhipu GLM",
+        "description": "Модели GLM от Zhipu AI"
+      },
+      "kimi": {
+        "name": "Moonshot Kimi",
+        "description": "Модели Kimi от Moonshot AI"
+      },
+      "ernie": {
+        "name": "Baidu ERNIE",
+        "description": "Модели ERNIE от Baidu через Qianfan"
+      },
+      "doubao": {
+        "name": "ByteDance Doubao",
+        "description": "Модели Doubao от ByteDance через Volcengine"
+      },
+      "hunyuan": {
+        "name": "Tencent Hunyuan",
+        "description": "Модели Hunyuan от Tencent"
+      },
+      "yi": {
+        "name": "01.AI Yi",
+        "description": "Модели Yi от 01.AI"
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "Размещённый API MiniMax"
+      },
+      "baichuan": {
+        "name": "Baichuan AI",
+        "description": "Размещённый API Baichuan AI"
+      },
+      "gigachat": {
+        "name": "GigaChat",
+        "description": "GigaChat от Сбера"
+      },
+      "yandex_gpt": {
+        "name": "YandexGPT",
+        "description": "Размещённый API Yandex AI Studio"
+      },
+      "cloud_ru": {
+        "name": "Cloud.ru Foundation Models",
+        "description": "Foundation Models от Cloud.ru"
+      },
+      "mts_ai": {
+        "name": "MTS AI Cotype",
+        "description": "Модели Cotype от MTS AI"
+      },
+      "naver": {
+        "name": "Naver HyperCLOVA X",
+        "description": "HyperCLOVA X от Naver"
+      },
+      "upstage": {
+        "name": "Upstage Solar",
+        "description": "Модели Solar от Upstage"
+      },
+      "rinna": {
+        "name": "Rinna",
+        "description": "Размещённый API Rinna"
+      },
+      "rakuten": {
+        "name": "Rakuten AI",
+        "description": "Размещённый API Rakuten AI"
+      },
+      "sarvam": {
+        "name": "Sarvam AI",
+        "description": "Размещённый API Sarvam AI"
+      },
+      "krutrim": {
+        "name": "Krutrim",
+        "description": "Размещённый API Krutrim от Ola"
+      },
+      "falcon": {
+        "name": "Falcon",
+        "description": "Размещённые модели Falcon от G42 и TII"
+      }
     }
   },
   "labels": {

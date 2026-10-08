@@ -3457,7 +3457,10 @@
       "doubled": "This base ends in /v1 and rolter appends /v1 itself, so requests would 404. Remove the trailing /v1.",
       "excludesV1": "Leave off the version prefix — rolter appends /v1 itself for {{kind}}",
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
-      "resolvesTo": "Requests resolve to"
+      "resolvesTo": {
+        "chat": "Chat requests resolve to",
+        "embeddings": "Embedding requests resolve to"
+      }
     },
     "created": "{{name}} is created but not tested yet",
     "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",
@@ -3474,21 +3477,23 @@
       "name": "Name",
       "nameHint": "Fixed once the provider is created.",
       "slugOptional": "Slug (optional)",
-      "slugOptionalHint": "URL-safe id for provider-slug/model addressing; derived from the name if blank, and immutable after create",
+      "slugOptionalHint": "URL-safe id for provider-slug/model addressing. Derived from the name if left blank, and fixed once the provider is created.",
       "slug": "Slug",
-      "slugHint": "immutable identity for provider-slug/model addressing",
+      "slugHint": "Fixed identity for provider-slug/model addressing.",
       "copyPrefix": "Copy address prefix",
       "kind": "Kind",
       "apiBase": "API base",
       "providerKey": "Provider key (optional)",
-      "providerKeyHintAdd": "the credential this provider issued to rolter — sealed at rest, never displayed again. not a rolter virtual key",
-      "providerKeyHintEdit": "blank leaves the stored provider key unchanged; sealed at rest, never displayed",
+      "providerKeyHintAdd": "The credential this provider issued to rolter, sealed at rest and never shown again. Not a rolter virtual key.",
+      "providerKeyHintEdit": "Leave blank to keep the stored provider key. It is sealed at rest and never shown.",
       "providerKeyEnv": "Provider key env var (optional)",
-      "providerKeyEnvHint": "read the provider key from this env var instead",
+      "providerKeyEnvHint": "Read the key from this environment variable instead. Set it in the gateway's environment, which reads it for every request, and in the control plane's, where Test connection runs.",
       "egressProxy": "Egress proxy (optional)",
       "egressProxyHint": "Only this provider's upstream calls go through it. Takes an http, https, socks5 or socks5h URL. For a proxy that needs credentials, use a whole-value ${ENV_VAR} reference instead of writing them into the URL.",
       "apiKeyUnchanged": "unchanged",
-      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead."
+      "providerKeyEnvScoped": "Only an organization admin can set this on a project-scoped provider, since the variable is read from the control plane's environment. Paste the key above instead.",
+      "keySentHeader": "Sent upstream in the {{header}} header.",
+      "keySentBearer": "Sent upstream as a bearer token."
     },
     "title": {
       "add": "Add provider",
@@ -3500,6 +3505,200 @@
     "cta": {
       "create": "Create provider",
       "save": "Save provider"
+    },
+    "kinds": {
+      "openai": {
+        "name": "OpenAI",
+        "description": "OpenAI's hosted API"
+      },
+      "anthropic": {
+        "name": "Anthropic",
+        "description": "Anthropic's Messages API for Claude models"
+      },
+      "openai_compatible": {
+        "name": "OpenAI-compatible",
+        "description": "vLLM, TGI, LM Studio or any server that speaks the OpenAI API"
+      },
+      "ollama": {
+        "name": "Ollama",
+        "description": "A self-hosted Ollama daemon"
+      },
+      "ollama_cloud": {
+        "name": "Ollama Cloud",
+        "description": "Ollama's hosted cloud"
+      },
+      "llama_cpp": {
+        "name": "llama.cpp",
+        "description": "A self-hosted llama.cpp llama-server"
+      },
+      "openrouter": {
+        "name": "OpenRouter",
+        "description": "OpenRouter's hosted gateway to many providers"
+      },
+      "tei": {
+        "name": "Text Embeddings Inference",
+        "description": "Hugging Face Text Embeddings Inference, for embedding models"
+      },
+      "azure_openai": {
+        "name": "Azure OpenAI",
+        "description": "Azure OpenAI's v1 API"
+      },
+      "bedrock": {
+        "name": "Amazon Bedrock",
+        "description": "Amazon Bedrock's OpenAI-compatible chat completions"
+      },
+      "vertex": {
+        "name": "Google Vertex AI",
+        "description": "Google Vertex AI's OpenAI-compatible chat completions"
+      },
+      "gemini": {
+        "name": "Google Gemini (OpenAI-compatible)",
+        "description": "Google Gemini through its OpenAI-compatible endpoint"
+      },
+      "gemini_native": {
+        "name": "Google Gemini (native)",
+        "description": "Google Gemini through its native generateContent API"
+      },
+      "gemini_interactions": {
+        "name": "Google Gemini Interactions",
+        "description": "Google Gemini's Interactions API for stateful conversations"
+      },
+      "mistral": {
+        "name": "Mistral AI",
+        "description": "Mistral AI's hosted API"
+      },
+      "groq": {
+        "name": "Groq",
+        "description": "Groq's hosted API"
+      },
+      "xai": {
+        "name": "xAI",
+        "description": "xAI's hosted API for Grok models"
+      },
+      "meta_llama_api": {
+        "name": "Meta Llama API",
+        "description": "Meta's hosted Llama API"
+      },
+      "cohere": {
+        "name": "Cohere",
+        "description": "Cohere's hosted OpenAI-compatible API"
+      },
+      "perplexity": {
+        "name": "Perplexity",
+        "description": "Perplexity's hosted API"
+      },
+      "together": {
+        "name": "Together AI",
+        "description": "Together AI's hosted API"
+      },
+      "fireworks": {
+        "name": "Fireworks AI",
+        "description": "Fireworks AI's hosted API"
+      },
+      "databricks": {
+        "name": "Databricks",
+        "description": "Databricks Foundation Model APIs"
+      },
+      "aleph_alpha": {
+        "name": "Aleph Alpha",
+        "description": "Aleph Alpha's hosted API"
+      },
+      "nebius": {
+        "name": "Nebius AI Studio",
+        "description": "Nebius AI Studio's hosted API"
+      },
+      "ovhcloud": {
+        "name": "OVHcloud AI Endpoints",
+        "description": "OVHcloud AI Endpoints"
+      },
+      "scaleway": {
+        "name": "Scaleway Generative APIs",
+        "description": "Scaleway Generative APIs"
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "description": "DeepSeek's hosted API"
+      },
+      "qwen": {
+        "name": "Alibaba Qwen",
+        "description": "Alibaba Cloud's Qwen models through DashScope"
+      },
+      "zhipu": {
+        "name": "Zhipu GLM",
+        "description": "Zhipu AI's GLM models"
+      },
+      "kimi": {
+        "name": "Moonshot Kimi",
+        "description": "Moonshot AI's Kimi models"
+      },
+      "ernie": {
+        "name": "Baidu ERNIE",
+        "description": "Baidu's ERNIE models through Qianfan"
+      },
+      "doubao": {
+        "name": "ByteDance Doubao",
+        "description": "ByteDance's Doubao models through Volcengine"
+      },
+      "hunyuan": {
+        "name": "Tencent Hunyuan",
+        "description": "Tencent's Hunyuan models"
+      },
+      "yi": {
+        "name": "01.AI Yi",
+        "description": "01.AI's Yi models"
+      },
+      "minimax": {
+        "name": "MiniMax",
+        "description": "MiniMax's hosted API"
+      },
+      "baichuan": {
+        "name": "Baichuan AI",
+        "description": "Baichuan AI's hosted API"
+      },
+      "gigachat": {
+        "name": "GigaChat",
+        "description": "Sber's GigaChat"
+      },
+      "yandex_gpt": {
+        "name": "YandexGPT",
+        "description": "Yandex AI Studio's hosted API"
+      },
+      "cloud_ru": {
+        "name": "Cloud.ru Foundation Models",
+        "description": "Cloud.ru's Foundation Models"
+      },
+      "mts_ai": {
+        "name": "MTS AI Cotype",
+        "description": "MTS AI's Cotype models"
+      },
+      "naver": {
+        "name": "Naver HyperCLOVA X",
+        "description": "Naver's HyperCLOVA X"
+      },
+      "upstage": {
+        "name": "Upstage Solar",
+        "description": "Upstage's Solar models"
+      },
+      "rinna": {
+        "name": "Rinna",
+        "description": "Rinna's hosted API"
+      },
+      "rakuten": {
+        "name": "Rakuten AI",
+        "description": "Rakuten AI's hosted API"
+      },
+      "sarvam": {
+        "name": "Sarvam AI",
+        "description": "Sarvam AI's hosted API"
+      },
+      "krutrim": {
+        "name": "Krutrim",
+        "description": "Krutrim's hosted API from Ola"
+      },
+      "falcon": {
+        "name": "Falcon",
+        "description": "G42 and TII's hosted Falcon models"
+      }
     }
   },
   "labels": {

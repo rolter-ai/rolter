@@ -107,17 +107,11 @@ import {
   type OAuthDraft,
 } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
+import { slugify } from "@/lib/slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
-const slugify = (value: string) =>
-  value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 63);
 const lines = (value: string) => [
   ...new Set(
     value

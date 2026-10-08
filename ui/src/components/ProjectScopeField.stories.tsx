@@ -56,7 +56,15 @@ const IN_GATEWAY = provider({ id: "p-gw", name: "gateway-private", project_id: "
 const IN_SEARCH = provider({ id: "p-search", name: "search-private", project_id: "project-2" });
 const ALL = [ORG_WIDE, IN_GATEWAY, IN_SEARCH];
 
-const KINDS = [{ kind: "openai", base_includes_v1: false }];
+const KINDS = [
+  {
+    kind: "openai",
+    base_includes_v1: false,
+    request: "chat",
+    request_path: "/v1/chat/completions",
+    auth_header: "authorization",
+  },
+];
 
 const GROUP: ProviderGroupRow = {
   id: "g-1",

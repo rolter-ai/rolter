@@ -120,12 +120,12 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 
 For the remaining kinds — `mistral`, `groq`, `openrouter`, `azure_openai` and the other hosted OpenAI-compatible clouds — Rolter strips the `/v1` it was asked for, so the base has to supply one: `https://api.mistral.ai/v1`.
 
-A base that would double the prefix is rejected on write rather than stored. The dashboard states the rule for the selected kind and previews the resolved upstream URL as you type; `GET /api/v1/provider-kinds` returns the same rule per kind if you are automating provider creation.
+A base that would double the prefix is rejected on write rather than stored. The dashboard states the rule for the selected kind and previews the resolved upstream URL as you type, naming the endpoint that kind is called at: `/v1/messages` for `anthropic`, `/v1/embeddings` for `tei`, a `generateContent` path for `gemini_native`, `/v1/chat/completions` for the rest. `GET /api/v1/provider-kinds` returns the same rule, the endpoint and the header the key is sent in per kind if you are automating provider creation.
 
 </ParamField>
 
 <ParamField path="api_key_env" type="string">
-  The name of an environment variable to read the API key from. Preferred over `api_key` because it keeps secrets out of your config file.
+  The name of an environment variable to read the API key from. Preferred over `api_key` because it keeps secrets out of your config file. The gateway reads it from its own environment for every request, and the control plane reads it from its own for **Test connection**, so set it in both when they run as separate processes.
 </ParamField>
 
 <ParamField path="api_key" type="string">

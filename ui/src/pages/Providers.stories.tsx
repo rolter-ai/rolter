@@ -531,7 +531,7 @@ export const ProviderKeyHintHasNoLinkWithoutADocsHost: Story = {
   play: async ({ canvasElement }) => {
     const sheet = await openTheProviderKeyField(canvasElement);
     // the hint itself is still there — only the link is suppressed
-    await sheet.findByText(/the credential this provider issued to rolter/);
+    await sheet.findByText(/The credential this provider issued to rolter/);
     await expect(sheet.queryByRole("link", { name: /Which key do I need/ })).toBeNull();
   },
 };

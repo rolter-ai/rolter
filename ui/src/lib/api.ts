@@ -633,15 +633,29 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
 // with --database-url; see crates/rolter-control/src/crud.rs) ---
 
 /**
- * Whether `api_base` must already end in the API version prefix, per kind.
+ * What the sheet needs to know about a provider kind: whether `api_base` must
+ * already end in the API version prefix, which endpoint a request reaches and
+ * which header carries the key.
  *
- * Served by the control plane rather than restated here: the rule covers ~38
- * of 48 kinds, and a copy in TypeScript would drift the moment a kind is added
- * (#947).
+ * Served by the control plane rather than restated here: the version rule
+ * covers ~38 of 48 kinds, and a copy in TypeScript would drift the moment a
+ * kind is added (#947). The endpoint and the header come from the functions the
+ * gateway's forwarder calls (`ProviderKind::primary_upstream_path`,
+ * `ProviderKind::auth_header`), so the preview cannot name another address than
+ * the one that is called (#2811).
  */
 export interface ProviderKindInfo {
   kind: string;
   base_includes_v1: boolean;
+  /** what the kind is chiefly called for; a text-embeddings server is not asked for chat */
+  request: "chat" | "embeddings";
+  /**
+   * the upstream path that request is sent to, before the `/v1` rule is applied;
+   * `{model}` stands for the upstream model name where the path carries one
+   */
+  request_path: string;
+  /** the lowercase header the key travels in; `authorization` is a bearer token */
+  auth_header: string;
 }
 
 export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {
@@ -659,7 +673,8 @@ export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {
 export function resolveUpstreamUrl(
   apiBase: string,
   baseIncludesV1: boolean,
-  path = "/v1/chat/completions",
+  /** the kind's own `request_path`; there is no default, since one for every kind was the bug (#2811) */
+  path: string,
 ): string {
   const base = apiBase.trim().replace(/\/+$/, "");
   if (!base) return "";
