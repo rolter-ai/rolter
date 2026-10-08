@@ -99,11 +99,15 @@ chart on their own defaults.
 - **Everything in `dogfood.toml` is in the explicit `readonly` tier.** Providers
   and groups alike are written `[[providers.readonly]]` / `[[provider_groups.readonly]]`
   rather than as the deprecated bare arrays (ADR-0022), because this file is
-  what a new operator reads before writing their own (#1657, #1650). The
-  `default` tier is not an option for this stack: giving the _control_ plane a
-  config file switches it to `MergedConfigStore`, which drops db-created virtual
-  keys from the snapshot (#623) and then 401s every key the stack mints. An
-  unknown tier name is not an error — the config lint reports it as an
+  what a new operator reads before writing their own (#1657, #1650). The file
+  reaches the database through `rolter-seed --import`, never as the _control_
+  plane's `--config`, so every row it seeds stays editable in the dashboard. A
+  control plane with a config file is safe for virtual keys (its
+  `MergedConfigStore` keeps db-minted keys since #623; a key minted before and
+  one minted after starting it with `dogfood.toml` both answer `200`, #2834),
+  but its readonly rows would be config-owned and locked in the dashboard, and
+  its `default` rows are seeded once and then editable, which the import
+  already gives. An unknown tier name is not an error — the config lint reports it as an
   unrecognised key and the entries are silently ignored, so a typo costs the
   whole fleet.
 - **Provider groups only propagate through a seed or a restart, and do not
@@ -112,11 +116,8 @@ chart on their own defaults.
   404s until it restarts (#1643). `dogfood.toml` seeds three groups for that
   reason, so group addressing is exercisable today — but every request to a
   group currently lands on its first member whatever the strategy and weights
-  say (#1655). Groups in this file are in the explicit `readonly` tier: the
-  `default` tier is seeded by the control plane from its own `ROLTER_CONFIG`,
-  and giving the control plane a config file switches it to `MergedConfigStore`,
-  which drops db-created virtual keys from the snapshot (#623) and 401s every
-  key this stack mints.
+  say (#1655). Groups in this file are in the explicit `readonly` tier and
+  reach the database through the same import as the providers.
 - **`allow_custom_api_base` does not survive the database, so `openrouter-edge`
   is served from a file config only.** `dogfood.toml` sets it on the
   OpenRouter-shaped edge, but the column does not exist yet (#1133), so once the
@@ -137,7 +138,11 @@ chart on their own defaults.
   anything, and `claude-sonnet-4` answers through `openrouter-edge`. It accepts
   any request, since no virtual keys are configured. Pass a port to run it beside
   `just dogfood` (`just dogfood-file 4010`). That, not the seeded stack, is what
-  exercises the OpenRouter dialect (#925) today.
+  exercises the OpenRouter dialect (#925) today. A control plane started with
+  `--config` naming a file that declares `openrouter-edge` in the readonly tier
+  would serve it, and `claude-sonnet-4`, on the database-backed path as well
+  (its snapshot keeps the flag; checked in #2834), but the provider would then
+  be config-owned and locked in the dashboard, so the harness waits for #1133.
 
 - **Payload capture is switched on by `just dogfood`.** `gateway.toml` declares
   `[logging.payload_capture] enabled = true`, but the first snapshot replaces it
