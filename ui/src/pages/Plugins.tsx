@@ -32,6 +32,7 @@ import {
   type PluginInstanceInput,
   type PluginInstanceRow,
 } from "@/lib/api";
+import { useErrorVisibility } from "@/lib/error-visibility";
 import { serverFieldError } from "@/lib/field-errors";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
@@ -459,7 +460,7 @@ function PluginDialog({
   });
   // the rules are checked from the first press on Save onwards, so a fresh
   // install is not opened already shouting about the name it has not been given
-  const [attempted, setAttempted] = React.useState(false);
+  const visibility = useErrorVisibility<PluginField>();
   const [serverErrors, setServerErrors] = React.useState<Partial<Record<PluginField, string>>>({});
   // shown before saving, and read out with both pickers it depends on
   const streamingNoteId = React.useId();
@@ -518,9 +519,9 @@ function PluginDialog({
     local.config = t("pages.plugins.errorConfigJson");
   }
   const errorOf = (field: PluginField) =>
-    (attempted ? local[field] : undefined) ?? serverErrors[field];
+    (visibility.shows(field) ? local[field] : undefined) ?? serverErrors[field];
   const save = () => {
-    setAttempted(true);
+    visibility.attempt();
     const first = PLUGIN_FIELD_ORDER.find((field) => local[field]);
     if (first) {
       // moved to the first field at fault, so the press says why it did nothing

@@ -457,6 +457,29 @@ const noLocalPassword = recording(async (input) => {
   return json({ error: { message: "unexpected request" } }, 404);
 });
 
+const staleSso = server(() =>
+  refusal("no_local_password", "this account signs in through single sign-on", undefined, 409),
+);
+
+/**
+ * While the account read still says the account has a password, the `409` is
+ * worded by the shared error copy, the same line any other screen would print
+ * for the code, behind the panel's own lead.
+ */
+export const NoLocalPasswordReadsFromTheSharedCopy: Story = {
+  render: () => panel(staleSso),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await fill(canvas, { current: OLD, next: NEXT });
+    await userEvent.click(canvas.getByRole("button", { name: SUBMIT }));
+
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent("Could not change your password.");
+    await expect(alert).toHaveTextContent(en.errors.api.codes.no_local_password);
+    await expect(alert).not.toHaveTextContent("this account signs in through single sign-on");
+  },
+};
+
 /**
  * An account whose password was removed since the page loaded gets the `409`,
  * and the panel reads `/auth/me` again and turns into the explanation instead

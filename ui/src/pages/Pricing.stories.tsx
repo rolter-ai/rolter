@@ -208,6 +208,10 @@ export const EmptySubmitIsRefused: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add price/i);
     const form = within(sheet());
+    // a pristine form is not flagged: the errors wait for the first refused save
+    await expect(form.getByLabelText("Model name")).toBeValid();
+    await expect(form.getByLabelText("Input price per Mtok")).toBeValid();
+    await expect(form.queryByText("Choose a model to price.")).toBeNull();
     await userEvent.click(form.getByRole("button", { name: "Save" }));
 
     await expect(form.getByLabelText("Model name")).toBeInvalid();

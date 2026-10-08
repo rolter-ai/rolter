@@ -293,6 +293,7 @@
         "last_superadmin": "This is the last superadmin, so it cannot be removed or demoted.",
         "mfa_enrolment_required": "Your organization requires a second factor, and this control plane cannot enrol one. Ask an operator.",
         "name_taken": "That name is already taken. Choose another.",
+        "no_local_password": "This account signs in through single sign-on and has no local password to change.",
         "no_such_endpoint": "This control plane does not offer that feature.",
         "open_mode_no_session": "This control plane has no admin token set, so it has no user accounts to act as.",
         "password_login_disabled": "Password sign-in is disabled for this organization. Use single sign-on.",
@@ -4272,7 +4273,6 @@
         "throttled_one": "Too many wrong passwords. Try again in {{wait}} second.",
         "throttled_other": "Too many wrong passwords. Try again in {{wait}} seconds.",
         "throttledNoWait": "Too many wrong passwords. Try again later.",
-        "noLocalPassword": "This account signs in through single sign-on and has no local password to change.",
         "failed": "Could not change your password."
       }
     },

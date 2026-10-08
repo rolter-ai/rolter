@@ -124,10 +124,9 @@ export function PasswordPanel() {
             : t("account.password.problem.throttledNoWait"),
         };
       }
-      if (error.status === 409 && error.code === "no_local_password") {
-        return { form: t("account.password.problem.noLocalPassword") };
-      }
     }
+    // everything else, a 409 no_local_password included, reads from the shared
+    // error copy (#2841)
     const copy = describeError(error, t);
     return {
       form: [t("account.password.problem.failed"), copy.message, copy.detail]

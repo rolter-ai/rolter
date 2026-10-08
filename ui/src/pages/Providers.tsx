@@ -44,6 +44,7 @@ import {
   type ProviderGroupRow,
   type ProviderRow,
 } from "@/lib/api";
+import { providerKindName } from "@/lib/provider-kinds";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
 import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
@@ -237,12 +238,14 @@ export default function Providers() {
       (!q ||
         p.name.toLowerCase().includes(q) ||
         p.kind.toLowerCase().includes(q) ||
+        providerKindName(p.kind, t).toLowerCase().includes(q) ||
         p.slug.toLowerCase().includes(q)) &&
       labels.matches(p.id, labelFilter),
   );
   const rows = apply(filtered, {
     name: (p) => p.name,
-    kind: (p) => p.kind,
+    // by the name the column shows, so the order reads as sorted
+    kind: (p) => providerKindName(p.kind, t),
     apiBase: (p) => p.api_base,
     slug: (p) => p.slug,
     keyEnv: (p) => p.api_key_env ?? "",
@@ -349,7 +352,7 @@ export default function Providers() {
               <LabelChips labels={labels.bySubject(provider.id)} />
             </ListCell>
             <ListCell>
-              <Badge tone="outline">{provider.kind}</Badge>
+              <Badge tone="outline">{providerKindName(provider.kind, t)}</Badge>
             </ListCell>
             <ListCell className="truncate font-mono text-xs text-muted-foreground">
               {provider.api_base}
