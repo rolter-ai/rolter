@@ -5,15 +5,18 @@
 #   cargo run -p rolter-control --features postgres --bin rolter-seed -- \
 #       --import integration/dogfood/dogfood.toml   # or: just dogfood-seed
 #
-# This is desired state for `rolter-seed --import`, not a gateway config: no
-# running process reads it, and the gateway runs on `gateway.toml` (#1288). The
-# importer writes the providers, groups and routes, and `[logging.payload_capture]`
-# into the `logging_settings` row. Every other section here (`[server]`,
-# `[logging].clickhouse_url`) is accepted and never written, and so would an
-# `[adaptive_routing]` be (#1818): `just dogfood` turns that switch on through
-# the API instead (#1817). `[logging.payload_capture]` is also in
-# `gateway.toml`; keep the two copies equal. See "Which config file does what"
-# in README.md.
+# This is desired state for `rolter-seed --import`, not the gateway config of
+# `just dogfood`: that gateway runs on `gateway.toml` (#1288) and no process of
+# that stack reads this file. `just dogfood-file` is the one reader besides the
+# importer: it starts a gateway on this file as a plain file config (#2808), the
+# only path where `allow_custom_api_base` is honoured today (see
+# `openrouter-edge` below). The importer writes the providers, groups and routes,
+# and `[logging.payload_capture]` into the `logging_settings` row. Every other
+# section here (`[server]`, `[logging].clickhouse_url`) is accepted and never
+# written, and so would an `[adaptive_routing]` be (#1818): `just dogfood` turns
+# that switch on through the API instead (#1817). `[logging.payload_capture]` is
+# also in `gateway.toml`; keep the two copies equal. See "Which config file does
+# what" in README.md.
 #
 # The point of this file is that every routing strategy has a route an operator
 # can actually exercise, against targets whose latencies differ enough that the
@@ -75,10 +78,21 @@ api_key_env = "DOGFOOD_OPENAI_KEY"
 # config edit cannot redirect a real key; `allow_custom_api_base` is the
 # deliberate opt-out from that pin (#925, ADR-0029), which is exactly what a
 # local fake needs. `rolter check` reports this provider, as intended.
+#
+# The base ends in `/v1` on purpose. This kind drops the gateway's own `/v1` and
+# appends `/models` and `/chat/completions` to the base, as it does to
+# https://openrouter.ai/api/v1, so a bare origin gets `/models` and a 404 (#2808).
+# The fleet serves `/v1/models` and `/v1/chat/completions` on that base.
+#
+# A gateway that reads this file serves the provider and `claude-sonnet-4`:
+# `just dogfood-file`. Through `rolter-seed --import` the flag is dropped, since
+# the providers table has no column for it (#1133), so the control plane prunes
+# the provider from the snapshot and the route with it. The row is still seeded
+# and its "Test connection" passes; only the route is unserved.
 [[providers.readonly]]
 name = "openrouter-edge"
 kind = "openrouter"
-api_base = "http://127.0.0.1:18002"
+api_base = "http://127.0.0.1:18002/v1"
 api_key_env = "DOGFOOD_OPENROUTER_KEY"
 allow_custom_api_base = true
 

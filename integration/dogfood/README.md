@@ -45,7 +45,8 @@ ships with capture off, so `just dogfood` turns it on through
 stack captures too.
 
 `dogfood.toml` is desired state for `rolter-seed --import` (`just dogfood-seed`),
-and no running process reads it. The importer writes its providers, provider
+and no process of `just dogfood` reads it (`just dogfood-file` does, see
+[the OpenRouter edge](#the-openrouter-edge)). The importer writes its providers, provider
 groups and routes, `[[model_prices]]` and the templates under
 `[prompt_templates]`, plus `[logging.payload_capture]` and `[logging].ui_events`
 into the `logging_settings` row the snapshot is built from. The two logging keys
@@ -66,13 +67,47 @@ where a mismatch changes behaviour.
 Three shapes, named the way each of them names things:
 
 - **`:18001`** — OpenAI's model names (`gpt-4o`, `o3-mini`), added as an `openai` provider
-- **`:18002`** — OpenRouter's `vendor/model` names, declared `kind = "openrouter"` with `allow_custom_api_base = true` so the dialect itself is exercised locally (#925)
+- **`:18002`** — OpenRouter's `vendor/model` names, declared `kind = "openrouter"` against `http://127.0.0.1:18002/v1` with `allow_custom_api_base = true`, so the dialect itself is exercised locally (#925), but only by a gateway that reads `dogfood.toml` as a file config: see [the OpenRouter edge](#the-openrouter-edge)
 - **`:18003-18015`** — a self-hosted vLLM/TEI fleet, one model per instance, roughly half behind a key
 
 Three of them exist to make failure legible: `vllm-a100-03` is ~4x slower than
 its pair, `vllm-spot-01` returns a 503 for a quarter of requests, and
 `vllm-spot-02` takes ~1.4s to first token. A fleet with no bad targets leaves
 the health, breaker and latency screens permanently green and unreadable.
+
+### The OpenRouter edge
+
+`openrouter-edge` exercises the `openrouter` kind (#925), which is pinned to
+`https://openrouter.ai/api/v1`; `allow_custom_api_base = true` is the deliberate
+opt-out that lets it point at a local fake (ADR-0029). Its base ends in `/v1`
+because that kind drops the gateway's own `/v1` and appends `/models` and
+`/chat/completions` to the base, which is where the fleet serves them. A bare
+origin there probes `/models` and gets a `404` (#2808).
+
+Which stack serves it depends on where the flag can live:
+
+- **A gateway on `dogfood.toml` as a file config serves it.** No docker, Postgres
+  or control plane is involved, and `claude-sonnet-4` answers through
+  `openrouter-edge`:
+
+  ```bash
+  just dogfood-file        # the fleet (unless it is up) and a gateway on :4000
+  just dogfood-file 4010   # the same, beside a running `just dogfood`
+  curl -s localhost:4000/v1/chat/completions -H 'content-type: application/json' \
+    -d '{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}'
+  ```
+
+  No virtual keys are configured there, so any request is accepted. The file
+  keeps `[logging].clickhouse_url`, so with ClickHouse listening its request logs
+  land in the same table as the managed gateway's.
+
+- **The database-backed stack does not.** `rolter-seed --import` stores the
+  provider without the flag, because the `providers` table has no column for it
+  (#1133). The control plane then prunes `openrouter-edge` from
+  `/internal/snapshot`, and `claude-sonnet-4` with it, so the gateway answers
+  `404 model_not_found` and logs both omissions on every reload; the dashboard
+  lists them under config problems. The provider's row is still there and its
+  **Test connection** passes. That stays until #1133 lets a stored provider opt out.
 
 ## Running it
 
