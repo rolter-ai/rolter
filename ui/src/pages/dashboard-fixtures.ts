@@ -79,6 +79,9 @@ export function recentRow(
     target: `openai/${model}`,
     variant: "",
     status: 200,
+    // the upstream answered with the status the caller got, on the first try
+    upstream_status: typeof overrides.status === "number" ? overrides.status : 200,
+    attempts: 1,
     stream: 0,
     cache_hit: 0,
     cache_read_tokens: 0,

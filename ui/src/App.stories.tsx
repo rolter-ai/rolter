@@ -1125,6 +1125,9 @@ const LOGGED: InvocationRow = {
   target: "openai/gpt-4o",
   variant: "",
   status: 502,
+  // the connection reset before the upstream sent a status line
+  upstream_status: 0,
+  attempts: 1,
   stream: 0,
   cache_hit: 0,
   cache_read_tokens: 0,

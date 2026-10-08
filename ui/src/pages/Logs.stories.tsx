@@ -51,6 +51,8 @@ const STEP_MS = 350;
 let seq = 0;
 const nextTs = () => new Date(BASE_TS + STEP_MS * seq++).toISOString();
 
+// the upstream answered with the status the caller got, on the first try, unless a
+// row says otherwise: a connection that never got a status line reads 0 (#2837)
 const row = (over: Partial<InvocationRow>): InvocationRow => ({
   ts: nextTs(),
   request_id: "req-1",
@@ -66,6 +68,8 @@ const row = (over: Partial<InvocationRow>): InvocationRow => ({
   target: "openai/gpt-4o",
   variant: "",
   status: 200,
+  upstream_status: Number(over.status ?? 200),
+  attempts: 1,
   stream: 0,
   cache_hit: 0,
   cache_read_tokens: 0,
@@ -1115,6 +1119,7 @@ const MIXED: InvocationRow[] = [
     model: "internal-llama",
     provider: "vllm",
     status: 502,
+    upstream_status: 0,
     error: "upstream reset the connection",
   }),
 ];
@@ -1454,6 +1459,7 @@ const FAILED = row({
   request_id: "req-failed-7f3a",
   trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
   status: 502,
+  upstream_status: 0,
   stream: 1,
   prompt_tokens: 0,
   completion_tokens: 0,
@@ -1555,6 +1561,9 @@ const ROUTED = row({
   customer_id: "cust-1",
   variant: "canary",
   cache_hit: 1,
+  // answered from rolter's own cache, so no upstream was reached
+  upstream_status: 0,
+  attempts: 0,
   stream: 1,
   ttft_ms: 120,
   cache_read_tokens: 2048,
@@ -1708,6 +1717,408 @@ export const AFailedRequestInTheSheet: Story = {
       TIMED_OUT.error,
     );
     await expectNoHorizontalOverflow();
+  },
+};
+
+// what the caller was told and what the upstream said are two columns (#2837).
+// the provider answered 429, the next target 500, and the gateway ran out of
+// targets: the caller got a 503 that names neither
+const EXHAUSTED = row({
+  request_id: "req-exhausted-5c1e",
+  model: "gemini-2.5-flash",
+  provider: "gemini",
+  target: "gemini/gemini-2.5-flash",
+  status: 503,
+  upstream_status: 500,
+  attempts: 3,
+  latency_ms: 2210,
+  ttft_ms: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  error: "upstream returned 500 after 3 attempts: internal error encountered",
+});
+// a rate limit that outlasted every target reaches the caller as the 429 it was,
+// so the two columns agree and only the attempts say it was tried twice
+const RATE_LIMITED = row({
+  request_id: "req-rate-limited-2b90",
+  model: "gpt-4o-mini",
+  status: 429,
+  upstream_status: 429,
+  attempts: 2,
+  latency_ms: 1180,
+  ttft_ms: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  error: "upstream returned 429 after 2 attempts: gpt-4o-mini is temporarily rate-limited upstream",
+});
+// the upstream's own error, handed to the caller as it came
+const PASSED_THROUGH = row({
+  request_id: "req-passed-through-a07d",
+  model: "claude-sonnet",
+  provider: "anthropic",
+  target: "anthropic/claude-sonnet",
+  status: 400,
+  upstream_status: 400,
+  attempts: 1,
+  latency_ms: 310,
+  ttft_ms: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  error: "upstream returned 400 after 1 attempt: max_tokens: 99999 > 64000, the maximum",
+});
+// refused at the gateway's door: no provider or target was chosen and no
+// upstream was called
+const REFUSED = row({
+  request_id: "req-refused-e3f4",
+  model: "gpt-4.1",
+  provider: "",
+  target: "",
+  status: 403,
+  upstream_status: 0,
+  attempts: 0,
+  latency_ms: 4,
+  ttft_ms: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  cost_usd: 0,
+  error: "this key is not allowed to use model gpt-4.1",
+});
+// failed over and then answered: nothing is wrong, but it took two tries
+const RETRIED = row({
+  request_id: "req-retried-9d12",
+  model: "gemini-2.5-pro",
+  provider: "gemini",
+  target: "gemini/gemini-2.5-pro",
+  attempts: 2,
+});
+// written before the columns existed, or by a ClickHouse without them: the
+// fields are absent, not zero
+const OLD = row({
+  request_id: "req-old-41aa",
+  model: "legacy-model",
+  provider: "vllm",
+  target: "vllm/legacy-model",
+  status: 502,
+  error: "upstream reset the connection",
+});
+delete OLD.upstream_status;
+delete OLD.attempts;
+// answered from rolter's response cache: no attempts, and nothing wrong
+const CACHED = row({
+  request_id: "req-cached-77b3",
+  model: "cached-model",
+  cache_hit: 1,
+  upstream_status: 0,
+  attempts: 0,
+});
+const UPSTREAM_ROWS = [EXHAUSTED, RATE_LIMITED, PASSED_THROUGH, REFUSED, RETRIED, OLD, CACHED];
+
+/** The status cell of table row `index`, whatever columns the width is drawing. */
+const statusCellOf = (canvasElement: HTMLElement, index: number) =>
+  canvasElement.querySelectorAll("tbody tr")[index].querySelectorAll("td")[3];
+
+/** Opens `model`'s drawer and returns its panel. */
+async function openDetails(canvasElement: HTMLElement, model: string) {
+  const canvas = within(canvasElement);
+  await userEvent.click(
+    await canvas.findByRole("button", { name: new RegExp(`Open request details for ${model}`) }),
+  );
+  return canvas.findByRole("complementary", { name: "Details" });
+}
+
+/**
+ * #2837: a 503 the gateway made after the provider's 500 says so beside its
+ * status, in the table, where the row is scanned. The hint is the upstream's
+ * number with the sentence as its title and its text for a screen reader. It is
+ * drawn only where the two statuses differ: a pass-through error, a rate limit
+ * the caller got as it was, a refusal, an old row and a cache hit have nothing
+ * to add, and a failover that succeeded is no different from any 200.
+ */
+export const TheStatusCellHintsAtTheUpstreamStatusWhenItDiffers: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(UPSTREAM_ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(EXHAUSTED.ts));
+
+    const hinted = within(statusCellOf(canvasElement, 0));
+    await expect(hinted.getByText("503")).toBeVisible();
+    await expect(hinted.getByText("500")).toBeVisible();
+    await expect(hinted.getByTitle("Upstream returned 500 after 3 attempts")).toBeVisible();
+    // a screen reader hears the sentence, not a bare second number
+    await expect(statusCellOf(canvasElement, 0)).toHaveTextContent(
+      "Upstream returned 500 after 3 attempts",
+    );
+
+    for (const index of [1, 2, 3, 4, 5, 6]) {
+      await expect(statusCellOf(canvasElement, index).querySelector("[title]")).toBeNull();
+      await expect(statusCellOf(canvasElement, index)).not.toHaveTextContent(/Upstream/);
+    }
+    // the hint takes its room from the column, not from the row's other cells
+    const shape = tableShape(canvasElement);
+    await expect(shape.scrolls).toBe(false);
+    await expectRowInFrame(shape, 0);
+  },
+};
+
+/**
+ * #2837: a failed-over request's drawer says what the upstream answered and how
+ * many tries it took, under the verdict and ahead of the ids, so the status the
+ * gateway made up is explained where it is read. A rate limit that ran out of
+ * targets and a request that was retried and then succeeded say the same thing
+ * in the same words.
+ */
+export const AFailedOverRequestSaysWhatTheUpstreamAnswered: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs(UPSTREAM_ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const panel = await openDetails(canvasElement, "gemini-2.5-flash");
+    const drawer = within(panel);
+
+    await waitFor(() =>
+      expect(drawer.getByText("Upstream returned 500 after 3 attempts")).toBeVisible(),
+    );
+    await expect(drawer.getByText("503")).toBeVisible();
+    // the sentence leads the ids, and the upstream's reason is still its own group
+    const sentence = drawer.getByText("Upstream returned 500 after 3 attempts");
+    const requestId = drawer.getByText("Request ID", { selector: "dt" });
+    await expect(sentence.compareDocumentPosition(requestId)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    await expect(drawer.getByRole("region", { name: /^Error — / })).toHaveTextContent(
+      EXHAUSTED.error,
+    );
+
+    // the rate limit the caller got as a 429: the same two numbers, two tries
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: /Open request details for gpt-4o-mini/ }),
+    );
+    await waitFor(() =>
+      expect(drawer.getByText("Upstream returned 429 after 2 attempts")).toBeVisible(),
+    );
+    await expect(drawer.queryByText(/after 3 attempts/)).toBeNull();
+
+    // a request that failed over and then answered is worth knowing about
+    await userEvent.click(
+      within(canvasElement).getByRole("button", {
+        name: /Open request details for gemini-2.5-pro/,
+      }),
+    );
+    await waitFor(() =>
+      expect(drawer.getByText("Upstream returned 200 after 2 attempts")).toBeVisible(),
+    );
+    await expect(drawer.queryByRole("heading", { name: "Error" })).toBeNull();
+  },
+};
+
+/**
+ * #2837: an error the upstream made and the gateway handed over as it came is
+ * one attempt with the same status on both sides. It has no hint in the table,
+ * and the drawer says the status is the upstream's own, in the singular.
+ */
+export const APassThroughUpstreamErrorIsOneAttempt: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([PASSED_THROUGH, row({})])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(PASSED_THROUGH.ts));
+    await expect(statusCellOf(canvasElement, 0)).toHaveTextContent(/^400$/);
+    await expect(statusCellOf(canvasElement, 0).querySelector("[title]")).toBeNull();
+
+    const drawer = within(await openDetails(canvasElement, "claude-sonnet"));
+    await waitFor(() =>
+      expect(drawer.getByText("Upstream returned 400 after 1 attempt")).toBeVisible(),
+    );
+    await expect(drawer.getByRole("region", { name: /^Error — / })).toHaveTextContent(
+      PASSED_THROUGH.error,
+    );
+  },
+};
+
+/**
+ * #2837: a request refused at the gateway's door has no provider, no target and
+ * no attempts, and its error is the message the caller got. The drawer says it
+ * never reached an upstream rather than leaving the empty routing to be
+ * guessed at, and the table has no upstream status to hint at.
+ */
+export const ARefusalSaysItNeverReachedAnUpstream: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([REFUSED, row({})])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(REFUSED.ts));
+    const cells = canvasElement.querySelectorAll("tbody tr")[0].querySelectorAll("td");
+    await expect(cells[2]).toHaveTextContent("—");
+    await expect(statusCellOf(canvasElement, 0)).toHaveTextContent(/^403$/);
+
+    const panel = await openDetails(canvasElement, "gpt-4.1");
+    const drawer = within(panel);
+    await waitFor(() =>
+      expect(drawer.getByText("Refused before reaching an upstream")).toBeVisible(),
+    );
+    await expect(drawer.getByRole("region", { name: /^Error — / })).toHaveTextContent(
+      REFUSED.error,
+    );
+    await expect(
+      valueOf(drawer.getByRole("region", { name: "Routing" }), "Provider → target"),
+    ).toBe("—");
+    await expect(drawer.queryByText(/Upstream returned/)).toBeNull();
+  },
+};
+
+/**
+ * #2837: a row written before the columns existed, or read from a ClickHouse
+ * without them, carries neither field. A missing field is zero attempts and no
+ * upstream status, and a failed row that names its provider must not be called
+ * a refusal on that evidence: the screen says nothing extra, as does a cache
+ * hit, which also made no attempts.
+ */
+export const ARowWithoutTheUpstreamFieldsSaysNothingExtra: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([OLD, CACHED])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect("attempts" in OLD || "upstream_status" in OLD).toBe(false);
+    await within(canvasElement).findByText(fmt.timeMs(OLD.ts));
+    for (const index of [0, 1]) {
+      await expect(statusCellOf(canvasElement, index).querySelector("[title]")).toBeNull();
+    }
+
+    const old = within(await openDetails(canvasElement, "legacy-model"));
+    await waitFor(() => expect(old.getByRole("region", { name: /^Error — / })).toBeVisible());
+    await expect(old.queryByText(/Upstream|Refused before/)).toBeNull();
+
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: /Open request details for cached-model/ }),
+    );
+    await waitFor(() => expect(old.getByText("Hit")).toBeVisible());
+    await expect(old.queryByText(/Upstream|Refused before/)).toBeNull();
+  },
+};
+
+// the counts the Russian plural rules tell apart: 1 and 21 are "one", 2 to 4
+// "few", 5 to 20 "many"
+const COUNTED = [1, 2, 5, 21].map((attempts) =>
+  row({
+    request_id: `req-counted-${attempts}`,
+    model: `counted-${attempts}`,
+    status: 503,
+    upstream_status: 500,
+    attempts,
+  }),
+);
+
+/**
+ * #2837 in Russian: the sentence follows the language's plural rules for the
+ * number of attempts, and the status it names is not grouped like a count.
+ */
+export const TheUpstreamSentenceIsPluralisedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs(COUNTED)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const ruSentence = (key: "answered_one" | "answered_few" | "answered_many", attempts: number) =>
+      ru.pages.logs.detail.upstream[key]
+        .replace("{{status}}", "500")
+        .replace("{{count}}", String(attempts));
+    const canvas = within(canvasElement);
+    const expected: [number, "answered_one" | "answered_few" | "answered_many"][] = [
+      [1, "answered_one"],
+      [2, "answered_few"],
+      [5, "answered_many"],
+      [21, "answered_one"],
+    ];
+    for (const [attempts, key] of expected) {
+      await userEvent.click(
+        await canvas.findByRole("button", {
+          name: ru.analytics.openDetails.replace("{{model}}", `counted-${attempts}`),
+        }),
+      );
+      const drawer = within(
+        await canvas.findByRole("complementary", { name: ru.analytics.details }),
+      );
+      await waitFor(() => expect(drawer.getByText(ruSentence(key, attempts))).toBeVisible());
+    }
+  },
+};
+
+/**
+ * #2837 on a phone, in the longer Russian copy: the upstream's number joins the
+ * status on the row's first line, the model is cut to make room for it, and
+ * nothing leaves the frame or scrolls the page sideways.
+ */
+export const TheUpstreamHintFitsAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs([EXHAUSTED, ...ROWS])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(formattersFor("ru").timeMs(EXHAUSTED.ts));
+    await expectNoHorizontalOverflow();
+
+    const shape = tableShape(canvasElement);
+    await expect(shape.scrolls).toBe(false);
+    await expectRowInFrame(shape, 0);
+    for (const cell of shape.cells(0)) await expectInViewport(cell);
+    const sentence = ru.pages.logs.detail.upstream.answered_few
+      .replace("{{status}}", "500")
+      .replace("{{count}}", "3");
+    await expect(within(shape.cells(0)[2]).getByTitle(sentence)).toBeVisible();
+    await expectStackedRow(canvasElement, 0, EXHAUSTED.model);
+  },
+};
+
+/**
+ * #2837 where the table is just wide enough to draw its columns and no wider:
+ * the status column has room for the badge alone, so the upstream's number
+ * wraps under it instead of pushing the cost out of frame.
+ */
+export const TheUpstreamHintWrapsUnderTheBadgeInANarrowTable: Story = {
+  parameters: { viewportSize: { width: 560, height: 800 } },
+  render: () => (
+    <Harness fetchStub={withLogs([EXHAUSTED, ...ROWS])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(EXHAUSTED.ts));
+    await expectNoHorizontalOverflow();
+    const shape = tableShape(canvasElement);
+    await expect(shape.scrolls).toBe(false);
+    await expectRowInFrame(shape, 0);
+
+    const cell = within(shape.cells(0)[2]);
+    const badge = cell.getByText("503");
+    const hint = cell.getByText("500");
+    await expect(hint).toBeVisible();
+    await expect(hint.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      badge.getBoundingClientRect().bottom - 1,
+    );
   },
 };
 
@@ -2164,6 +2575,7 @@ const ARCHIVED = row({
   trace_id: "",
   ts: "2025-01-15T09:30:00.000Z",
   status: 502,
+  upstream_status: 0,
   error: "upstream reset the connection",
 });
 const TRACE = "0af7651916cd43dd8448eb211c80319c";
