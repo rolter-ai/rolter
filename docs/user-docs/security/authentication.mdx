@@ -264,6 +264,9 @@ A session ends before its seven days are up when:
 - a superadmin deactivates or deletes the account, or the identity provider
   deprovisions it over SCIM
 - the account's second factor is reset
+- the account changes its own password (`POST /api/v1/auth/password`): every
+  other session ends and the one it was changed from stays. See
+  [Change your password](/api/change-password)
 - a superadmin sets a new password for the account (`PUT /api/v1/users/{id}`
   with a `password`). The usual reason for a reset is that the old password is
   in someone else's hands, so every session opened with it ends on the spot.

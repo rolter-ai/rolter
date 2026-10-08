@@ -786,7 +786,11 @@ Four properties are load-bearing:
   reason to refuse — would turn one redis blip into a fleet-wide lockout.
 
 The same guard covers the invitation preview/accept endpoints, which are the
-same primitive with a different token.
+same primitive with a different token, and `POST /api/v1/auth/password` (#2804):
+a signed-in account proving its current password is still a password guess, and a
+stolen session would otherwise be an unthrottled oracle for it. That route keys
+the counters on the account's email like a sign-in does, so the two share one
+budget and one lock.
 
 Rejected attempts, engaged locks and sign-ins that follow a lock are written to
 `audit_log`, and `rolter_control_login_attempts` counts them by outcome

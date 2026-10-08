@@ -209,6 +209,16 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   state reads `useCan()` for its copy only: on an explicit `false` it says
   that members mint their own keys and to ask an admin of the project, beside
   the refused button, instead of inviting a mint the button refuses (#2064).
+- **Changing your own password.** **Change password** in the Password panel on
+  the account screen is a `GatedButton` on `my_password:update`, a capability
+  the table marks `authenticated_only`, so `effective` lists it for every
+  signed-in caller and the button never refuses a real one. It is gated anyway,
+  so the control reads the same table as every other and a tightened rule would
+  reach it, and `AllowedToAViewer` pins that the lowest role can use it. What
+  the panel decides for itself is the account: `has_local_password: false` on
+  `/auth/me` (an account that signs in through single sign-on only) replaces the
+  form with the explanation, and open mode, which has no accounts, draws no
+  panel at all (#2804).
 - **Links into a gated screen.** A link the caller cannot follow is a 403
   with an extra click. The LLM Logs payload drawer links to the log settings
   unless `logging_settings:read` is an explicit `false`, the rail's own rule

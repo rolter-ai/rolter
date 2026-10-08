@@ -358,6 +358,19 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // an account changing its own local password (#2804). It is every signed-in
+    // account's to do, a viewer or one with no membership included: the route
+    // writes only the caller's own row and proves the current password first, so
+    // it needs no role and does not widen `user:update`, which resets anyone's
+    // password and stays superadmin-only
+    Capability {
+        resource: "my_password",
+        scope: "deployment",
+        read: NA,
+        create: NA,
+        update: ANYONE,
+        delete: NA,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -1502,8 +1515,9 @@ mod tests {
     }
 
     /// Without a membership anywhere, a caller holds exactly the global
-    /// read-only catalogs and nothing else — those carry no tenant's data and
-    /// have no scope a membership could be held at (#766).
+    /// read-only catalogs and the one write that touches only their own row
+    /// — none of them carries a tenant's data or has a scope a membership
+    /// could be held at (#766).
     #[test]
     fn no_membership_means_only_the_global_catalogs() {
         let allowed = as_role(None);
@@ -1522,7 +1536,10 @@ mod tests {
                 "stability:read",
                 // the control plane's own public url (#2083): a property of
                 // the deployment, the same for every caller
-                "public_url:read"
+                "public_url:read",
+                // changing one's own password (#2804): the route writes only
+                // the caller's own row, so there is no membership to hold
+                "my_password:update"
             ]
         );
     }

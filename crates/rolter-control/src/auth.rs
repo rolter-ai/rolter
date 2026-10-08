@@ -49,6 +49,11 @@ use rolter_store::postgres::repo::{
     AuditLogRepo, MembershipRepo, MfaRepo, OrgAuthPolicyRepo, SessionRepo, UserRepo,
 };
 
+use crate::crud::{
+    hash_password, invalid_field, password_length_problem, ApiError, ApiResult, SafeJson,
+};
+use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac_matrix::cap;
 use crate::ControlState;
 
 /// [`IdentityProvider`] for rolter's own local accounts (email + argon2id
@@ -160,6 +165,7 @@ pub fn router() -> Router<ControlState> {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
+        .route("/api/v1/auth/password", post(change_password))
 }
 
 /// Deployment-wide pepper for session tokens (`ROLTER_SESSION_PEPPER`),
@@ -614,6 +620,12 @@ struct MeResponse {
     /// the address clients already dial), so every session may read it without
     /// holding `client_settings:read`
     gateway_base_url: Option<String>,
+    /// whether the account has a local password. `false` is an account that
+    /// signs in through single sign-on only: `POST /api/v1/auth/password` has
+    /// nothing to change for it and answers `409 no_local_password`, so the
+    /// dashboard explains that instead of offering the form (#2804). The hash
+    /// itself never leaves the server
+    has_local_password: bool,
 }
 
 /// A membership as `/auth/me` reports it: the row as stored, plus the org and
@@ -660,12 +672,187 @@ async fn me(
         .ok()
         .and_then(|row| row.public_base_url)
         .filter(|url| !url.trim().is_empty());
+    let has_local_password = current.user.password_hash.is_some();
     Ok(Json(MeResponse {
         user: current.user,
         memberships,
         display_name_managed,
         gateway_base_url,
+        has_local_password,
     }))
+}
+
+/// stable code of the 409 for a password change on an account that has no
+/// local password, because it signs in through single sign-on only (#2804)
+pub(crate) const NO_LOCAL_PASSWORD: &str = "no_local_password";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangePasswordRequest {
+    /// the password the account signs in with today, proved again so a session
+    /// left open on a shared machine cannot be turned into a new password
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PasswordChanged {
+    /// how many of the account's other sessions the change signed out; the one
+    /// the request came from is kept
+    sessions_revoked: u64,
+}
+
+/// Change the signed-in account's own password (#2804).
+///
+/// A wrong current password is counted exactly like a failed sign-in: the same
+/// per-account and per-address counters, checked before any argon2 work, with
+/// the same growing delay and temporary lock. Without that, a stolen session
+/// would be an unthrottled oracle for the password it was meant not to reveal.
+/// The answer for a wrong password is a `400`, never a `401`: the session is
+/// fine, and a `401` would sign the dashboard out.
+///
+/// Every other session of the account ends, since a change usually means the
+/// old password is in someone else's hands and whoever signed in with it would
+/// otherwise keep a session for its full lifetime (#1936).
+async fn change_password(
+    current: CurrentUser,
+    State(state): State<ControlState>,
+    client: crate::login_throttle::ClientAddr,
+    headers: axum::http::HeaderMap,
+    SafeJson(body): SafeJson<ChangePasswordRequest>,
+) -> ApiResult<Json<PasswordChanged>> {
+    let pool = pool(&state);
+    let user = &current.user;
+    // advisory today (any signed-in account passes), but it is the rule the
+    // matrix publishes, so the route asks the table rather than assuming it
+    authorize(
+        &state,
+        &Principal::for_user(user.clone()),
+        ScopeChain::default(),
+        cap!("my_password", Update),
+    )
+    .await?;
+
+    // nothing is being guessed yet, so neither refusal below costs the account
+    // a failure or an argon2 verification
+    let Some(stored_hash) = user.password_hash.as_deref() else {
+        return Err(ApiError::CodedConflict {
+            code: NO_LOCAL_PASSWORD,
+            message: "this account signs in through single sign-on and has no local password \
+                      to change; change it at your identity provider, or ask a superadmin to \
+                      set a local one"
+                .to_string(),
+        });
+    };
+    if let Some(problem) = password_length_problem(&body.new_password) {
+        return Err(invalid_field("new_password", problem));
+    }
+
+    // keyed on the account's email like a sign-in, so a guess made here and a
+    // guess made at the login screen draw on one budget
+    let client_ip = client.resolve(&headers, state.trust_forwarded_for);
+    let subjects = state.login_throttle.subjects(&user.email, client_ip);
+    // before the verification, for the same reason as at login: refusing
+    // afterwards would still buy the caller a full argon2 hash per request
+    if let Some(locked) = state.login_throttle.check(&subjects).await {
+        tracing::warn!(
+            scope = locked.scope.as_str(),
+            client = ?client_ip,
+            "rejected password change: too many failed attempts"
+        );
+        return Err(ApiError::TooManyAttempts(locked.retry_after));
+    }
+
+    let verified = PasswordHash::new(stored_hash)
+        .map_err(|e| ApiError::Core(rolter_core::Error::Store(e.to_string())))
+        .map(|parsed| {
+            Argon2::default()
+                .verify_password(body.current_password.as_bytes(), &parsed)
+                .is_ok()
+        })?;
+    if !verified {
+        let penalty = state.login_throttle.record_failure(&subjects).await;
+        let mut detail = serde_json::json!({
+            "delay_ms": penalty.delay.as_millis() as u64,
+            "client": client_ip.map(|ip| ip.to_string()),
+        });
+        if let Some(lock) = penalty.locked_for {
+            detail["locked_for_secs"] = lock.as_secs().into();
+            detail["locked_scope"] = penalty
+                .locked_scope
+                .map(|scope| scope.as_str())
+                .unwrap_or_default()
+                .into();
+        }
+        audit_password(&state, user.id, "auth.password_change_failed", detail).await;
+        if !penalty.delay.is_zero() {
+            tokio::time::sleep(penalty.delay).await;
+        }
+        return Err(invalid_field(
+            "current_password",
+            "the current password is not correct",
+        ));
+    }
+    // the caller has proved the password, so this counts as a successful sign-in
+    // for the throttle: the failures that led up to it are forgotten
+    state.login_throttle.record_success(&subjects).await;
+
+    // after the proof, so the answer says nothing to someone who does not know
+    // the password
+    if body.new_password == body.current_password {
+        return Err(invalid_field(
+            "new_password",
+            "the new password must differ from the current one",
+        ));
+    }
+
+    let new_hash = hash_password(&body.new_password)?;
+    UserRepo(pool)
+        .update_account(user.id, None, Some(&new_hash), None, None)
+        .await?;
+    // every session but this one: the change usually means the old password is
+    // in someone else's hands, and whoever signed in with it would otherwise
+    // keep a session for its full lifetime (#1936)
+    let sessions_revoked = SessionRepo(pool)
+        .delete_for_user_except(user.id, Some(&current.session.token_hash))
+        .await?;
+    // a sign-in halfway through its second-factor step was started with the old
+    // password, and an enrolment token among them could still arm a factor for
+    // whoever held it (#1852)
+    MfaRepo(pool).delete_challenges_for_user(user.id).await?;
+
+    audit_password(
+        &state,
+        user.id,
+        "auth.password_changed",
+        serde_json::json!({ "sessions_revoked": sessions_revoked }),
+    )
+    .await;
+    Ok(Json(PasswordChanged { sessions_revoked }))
+}
+
+/// Record a password-change event against the account itself. Best-effort, like
+/// the sign-in entries: the password has already changed (or been refused), and
+/// a failed audit write must not turn that into a `500`.
+async fn audit_password(
+    state: &ControlState,
+    user_id: Uuid,
+    action: &'static str,
+    detail: serde_json::Value,
+) {
+    if let Err(err) = AuditLogRepo(pool(state))
+        .create(
+            None,
+            Some(user_id),
+            action,
+            Some("user"),
+            Some(user_id),
+            Some(detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, action, "failed to write password audit entry");
+    }
 }
 
 /// generate a fresh opaque session token and its peppered digest; the digest
@@ -701,7 +888,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// ```
 pub struct CurrentUser {
     pub user: User,
-    #[allow(dead_code)] // not consumed yet; kept for ROL-34's role checks
+    /// the session the request came in on, so a handler can tell it apart from
+    /// the account's other ones (a password change keeps it, #2804)
     pub session: Session,
 }
 

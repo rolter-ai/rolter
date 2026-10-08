@@ -273,6 +273,9 @@ impl IntoResponse for ApiError {
             Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
+            // the same code the sign-in answers a lock with, so a client reads
+            // one name for it wherever a password is being guessed
+            Self::TooManyAttempts(_) => Some("too_many_attempts"),
             _ => None,
         };
         let field = match &self {
@@ -5395,16 +5398,22 @@ async fn delete_model(
 
 const MIN_PASSWORD_LEN: usize = 8;
 
+/// what a password shorter than [`MIN_PASSWORD_LEN`] is refused with, or `None`
+/// when it is long enough. One rule for every path that sets a password, so the
+/// admin reset, an invitation and the account's own change cannot disagree
+pub(crate) fn password_length_problem(password: &str) -> Option<String> {
+    (password.len() < MIN_PASSWORD_LEN)
+        .then(|| format!("password must be at least {MIN_PASSWORD_LEN} characters"))
+}
+
 /// hash a plaintext password with argon2id for at-rest storage; the repo layer
 /// only ever sees the digest
 pub(crate) fn hash_password(password: &str) -> ApiResult<String> {
     use argon2::password_hash::PasswordHasher;
     use argon2::Argon2;
 
-    if password.len() < MIN_PASSWORD_LEN {
-        return Err(ApiError::Core(Error::Config(format!(
-            "password must be at least {MIN_PASSWORD_LEN} characters"
-        ))));
+    if let Some(problem) = password_length_problem(password) {
+        return Err(ApiError::Core(Error::Config(problem)));
     }
     // hash_password generates its own 16-byte salt from getrandom
     Argon2::default()
@@ -5440,12 +5449,30 @@ pub(crate) fn validate_role(role: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// what `GET /api/v1/orgs/{org_id}/users` can be narrowed or widened by
+#[derive(Deserialize, Default)]
+struct ListUsersQuery {
+    /// also list the accounts that hold no membership anywhere, such as the
+    /// superadmin `rolter-seed --admin-email` creates. Only a superadmin can
+    /// edit such an account, so only a superadmin is shown it: for anyone else
+    /// the flag changes nothing, rather than failing a list the caller may
+    /// read (#2804)
+    #[serde(default)]
+    include_unassigned: bool,
+}
+
 async fn list_users(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
+    Query(query): Query<ListUsersQuery>,
 ) -> ApiResult<Json<Vec<User>>> {
-    let users = UserRepo(pool(&state)).list_in_org(org_id).await?;
+    let repo = UserRepo(pool(&state));
+    let users = if query.include_unassigned && matches!(principal, Principal::Superadmin) {
+        repo.list_in_org_with_unassigned(org_id).await?
+    } else {
+        repo.list_in_org(org_id).await?
+    };
     let filter = ScopeFilter::load(&state, &principal, cap!("user", Read)).await?;
     if filter.allows(ScopeChain::org(org_id)) {
         return Ok(Json(users));
@@ -6188,6 +6215,41 @@ mod user_tests {
             .verify_password(b"longenough", &parsed)
             .is_ok());
     }
+
+    #[test]
+    fn the_length_rule_is_one_shared_function() {
+        // the account's own change reports the same problem the admin reset
+        // does, from the same place, so the two cannot drift
+        // built from lengths, so no test carries a password as a literal
+        let problem = password_length_problem(&"x".repeat(5)).expect("5 characters is too short");
+        assert!(
+            problem.contains("at least 8"),
+            "the refusal states the minimum"
+        );
+        assert!(password_length_problem(&"y".repeat(MIN_PASSWORD_LEN)).is_none());
+        assert!(password_length_problem(&"x".repeat(0)).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_throttled_password_endpoint_says_so_with_a_stable_code() {
+        let response =
+            ApiError::TooManyAttempts(std::time::Duration::from_millis(1500)).into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        // rounded up, so a sub-second remainder never invites an instant retry
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "too_many_attempts");
+    }
+
     #[test]
     fn advanced_model_validation_rejects_unsafe_values() {
         let mut advanced = AdvancedModelConfig {

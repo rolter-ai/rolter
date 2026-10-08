@@ -113,9 +113,16 @@ export default function Users() {
   const queryClient = useQueryClient();
   const toast = useToast();
 
+  // a superadmin also lists the accounts that hold no role anywhere, such as
+  // the first administrator `rolter-seed --admin-email` creates: they are in no
+  // org's membership list, so without the flag their own row is nowhere to edit
+  // (#2804). the control plane ignores it for anyone else. the flag is in the
+  // key because AuditLog and the model sheet cache the plain list under
+  // `["users", orgId]`, and the two answers must not stand in for each other
+  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const users = useQuery({
-    queryKey: ["users", orgId],
-    queryFn: () => fetchUsers(orgId as string),
+    queryKey: ["users", orgId, { includeUnassigned: callerIsSuperadmin }],
+    queryFn: () => fetchUsers(orgId as string, { includeUnassigned: callerIsSuperadmin }),
     enabled: !!orgId,
   });
 
@@ -164,7 +171,6 @@ export default function Users() {
 
   // the org's last admin grant, which the control plane refuses to revoke for
   // anyone but a superadmin, who is not offered the warning
-  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const isLastAdmin = (grant: MembershipRow) =>
     !callerIsSuperadmin &&
     users.data !== undefined &&

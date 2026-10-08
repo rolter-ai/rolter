@@ -67,7 +67,7 @@ This guide takes a deployment from nothing to "our people and our applications c
       --admin-email you@example.com --admin-password '<a long password>'
     ```
 
-    Open the dashboard (port 4001), sign in, then protect the account with a second factor under **Settings → Account & keys → Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
+    Open the dashboard (port 4001) and sign in. The account belongs to no organization, so it is not in any organization's people list until you ask for it: a superadmin sees such accounts under **Governance → Users**. Change the password you seeded under **Settings → Account & keys → Password**: it asks for the current password and the new one twice, and signs the account out of its other sessions while keeping the one you are in ([Change your password](/api/change-password)). Then protect the account with a second factor on the same screen, under **Two-factor authentication**. See [Two-factor authentication](/security/two-factor-authentication).
 
   </Step>
   <Step title="Follow the Getting started card">

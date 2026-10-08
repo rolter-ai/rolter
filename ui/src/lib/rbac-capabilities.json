@@ -502,6 +502,18 @@
       ]
     },
     {
+      "resource": "my_password",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "update",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
+        }
+      ]
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "actions": [

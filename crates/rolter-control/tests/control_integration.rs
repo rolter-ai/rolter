@@ -6113,6 +6113,559 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// changing your own password (#2804)
+// ---------------------------------------------------------------------------
+
+/// Seed a local account with a password, optionally a superadmin, and return
+/// its id. `seed_local_user` is always a superadmin; the self-service routes
+/// are for every role, so these tests mostly want an account that is none.
+async fn seed_password_user(
+    pool: &sqlx::PgPool,
+    email: &str,
+    password: &str,
+    is_superadmin: bool,
+) -> uuid::Uuid {
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string();
+    sqlx::query_scalar(
+        "insert into users (email, password_hash, is_superadmin) values ($1, $2, $3)
+         returning id",
+    )
+    .bind(email)
+    .bind(&hash)
+    .bind(is_superadmin)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// `POST /api/v1/auth/password` with `token`.
+async fn post_password_change(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    current: &str,
+    new: &str,
+) -> reqwest::Response {
+    client
+        .post(format!("{base}/api/v1/auth/password"))
+        .bearer_auth(token)
+        .json(&json!({"current_password": current, "new_password": new}))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// The status a password sign-in answers, without asserting it succeeded.
+async fn login_status(client: &reqwest::Client, base: &str, email: &str, password: &str) -> u16 {
+    client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({"email": email, "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+/// The status `GET /api/v1/auth/me` answers for `token`, which is whether the
+/// session behind it is alive.
+async fn session_status(client: &reqwest::Client, base: &str, token: &str) -> u16 {
+    client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+/// The session token a password sign-in handed out.
+async fn session_token(
+    client: &reqwest::Client,
+    base: &str,
+    email: &str,
+    password: &str,
+) -> String {
+    login_as(client, base, email, password).await["token"]
+        .as_str()
+        .expect("a session token")
+        .to_string()
+}
+
+/// The whole happy path for an account with no role anywhere: the change takes
+/// effect, every *other* session of the account ends, the one it was made from
+/// survives, and the audit row says how many ended without ever carrying a
+/// password.
+#[tokio::test]
+async fn changing_your_own_password_ends_the_other_sessions_and_keeps_this_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let old_password = random_password();
+    let new_password = random_password();
+    let user_id = seed_password_user(&pool, "self@example.com", &old_password, false).await;
+    // another account's session must be left alone, which a delete that forgot
+    // its `where user_id` would not
+    let bystander =
+        seed_password_user(&pool, "bystander@example.com", &random_password(), false).await;
+    let bystander_token = seed_session(&pool, bystander, "bystander").await;
+
+    let here = session_token(&client, &base, "self@example.com", &old_password).await;
+    let elsewhere = session_token(&client, &base, "self@example.com", &old_password).await;
+    let seeded = seed_session(&pool, user_id, "self-seeded").await;
+
+    let me: Value = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&here)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["has_local_password"], true);
+    assert!(
+        me["user"].get("password_hash").is_none(),
+        "the hash never leaves the server"
+    );
+
+    let changed = post_password_change(&client, &base, &here, &old_password, &new_password).await;
+    assert_eq!(changed.status(), 200);
+    let body: Value = changed.json().await.unwrap();
+    assert_eq!(body["sessions_revoked"], 2, "the two other sessions end");
+
+    assert_eq!(
+        session_status(&client, &base, &here).await,
+        200,
+        "this session is kept"
+    );
+    assert_eq!(session_status(&client, &base, &elsewhere).await, 401);
+    assert_eq!(session_status(&client, &base, &seeded).await, 401);
+    assert_eq!(
+        session_status(&client, &base, &bystander_token).await,
+        200,
+        "another account's session is not touched"
+    );
+
+    assert_eq!(
+        login_status(&client, &base, "self@example.com", &old_password).await,
+        401,
+        "the old password stops working"
+    );
+    assert_eq!(
+        login_status(&client, &base, "self@example.com", &new_password).await,
+        200,
+        "and the new one signs in"
+    );
+
+    let (actor, detail): (Option<uuid::Uuid>, Value) = sqlx::query_as(
+        "select actor_user_id, detail from audit_log where action = 'auth.password_changed'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(actor, Some(user_id));
+    assert_eq!(detail["sessions_revoked"], 2);
+    let recorded = detail.to_string();
+    assert!(
+        !recorded.contains(&old_password) && !recorded.contains(&new_password),
+        "a password must never reach the audit log"
+    );
+}
+
+/// A wrong current password is a refusal that leaves the account as it was, is
+/// audited, and counts like a failed sign-in: the lock engages after the
+/// budget, says how long it lasts, holds even against the right password, and
+/// is the same lock the login screen sees.
+#[tokio::test]
+async fn a_wrong_current_password_is_refused_audited_and_throttled_like_a_login() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    let wanted = random_password();
+    seed_password_user(&pool, "guarded@example.com", &password, false).await;
+    let token = session_token(&client, &base, "guarded@example.com", &password).await;
+
+    // the default budget is five failures; each is an ordinary refusal that
+    // names the field, and is a 400 rather than a 401 so the dashboard does not
+    // read it as a dead session and sign the person out
+    for _ in 0..5 {
+        let refused =
+            post_password_change(&client, &base, &token, &random_password(), &wanted).await;
+        assert_eq!(refused.status(), 400);
+        let body: Value = refused.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_field");
+        assert_eq!(body["error"]["field"], "current_password");
+    }
+
+    // the sixth is refused before any password work happens, and says for how
+    // long. The right password does not get through a lock either
+    let locked = post_password_change(&client, &base, &token, &password, &wanted).await;
+    assert_eq!(locked.status(), 429);
+    let retry_after: u64 = locked
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .expect("a lock states how long it lasts")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        retry_after > 0,
+        "retry-after must never invite an instant retry"
+    );
+    let body: Value = locked.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "too_many_attempts");
+
+    // the budget is the account's, shared with the login screen: a guess made
+    // here and a guess made there are one run, and the lock holds for both
+    assert_eq!(
+        login_status(&client, &base, "guarded@example.com", &password).await,
+        429
+    );
+
+    // nothing changed: the same password still opens the account, and this
+    // session is intact
+    let stored_hash: String =
+        sqlx::query_scalar("select password_hash from users where email = 'guarded@example.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let parsed = argon2::PasswordHash::new(&stored_hash).unwrap();
+    use argon2::password_hash::PasswordVerifier;
+    assert!(argon2::Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok());
+    assert_eq!(session_status(&client, &base, &token).await, 200);
+
+    let rows: Vec<Value> = sqlx::query_scalar(
+        "select detail from audit_log where action = 'auth.password_change_failed' order by at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 5, "every rejected guess is on the record");
+    assert!(
+        rows[4]["locked_for_secs"].as_u64().is_some(),
+        "the guess that engaged the lock says so"
+    );
+    assert!(
+        rows[0].get("locked_for_secs").is_none(),
+        "an ordinary miss does not claim a lock"
+    );
+    let changed: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'auth.password_changed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(changed, 0);
+}
+
+/// A correct current password clears the failures that led up to it, exactly as
+/// a successful sign-in does, so an ordinary typo does not carry over into the
+/// next change.
+#[tokio::test]
+async fn a_correct_current_password_forgets_the_earlier_misses() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let first = random_password();
+    let second = random_password();
+    let third = random_password();
+    seed_password_user(&pool, "typo@example.com", &first, false).await;
+    let token = session_token(&client, &base, "typo@example.com", &first).await;
+
+    for _ in 0..4 {
+        let refused =
+            post_password_change(&client, &base, &token, &random_password(), &second).await;
+        assert_eq!(refused.status(), 400);
+    }
+    assert_eq!(
+        post_password_change(&client, &base, &token, &first, &second)
+            .await
+            .status(),
+        200
+    );
+    // four more would have crossed five had the first four still counted
+    for _ in 0..4 {
+        let refused =
+            post_password_change(&client, &base, &token, &random_password(), &third).await;
+        assert_eq!(refused.status(), 400, "the counter started over");
+    }
+    assert_eq!(
+        post_password_change(&client, &base, &token, &second, &third)
+            .await
+            .status(),
+        200
+    );
+}
+
+/// The new password is held to the length every other path that sets one
+/// enforces, and a refusal for its shape is not a guess at the current
+/// password: it costs the account nothing and runs no verification.
+#[tokio::test]
+async fn a_new_password_is_checked_for_length_without_counting_as_a_guess() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_password_user(&pool, "short@example.com", &password, false).await;
+    let token = session_token(&client, &base, "short@example.com", &password).await;
+
+    // well past the account's failure budget, none of it counted
+    for _ in 0..8 {
+        let refused = post_password_change(&client, &base, &token, &password, &"s".repeat(7)).await;
+        assert_eq!(refused.status(), 400);
+        let body: Value = refused.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_field");
+        assert_eq!(body["error"]["field"], "new_password");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("at least 8"),
+            "the refusal states the minimum"
+        );
+    }
+    // exactly the minimum is long enough
+    assert_eq!(
+        post_password_change(&client, &base, &token, &password, &"m".repeat(8))
+            .await
+            .status(),
+        200
+    );
+}
+
+/// Setting the password to what it already is would end every other session for
+/// nothing, so it is refused -- and only after the current password is proved,
+/// so the answer tells nobody anything.
+#[tokio::test]
+async fn the_new_password_must_differ_from_the_current_one() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_password_user(&pool, "same@example.com", &password, false).await;
+    let token = session_token(&client, &base, "same@example.com", &password).await;
+    let elsewhere = session_token(&client, &base, "same@example.com", &password).await;
+
+    let refused = post_password_change(&client, &base, &token, &password, &password).await;
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["field"], "new_password");
+    assert_eq!(
+        session_status(&client, &base, &elsewhere).await,
+        200,
+        "nothing was revoked"
+    );
+}
+
+/// An account that signs in through single sign-on has no local password to
+/// change. The refusal carries a stable code the dashboard translates, the
+/// session payload says so up front, and nothing is audited as a change.
+#[tokio::test]
+async fn an_sso_only_account_is_refused_with_a_code_the_dashboard_can_translate() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let user_id = seed_user(&pool, "sso@example.com", false).await;
+    let token = seed_session(&pool, user_id, "sso-only").await;
+
+    let me: Value = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["has_local_password"], false);
+
+    let refused = post_password_change(
+        &client,
+        &base,
+        &token,
+        &random_password(),
+        &random_password(),
+    )
+    .await;
+    assert_eq!(refused.status(), 409);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "no_local_password");
+    assert!(body["error"]["message"].as_str().is_some());
+
+    let rows: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action like 'auth.password_change%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 0, "a refusal that guessed nothing writes nothing");
+}
+
+/// The route is authenticated by a session and by nothing else, and it takes
+/// exactly the two fields it names.
+#[tokio::test]
+async fn the_password_route_needs_a_session_and_a_well_formed_body() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let password = random_password();
+    seed_password_user(&pool, "shape@example.com", &password, false).await;
+    let token = session_token(&client, &base, "shape@example.com", &password).await;
+
+    let anonymous = client
+        .post(format!("{base}/api/v1/auth/password"))
+        .json(&json!({"current_password": password, "new_password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+
+    for (shape, body) in [
+        json!({"current_password": password}),
+        json!({"new_password": random_password()}),
+        json!({"current_password": password, "new_password": random_password(), "extra": 1}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = client
+            .post(format!("{base}/api/v1/auth/password"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 400, "malformed body #{shape}");
+        let json: Value = refused.json().await.unwrap();
+        assert!(
+            json["error"]["message"].as_str().is_some(),
+            "malformed body #{shape} is answered with a message"
+        );
+    }
+}
+
+/// `GET /api/v1/orgs/{org_id}/users` lists the people with a role in an org, so
+/// the superadmin `rolter-seed --admin-email` creates -- who belongs to no org
+/// -- was never on the Users screen to edit. `include_unassigned` adds the
+/// accounts that hold no membership anywhere, for a superadmin only, and never
+/// another org's people.
+#[tokio::test]
+async fn a_superadmin_can_list_the_accounts_that_belong_to_no_org() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let other: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Other', 'other') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let member = seed_user(&pool, "member@example.com", false).await;
+    seed_membership(&pool, member, Some(acme), None, None, "admin").await;
+    let elsewhere = seed_user(&pool, "elsewhere@example.com", false).await;
+    seed_membership(&pool, elsewhere, Some(other), None, None, "member").await;
+    let seeded_admin = seed_user(&pool, "root@example.com", true).await;
+    seed_user(&pool, "stranded@example.com", false).await;
+    let root_token = seed_session(&pool, seeded_admin, "root").await;
+    let member_token = seed_session(&pool, member, "member").await;
+
+    let emails = |token: String, query: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let response = client
+                .get(format!("{base}/api/v1/orgs/{acme}/users{query}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "{query}");
+            let users: Vec<Value> = response.json().await.unwrap();
+            users
+                .iter()
+                .map(|u| u["email"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    // unchanged for everyone who does not ask
+    assert_eq!(
+        emails(admin_token().to_string(), "").await,
+        ["member@example.com"]
+    );
+    assert_eq!(
+        emails(root_token.clone(), "?include_unassigned=false").await,
+        ["member@example.com"]
+    );
+    // a superadmin, by session or by the admin token, also gets the accounts no
+    // org lists, in one email-ordered list, and not the other org's member
+    let wanted = [
+        "member@example.com",
+        "root@example.com",
+        "stranded@example.com",
+    ];
+    assert_eq!(emails(root_token, "?include_unassigned=true").await, wanted);
+    assert_eq!(
+        emails(admin_token().to_string(), "?include_unassigned=true").await,
+        wanted
+    );
+    // an org admin asking for it is not shown them: they could not edit them
+    assert_eq!(
+        emails(member_token, "?include_unassigned=true").await,
+        ["member@example.com"]
+    );
+}
+
 /// An expired session row is rejected even though the token digest matches,
 /// proving `find_active_by_hash`'s `expires_at > now()` bound is doing its job.
 #[tokio::test]
@@ -8472,7 +9025,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
         .unwrap();
     assert!(elsewhere["role"].is_null());
     // nothing org-scoped is reachable there; what remains is exactly the
-    // global read-only facts, which take authentication and no membership
+    // global read-only facts and the account's own password, which take
+    // authentication and no membership
     let elsewhere_allowed: Vec<&str> = elsewhere["allowed"]
         .as_array()
         .unwrap()
@@ -8487,7 +9041,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "model:read",
             "version:read",
             "stability:read",
-            "public_url:read"
+            "public_url:read",
+            "my_password:update"
         ]
     );
 

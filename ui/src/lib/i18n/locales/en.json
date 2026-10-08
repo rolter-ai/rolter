@@ -2856,7 +2856,7 @@
       "colRoles": "Roles",
       "colStatus": "Status",
       "colCreated": "Created",
-      "noRoles": "no roles",
+      "noRoles": "no role in this org",
       "statusFilterAria": "Filter users by status",
       "statusAll": "All",
       "statusActive": "Active",
@@ -3817,7 +3817,7 @@
     },
     "api-keys": {
       "title": "Account & keys",
-      "subtitle": "Your own virtual keys for calling the gateway from code."
+      "subtitle": "Your profile, how you sign in, and the virtual keys you call the gateway with."
     },
     "performance": {
       "title": "Performance Tuning",
@@ -4041,6 +4041,32 @@
         "enabled": "Two-factor authentication is on",
         "removed": "Two-factor authentication removed",
         "regenerated": "New recovery codes issued"
+      }
+    },
+    "password": {
+      "title": "Password",
+      "subtitle": "Change the password you sign in with. Your other sessions end; this one stays signed in.",
+      "ssoOnly": "You sign in through single sign-on, so this account has no local password to change. Change it with your identity provider, or ask a superadmin to set a local one.",
+      "current": "Current password",
+      "new": "New password",
+      "newHint": "At least {{min}} characters.",
+      "confirm": "Confirm new password",
+      "submit": "Change password",
+      "changed_one": "Password changed. {{sessions}} other session was signed out.",
+      "changed_other": "Password changed. {{sessions}} other sessions were signed out.",
+      "changedAlone": "Password changed. You had no other sessions to sign out.",
+      "problem": {
+        "currentEmpty": "Enter your current password.",
+        "currentWrong": "That is not your current password.",
+        "tooShort": "The new password needs at least {{min}} characters.",
+        "same": "The new password must differ from the current one.",
+        "rejected": "This password was not accepted. Try a different one.",
+        "mismatch": "The new password and its confirmation do not match.",
+        "throttled_one": "Too many wrong passwords. Try again in {{wait}} second.",
+        "throttled_other": "Too many wrong passwords. Try again in {{wait}} seconds.",
+        "throttledNoWait": "Too many wrong passwords. Try again later.",
+        "noLocalPassword": "This account signs in through single sign-on and has no local password to change.",
+        "failed": "Could not change your password."
       }
     },
     "profile": {
