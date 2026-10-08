@@ -32,6 +32,15 @@ describe("describeError", () => {
     expect(copy).toEqual({ message: "errors.api.codes.name_taken" });
   });
 
+  it("translates no_local_password, the 409 an SSO-only account gets on a password change", () => {
+    const copy = describeError(
+      new ApiError("this account signs in through single sign-on", 409, "no_local_password"),
+      t,
+    );
+    expect(copy).toEqual({ message: "errors.api.codes.no_local_password" });
+    expect(KNOWN_ERROR_CODES).toContain("no_local_password");
+  });
+
   it("falls back to the status for an uncoded 401, 403, 429 and 5xx", () => {
     expect(describeError(new ApiError("x", 401), t).message).toBe("errors.api.unauthorized");
     expect(describeError(new ApiError("x", 403), t).message).toBe("errors.api.forbidden");

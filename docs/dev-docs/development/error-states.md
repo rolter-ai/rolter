@@ -355,7 +355,10 @@ leads with `error.message`: pass the thrown value through `describeError` in
 (`errors.api.codes.<code>`), then the HTTP status, and only when neither is known
 returns the server's words as `detail`, to be shown below a generic translated
 line. A new code the control plane starts sending is added to `KNOWN_ERROR_CODES`
-and to `errors.api.codes` in every catalog.
+and to `errors.api.codes` in every catalog. A screen keeps a sentence of its own
+only for a refusal it can place on a field or act on: the Account screen's
+Password panel words `invalid_field` per input and the `429` throttle itself, and
+every other code, `no_local_password` included, reads from the shared copy (#2841).
 
 On the control plane, a refusal earns a code by going through the helpers in
 `crates/rolter-control/src/crud.rs` rather than a bare `Error::Config` or

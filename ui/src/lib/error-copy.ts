@@ -24,6 +24,7 @@ export const KNOWN_ERROR_CODES = [
   "last_superadmin",
   "mfa_enrolment_required",
   "name_taken",
+  "no_local_password",
   "no_such_endpoint",
   "open_mode_no_session",
   "password_login_disabled",
