@@ -116,12 +116,28 @@ chart on their own defaults.
   and giving the control plane a config file switches it to `MergedConfigStore`,
   which drops db-created virtual keys from the snapshot (#623) and 401s every
   key this stack mints.
-- **`allow_custom_api_base` does not survive the database.** `dogfood.toml`
-  sets it on the OpenRouter-shaped edge, but the column does not exist yet
-  (#1133), so once the fleet is seeded the control plane omits that provider
-  from the snapshot and the `claude-sonnet-4` route with it. The gateway says
-  so on every reload and the dashboard shows it under config problems; it is
-  expected until #1133 lands.
+- **`allow_custom_api_base` does not survive the database, so `openrouter-edge`
+  is served from a file config only.** `dogfood.toml` sets it on the
+  OpenRouter-shaped edge, but the column does not exist yet (#1133), so once the
+  fleet is seeded the control plane omits that provider from the snapshot and
+  the `claude-sonnet-4` route with it. The gateway says so on every reload and
+  the dashboard shows it under config problems; every `claude-sonnet-4` request
+  is a `404 model_not_found` until #1133 lands, and the admin journey's step
+  A3.18 reports it as that gap. The provider's row is seeded all the same, and
+  its **Test connection** passes: the base is `http://127.0.0.1:18002/v1`
+  because the `openrouter` kind appends `/models` and `/chat/completions` to a
+  base that ends in `/v1`, which the fleet serves (a bare origin 404s on
+  `/models`, #2808). Re-running `just dogfood-seed` moves a stack seeded with
+  the old base onto the new one.
+
+  `just dogfood-file` is the path that honours the flag. It starts the fleet
+  (unless it is already up) and a gateway with `--config integration/dogfood/dogfood.toml`
+  and no snapshot URL, so there is no control plane or Postgres to prune
+  anything, and `claude-sonnet-4` answers through `openrouter-edge`. It accepts
+  any request, since no virtual keys are configured. Pass a port to run it beside
+  `just dogfood` (`just dogfood-file 4010`). That, not the seeded stack, is what
+  exercises the OpenRouter dialect (#925) today.
+
 - **Payload capture is switched on by `just dogfood`.** `gateway.toml` declares
   `[logging.payload_capture] enabled = true`, but the first snapshot replaces it
   with the `logging_settings` row, which ships with capture off and which only

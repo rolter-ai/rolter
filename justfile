@@ -373,6 +373,33 @@ dogfood-seed:
     cargo run -q -p rolter-control --features postgres --bin rolter-seed -- \
       --import integration/dogfood/dogfood.toml
 
+# the file-config path (#2808): a gateway that reads dogfood.toml itself, with no
+# docker, no Postgres and no control plane. it is the only place `openrouter-edge`
+# and `claude-sonnet-4` are served today, because the importer drops
+# `allow_custom_api_base` (#1133) and the control plane then prunes both from the
+# snapshot. no virtual keys are configured, so any request is accepted. the fleet
+# is started unless it is already up, so this also runs beside `just dogfood`
+# on another port: `just dogfood-file 4010`
+
+# serve the whole fleet from dogfood.toml with no control plane or database
+dogfood-file port="4000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$HOME/.bun/bin:$PATH"
+    d=integration/dogfood
+    # the keys the fleet expects, and the env vars dogfood.toml names them by
+    set -a; . "$d/keys.env"; set +a
+    trap 'kill 0' EXIT
+    if ! curl -fsS -m 1 http://127.0.0.1:18002/health >/dev/null 2>&1; then
+      ( bun "$d/fleet.ts" 2>&1 | sed 's/^/[fleet]   /' ) &
+      sleep 1
+    fi
+    echo "[dogfood-file] gateway on :{{port}}, config $d/dogfood.toml"
+    echo "[dogfood-file] try: curl -s localhost:{{port}}/v1/chat/completions -H 'content-type: application/json' \\"
+    echo "                      -d '{\"model\":\"claude-sonnet-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+    ROLTER_PORT={{port}} cargo run -q -p rolter-gateway -- --config "$d/dogfood.toml" 2>&1 \
+      | sed 's/^/[gateway] /'
+
 # bring an already-running stack in line with creds.env, and print it
 dev-creds:
     #!/usr/bin/env bash
