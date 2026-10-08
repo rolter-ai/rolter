@@ -16,6 +16,8 @@ On a transient upstream failure, Rolter re-picks a target from the route's pool,
 
 Rolter waits between attempts using exponential backoff with full jitter — it picks a random delay in the range `[0, min(base × 2^(attempt−1), max_backoff_ms)]`. The randomness spreads retry storms across time when many requests hit a flapping target simultaneously. If the upstream returned a `429` with a `Retry-After` header, that value takes precedence over the computed delay.
 
+Rolter only waits when there is an attempt to wait for. If the attempt that just failed was against the last target the request could try, such as the only target of a route or the last of several, the request ends at once with the upstream's answer instead of sleeping through the backoff, or a `Retry-After` of up to 30 seconds, for a retry that cannot happen. A client sent a `429` with `Retry-After: 30` by a single-target route therefore hears it immediately. A provider configured with several API keys is the exception: a `429` or `401` parks that key and retries the same target on a sibling key, so the wait stays.
+
 ### Configuration
 
 Add a `[retry]` section to `rolter.toml`. All fields are optional — omit the section entirely to use the defaults shown below.

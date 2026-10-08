@@ -532,6 +532,16 @@ impl LifecycleOperation {
         }
     }
 
+    /// The value of the request-log row's `lifecycle_operation` column.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Retrieve => "retrieve",
+            Self::Delete => "delete",
+            Self::Cancel => "cancel",
+            Self::InputItems => "input_items",
+        }
+    }
+
     fn path(self, response_id: &str) -> String {
         match self {
             Self::Retrieve | Self::Delete => format!("/v1/responses/{response_id}"),
@@ -549,34 +559,56 @@ async fn response_lifecycle(
     operation: LifecycleOperation,
 ) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
+    let started = Instant::now();
     let snap = state.snapshot.load();
     let vk = match authenticate(&state, &snap, &headers, uri.path()) {
         Ok(vk) => vk,
         Err(resp) => return resp,
     };
     let tenant = tenant_scope(vk.as_ref());
+    // from here the caller is known, so every answer below is attributable and
+    // leaves one request-log row, the same rule a model request follows. a
+    // lifecycle call is not billable: the row carries no tokens and no cost,
+    // and nothing below charges a budget or a rate-limit window (#2836)
+    let scope = request_scope(vk.as_ref());
+    let call = LifecycleLog {
+        state: &state,
+        headers: &headers,
+        scope: &scope,
+        operation: operation.label(),
+        sample_rate: snap.logging.sample_rate,
+        started,
+    };
     let Some(route) = state.response_registry.get(&tenant, &response_id) else {
-        return response_not_found();
+        return call.log(None, UpstreamLeg::NotReached, response_not_found());
     };
     // the registry proves the caller created this response, not that it may
     // still reach the route it came from: access revoked since then must stop
     // the retrieve, cancel, delete and input-items calls too (#1779)
     if let Err(denial) = authorize_lifecycle(&snap, vk.as_ref(), &route) {
-        return denial.into_response();
+        return call.log(
+            Some(&route),
+            UpstreamLeg::NotReached,
+            denial.into_response(),
+        );
     }
     if !operation.supported(route.capabilities) {
-        return crate::error::ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "response lifecycle operation is not supported by the originating provider contract",
-        )
-        .with_code("response_lifecycle_unsupported")
-        .into_response();
+        return call.log(
+            Some(&route),
+            UpstreamLeg::NotReached,
+            crate::error::ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "response lifecycle operation is not supported by the originating provider contract",
+            )
+            .with_code("response_lifecycle_unsupported")
+            .into_response(),
+        );
     }
     let Some(provider) = snap.providers.get(&route.provider) else {
-        return response_not_found();
+        return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
     };
     if provider.kind != rolter_core::ProviderKind::Openai {
-        return response_not_found();
+        return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
     }
     let resolved_keys = provider.resolve_api_keys();
     let api_key = match &route.provider_key_fingerprint {
@@ -585,10 +617,12 @@ async fn response_lifecycle(
             .map(|(key, _)| key)
             .find(|key| provider_key_fingerprint(key) == *expected),
         None if resolved_keys.is_empty() => None,
-        None => return response_not_found(),
+        None => {
+            return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
+        }
     };
     if route.provider_key_fingerprint.is_some() && api_key.is_none() {
-        return response_not_found();
+        return call.log(Some(&route), UpstreamLeg::NotReached, response_not_found());
     }
     let mut upstream_path = operation.path(&route.provider_native_id);
     if let Some(query) = uri.query() {
@@ -617,9 +651,112 @@ async fn response_lifecycle(
             if matches!(operation, LifecycleOperation::Delete) && response.status().is_success() {
                 state.response_registry.remove(&tenant, &response_id);
             }
-            lifecycle_response(response, &route)
+            let upstream_status = response.status().as_u16();
+            call.log(
+                Some(&route),
+                UpstreamLeg::Answered(upstream_status),
+                lifecycle_response(response, &route),
+            )
         }
-        Err(err) => upstream_error_response(&err.to_string()),
+        Err(err) => {
+            let message = err.to_string();
+            call.log(
+                Some(&route),
+                UpstreamLeg::Failed(&message),
+                upstream_error_response(&message),
+            )
+        }
+    }
+}
+
+/// What a lifecycle call did upstream, for its request-log row.
+enum UpstreamLeg<'a> {
+    /// The gateway answered without calling the provider: an unknown or
+    /// foreign response id, access since revoked, an operation the response's
+    /// provider does not support.
+    NotReached,
+    /// The provider answered with this status.
+    Answered(u16),
+    /// The provider could not be reached; this is why.
+    Failed(&'a str),
+}
+
+/// Writes the request-log row for a call on a stored response (#2836).
+///
+/// `GET`, `DELETE`, `cancel` and `input_items` on `/v1/responses/{id}` used to
+/// answer and leave nothing behind, success included, so a lifecycle call that
+/// failed upstream was visible only as the `502` its caller saw. The rule that
+/// every request from an identified caller leaves one row now holds for them
+/// too (see [`Refusals`]).
+///
+/// The row names the model and the provider and target the response was
+/// created on, which come from the stored route, and the operation in
+/// `lifecycle_operation`. It has no tokens and no cost, because the call
+/// generates nothing, and it is not marked `unpriced` or `usage_unknown` for
+/// the same reason. A call the gateway refused names the model but no provider
+/// or target and has `attempts = 0`, which is how every refusal row reads as
+/// "never reached an upstream"; one that went upstream has `attempts = 1`, the
+/// provider's status in `upstream_status` when it answered, and `0` when the
+/// connection failed first.
+///
+/// The latency is the time to the provider's answer, not the time the body
+/// takes to reach the caller.
+struct LifecycleLog<'a> {
+    state: &'a AppState,
+    headers: &'a HeaderMap,
+    scope: &'a ScopeIds,
+    operation: &'static str,
+    sample_rate: f64,
+    started: Instant,
+}
+
+impl LifecycleLog<'_> {
+    /// Log `response` as this call's outcome and hand it back. `route` is the
+    /// stored route when the call got as far as finding one.
+    fn log(
+        &self,
+        route: Option<&crate::response_registry::ResponseRoute>,
+        leg: UpstreamLeg<'_>,
+        response: Response,
+    ) -> Response {
+        let model = route.map(|route| route.model.as_str()).unwrap_or_default();
+        let model = &model[..model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
+        let ctx = RequestLogCtx::new(
+            self.headers,
+            self.scope,
+            model,
+            self.sample_rate,
+            self.started,
+        );
+        let mut row = RequestLog {
+            status: response.status().as_u16(),
+            lifecycle_operation: self.operation.to_string(),
+            ..ctx.into_log()
+        };
+        match (leg, route) {
+            (UpstreamLeg::Answered(status), Some(route)) => {
+                row.provider = route.provider.clone();
+                row.target = route.target.clone();
+                row.upstream_status = status;
+                row.attempts = 1;
+                if status >= 400 {
+                    row.error = upstream_failure::upstream_error_text(status, &[]);
+                }
+            }
+            (UpstreamLeg::Failed(message), Some(route)) => {
+                row.provider = route.provider.clone();
+                row.target = route.target.clone();
+                row.attempts = 1;
+                row.error = rolter_core::redact::redact_urls_in_text(message);
+                row.error
+                    .truncate(row.error.floor_char_boundary(REFUSAL_ERROR_MAX_BYTES));
+            }
+            // a leg that went upstream always has the route it went to; the
+            // arm exists so that a refusal reads the same on every path
+            _ => row.error = refusal_error(&response),
+        }
+        self.state.log.log_lifecycle(row);
+        response
     }
 }
 
@@ -714,16 +851,38 @@ pub async fn unsupported_response_lifecycle(
     Path(_response_id): Path<String>,
 ) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
+    let started = Instant::now();
     let snap = state.snapshot.load();
-    if let Err(resp) = authenticate(&state, &snap, &headers, uri.path()) {
-        return resp;
+    let vk = match authenticate(&state, &snap, &headers, uri.path()) {
+        Ok(vk) => vk,
+        Err(resp) => return resp,
+    };
+    let scope = request_scope(vk.as_ref());
+    // the two routes this serves are fixed, so the label is a closed set and a
+    // caller cannot mint one
+    let operation = match uri.path().rsplit('/').next() {
+        Some("compact") => "compact",
+        Some("input_tokens") => "input_tokens",
+        _ => "unsupported",
+    };
+    LifecycleLog {
+        state: &state,
+        headers: &headers,
+        scope: &scope,
+        operation,
+        sample_rate: snap.logging.sample_rate,
+        started,
     }
-    crate::error::ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "response lifecycle operations are not supported; Rolter does not route model-less response identifiers",
+    .log(
+        None,
+        UpstreamLeg::NotReached,
+        crate::error::ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "response lifecycle operations are not supported; Rolter does not route model-less response identifiers",
+        )
+        .with_code("response_lifecycle_unsupported")
+        .into_response(),
     )
-    .with_code("response_lifecycle_unsupported")
-    .into_response()
 }
 
 fn tenant_scope(vk: Option<&KeyMeta>) -> String {
@@ -2332,7 +2491,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            sleep(Duration::from_millis(delay)).await;
+                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                             continue;
                         }
                     } else if is_retryable_status(status) {
@@ -2367,7 +2526,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            sleep(Duration::from_millis(delay)).await;
+                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                             continue;
                         }
                     } else if state.breaker.on_success(&model, idx) {
@@ -2421,9 +2580,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(
+                        back_off(
                             retry.backoff_ms(attempt + 1, jitter(started)),
-                        ))
+                            has_untried_target(entry, &tried, vk.as_ref()),
+                        )
                         .await;
                         continue;
                     }
@@ -3040,7 +3200,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3073,7 +3233,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&model, idx) {
@@ -3117,9 +3277,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     });
                     last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(
+                    back_off(
                         retry.backoff_ms(attempt + 1, jitter(started)),
-                    ))
+                        has_untried_target(entry, &tried, vk.as_ref()),
+                    )
                     .await;
                     continue;
                 }
@@ -3542,7 +3703,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3575,7 +3736,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&key, ti) {
@@ -3622,9 +3783,10 @@ async fn forward_variants(
                     });
                     out.last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(
+                    back_off(
                         retry.backoff_ms(attempt + 1, jitter(started)),
-                    ))
+                        has_untried_candidate(candidates.len(), &tried),
+                    )
                     .await;
                     continue;
                 }
@@ -3683,13 +3845,58 @@ pub(crate) fn pick_untried(
     // every remaining sibling is parked or unhealthy
     (0..n)
         .find(|i| !tried.contains(i) && !skip(*i))
-        .or_else(|| {
-            (0..n).find(|i| {
-                !tried.contains(i)
-                    && key_meta
-                        .is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
-            })
-        })
+        .or_else(|| first_untried_allowed(entry, tried, key_meta))
+}
+
+/// The first target this request has not tried that its key may use,
+/// whatever its cooldown, health or breaker says.
+///
+/// This is where [`pick_untried`] ends up when every sibling is skippable, and
+/// the only way it returns `None`, so it answers "is there anything left to
+/// fail over to" without consulting the balancer. Asking the balancer instead
+/// would advance a round-robin cursor for a pick nobody uses.
+fn first_untried_allowed(
+    entry: &crate::state::RouteEntry,
+    tried: &[usize],
+    key_meta: Option<&KeyMeta>,
+) -> Option<usize> {
+    (0..entry.route.targets.len()).find(|i| {
+        !tried.contains(i)
+            && key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
+    })
+}
+
+/// Whether the next attempt of a forward loop has a target to try.
+///
+/// Read before the loop backs off, so a request is not made to wait for an
+/// attempt that cannot happen (#2835). A multi-key provider that answered `429`
+/// or `401` takes `tried.pop()` first, which makes its own target untried
+/// again, so that path still waits for the key's cooldown.
+pub(crate) fn has_untried_target(
+    entry: &crate::state::RouteEntry,
+    tried: &[usize],
+    key_meta: Option<&KeyMeta>,
+) -> bool {
+    first_untried_allowed(entry, tried, key_meta).is_some()
+}
+
+/// Whether the variant loop has a candidate it has not tried, the variant
+/// counterpart of [`has_untried_target`].
+fn has_untried_candidate(candidates: usize, tried: &[usize]) -> bool {
+    (0..candidates).any(|ci| !tried.contains(&ci))
+}
+
+/// Wait out the backoff before the next attempt, unless there is no next
+/// attempt to wait for.
+///
+/// A single-target route whose upstream answers `429` with `Retry-After: 30`
+/// used to make the caller wait the full 30 s only to be told the same thing:
+/// the loop woke, found nothing left to try and ended the request with that
+/// answer. `can_retry` is whether the loop will find a target when it wakes.
+async fn back_off(delay_ms: u64, can_retry: bool) {
+    if can_retry {
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
 }
 
 /// Whether an upstream HTTP status is worth retrying: request timeout, too many
@@ -4158,6 +4365,18 @@ const REFUSAL_MODEL_MAX_BYTES: usize = 256;
 /// own words back, such as `no route for model '…'`, and a body can be large.
 const REFUSAL_ERROR_MAX_BYTES: usize = 512;
 
+/// The message a refusal carries, bounded for a log row: the `error` the row
+/// holds is what the caller was told.
+fn refusal_error(response: &Response) -> String {
+    let mut error = response
+        .extensions()
+        .get::<crate::error::ErrorMessage>()
+        .map(|message| message.0.clone())
+        .unwrap_or_default();
+    error.truncate(error.floor_char_boundary(REFUSAL_ERROR_MAX_BYTES));
+    error
+}
+
 /// Writes the request-log row for a request the gateway refused before it
 /// reached an upstream (#2807).
 ///
@@ -4190,12 +4409,7 @@ impl Refusals<'_> {
     /// `error` is the message the response carries, so the log says what the
     /// caller was told.
     fn log(&self, response: Response) -> Response {
-        let mut error = response
-            .extensions()
-            .get::<crate::error::ErrorMessage>()
-            .map(|message| message.0.clone())
-            .unwrap_or_default();
-        error.truncate(error.floor_char_boundary(REFUSAL_ERROR_MAX_BYTES));
+        let error = refusal_error(&response);
         let model = &self.model[..self.model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
         let ctx = RequestLogCtx::new(
             self.headers,
@@ -5537,6 +5751,123 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn three_target_entry() -> crate::state::RouteEntry {
+        let target = |provider: &str| Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![target("a"), target("b"), target("c")],
+            tenancy: None,
+        };
+        crate::state::RouteEntry {
+            project_scope: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        }
+    }
+
+    /// #2835: the check the loops make before backing off must agree with the
+    /// pick they make after it, for every set of tried targets, every key
+    /// restriction and with each target parked on a cooldown. If it said "yes"
+    /// where the pick finds nothing the request would wait for nothing, and if
+    /// it said "no" where the pick finds a target the request would skip a wait
+    /// it owes.
+    #[test]
+    fn has_untried_target_agrees_with_pick_untried() {
+        let entry = three_target_entry();
+        let ctx = RouteContext::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        let keys = [
+            None,
+            Some(KeyMeta::default()),
+            Some(KeyMeta {
+                providers: vec!["b".to_string()],
+                ..Default::default()
+            }),
+            Some(KeyMeta {
+                providers: vec!["a".to_string(), "c".to_string()],
+                ..Default::default()
+            }),
+            Some(KeyMeta {
+                providers: vec!["missing".to_string()],
+                ..Default::default()
+            }),
+        ];
+        for tried_mask in 0u8..8 {
+            let tried: Vec<usize> = (0..3).filter(|i| tried_mask & (1 << i) != 0).collect();
+            for parked_mask in 0u8..8 {
+                let cd = crate::cooldowns::Cooldowns::default();
+                for i in (0..3).filter(|i| parked_mask & (1 << i) != 0) {
+                    cd.park("m", i, 60);
+                }
+                for key in &keys {
+                    let picked = pick_untried(
+                        &entry,
+                        &ctx,
+                        &tried,
+                        &[],
+                        &cd,
+                        &hh,
+                        &bb,
+                        "m",
+                        true,
+                        key.as_ref(),
+                    );
+                    assert_eq!(
+                        has_untried_target(&entry, &tried, key.as_ref()),
+                        picked.is_some(),
+                        "tried {tried:?}, parked {parked_mask:03b}, key {key:?}, picked {picked:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The multi-key path re-allows its own target with `tried.pop()`, and the
+    /// check has to see that: it is the case the wait is kept for.
+    #[test]
+    fn a_target_popped_from_tried_is_untried_again() {
+        let entry = three_target_entry();
+        let mut tried = vec![0, 1, 2];
+        assert!(!has_untried_target(&entry, &tried, None));
+        tried.pop();
+        assert!(has_untried_target(&entry, &tried, None));
+    }
+
+    #[test]
+    fn has_untried_candidate_counts_the_variant_candidates_left() {
+        assert!(!has_untried_candidate(0, &[]));
+        assert!(has_untried_candidate(2, &[]));
+        assert!(has_untried_candidate(2, &[1]));
+        assert!(!has_untried_candidate(2, &[1, 0]));
+        // a candidate popped for a sibling key is untried again
+        assert!(has_untried_candidate(1, &[]));
+    }
+
+    /// #2835: a retry that cannot happen is not waited for, and one that can
+    /// is waited for in full.
+    #[tokio::test]
+    async fn back_off_waits_only_for_an_attempt_that_can_happen() {
+        let delay = 250;
+        let start = Instant::now();
+        back_off(delay, false).await;
+        assert!(start.elapsed() < Duration::from_millis(delay / 2));
+        back_off(delay, true).await;
+        assert!(start.elapsed() >= Duration::from_millis(delay));
     }
 
     /// #1714: a balancer sized for more targets than the route carries must

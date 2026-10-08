@@ -219,6 +219,18 @@ pub struct RequestLog {
     /// How many upstream attempts the request made, the one that answered
     /// included; `0` when it never reached an upstream. Saturates at 255.
     pub attempts: u8,
+    /// Which call on a stored response this row records: `retrieve`, `delete`,
+    /// `cancel`, `input_items`, or one of the two the gateway does not serve
+    /// (`compact`, `input_tokens`). Empty for a request that ran a model,
+    /// which is every other row (#2836).
+    ///
+    /// Nothing else on a lifecycle row tells the operations apart: they share
+    /// a model and provider, carry no tokens and cost nothing, and a `GET` and
+    /// a `DELETE` of the same response differ only in what they did to it.
+    /// Not serialized when empty, so a model request's row is byte for byte
+    /// what it was before the column existed.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lifecycle_operation: String,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -277,6 +289,7 @@ impl Default for RequestLog {
             error: String::new(),
             upstream_status: 0,
             attempts: 0,
+            lifecycle_operation: String::new(),
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -1227,6 +1240,22 @@ impl LogSink {
     /// counted by its own counter (`budget_blocks_total`,
     /// `rate_limit_blocks_total`, and so on), and there is no target to blame.
     pub fn log_refusal(&self, record: RequestLog) {
+        self.enqueue(record);
+    }
+
+    /// Enqueue the row for a call on a stored response: retrieve, delete,
+    /// cancel or list its input items (#2836).
+    ///
+    /// Only the ClickHouse row is written, for two reasons. The latency and
+    /// time-to-first-token histograms describe generating a completion, and a
+    /// `GET` that answers in a few milliseconds would drag every model's
+    /// percentiles down. And the call is pinned to the provider that holds the
+    /// response rather than picked by the balancer, so its outcome is not a
+    /// signal about which target to prefer and does not feed the passive
+    /// health series. Nothing here touches a budget or a rate-limit window:
+    /// those are charged by the spend and token recorders, which a lifecycle
+    /// call never builds.
+    pub fn log_lifecycle(&self, record: RequestLog) {
         self.enqueue(record);
     }
 

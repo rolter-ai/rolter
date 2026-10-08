@@ -157,7 +157,7 @@ When a request ends because the upstreams failed, the answer says which kind of 
 | the last attempt never got a response (refused, reset, timed out)                 | `502`       | `overloaded_error` | none                                           |
 | the provider's queue is full, timed out or dropped the request                    | `429`/`503` | by status          | `queue_full`, `queue_timeout`, `queue_dropped` |
 
-A `429` carries the upstream's `Retry-After` when it sent one. The message names the status and the model (`every upstream target for model 'x' is rate limited (last upstream status 429)`) and never the upstream's own words, which are in the request-log row (`error`, with `upstream_status` and `attempts` beside it; see [Observability](../architecture/observability.md#request--cost-logs)). When the retry budget runs out while an untried target remains, the upstream's own response is handed to the caller as it was. An earlier gateway answered all of these with `503 no target selected`, which points at routing config when the cause was an upstream that said no.
+A `429` carries the upstream's `Retry-After` when it sent one. The message names the status and the model (`every upstream target for model 'x' is rate limited (last upstream status 429)`) and never the upstream's own words, which are in the request-log row (`error`, with `upstream_status` and `attempts` beside it; see [Observability](../architecture/observability.md#request--cost-logs)). When the retry budget runs out while an untried target remains, the upstream's own response is handed to the caller as it was. The loop does not back off before an attempt that cannot happen (#2835): when the failed attempt used the last untried target it ends the request there, so a single-target route whose upstream answers `429` with `Retry-After: 30` returns that `429` at once instead of after 30 seconds. The wait is kept wherever a next attempt exists, a sibling target and the multi-key path included. An earlier gateway answered all of these with `503 no target selected`, which points at routing config when the cause was an upstream that said no.
 
 ## Model listing
 
@@ -255,6 +255,13 @@ ownership record but expose no lifecycle capabilities, because those upstream
 contracts do not retain an OpenAI Responses resource. Their lifecycle calls
 return `501 response_lifecycle_unsupported`. Compaction and input-token counting
 remain unsupported for all providers.
+
+Every lifecycle call from an identified caller leaves one request-log row, the
+refused ones included (#2836): the model and the provider and target come from
+the stored record, the operation is in `lifecycle_operation`, and there are no
+tokens and no cost. The calls are not billable, so they never move a budget, a
+token window or a request admission. See
+[Observability](../architecture/observability.md#request--cost-logs).
 
 ## Examples
 
