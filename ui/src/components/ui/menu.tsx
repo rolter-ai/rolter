@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -14,14 +15,21 @@ import { cn } from "@/lib/utils";
 // arrow keys walk, rather than a disclosure of buttons in the tab order. It is
 // for a short list of verbs behind one control — the account card's, and the
 // overflow button on each row of the scope popover — where a list of links the
-// reader tabs through (the rail's group flyout) would be the wrong shape.
+// reader tabs through (the rail's group flyout) would be the wrong shape. A
+// short list of exclusive choices behind one control (the language picker) is
+// the same menu made of `MenuItemRadio` entries.
 //
 // The panel, its placement and its dismissal are `AnchoredPanel`'s. This adds
-// the keyboard: focus lands on the first entry that can be chosen, Up and Down
-// wrap, Home and End jump, Tab closes the menu and carries on to the next
-// control after the one that opened it, and Escape closes and hands focus back.
+// the keyboard: focus lands on the entry that is checked, else the first one
+// that can be chosen, Up and Down wrap, Home and End jump, Tab closes the menu
+// and carries on to the next control after the one that opened it, and Escape
+// closes and hands focus back.
 
-const FOCUSABLE_ITEM = '[role="menuitem"]:not(:disabled)';
+const FOCUSABLE_ITEM = '[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)';
+
+// what an entry of either kind looks like, so a radio is not a second menu row
+const ENTRY =
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-[color:var(--surface-hover)] focus-visible:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export interface MenuProps {
   /** the control that opened the menu */
@@ -57,10 +65,13 @@ export function Menu({
   const entries = () =>
     Array.from(list.current?.querySelectorAll<HTMLElement>(FOCUSABLE_ITEM) ?? []);
 
-  // the keyboard opens a menu onto its first entry; so does the pointer, which
-  // costs a pointer user nothing and spares a keyboard one a stray Tab
+  // the keyboard opens a menu onto its first entry, or onto the one a radio
+  // group already has checked; so does the pointer, which costs a pointer user
+  // nothing and spares a keyboard one a stray Tab
   React.useEffect(() => {
-    entries()[0]?.focus({ preventScroll: true });
+    const all = entries();
+    const checked = all.find((el) => el.getAttribute("aria-checked") === "true");
+    (checked ?? all[0])?.focus({ preventScroll: true });
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -145,8 +156,8 @@ export function MenuItem({
         title={denied ? reason : title}
         onClick={onSelect}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors [&>svg]:h-4 [&>svg]:w-4 [&>svg]:flex-none",
-          "hover:bg-[color:var(--surface-hover)] focus-visible:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          ENTRY,
+          "[&>svg]:h-4 [&>svg]:w-4 [&>svg]:flex-none",
           "disabled:cursor-not-allowed disabled:text-[color:var(--text-subtle)] disabled:hover:bg-transparent",
           tone === "danger"
             ? "text-[color:var(--text-secondary)] hover:text-[color:var(--status-danger-text)] focus-visible:text-[color:var(--status-danger-text)]"
@@ -165,6 +176,49 @@ export function MenuItem({
         </span>
       </button>
     </span>
+  );
+}
+
+export interface MenuItemRadioProps extends Omit<
+  React.ButtonHTMLAttributes<HTMLButtonElement>,
+  "role" | "type" | "onSelect" | "aria-checked"
+> {
+  /** whether this is the choice in force; the others in the menu are not */
+  checked: boolean;
+  onSelect: () => void;
+}
+
+/**
+ * One choice of an exclusive set, a `menuitemradio`. The chosen one reads
+ * `aria-checked` and carries a tick; picking runs `onSelect`, and closing the
+ * menu is the caller's call, as it is for a `MenuItem`.
+ */
+export function MenuItemRadio({
+  checked,
+  onSelect,
+  className,
+  children,
+  ...props
+}: MenuItemRadioProps) {
+  return (
+    <button
+      {...props}
+      type="button"
+      role="menuitemradio"
+      aria-checked={checked}
+      tabIndex={-1}
+      onClick={onSelect}
+      className={cn(
+        ENTRY,
+        checked ? "text-foreground" : "text-[color:var(--text-secondary)]",
+        className,
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {checked && (
+        <Check aria-hidden className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
+      )}
+    </button>
   );
 }
 

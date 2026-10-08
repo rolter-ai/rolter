@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
+import { LocalePicker } from "@/components/LocalePicker";
 import { MenuItem, MenuSeparator } from "./menu";
 import {
   NAV_MAX_WIDTH,
@@ -1060,5 +1061,158 @@ export const HeaderSlotFollowsTheFold: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("button", { name: "scope icon" })).toBeVisible();
     await expect(canvas.queryByRole("button", { name: "scope path" })).toBeNull();
+  },
+};
+
+// a rail entry too long for the rail ends in an ellipsis; the rail names the
+// label it has cut, in the full rail and in a folded group's flyout, and
+// leaves one that fits alone (#2830)
+const LONG_LABEL =
+  "A navigation entry named far longer than any rail or flyout is wide, on purpose";
+
+const withLongLabels = {
+  groups: [
+    {
+      items: [
+        { key: "playground", label: "Playground", icon: <Play /> },
+        { key: "long", label: LONG_LABEL, icon: <Boxes /> },
+        {
+          key: "analytics",
+          label: "Analytics",
+          icon: <Boxes />,
+          children: [
+            { key: "usage", label: "Usage" },
+            { key: "long-child", label: LONG_LABEL },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const labelOf = (scope: HTMLElement, text: string) =>
+  within(scope).getByText(text, { selector: "button span" });
+
+export const ClippedRailLabelNamesItself: Story = {
+  args: { ...withLongLabels, activeKey: "playground" },
+  play: async ({ canvasElement }) => {
+    const long = labelOf(canvasElement, LONG_LABEL);
+    // the label really is cut, or the rest proves nothing
+    await expect(long.scrollWidth).toBeGreaterThan(long.clientWidth + 1);
+    await expect(long).not.toHaveAttribute("title");
+    await userEvent.hover(long);
+    await expect(long).toHaveAttribute("title", LONG_LABEL);
+
+    // one that fits says nothing more than it shows
+    const short = labelOf(canvasElement, "Playground");
+    await userEvent.hover(short);
+    await expect(short).not.toHaveAttribute("title");
+
+    // and a label that has since been given room takes the title back
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    nav.style.width = "2000px";
+    // the rail animates its width, so wait for the room to arrive
+    await waitFor(() => expect(long.scrollWidth).toBeLessThanOrEqual(long.clientWidth + 1));
+    await userEvent.unhover(long);
+    await userEvent.hover(long);
+    await expect(long).not.toHaveAttribute("title");
+  },
+};
+
+export const ClippedLabelInAFlyoutNamesItself: Story = {
+  args: { ...withLongLabels, defaultCollapsed: true, activeKey: "playground" },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 52);
+    const { flyout } = await openGroup(canvasElement);
+
+    const long = labelOf(flyout, LONG_LABEL);
+    await expect(long.scrollWidth).toBeGreaterThan(long.clientWidth + 1);
+    await userEvent.hover(long);
+    await expect(long).toHaveAttribute("title", LONG_LABEL);
+
+    const short = labelOf(flyout, "Usage");
+    await userEvent.hover(short);
+    await expect(short).not.toHaveAttribute("title");
+  },
+};
+
+// the language picker lives in the rail's footer and opens in every shape the
+// rail takes: above the button on the full rail, beside the strip once folded,
+// and inside the drawer, where it owns Escape while it is up (#2822)
+const picker = (collapsed: boolean) => <LocalePicker collapsed={collapsed} />;
+const CHANGE = en.locale.change;
+const LANGUAGE = en.locale.label;
+
+export const LocalePickerOpensAboveTheFullRail: Story = {
+  args: { footerExtra: picker },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: CHANGE });
+    await userEvent.click(trigger);
+    const menu = await canvas.findByRole("menu", { name: LANGUAGE });
+    const english = within(menu).getByRole("menuitemradio", { name: "English" });
+    await expect(english).toHaveAttribute("aria-checked", "true");
+    await waitFor(() => expect(english).toHaveFocus());
+
+    const box = (menu.parentElement as HTMLElement).getBoundingClientRect();
+    await waitFor(() => expect(menu).toBeVisible());
+    await expect(box.bottom).toBeLessThanOrEqual(trigger.getBoundingClientRect().top);
+    await expectNoHorizontalOverflow();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+export const LocalePickerOpensBesideTheFoldedRail: Story = {
+  args: { footerExtra: picker, defaultCollapsed: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 52);
+    const trigger = canvas.getByRole("button", { name: CHANGE });
+    // the strip has no room for the code, only the globe
+    await expect(trigger).not.toHaveTextContent("EN");
+    await userEvent.click(trigger);
+    const menu = await canvas.findByRole("menu", { name: LANGUAGE });
+    await waitFor(() => expect(menu).toBeVisible());
+
+    const box = (menu.parentElement as HTMLElement).getBoundingClientRect();
+    await expect(box.left).toBeGreaterThanOrEqual(nav.getBoundingClientRect().right);
+    await expect(Math.abs(box.bottom - trigger.getBoundingClientRect().bottom)).toBeLessThan(2);
+    await expectInFrame(menu, document.documentElement);
+    await expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(2);
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  },
+};
+
+export const LocalePickerInsideTheDrawerOwnsEscape: Story = {
+  ...atMobile,
+  args: { footerExtra: picker },
+  render: (args) => <Shell {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Open navigation" }));
+    const drawer = await canvas.findByRole("dialog", { name: /navigation/i });
+    const trigger = within(drawer).getByRole("button", { name: CHANGE });
+    await userEvent.click(trigger);
+    const menu = await within(drawer).findByRole("menu", { name: LANGUAGE });
+    await waitFor(() => expect(menu).toBeVisible());
+    await expectInFrame(menu, document.documentElement);
+
+    // the first Escape puts the menu away and keeps the drawer
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await expect(canvas.getByRole("dialog", { name: /navigation/i })).toBeVisible();
+
+    // and only the second closes the drawer
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
   },
 };
