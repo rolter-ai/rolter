@@ -95,8 +95,7 @@ a phone or in a short window at all (#2003).
 `SheetActions` (`ui/src/components/ui/sheet.tsx`) is the button row inside a
 `SheetFooter`. Its children are Cancel and then the primary action. Its
 `start` slot takes anything outside that pair: `ProviderSheet`'s connection
-test, which pins itself left with `mr-auto`, or `ModelSheet`'s line naming why
-Save is disabled (#1265). Below `sm` the sheet is the whole screen and cannot
+test, which pins itself left with `mr-auto`. Below `sm` the sheet is the whole screen and cannot
 be scrolled sideways, so the row becomes a column. `start` goes on top, and the
 pair gets the bottom line to itself with the primary action last, taking the
 width Cancel leaves. From `sm` up it is one row that wraps rather than overflows.
@@ -104,10 +103,45 @@ Every sheet footer uses it. A sheet that writes its own `flex justify-end` row
 brings back the single line that pushed `ModelSheet`'s Save into the gutter
 and `ProviderSheet`'s connection test 151 px off the left edge in Russian.
 
-`ModelSheet` hides its disabled-save reason visually below `sm` and keeps it as
-the button's description and a live region. The error summary directly above
-the buttons already starts with the same line, and a second copy squeezed beside
-them is what pushed Save into the gutter.
+`ModelSheet` no longer puts a reason beside the primary action, and no longer
+disables it for one (#2810): it stays pressable, and a refused press puts one
+line above the buttons that counts what is left to fix. A reason squeezed beside
+the pair is what pushed Save into the gutter (#2003), so the line sits on a row
+of its own above them.
+
+## When a form shows its errors
+
+A required field is not wrong before anybody has had the chance to fill it, so a
+sheet computes every error on every render but shows an error only when its
+field was touched or a save was refused (#2810). `useErrorVisibility`
+(`ui/src/lib/error-visibility.ts`) holds that decision:
+
+```tsx
+const visibility = useErrorVisibility<"name" | "baseUrl">();
+const shown = (field) => (visibility.shows(field) ? found[field] : "");
+// <Input onBlur={() => visibility.touch("name")} … />
+// <Button onClick={() => (problems.length ? visibility.attempt() : save())}>
+```
+
+- `touch(field)` is called when focus leaves the field (a list row's field,
+  when the row has one message for all of them). A field the form filled in
+  itself, such as the name a duplicated route arrives with, is touched when it
+  is filled.
+- `attempt()` is the refused save. From then on `shows()` is true for every
+  field, and `attempts` counts them, so an effect can move focus to the first
+  `[aria-invalid="true"]` after each one.
+- `reset()` belongs where the form opens.
+- The primary action is never disabled for a validation error: pressing it is
+  what asks for them. It is disabled while the form is loading or saving.
+- Each problem is said once, under its own field, with `FieldError` and the
+  control's `aria-describedby`. The footer carries at most one more line, a
+  count under `role="alert"` that does not repeat the messages. Sections that
+  hold a problem are opened by the refused save, so the field it names is on
+  screen.
+
+`Pricing`'s and `Plugins`' `attempted` flags and `Security`'s `touched` map
+solved the same question for themselves; they are the two halves of this, and
+moving them onto the hook is #2825.
 
 `DialogBody` (`ui/src/components/ui/dialog.tsx`) holds a dialog form's fields,
 between `DialogHeader` and `DialogFooter`. A panel with a body caps itself at

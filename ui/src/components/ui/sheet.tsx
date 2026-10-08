@@ -97,9 +97,16 @@ export function SheetHeader({
   );
 }
 
-export function SheetBody({ children }: { children: React.ReactNode }) {
+export function SheetBody({
+  children,
+  ref,
+}: {
+  children: React.ReactNode;
+  /** the scroll region itself, for a sheet that searches its own fields */
+  ref?: React.Ref<HTMLDivElement>;
+}) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[22px] py-4">
+    <div ref={ref} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-[22px] py-4">
       {children}
     </div>
   );

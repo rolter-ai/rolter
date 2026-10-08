@@ -141,9 +141,21 @@ const TARGETS = [
   },
 ];
 
+/** the upstream model ids each provider's catalogue lists, as the control plane relays them */
+const LISTED: Record<string, string[]> = {
+  "prov-1": ["gpt-4o", "gpt-4o-mini"],
+  "prov-2": [
+    "meta-llama/Llama-3.1-70B",
+    "meta-llama/Llama-3.1-8B",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+  ],
+};
+
 /** everything the sheet reads on open; the rbac chip sources are best-effort */
 const backing: FetchStub = async (input) => {
   const url = String(input);
+  const catalogue = /\/providers\/([^/]+)\/models/.exec(url);
+  if (catalogue) return json({ models: LISTED[catalogue[1]] ?? [] });
   if (url.includes("/routes/route-1/targets")) return json(TARGETS);
   if (url.includes("/routes/route-2/targets")) return json(FLEET_TARGETS);
   if (url.includes("/model-prices")) return json([]);
@@ -216,6 +228,14 @@ async function seeded(dialog: ReturnType<typeof within>): Promise<void> {
   );
 }
 
+/**
+ * The seed of a new route: its first target line is there, on no provider while
+ * the org has several (#2810). The line appearing is the seed having run.
+ */
+async function seededBlank(dialog: ReturnType<typeof within>): Promise<void> {
+  await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
+}
+
 /** the bodies of every request matching `method` and `fragment`, in order */
 function sentBodies<T>(method: string, fragment: string): T[] {
   return calls.calls
@@ -246,43 +266,238 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * A blank draft: one target on the first provider is already there, so the
- * model name is what is missing, and removing the last target makes "add a
- * target" a reason of its own.
+ * A blank draft opens with nothing wrong on it (#2810).
+ *
+ * The required name is not an error before anybody has had the chance to fill
+ * it: it used to be stated three times, under the field, in a summary and
+ * beside the buttons, on a form nothing had been typed into. The first target
+ * line is there and points at no provider while the org has several, since the
+ * first one alphabetically is a provider the route's traffic should not reach
+ * unless it was chosen.
  */
 export const Add: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByRole("heading", { name: "Add model" })).toBeVisible();
-    // the draft starts with no target until the seed effect adds one on the
-    // first provider; asserting before the seed raced it (#1500)
-    await seeded(dialog);
-    // each error is read through its own field's description, so it is the
-    // field that is invalid rather than some text somewhere on the sheet (#1527)
-    const name = dialog.getByLabelText("Model name");
-    await expect(name).toHaveAttribute("aria-invalid", "true");
-    await expect(name).toHaveAccessibleDescription(/Enter the name clients will send/);
-    // the primary action keeps its place and greys out while the draft is
-    // incomplete (#1265), with the first blocking reason beside it
-    const save = dialog.getByRole("button", { name: "Add model" });
-    await expect(save).toBeDisabled();
-    await expect(save).toHaveAccessibleDescription(/Enter the name clients will send/);
-    // a new model is not created `round_robin` behind the operator's back: the
+    await expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible();
+    await expect(dialog.getByText("Name the route clients call", { exact: false })).toBeVisible();
+    // the draft has no target line until the seed effect adds one; asserting
+    // before the seed raced it (#1500)
+    await seededBlank(dialog);
+    const provider = dialog.getByLabelText("Target 1 provider");
+    await expect(provider).toHaveAttribute("placeholder", "Pick a provider");
+    // no field is marked, and nothing is announced
+    const name = dialog.getByLabelText("Route name");
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await expect(provider).not.toHaveAttribute("aria-invalid");
+    await expect(name).toHaveAccessibleDescription(/The name clients call/);
+    await expect(dialog.queryByText(/Enter the name clients will send/)).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/needs? attention/)).not.toBeInTheDocument();
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    // the primary action is there to be pressed: pressing it is what asks for
+    // the errors, so it is never greyed out by them
+    await expect(dialog.getByRole("button", { name: "Add route" })).toBeEnabled();
+    // a new route is not created `round_robin` behind the operator's back: the
     // strategy is a field, starting at the first one offered (#1979)
     await expect(dialog.getByLabelText("Strategy")).toHaveValue("round_robin");
     await expect(dialog.getByLabelText("Strategy")).toBeEnabled();
+    // "duplicate from" is offered only where there is something to duplicate
+    await expect(dialog.getByLabelText("Duplicate from")).toBeVisible();
+  },
+};
 
-    await userEvent.type(name, "qwen-72b");
+/**
+ * A field that was visited and left blank says so, and only that field does.
+ *
+ * Focus coming in and going out is what makes a required field's error fair;
+ * the summary and every other field wait for a refused save (#2810).
+ */
+export const TouchedNameShowsItsError: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    const name = dialog.getByLabelText("Route name");
+    await userEvent.click(name);
+    // on the way in, the field is not wrong yet
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
+    await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
+    await expect(name).toHaveAccessibleDescription(/Enter the name clients will send/);
+    // said once, at the field
+    await expect(dialog.getAllByText(/Enter the name clients will send/)).toHaveLength(1);
+    // the untouched provider line and the footer stay as they were
+    await expect(dialog.getByLabelText("Target 1 provider")).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(dialog.getByRole("button", { name: "Add route" })).toBeEnabled();
+  },
+};
+
+/**
+ * A save with problems puts each one at its own field, once, and counts them in
+ * one line above the buttons (#2810).
+ *
+ * The button stays enabled and is the press that asks; focus goes to the first
+ * problem, and nothing is sent.
+ */
+export const RefusedSaveStatesEachProblemOnce: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    const save = dialog.getByRole("button", { name: "Add route" });
+    await userEvent.click(save);
+
+    const name = dialog.getByLabelText("Route name");
+    const provider = dialog.getByLabelText("Target 1 provider");
+    await waitFor(() => expect(name).toHaveAttribute("aria-invalid", "true"));
+    await expect(provider).toHaveAttribute("aria-invalid", "true");
+    // one message per field, each read through its own control's description
+    await expect(dialog.getAllByText(/Enter the name clients will send/)).toHaveLength(1);
+    await expect(dialog.getAllByText(/Pick a provider for every target/)).toHaveLength(1);
+    await expect(name).toHaveAccessibleDescription(/Enter the name clients will send/);
+    await expect(provider).toHaveAccessibleDescription(/Pick a provider for every target/);
+    // and one summary, which counts the problems instead of repeating them
+    await expect(dialog.getByRole("alert")).toHaveTextContent(
+      "2 fields need attention before this route can be saved.",
+    );
+    // focus is on the first problem, so the operator is not left in the footer
+    await waitFor(() => expect(name).toHaveFocus());
+    // nothing went out, and the button is still there to press
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
+    await expect(save).toBeEnabled();
+  },
+};
+
+/**
+ * Fixing what a refused save named takes the summary and the field errors away
+ * as each is fixed, and the same press then goes through.
+ */
+export const FixingTheProblemsLetsTheSaveThrough: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    const save = dialog.getByRole("button", { name: "Add route" });
+    await userEvent.click(save);
+    const name = dialog.getByLabelText("Route name");
+    const provider = dialog.getByLabelText("Target 1 provider");
+    await expect(await dialog.findByRole("alert")).toHaveTextContent("2 fields need attention");
+
+    await userEvent.type(name, "llama-3.1-8b");
+    await waitFor(() => expect(name).not.toHaveAttribute("aria-invalid"));
+    // one problem left, and the count follows it
+    await expect(dialog.getByRole("alert")).toHaveTextContent(
+      "1 field needs attention before this route can be saved.",
+    );
+    await pickOption(provider, "vllm-cluster");
+    await waitFor(() => expect(dialog.queryByRole("alert")).not.toBeInTheDocument());
+    await expect(provider).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
+
+    await userEvent.click(save);
+    await calls.expectSent("POST", `/projects/${PROJECT.id}/routes`);
+    await calls.expectSent("POST", "/routes/route-new/targets");
+  },
+};
+
+/**
+ * Emptying the target list says a target is needed, once, at the list — and the
+ * "add a target" button points at it.
+ */
+export const RemovingTheLastTargetSaysATargetIsNeeded: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
     await userEvent.click(dialog.getByRole("button", { name: "Remove target 1" }));
     const addTarget = dialog.getByRole("button", { name: "Add target" });
     await waitFor(() => expect(addTarget).toHaveAccessibleDescription(/at least one target/));
-    await expect(save).toHaveAccessibleDescription(/at least one target/);
-    // `getAll`: the sheet states each error under its field *and* repeats the
-    // set in a summary above the footer
-    await expect(dialog.getAllByText(/at least one target/).length).toBeGreaterThan(1);
-    // "duplicate from" is offered only where there is something to duplicate
-    await expect(dialog.getByLabelText("Duplicate from")).toBeVisible();
+    await expect(dialog.getAllByText(/at least one target/)).toHaveLength(1);
+    // the provider error was about the line that is gone
+    await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    // adding one back clears it, and the new line starts on no provider too
+    await userEvent.click(addTarget);
+    await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
+    await waitFor(() => expect(dialog.queryByText(/at least one target/)).not.toBeInTheDocument());
+  },
+};
+
+/**
+ * With exactly one provider there is nothing to choose between, so the line
+ * starts on it — and so does every line added after it (#2810).
+ */
+export const OneProviderIsTheDefaultTarget: Story = {
+  render: () => <Stage mode="add" providers={[PROVIDERS[0]]} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await waitFor(() =>
+      expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
+    );
+    // nothing to fix about it
+    await expect(dialog.getByLabelText("Target 1 provider")).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await expect(await dialog.findByLabelText("Target 2 provider")).toHaveValue("openai-prod");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Remove target 2" }));
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-4o-eu");
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    const target = (await calls.expectSentBody("POST", "/routes/route-new/targets")) as {
+      provider_id: string;
+    };
+    await expect(target.provider_id).toBe("prov-1");
+  },
+};
+
+/**
+ * With several providers a new target line starts on none, and so does every
+ * line added after it — the first one alphabetically is a guess that sent a
+ * `llama-3.1-8b` route to `anthropic-direct` (#2810).
+ */
+export const SeveralProvidersAreNotDefaulted: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await expect(await dialog.findByLabelText("Target 2 provider")).toHaveValue("");
+    // both lines offer every provider, and neither holds one
+    await expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("");
+    const listbox = await openOptions(dialog.getByLabelText("Target 2 provider"));
+    await expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["openai-prod", "vllm-cluster"]);
+  },
+};
+
+/**
+ * A provider that is not an org-wide one nor this project's is not offered, so
+ * the only one left is the default (#1919, #2810): the count of providers the
+ * sheet may use decides it, not the count the org has.
+ */
+export const TheOnlyUsableProviderIsTheDefault: Story = {
+  render: () => (
+    <Stage
+      mode="add"
+      providers={[
+        PROVIDERS[0],
+        { ...PROVIDERS[1], id: "prov-other", name: "elsewhere", project_id: "project-2" },
+      ]}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await waitFor(() =>
+      expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
+    );
+    await expect(
+      dialog.getByText("1 provider scoped to another project is not offered here."),
+    ).toBeVisible();
   },
 };
 
@@ -290,11 +505,10 @@ export const Add: Story = {
  * The footer on a phone, in the longer of the two catalogs (#2003).
  *
  * The sheet is the whole screen below `sm` and cannot be scrolled sideways, so
- * a button past the right edge cannot be pressed at all. The blocking reason
- * used to sit beside Cancel and the primary action and squeeze them past the
- * gutter. Now the pair takes the bottom line to itself with the primary action
- * last and widest, and the reason stays what the button says it waits for —
- * the summary above the buttons already shows it, so it is not printed twice.
+ * a button past the right edge cannot be pressed at all. A reason beside Cancel
+ * and the primary action used to squeeze them past the gutter. Now the pair
+ * takes the bottom line to itself with the primary action last and widest, and
+ * what a refused save has to say is one line above them (#2810).
  */
 export const AddOnAPhoneInRussian: Story = {
   ...atMobile,
@@ -305,20 +519,25 @@ export const AddOnAPhoneInRussian: Story = {
     await expect(
       await dialog.findByRole("heading", { name: ru.modelSheet.titleAdd }),
     ).toBeVisible();
-    await waitFor(() =>
-      expect(
-        dialog.getByLabelText(ru.modelSheet.targets.providerAria.replace("{{n}}", "1")),
-      ).toHaveValue("openai-prod"),
-    );
+    await expect(
+      await dialog.findByLabelText(ru.modelSheet.targets.providerAria.replace("{{n}}", "1")),
+    ).toHaveValue("");
     const save = dialog.getByRole("button", { name: ru.modelSheet.ctaAdd });
     const cancel = dialog.getByRole("button", { name: ru.common.cancel });
-    // greyed out in place (#1265), still naming why
-    await expect(save).toBeDisabled();
-    await expect(save).toHaveAccessibleDescription(ru.modelSheet.errors.name);
+    // nothing is wrong yet, so nothing is said, and the action is live
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(save).toBeEnabled();
+    await userEvent.click(save);
+    // two problems, in the plural form `ru` gives two
+    const summary = await dialog.findByRole("alert");
+    await expect(summary).toHaveTextContent(
+      ru.modelSheet.errors.summary_few.replace("{{count}}", "2"),
+    );
+    await expectInViewport(summary);
     await expectInViewport(save);
     await expectInViewport(cancel);
     // on the sheet, not only on the screen: level with the header's close
-    // button rather than pushed into the gutter by the reason beside it
+    // button rather than pushed into the gutter
     const close = dialog.getByRole("button", { name: ru.common.close });
     const [saveBox, cancelBox] = [save.getBoundingClientRect(), cancel.getBoundingClientRect()];
     await expect(saveBox.right).toBeLessThanOrEqual(close.getBoundingClientRect().right);
@@ -330,7 +549,7 @@ export const AddOnAPhoneInRussian: Story = {
   },
 };
 
-/** The edit variant's longer "Сохранить модель", with nothing blocking it. */
+/** The edit variant's longer "Сохранить маршрут", with nothing blocking it. */
 export const EditOnAPhoneInRussian: Story = {
   ...atMobile,
   globals: { ...atMobile.globals, locale: "ru" },
@@ -379,16 +598,19 @@ export const Edit: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await expect(dialog.getByLabelText("Model name")).toHaveValue("gpt-4o");
+    await expect(dialog.getByLabelText("Route name")).toHaveValue("gpt-4o");
     // renaming is not supported yet, and the field says so rather than
     // accepting an edit the control plane would drop
-    await expect(dialog.getByLabelText("Model name")).toBeDisabled();
+    await expect(dialog.getByLabelText("Route name")).toBeDisabled();
     // the strategy is shown as stored, and said to be fixed: the control plane
     // takes it at creation and has no call that changes it (#1979)
     const strategy = dialog.getByLabelText("Strategy");
     await expect(strategy).toHaveValue("round_robin");
     await expect(strategy).toBeDisabled();
-    await expect(strategy).toHaveAccessibleDescription(/set when a model is created/);
+    await expect(strategy).toHaveAccessibleDescription(/set when a route is created/);
+    // the stored providers' catalogues are not asked for just because the sheet
+    // opened: an upstream call waits until somebody reaches for its models
+    calls.expectNotSent("GET", "/providers/prov-1/models");
   },
 };
 
@@ -411,9 +633,9 @@ export const ViewConfigModel: Story = {
   ),
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText("Model details")).toBeVisible();
-    await expect(dialog.getByText(/Read-only config model/)).toBeVisible();
-    await expect(dialog.queryByRole("button", { name: "Save model" })).not.toBeInTheDocument();
+    await expect(dialog.getByText("Route details")).toBeVisible();
+    await expect(dialog.getByText(/Read-only config route/)).toBeVisible();
+    await expect(dialog.queryByRole("button", { name: "Save route" })).not.toBeInTheDocument();
     await waitFor(() => expect(dialog.getByLabelText("Strategy")).toHaveValue("weighted"));
     await expect(dialog.getByLabelText("Strategy")).toBeDisabled();
     // the targets are a list to read, not an editor with nothing behind it
@@ -428,37 +650,60 @@ export const ViewConfigModel: Story = {
 /**
  * A public name already in the catalog. Two routes answering the same name is
  * ambiguous, so it is caught here rather than by whichever one the gateway
- * happens to resolve first.
+ * happens to resolve first. The conflict is stated when the field is left, and a
+ * save with it standing is refused (#2810).
  */
 export const NameConflict: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    const name = dialog.getByLabelText("Model name");
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const name = dialog.getByLabelText("Route name");
     await userEvent.type(name, "gpt-4o");
+    // still typing: "gpt-4" on the way to "gpt-4o-mini" is not a mistake yet
+    await expect(name).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
     await waitFor(() => expect(name).toHaveAccessibleDescription(/already exists/));
     await expect(name).toHaveAttribute("aria-invalid", "true");
-    await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
-  },
-};
+    await expect(dialog.getAllByText(/already exists/)).toHaveLength(1);
 
-/** A base URL that is not a URL is refused before it reaches a provider. */
-export const InvalidBaseUrl: Story = {
-  render: () => <Stage mode="add" />,
-  play: async () => {
-    const dialog = within(sheet());
-    await seeded(dialog);
-    const baseUrl = dialog.getByLabelText("Base URL override");
-    await userEvent.type(baseUrl, "vllm.internal:8000");
-    await waitFor(() => expect(baseUrl).toHaveAttribute("aria-invalid", "true"));
-    await expect(baseUrl).toHaveAccessibleDescription(/must start with http/);
-    await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "1 field needs attention before this route can be saved.",
+    );
+    await waitFor(() => expect(name).toHaveFocus());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 
 /**
- * Adding a model is a route plus a target, in that order: the target needs the
+ * A base URL that is not a URL is refused before it reaches a provider — said
+ * when the field is left, not on the way to `https://` (#2810).
+ */
+export const InvalidBaseUrl: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    const baseUrl = dialog.getByLabelText("Base URL override");
+    await userEvent.type(baseUrl, "vllm.internal:8000");
+    await expect(baseUrl).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
+    await waitFor(() => expect(baseUrl).toHaveAttribute("aria-invalid", "true"));
+    await expect(baseUrl).toHaveAccessibleDescription(/must start with http/);
+    await expect(dialog.getAllByText(/must start with http/)).toHaveLength(1);
+    // the save is still there to press, and refuses with the problem standing
+    await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(baseUrl).toHaveFocus());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
+  },
+};
+
+/**
+ * Adding a route is a route plus a target, in that order: the target needs the
  * id the route creation returns. A target that names no upstream model of its
  * own sends the public name through, and says so by sending no model at all.
  */
@@ -466,10 +711,10 @@ export const AddsAModel: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
     await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
-    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
     const route = (await calls.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)) as {
       model: string;
       strategy: string;
@@ -495,8 +740,8 @@ export const AddsACacheAwareFleet: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "qwen-72b");
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
     await pickOption(dialog.getByLabelText("Strategy"), "cache_aware");
     await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
     await userEvent.type(
@@ -510,7 +755,7 @@ export const AddsACacheAwareFleet: Story = {
     await userEvent.type(weight, "3");
     await expect(dialog.getByText(/does not read weights/)).toHaveTextContent(/^cache_aware/);
 
-    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
     const route = (await calls.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)) as {
       strategy: string;
     };
@@ -523,19 +768,285 @@ export const AddsACacheAwareFleet: Story = {
   },
 };
 
-/** A weight is a whole number from 1; the control plane refuses anything else. */
+/**
+ * The upstream model field suggests what the picked provider lists (#2810).
+ *
+ * The id is chosen from the provider's own catalogue instead of retyped to the
+ * letter. The catalogue is asked for when the operator reaches for it, and only
+ * for the provider that line points at.
+ */
+export const SuggestsTheProvidersModels: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+
+    // with no provider there is nothing to suggest, and the field says why
+    // rather than claiming the list is empty
+    const none = await openOptions(upstream);
+    await expect(none.parentElement).toHaveTextContent(/Pick a provider to see its models/);
+    await userEvent.keyboard("{Escape}");
+    calls.expectNotSent("GET", "/providers/");
+
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const listbox = await openOptions(upstream);
+    await waitFor(() =>
+      expect(
+        within(listbox)
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual([
+        "meta-llama/Llama-3.1-70B",
+        "meta-llama/Llama-3.1-8B",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+      ]),
+    );
+    // the one provider asked about is the one that line points at
+    await calls.expectSent("GET", "/providers/prov-2/models");
+    calls.expectNotSent("GET", "/providers/prov-1/models");
+  },
+};
+
+/**
+ * Typing narrows the suggestions, and picking one is what the target sends.
+ */
+export const PickingASuggestionSendsItUpstream: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-8b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+    const listbox = await openOptions(upstream);
+    await waitFor(() => expect(within(listbox).getAllByRole("option")).toHaveLength(3));
+    // typing narrows the list, as it does everywhere a combobox is used
+    await userEvent.type(upstream, "8b");
+    await waitFor(() =>
+      expect(
+        within(listbox)
+          .getAllByRole("option")
+          .map((o) => o.textContent),
+      ).toEqual(["meta-llama/Llama-3.1-8B", "Use “8b”"]),
+    );
+    await userEvent.click(within(listbox).getByRole("option", { name: "meta-llama/Llama-3.1-8B" }));
+    await expect(upstream).toHaveValue("meta-llama/Llama-3.1-8B");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    const target = (await calls.expectSentBody("POST", "/routes/route-new/targets")) as {
+      provider_id: string;
+      upstream_model?: string;
+    };
+    await expect(target).toEqual({
+      provider_id: "prov-2",
+      upstream_model: "meta-llama/Llama-3.1-8B",
+      weight: 1,
+    });
+  },
+};
+
+/**
+ * On a phone the suggestions are as readable as on the sheet: the field is a
+ * third of the line, and ids that share a long prefix are told apart in a list
+ * that takes the width the screen has instead of the field's.
+ */
+export const SuggestionsFitOnAPhone: Story = {
+  ...atMobile,
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+    upstream.scrollIntoView({ block: "center" });
+    const listbox = await openOptions(upstream);
+    await waitFor(() => expect(within(listbox).getAllByRole("option")).toHaveLength(3));
+    const popup = listbox.parentElement as HTMLElement;
+    await expectInViewport(popup);
+    // wide enough to read the id that tells the 70B from the 8B
+    await expect(popup.getBoundingClientRect().width).toBeGreaterThan(250);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
+ * The list only suggests: an id the provider does not list is typed and kept.
+ *
+ * A fine-tune, a model added since the list was cached or a provider that lists
+ * nothing all still need their id to be said, and leaving the field is what
+ * keeps it, with no "Use …" row to find first.
+ */
+export const KeepsAnUpstreamModelTheProviderDoesNotList: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "support-bot");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+    await userEvent.type(upstream, "acme/support-ft-v2");
+    // leaving the field, not pressing Enter on a row
+    await userEvent.tab();
+    await waitFor(() => expect(upstream).toHaveValue("acme/support-ft-v2"));
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    const target = (await calls.expectSentBody("POST", "/routes/route-new/targets")) as {
+      upstream_model?: string;
+    };
+    await expect(target.upstream_model).toBe("acme/support-ft-v2");
+  },
+};
+
+/**
+ * A provider whose upstream listed nothing says so, and the field is the text
+ * box it always was. The control plane answers an upstream that is down, or that
+ * is not a catalogue, with the same empty list, so a failure there never blocks
+ * typing the id.
+ */
+export const SaysWhenAProviderListsNoModels: Story = {
+  render: () => (
+    <Stage
+      mode="add"
+      stub={async (input, init) =>
+        String(input).includes("/providers/prov-2/models")
+          ? json({ models: [] })
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+    const listbox = await openOptions(upstream);
+    await waitFor(() =>
+      expect(listbox.parentElement).toHaveTextContent(/This provider listed no models/),
+    );
+    await userEvent.type(upstream, "meta-llama/Llama-3.1-8B");
+    await userEvent.tab();
+    await waitFor(() => expect(upstream).toHaveValue("meta-llama/Llama-3.1-8B"));
+    // nothing on the sheet is marked as an error for it
+    await expect(upstream).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A refused listing degrades quietly (#2810).
+ *
+ * The listing spends the provider's credential, so it takes the permission the
+ * connection test takes, and a role that may build a route but not test its
+ * provider is refused — `403`, or `404` for a provider it cannot see. No
+ * suggestions come of it, nothing on the sheet reads as a failure of the form,
+ * and the id is typed and kept as it is for any provider.
+ */
+function refusedListing(status: number, message: string): Story {
+  return {
+    render: () => (
+      <Stage
+        mode="add"
+        toasts
+        stub={async (input, init) =>
+          String(input).includes("/providers/prov-2/models")
+            ? json({ error: { message } }, status)
+            : backing(input, init)
+        }
+      />
+    ),
+    play: async ({ canvasElement }) => {
+      const dialog = within(sheet());
+      await seededBlank(dialog);
+      await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-8b");
+      await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+      const upstream = dialog.getByLabelText("Target 1 upstream model");
+      const listbox = await openOptions(upstream);
+      await calls.expectSent("GET", "/providers/prov-2/models");
+      await waitFor(() =>
+        expect(listbox.parentElement).toHaveTextContent(/Suggestions are not available/),
+      );
+      await expect(within(listbox).queryAllByRole("option")).toHaveLength(0);
+      // the refusal is not an error of the form: no alert on the sheet, no toast
+      // over it, no field marked
+      await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+      await expect(within(canvasElement).queryByText(message)).not.toBeInTheDocument();
+      await expect(within(document.body).queryByText(message)).not.toBeInTheDocument();
+      await expect(upstream).not.toHaveAttribute("aria-invalid");
+
+      // and the id is typed as for any provider, and what is typed is sent
+      await userEvent.type(upstream, "meta-llama/Llama-3.1-8B");
+      await userEvent.tab();
+      await waitFor(() => expect(upstream).toHaveValue("meta-llama/Llama-3.1-8B"));
+      await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+      const target = (await calls.expectSentBody("POST", "/routes/route-new/targets")) as {
+        provider_id: string;
+        upstream_model?: string;
+      };
+      await expect(target).toEqual({
+        provider_id: "prov-2",
+        upstream_model: "meta-llama/Llama-3.1-8B",
+        weight: 1,
+      });
+    },
+  };
+}
+
+export const StaysQuietWhenTheListingIsForbidden: Story = refusedListing(
+  403,
+  "insufficient role for this resource",
+);
+
+export const StaysQuietWhenTheProviderIsNotVisible: Story = refusedListing(404, "provider prov-2");
+
+/** While the catalogue is on its way, the field says it is loading and stays typeable. */
+export const SaysWhileAProvidersModelsLoad: Story = {
+  render: () => (
+    <Stage
+      mode="add"
+      stub={(input, init) =>
+        String(input).includes("/providers/prov-2/models")
+          ? new Promise<Response>(() => {})
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    const upstream = dialog.getByLabelText("Target 1 upstream model");
+    const listbox = await openOptions(upstream);
+    await waitFor(() =>
+      expect(listbox.parentElement).toHaveTextContent(/Loading this provider's models/),
+    );
+    await userEvent.type(upstream, "meta-llama/Llama-3.1-8B");
+    await userEvent.tab();
+    await waitFor(() => expect(upstream).toHaveValue("meta-llama/Llama-3.1-8B"));
+  },
+};
+
+/**
+ * A weight is a whole number from 1; the control plane refuses anything else.
+ * The field says so when it is left, and a save with it standing is refused.
+ */
 export const RefusesAWeightBelowOne: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "qwen-72b");
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
     const weight = dialog.getByLabelText("Target 1 weight");
     await userEvent.clear(weight);
     await userEvent.type(weight, "0");
+    await expect(weight).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
     await waitFor(() => expect(weight).toHaveAttribute("aria-invalid", "true"));
     await expect(weight).toHaveAccessibleDescription(/whole numbers, 1 or more/);
-    await expect(dialog.getByRole("button", { name: "Add model" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(weight).toHaveFocus());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 
@@ -563,7 +1074,7 @@ export const EditsEveryTargetOfAFleet: Story = {
     await userEvent.clear(weight);
     await userEvent.type(weight, "2");
     await userEvent.click(dialog.getByRole("button", { name: "Remove target 3" }));
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
 
     await calls.expectSent("DELETE", "/route-targets/fleet-3");
     await calls.expectSent("DELETE", "/route-targets/fleet-2");
@@ -587,12 +1098,12 @@ export const DuplicatesStrategyAndTargets: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
+    await seededBlank(dialog);
     await pickOption(dialog.getByLabelText("Duplicate from"), "llama-70b");
     await waitFor(() => expect(dialog.getByLabelText("Strategy")).toHaveValue("cache_aware"));
     await expect(await dialog.findByLabelText("Target 3 upstream model")).toHaveValue("llama-70b");
     // the copy carries the source's name, which is taken, until it is renamed
-    await expect(dialog.getByLabelText("Model name")).toHaveAccessibleDescription(/already exists/);
+    await expect(dialog.getByLabelText("Route name")).toHaveAccessibleDescription(/already exists/);
   },
 };
 
@@ -622,7 +1133,7 @@ export const SavesTheAdvancedEditor: Story = {
     await userEvent.clear(headerValue);
     await userEvent.type(headerValue, "beta");
 
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
       advanced: {
         base_url: string;
@@ -684,13 +1195,12 @@ export const OffersNoFakeConnectionTest: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
+    await seededBlank(dialog);
     await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
-    // a complete draft, the state an operator would have tested from, with the
-    // footer past validation: this is an absent control, not a footer that has
-    // not painted its actions yet
-    await waitFor(() => expect(dialog.getByRole("button", { name: "Add model" })).toBeEnabled());
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
+    // a complete draft, the state an operator would have tested from: this is
+    // an absent control, not a footer that has not painted its actions yet
+    await expect(dialog.getByRole("button", { name: "Add route" })).toBeEnabled();
     await expect(
       dialog.queryByRole("button", { name: /test connection/i }),
     ).not.toBeInTheDocument();
@@ -709,7 +1219,7 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await calls.expectSent("PUT", "/routes/route-1/params");
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
     // nor are the targets rewritten: an unchanged line is left as it is
@@ -734,7 +1244,7 @@ export const PinsARouteToItsProject: Story = {
     await expect(visibility.getByRole("radio", { name: "Whole organization" })).toBeChecked();
     await userEvent.click(visibility.getByRole("radio", { name: "This project" }));
 
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
       advanced: { visibility: Record<string, unknown> };
     };
@@ -779,7 +1289,7 @@ export const OpensAPinnedRouteToTheOrganization: Story = {
     await expect(visibility.getByRole("radio", { name: "This project" })).toBeChecked();
     await userEvent.click(visibility.getByRole("radio", { name: "Whole organization" }));
 
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
       advanced: { visibility: Record<string, unknown> };
     };
@@ -813,7 +1323,7 @@ export const AdvancedRejected: Story = {
     const rpm = dialog.getByLabelText("Requests / min");
     await userEvent.clear(rpm);
     await userEvent.type(rpm, "99999999");
-    await userEvent.click(dialog.getByRole("button", { name: "Save model" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await waitFor(() =>
       expect(dialog.getByRole("alert")).toHaveTextContent(/advanced configuration/),
     );
@@ -853,11 +1363,11 @@ export const DiscardGuardKeepsTheDraft: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(false);
-    await expect(dialog.getByLabelText("Model name")).toHaveValue("llama-3.1-70b");
+    await expect(dialog.getByLabelText("Route name")).toHaveValue("llama-3.1-70b");
   },
 };
 
@@ -866,8 +1376,8 @@ export const DiscardGuardThrowsItAway: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(true);
     await expectSheetClosed();
@@ -902,7 +1412,7 @@ export const OffersOnlyTheProjectsOwnAndOrgWideProviders: Story = {
   render: () => <Stage mode="add" providers={SCOPED_PROVIDERS} />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
+    await seededBlank(dialog);
     const listbox = await openOptions(dialog.getByLabelText("Target 1 provider"));
     const names = within(listbox)
       .getAllByRole("option")
@@ -920,7 +1430,7 @@ export const SaysNothingWhenNoProviderIsLeftOut: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await seeded(dialog);
+    await seededBlank(dialog);
     await expect(dialog.queryByText(/not offered here/)).toBeNull();
   },
 };
@@ -952,9 +1462,10 @@ export const TargetRefusedByTheProvidersScope: Story = {
   ),
   play: async ({ canvasElement }) => {
     const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.type(dialog.getByLabelText("Model name"), "llama-3.1-70b");
-    await userEvent.click(dialog.getByRole("button", { name: "Add model" }));
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
     await expectToast(canvasElement, /cannot use provider 'search-private'/, "error");
     // the sheet stays open on the draft
     await expect(sheet()).toBeVisible();

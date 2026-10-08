@@ -408,6 +408,182 @@ export const ClearsFromTheKeyboard: Story = {
   },
 };
 
+// a field that is mostly free text and only suggests (#2810): the control
+// plane's list of what a provider serves is a hint, and an id outside it is
+// still the operator's to type
+function Suggesting({
+  options = STRATEGIES,
+  commitOnBlur = true,
+  emptyText,
+}: {
+  options?: ComboboxOption[];
+  commitOnBlur?: boolean;
+  emptyText?: string;
+}) {
+  const [value, setValue] = React.useState("");
+  const [events, setEvents] = React.useState<string[]>([]);
+  const note = (event: string) => setEvents((seen) => [...seen, event]);
+  return (
+    <div className="w-80 space-y-2">
+      <Field label="Upstream model" hint={`current: ${value || "(none)"}`}>
+        <Combobox
+          allowCustom
+          clearable
+          commitOnBlur={commitOnBlur}
+          emptyText={emptyText}
+          options={options}
+          value={value}
+          onChange={setValue}
+          onFocus={() => note("focus")}
+          onBlur={() => note("blur")}
+        />
+      </Field>
+      <p>{`events: ${events.join(",") || "(none)"}`}</p>
+      <button type="button">elsewhere</button>
+    </div>
+  );
+}
+
+// leaving the field keeps what was typed, with no "Use …" row to find first
+export const KeepsWhatWasTypedWhenFocusLeaves: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Upstream model" });
+    await userEvent.click(input);
+    await userEvent.keyboard("acme/support-ft-v2");
+    await userEvent.tab();
+    await waitFor(() =>
+      expect(canvas.getByText("current: acme/support-ft-v2")).toBeInTheDocument(),
+    );
+    await expect(input).toHaveValue("acme/support-ft-v2");
+    await expect(input).toHaveAttribute("aria-expanded", "false");
+  },
+};
+
+// the same on a pointer: clicking away is leaving, and a click on an option is not
+export const KeepsWhatWasTypedWhenAnotherControlIsClicked: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Upstream model" }));
+    await userEvent.keyboard("acme/support-ft-v2");
+    await userEvent.click(canvas.getByRole("button", { name: "elsewhere" }));
+    await waitFor(() =>
+      expect(canvas.getByText("current: acme/support-ft-v2")).toBeInTheDocument(),
+    );
+  },
+};
+
+// typed in another case, the text names the option it matches rather than a second spelling
+export const TypedTextNamesTheOptionItMatches: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Upstream model" }));
+    await userEvent.keyboard("ROUND_ROBIN");
+    await userEvent.tab();
+    await waitFor(() => expect(canvas.getByText("current: round_robin")).toBeInTheDocument());
+  },
+};
+
+// what the flag is for: without it a typed value that was not picked is dropped
+export const WithoutTheFlagTypedTextIsDropped: Story = {
+  render: () => <Suggesting commitOnBlur={false} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Upstream model" });
+    await userEvent.click(input);
+    await userEvent.keyboard("acme/support-ft-v2");
+    await userEvent.tab();
+    await waitFor(() => expect(input).toHaveValue(""));
+    await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+  },
+};
+
+// Escape is a way out, not a way to keep: it discards what was typed
+export const EscapeDiscardsWhatWasTyped: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Upstream model" });
+    await userEvent.click(input);
+    await userEvent.keyboard("acme/support-ft-v2{Escape}");
+    await userEvent.tab();
+    await expect(canvas.getByText("current: (none)")).toBeInTheDocument();
+    await expect(input).toHaveValue("");
+  },
+};
+
+// nothing was typed: focus passing through changes nothing
+export const FocusPassingThroughKeepsTheValue: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("combobox", { name: "Upstream model" });
+    await userEvent.click(input);
+    await userEvent.keyboard("weighted{Enter}");
+    await userEvent.tab();
+    await userEvent.tab({ shift: true });
+    await userEvent.tab();
+    await expect(canvas.getByText("current: weighted")).toBeInTheDocument();
+  },
+};
+
+// the owner is told when focus arrives and when it leaves the control as a
+// whole, once each: picking an option is a move inside it
+export const ReportsFocusAndBlurOnce: Story = {
+  render: () => <Suggesting />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Upstream model" }));
+    await userEvent.click(await canvas.findByRole("option", { name: /^weighted/ }));
+    await expect(canvas.getByText("events: focus")).toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "elsewhere" }));
+    await waitFor(() => expect(canvas.getByText("events: focus,blur")).toBeInTheDocument());
+  },
+};
+
+// a list with nothing to offer says why instead of "No options match your filter",
+// which would blame a filter nobody typed
+export const SaysWhyThereIsNothingToOffer: Story = {
+  render: () => <Suggesting options={[]} emptyText="This provider listed no models." />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Upstream model" }));
+    await expect(canvas.getByText("This provider listed no models.")).toBeInTheDocument();
+    await expect(canvas.queryByText("No options match your filter")).not.toBeInTheDocument();
+    // typing a value gives the "Use …" row, and the message makes way for it
+    await userEvent.keyboard("acme/ft");
+    await expect(canvas.queryByText("This provider listed no models.")).not.toBeInTheDocument();
+    await expect(canvas.getByRole("option", { name: "Use “acme/ft”" })).toBeInTheDocument();
+  },
+};
+
+// the message is for an empty list only: a filter that matches nothing in a
+// list that has options still blames the filter
+export const AFilterThatMatchesNothingStillSaysSo: Story = {
+  render: () => (
+    <div className="w-80">
+      <Field label="Model">
+        <Combobox
+          options={GROUPED}
+          value=""
+          onChange={() => {}}
+          emptyText="This provider listed no models."
+        />
+      </Field>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    await userEvent.keyboard("zzzz");
+    await expect(canvas.getByText("No options match your filter")).toBeInTheDocument();
+    await expect(canvas.queryByText("This provider listed no models.")).not.toBeInTheDocument();
+  },
+};
+
 function InSheet() {
   const [open, setOpen] = React.useState(true);
   const [value, setValue] = React.useState("round_robin");

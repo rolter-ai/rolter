@@ -1352,6 +1352,24 @@ export function testProvider(id: string): Promise<ProviderTestResult> {
   return sendJson<ProviderTestResult>("POST", `/api/v1/providers/${id}/test`);
 }
 
+/** The upstream model ids a stored provider lists, sorted. Empty when it listed none. */
+export interface ProviderModelList {
+  models: string[];
+}
+
+/**
+ * Ask a stored provider's upstream which models it serves.
+ *
+ * It is the catalogue the connection test counts, with the ids kept: what a
+ * route target can name as its upstream model. An upstream that is down, or
+ * answers with something other than a catalogue, gives an empty list rather
+ * than an error, since the list only ever suggests; "Test connection" is the
+ * call that says why.
+ */
+export function fetchProviderModels(id: string): Promise<ProviderModelList> {
+  return getJson<ProviderModelList>(`/api/v1/providers/${id}/models`);
+}
+
 // --- provider groups (ADR-0022): unify a fleet of providers behind one
 // `group-slug/model` address, balanced by a chosen strategy. the CRUD API
 // returns default/DB groups (editable); config-owned readonly groups live only

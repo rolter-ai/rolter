@@ -43,6 +43,21 @@ export interface ComboboxProps {
    */
   allowCustom?: boolean;
   /**
+   * with `allowCustom`, keep what was typed when focus leaves the control
+   * instead of dropping it unless "Use …" was picked: a field that is mostly
+   * free text and only suggests from `options` (#2810)
+   */
+  commitOnBlur?: boolean;
+  /**
+   * said in place of "No matches" when the popup has no option to list at all,
+   * for a list that is still loading or that the source had nothing for
+   */
+  emptyText?: string;
+  /** focus came into the control */
+  onFocus?: () => void;
+  /** focus left the control entirely, not for one of its own parts */
+  onBlur?: () => void;
+  /**
    * control height. `default` matches Input; `sm` is the compact toolbar
    * variant the dashboard wrote as `h-8 text-xs` on the native select
    */
@@ -210,6 +225,10 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     className,
     listClassName,
     allowCustom,
+    commitOnBlur = false,
+    emptyText,
+    onFocus,
+    onBlur,
     "aria-label": ariaLabel,
     "aria-describedby": describedBy,
     "aria-invalid": invalid,
@@ -283,6 +302,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
     setOpen(false);
     setQuery(null);
   }, []);
+
+  // what was typed becomes the value when the control keeps it (`commitOnBlur`):
+  // the option it names outright, or the text as typed
+  const keepTyped = () => {
+    const typed = query?.trim();
+    if (!commitOnBlur || !allowCustom || !typed) return;
+    const next = options.find((o) => fold(o.value) === fold(typed))?.value ?? typed;
+    if (next !== value) onChange(next);
+  };
 
   const commit = React.useCallback(
     (option: ComboboxOption | undefined) => {
@@ -389,7 +417,10 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         }
         return;
       case "Tab":
-        if (open) close();
+        if (open) {
+          keepTyped();
+          close();
+        }
         return;
       default:
     }
@@ -477,7 +508,10 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
       className={cn("relative", className)}
       onBlur={(event) => {
         // focus left the control entirely — not a hop between its own parts
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        keepTyped();
+        close();
+        onBlur?.();
       }}
     >
       {/* a form-serialisable mirror, so a Combobox drops into a <form> where
@@ -506,6 +540,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
           if (!open) show();
         }}
         onKeyDown={onKeyDown}
+        onFocus={onFocus}
         onMouseDown={() => {
           if (open) close();
           else show();
@@ -562,7 +597,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
               paragraph inside one is an axe `aria-required-children` failure */}
         {open && count === 0 && (
           <p className="px-2 py-3 text-center text-xs text-muted-foreground">
-            {t("common.combobox.noMatches")}
+            {options.length === 0 && emptyText ? emptyText : t("common.combobox.noMatches")}
           </p>
         )}
         <div

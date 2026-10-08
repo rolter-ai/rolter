@@ -144,7 +144,7 @@ export const Empty: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectEmptyState(canvasElement, /No models yet/, /Add model/);
+    await expectEmptyState(canvasElement, /No models yet/, /Add route/);
   },
 };
 
@@ -578,7 +578,7 @@ export const RefusedToAViewer: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await expectRefused(canvasElement, /add model/i);
+    await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Edit gpt-4o");
     await expectRefused(canvasElement, "Delete model gpt-4o", NEEDS_SUPERADMIN);
   },

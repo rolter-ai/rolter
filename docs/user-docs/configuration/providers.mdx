@@ -55,7 +55,21 @@ It issues a `GET` against the provider kind's free model-list endpoint — the s
 
 The key is presented the way the provider's own API reads it, exactly as when the gateway forwards a request: `x-api-key` for Anthropic, `api-key` for Azure OpenAI, `x-goog-api-key` for native Gemini and a bearer token for the rest. A `401` from the test therefore means the upstream rejected the key, not that rolter sent it in a form the API ignores.
 
-It checks the provider, not a model. `models_found` is a count, so a green test does not say that the upstream model name a route sends is among them, and the model sheet has no connection check of its own until the probe can answer that ([#2008](https://github.com/rolter-ai/rolter/issues/2008)).
+It checks the provider, not a model. `models_found` is a count, so a green test does not say that the upstream model name a route sends is among them, and the route sheet has no connection check of its own until the probe can answer that ([#2008](https://github.com/rolter-ai/rolter/issues/2008)).
+
+### The models a provider lists
+
+The ids behind that count have a read of their own, which is what the route sheet's **Upstream model** field suggests from:
+
+```bash
+curl https://control.example.com/api/v1/providers/$ID/models
+```
+
+```json
+{ "models": ["gpt-4o", "gpt-4o-mini"] }
+```
+
+The list is sorted, has no duplicates and stops at 2000 ids. They are the ids the gateway lists under `provider-slug/model`. An upstream that is down, rejects the credential or answers with something other than a catalogue gives `{"models": []}` rather than an error, since the list only ever suggests; **Test connection** is the call that says why. It reads the same free model-list endpoint with the provider's own credential and under the same [egress policy](/configuration/egress) as the test. It sends the provider's credential to the upstream just as the test does, authenticated the same way, so it takes the same permission as the test, `provider:update` in the provider's scope, and a role that cannot test a provider cannot list its models either. A provider the caller may not see is answered `404`. The dashboard's route sheet shows no suggestions on a refusal and still takes any model id you type.
 
 ### Reading the result
 
