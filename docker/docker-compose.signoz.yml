@@ -63,6 +63,12 @@ services:
       # is 56 KB of third-party configuration we would then own and have to keep
       # in step; the stock image defaults cover everything else for a single node
       - ./signoz/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      # the system.*_log tables ClickHouse writes about itself, off as in
+      # rolter's own clickhouse (#2795, #2815). signoz reads none of them: its
+      # query service and schema migrator read system.tables, columns, disks,
+      # clusters, databases, mutations and distributed_ddl_queue. query_log
+      # stays. one more single file beside cluster.xml, never the directory
+      - ./clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
       - signoz-clickhouse:/var/lib/clickhouse/
     environment:
       - CLICKHOUSE_SKIP_USER_SETUP=1

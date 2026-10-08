@@ -81,9 +81,10 @@ persistent spot is `integration/e2e/.env`.
 
 On a small or slow host (a Raspberry Pi, an SD card) ClickHouse has a second
 cost besides the open-file limit: its own diagnostic tables. The compose file
-mounts `docker/clickhouse/system-logs.xml` to turn them off, and the page below
-covers dropping the ones an older volume already has and capping the caches for
-a small host: [Docker deployment](../deployment/docker.md).
+mounts `docker/clickhouse/system-logs.xml` to turn them off (so do the SigNoz
+overlay's ClickHouse and the e2e stack's), and the page below covers dropping
+the ones an older volume already has and capping the caches for a small host:
+[Docker deployment](../deployment/docker.md).
 
 ## Handy tasks
 

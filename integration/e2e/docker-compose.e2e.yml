@@ -41,6 +41,12 @@ services:
     image: clickhouse/clickhouse-server:24-alpine
     volumes:
       - ../../clickhouse:/docker-entrypoint-initdb.d
+      # the system.*_log tables ClickHouse writes about itself, off as in the
+      # local stack (#2815): nothing here reads them, and an idle diagnostic
+      # insert every few seconds is merge load a CI runner does not need.
+      # query_log stays. one file, never the directory (the image keeps its
+      # listen-address config in config.d)
+      - ../../docker/clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/system-logs.xml:ro
     # overridable where the runtime cannot grant 262144 (#1819)
     ulimits:
       nofile: { soft: "${CLICKHOUSE_NOFILE:-262144}", hard: "${CLICKHOUSE_NOFILE:-262144}" }
