@@ -179,6 +179,29 @@ What a mid-week outage costs, and which failures disable the stream permanently
 rather than dropping one batch, is tabulated in
 [`docs/dev-docs/development/ux-telemetry.md`](../../docs/dev-docs/development/ux-telemetry.md#failure-modes-and-who-notices).
 
+### On a team-shape stack
+
+The compose team shape (`docker-compose.yml` + `docker-compose.team.yml`) is not
+this stack: ClickHouse is not published, and `creds.env`'s account does not exist
+there. Run the same proof from the host that runs it, signed in as yourself
+(#2794):
+
+```bash
+read -rs DEV_PASSWORD && export DEV_PASSWORD
+DEV_EMAIL=you@example.com just dogfood-ux-team   # or ux-capture.sh --team
+```
+
+`DEV_EMAIL` and `DEV_PASSWORD` from the environment win over `creds.env`, which
+only fills what is unset. Add `DEV_TOTP=<current code>` when the account has a
+second factor. `--team` runs ClickHouse statements through
+`docker compose exec clickhouse clickhouse-client` with the stack's own
+credentials, takes the compose project's secrets from `ROLTER_ENV_FILE` (default
+`.env` at the repository root) and finds the control plane at that file's
+`ROLTER_CONTROL_HOST`, or `ROLTER_CONTROL_URL` when you set it. Without `--team`,
+a `CLICKHOUSE_URL` with credentials (`http://<user>:<password>@host:8123`) works too.
+The table of what each knob does is in
+[`ux-telemetry.md`](../../docs/dev-docs/development/ux-telemetry.md#against-a-team-shape-stack-2794).
+
 ## Browser tracing
 
 The dashboard's own spans (#805) are posted from the operator's browser, so

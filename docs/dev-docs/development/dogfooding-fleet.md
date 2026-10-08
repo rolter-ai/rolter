@@ -46,6 +46,7 @@ just dogfood-seed   # re-import dogfood.toml over a running stack
 just dogfood-adaptive off  # serve deepseek-r1 from its fallback stack (`on` undoes it)
 just dogfood-capture off   # stop raw payload capture (`on` undoes it; `just dogfood` turns it back on)
 just dogfood-ux     # prove the dashboard UX capture works, before relying on it
+just dogfood-ux-team  # the same against a compose team-shape stack, signed in as you
 ```
 
 `--import` is desired state, so re-importing an edited `dogfood.toml` updates
@@ -189,6 +190,12 @@ migration has never seen it, so a machine that has been running this stack for a
 while may have no `ui_events` table at all — and then every batch is a `500` and
 the week captures nothing. `just dogfood` now applies them on every boot for the
 same reason.
+
+A stack that is not this one — the compose team shape, where ClickHouse is not
+published and the checked-in account does not exist — takes
+`DEV_EMAIL=you@example.com just dogfood-ux-team` from the host that runs it. How,
+and what each variable does, is in
+[UX telemetry](ux-telemetry.md#against-a-team-shape-stack-2794).
 
 ### What a mid-week ClickHouse hiccup costs
 
