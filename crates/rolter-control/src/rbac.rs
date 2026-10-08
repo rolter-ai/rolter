@@ -1004,6 +1004,25 @@ mod tests {
         }
     }
 
+    /// A superadmin session keeps the account it came from, so a record of who
+    /// acted can name a superadmin who holds no membership (#2813); the admin
+    /// token and open mode are credentials, not people, and name nobody.
+    #[test]
+    fn account_id_names_every_signed_in_account_and_no_token() {
+        let superadmin = user_with_superadmin(true);
+        let superadmin_id = superadmin.id;
+        assert_eq!(
+            Principal::for_user(superadmin).account_id(),
+            Some(superadmin_id)
+        );
+
+        let member = user_with_superadmin(false);
+        let member_id = member.id;
+        assert_eq!(Principal::for_user(member).account_id(), Some(member_id));
+
+        assert_eq!(Principal::Superadmin { account: None }.account_id(), None);
+    }
+
     #[test]
     fn require_superadmin_allows_only_superadmin() {
         assert!(require_superadmin(&Principal::Superadmin { account: None }).is_ok());
