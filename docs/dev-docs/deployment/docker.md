@@ -46,7 +46,7 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
 
 `--env-file` is a flag of `docker compose`, not of `run`. `check_exposure` reads `ROLTER_CONTROL_HOST` and warns on `0.0.0.0`, and inside the container that is always `0.0.0.0`, so preflight gets the published address instead, which makes `ROLTER_CONTROL_HOST=0.0.0.0` in the env file fail the strict check, as it should.
 
-Known gaps: the control plane and gateway log their Redis and ClickHouse URLs with the passwords in them (#2406), and `rolter init` does not write the three datastore passwords (#2413).
+Known gap: `rolter init` does not write the three datastore passwords (#2413). The startup log no longer carries them: every datastore URL the control plane and gateway print goes through `rolter_core::redact` (#2406, see [Security](../architecture/security.md)).
 
 ClickHouse runs with `nofile` at `${CLICKHOUSE_NOFILE:-262144}`. Where the
 container runtime cannot grant that much (rootless Docker or Podman, sandboxed

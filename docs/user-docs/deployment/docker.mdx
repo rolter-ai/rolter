@@ -179,9 +179,9 @@ What the team stack publishes:
 
 The team stack does not read the `rolter.toml` that `rolter init` writes. It mounts `docker/rolter.team.toml`, which defines no providers, routes or virtual keys, in its place: the image's bundled example would otherwise reach the gateway through the control plane with the public `sk-rolter-dev` key in it. Everything is created in the dashboard. To keep some providers in a file, mount your own over `docker/rolter.team.toml` and leave `[[virtual_keys]]` out of it.
 
-<Warning>
-  The control plane and the gateway print their Redis and ClickHouse URLs at startup, passwords included ([#2406](https://github.com/rolter-ai/rolter/issues/2406)). Until that is fixed, treat the container logs like the env file.
-</Warning>
+<Note>
+  The control plane and the gateway print the Redis and ClickHouse URLs they connect to at startup, and any error that quotes a datastore URL, with the password replaced by `***` ([#2406](https://github.com/rolter-ai/rolter/issues/2406)). The container logs do not carry the datastore passwords; the env file does, so keep it readable by its owner only.
+</Note>
 
 ## Run the single image
 
