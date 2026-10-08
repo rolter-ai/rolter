@@ -190,7 +190,7 @@ In the dashboard and API, the provider's `project_id` is the same scope. See [Pr
 </ParamField>
 
 <ParamField path="also_track_via_llm_call" type="bool" default="false">
-  Make active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **Costs a few tokens on every sweep** — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events` and fed through the same failure/recovery thresholds as free probes. See [Health checks](/reliability/health-checks).
+  Make active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **Costs a few tokens on every sweep** — leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events` and fed through the same failure/recovery thresholds as free probes. The request goes where a forwarded one would, in the provider kind's own format, and unlike the free probe it counts a `404`/`405` or a `401`/`403` answer as a failure. See [Health checks](/reliability/health-checks#what-counts-as-healthy-for-an-llm-call-check).
 </ParamField>
 
 <ParamField path="llm_probe_model" type="string">

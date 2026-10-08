@@ -19,6 +19,10 @@ By default (`path = "/"`), the probe targets each provider kind's **free, non-in
 
 Set an explicit `path` (e.g. `/healthz`) to override this for every provider and probe that exact route instead.
 
+<Note>
+  The "any non-5xx is healthy" rule belongs to this free probe. The [end-to-end check](#end-to-end-llm-call-checks) below is judged more strictly, because it is aimed at the endpoint that has to work.
+</Note>
+
 When the provider has a key, the probe sends it the way that provider's API reads it (`x-api-key` for Anthropic, `api-key` for Azure OpenAI, `x-goog-api-key` for native Gemini, a bearer token for the rest), the same as a forwarded request. A `401` still counts as healthy, but only an authenticated model list can be read, so a provider whose probe is rejected contributes no models to `/v1/models`.
 
 **Fail-open guarantee:** when every target of a route is marked unhealthy, Rolter does not return an error. It fails open and still forwards the request, preferring a potential upstream error over a guaranteed 503 from the gateway.
@@ -74,6 +78,22 @@ By default the probe hits a free liveness endpoint that burns no tokens. If you 
 <ParamField path="llm_probe_model" type="string">
   The upstream model id the check calls (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or a resolvable api key) the checker logs a warning and falls back to the free probe.
 </ParamField>
+
+The check calls the same endpoint a forwarded request would reach, in that provider's own format: the Messages API for `anthropic`, `generateContent` for `gemini_native`, an embedding for a `tei` server, and a chat completion for the rest. It follows your `api_base` exactly as routing does, so a base that already ends in `/v1` is not given a second one.
+
+### What counts as healthy for an LLM-call check
+
+Because this check exists to prove that inference works, it does not give the free probe's benefit of the doubt:
+
+| Answer                                    | Counts as   | Why                                                                         |
+| ----------------------------------------- | ----------- | --------------------------------------------------------------------------- |
+| `404` or `405`                            | **failure** | The check is pointed at the wrong place: check `api_base` and the model id. |
+| `401` or `403`                            | **failure** | The configured key cannot call the model.                                   |
+| `429`                                     | healthy     | The model answered; probing backs off as described below.                   |
+| any other status below 500 (`200`, `400`) | healthy     | The model answered, or declined this prompt for its own reasons.            |
+| `5xx`, timeout, connection failure        | **failure** | The provider is not serving.                                                |
+
+A failure of the first two kinds is logged as a warning naming the provider, the status and what to check, and is recorded in `provider_health_events` with `error_kind` set to `wrong_endpoint` or `key_refused`. It counts toward `consecutive_failure_threshold` like any other failed probe. The free probe keeps its own rule and is unaffected.
 
 ```toml rolter.toml
 [[providers]]

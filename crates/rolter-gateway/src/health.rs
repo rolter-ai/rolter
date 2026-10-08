@@ -9,14 +9,21 @@
 //! health route. Only connection failures, timeouts, and server errors mark a
 //! provider down. When every target of a route is unhealthy the caller fails open
 //! rather than rejecting the request.
+//!
+//! The opt-in llm-call check is stricter, because it is aimed at the one
+//! endpoint that must work: a `404`/`405` means it points at the wrong place and
+//! a `401`/`403` means the key cannot call the model, so both count as failures
+//! (see `LlmCallRejection`).
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::health_events::HealthSource;
 use rolter_core::probe::{probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION};
 use rolter_core::{HealthConfig, ProviderKind};
+use rolter_proxy::TranslationPlan;
 
 /// A fully-resolved probe request for one provider: either a free liveness GET
 /// or an opt-in minimal completion POST (`also_track_via_llm_call`, ROL-199).
@@ -66,42 +73,37 @@ impl ProbePlan {
 fn build_probe_plan(
     provider: &rolter_core::ProviderConfig,
     configured_path: &str,
-) -> (ProbePlan, crate::health_events::HealthSource) {
-    use crate::health_events::HealthSource;
-    let base = provider.api_base.trim_end_matches('/');
+) -> (ProbePlan, HealthSource) {
     if provider.also_track_via_llm_call {
         let key = provider.resolve_api_key();
         if let Some(model) = &provider.llm_probe_model {
             if key.is_some() || provider.kind == ProviderKind::Ollama {
-                // the path is the only thing that differs per kind; the
-                // credential goes out the way the proxy would send it
-                let path = match provider.kind {
-                    ProviderKind::Anthropic => "/v1/messages",
-                    ProviderKind::Openrouter
-                    | ProviderKind::AzureOpenai
-                    | ProviderKind::Bedrock
-                    | ProviderKind::Vertex => "/chat/completions",
-                    _ => "/v1/chat/completions",
-                };
-                let mut headers = credential_headers(provider.kind, key.as_deref());
-                if provider.kind == ProviderKind::Anthropic {
-                    headers.push((
-                        "anthropic-version".to_string(),
-                        ANTHROPIC_VERSION.to_string(),
-                    ));
+                match llm_call_request(provider, model) {
+                    Ok((url, body)) => {
+                        // the credential goes out the way the proxy would send it
+                        let mut headers = credential_headers(provider.kind, key.as_deref());
+                        if provider.kind == ProviderKind::Anthropic {
+                            headers.push((
+                                "anthropic-version".to_string(),
+                                ANTHROPIC_VERSION.to_string(),
+                            ));
+                        }
+                        return (
+                            ProbePlan::LlmCall { url, headers, body },
+                            HealthSource::LlmCall,
+                        );
+                    }
+                    Err(reason) => {
+                        tracing::warn!(
+                            provider = %provider.name,
+                            kind = ?provider.kind,
+                            %reason,
+                            "also_track_via_llm_call cannot call this provider kind; \
+                             falling back to the free liveness probe"
+                        );
+                        return free_probe_plan(provider, configured_path);
+                    }
                 }
-                let body = format!(
-                    "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}],\"max_tokens\":1}}",
-                    serde_json::Value::String(model.clone())
-                );
-                return (
-                    ProbePlan::LlmCall {
-                        url: format!("{base}{path}"),
-                        headers,
-                        body,
-                    },
-                    HealthSource::LlmCall,
-                );
             }
         }
         tracing::warn!(
@@ -110,12 +112,64 @@ fn build_probe_plan(
              falling back to the free liveness probe"
         );
     }
+    free_probe_plan(provider, configured_path)
+}
+
+/// The free liveness probe for `provider`, authenticated when it has a key.
+fn free_probe_plan(
+    provider: &rolter_core::ProviderConfig,
+    configured_path: &str,
+) -> (ProbePlan, HealthSource) {
     let (url, mut headers) = probe_request(provider.kind, &provider.api_base, configured_path);
     headers.extend(credential_headers(
         provider.kind,
         provider.resolve_api_key().as_deref(),
     ));
     (ProbePlan::Free { url, headers }, HealthSource::Probe)
+}
+
+/// The address and JSON body of the llm-call check for `provider`, or why the
+/// check cannot call this kind.
+///
+/// Both come from the proxy's own rules, so the check calls the endpoint a
+/// forwarded request would reach and not one nobody serves (#2818): the URL is
+/// [`ProviderKind::resolve_upstream_url`] over the kind's primary upstream
+/// path, which is where `/v1` is added or left out, and the body is the
+/// `max_tokens = 1` chat completion put through the same
+/// [`TranslationPlan`] a client request takes, so Anthropic, native Gemini and
+/// Gemini Interactions get their own wire format. A text-embeddings server
+/// answers no completion; it is asked for the embedding of one word instead.
+fn llm_call_request(
+    provider: &rolter_core::ProviderConfig,
+    model: &str,
+) -> Result<(String, String), String> {
+    use rolter_core::upstream::{RequestKind, CHAT_COMPLETIONS_PATH};
+    let kind = provider.kind;
+    // native gemini carries the model in the path; every other kind has no
+    // placeholder, so the replace leaves its path alone
+    let path = kind.primary_upstream_path().replace("{model}", model);
+    let url = kind.resolve_upstream_url(&provider.api_base, &path);
+    let body = match kind.primary_request() {
+        RequestKind::Embeddings => {
+            serde_json::json!({ "model": model, "input": "ping" }).to_string()
+        }
+        RequestKind::Chat => {
+            let chat = serde_json::json!({
+                "model": model,
+                "messages": [{ "role": "user", "content": "ping" }],
+                "max_tokens": 1,
+            });
+            let translated = TranslationPlan::resolve(
+                CHAT_COMPLETIONS_PATH,
+                kind,
+                provider.role_profile_for(Some(model)),
+            )
+            .translate_request(bytes::Bytes::from(chat.to_string()))
+            .map_err(|error| error.to_string())?;
+            String::from_utf8(translated.to_vec()).map_err(|error| error.to_string())?
+        }
+    };
+    Ok((url, body))
 }
 
 /// The headers that authenticate a probe to `kind`, empty without a key.
@@ -145,6 +199,66 @@ pub enum ProbeOutcome {
     RateLimited,
     /// connection failure, timeout, or 5xx
     Failed,
+}
+
+/// Why an llm-call check's answer proves nothing about inference although it
+/// is not a server error.
+///
+/// The free probe reads any status below 500 as "the API is up" and that stays
+/// true for it. The llm-call check exists to prove a completion works, so for
+/// it a `404`/`405` means the request was sent to the wrong place and a
+/// `401`/`403` means the configured key cannot call the model; reporting those
+/// healthy is how a check pointed at an endpoint nobody serves stayed green
+/// for every `/v1`-carrying kind (#2818). A `429` and every other status below
+/// 500 still read as healthy: the model answered, or declined to for a reason
+/// that is not the check's to judge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LlmCallRejection {
+    /// `404`/`405`: the check is aimed at an endpoint the upstream does not serve
+    WrongEndpoint,
+    /// `401`/`403`: the upstream refused the configured key
+    KeyRefused,
+}
+
+impl LlmCallRejection {
+    fn of(status: u16) -> Option<Self> {
+        match status {
+            404 | 405 => Some(Self::WrongEndpoint),
+            401 | 403 => Some(Self::KeyRefused),
+            _ => None,
+        }
+    }
+
+    /// The coarse label recorded as `error_kind` on the health event
+    fn error_kind(self) -> &'static str {
+        match self {
+            Self::WrongEndpoint => "wrong_endpoint",
+            Self::KeyRefused => "key_refused",
+        }
+    }
+
+    /// What the operator should look at, for the log line
+    fn hint(self) -> &'static str {
+        match self {
+            Self::WrongEndpoint => {
+                "the upstream does not serve this endpoint or model; check api_base and \
+                 llm_probe_model"
+            }
+            Self::KeyRefused => "the upstream refused the configured api key for this model",
+        }
+    }
+}
+
+/// Fold an HTTP status into an outcome for the check that sent the request.
+fn classify_status(source: HealthSource, status: u16) -> ProbeOutcome {
+    match status {
+        429 => ProbeOutcome::RateLimited,
+        s if source == HealthSource::LlmCall && LlmCallRejection::of(s).is_some() => {
+            ProbeOutcome::Failed
+        }
+        s if s < 500 => ProbeOutcome::Ok,
+        _ => ProbeOutcome::Failed,
+    }
 }
 
 /// Per-provider probe state machine: consecutive-failure/-success counters
@@ -362,13 +476,7 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
         // read providers off the current snapshot so hot-reloads and newly-added
         // providers are picked up. resolve the whole probe plan here (while we
         // hold the config) so the spawned tasks own everything they need
-        let plans: Vec<(
-            String,
-            ProbePlan,
-            crate::health_events::HealthSource,
-            reqwest::Client,
-            bool,
-        )> = {
+        let plans: Vec<(String, ProbePlan, HealthSource, reqwest::Client, bool)> = {
             let snap = state.snapshot.load();
             // a provider a reload removed must stop showing up in /v1/models
             state
@@ -413,11 +521,7 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
                 {
                     Ok(Ok(resp)) => {
                         let code = resp.status().as_u16();
-                        let out = match code {
-                            429 => ProbeOutcome::RateLimited,
-                            s if s < 500 => ProbeOutcome::Ok,
-                            _ => ProbeOutcome::Failed,
-                        };
+                        let out = classify_status(source, code);
                         if let (Some(catalog), true) = (&model_catalog, (200..300).contains(&code))
                         {
                             if let Ok(Some(models)) =
@@ -439,6 +543,17 @@ async fn run_sweep(cfg: &HealthConfig, state: &crate::state::AppState) {
             let Ok(Some((name, source, outcome, status, latency_ms, timed_out))) = joined else {
                 continue;
             };
+            if let (HealthSource::LlmCall, Some(rejection)) =
+                (source, status.and_then(LlmCallRejection::of))
+            {
+                tracing::warn!(
+                    provider = %name,
+                    status,
+                    reason = rejection.error_kind(),
+                    "llm-call health check failed: {}",
+                    rejection.hint()
+                );
+            }
             // record a health event for every sweep observation (ROL-197); the
             // source distinguishes free probes from llm-call checks (ROL-199)
             state.health_events.emit(probe_health_event(
@@ -504,7 +619,7 @@ async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
 /// other failure is `error`.
 fn probe_health_event(
     provider: &str,
-    source: crate::health_events::HealthSource,
+    source: HealthSource,
     outcome: ProbeOutcome,
     status: Option<u16>,
     latency_ms: u32,
@@ -518,7 +633,10 @@ fn probe_health_event(
         ProbeOutcome::Failed => {
             let kind = match status {
                 Some(s) if s >= 500 => "upstream_error",
-                Some(_) => "error",
+                Some(s) => match (source, LlmCallRejection::of(s)) {
+                    (HealthSource::LlmCall, Some(rejection)) => rejection.error_kind(),
+                    _ => "error",
+                },
                 None => "connect_error",
             };
             (HealthOutcome::Error, Some(kind.to_string()))
@@ -719,7 +837,7 @@ mod tests {
     fn plan_defaults_to_free_probe() {
         let (plan, source) = build_probe_plan(&provider(ProviderKind::Openai), "/");
         assert!(matches!(plan, ProbePlan::Free { .. }));
-        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        assert_eq!(source, HealthSource::Probe);
     }
 
     #[test]
@@ -729,7 +847,7 @@ mod tests {
         p.llm_probe_model = Some("gpt-4o-mini".to_string());
         p.api_key = Some("sk-test".to_string());
         let (plan, source) = build_probe_plan(&p, "/");
-        assert_eq!(source, crate::health_events::HealthSource::LlmCall);
+        assert_eq!(source, HealthSource::LlmCall);
         match plan {
             ProbePlan::LlmCall { url, headers, body } => {
                 assert_eq!(url, "https://api.test/v1/chat/completions");
@@ -771,7 +889,7 @@ mod tests {
         p.also_track_via_llm_call = true;
         let (plan, source) = build_probe_plan(&p, "/");
         assert!(matches!(plan, ProbePlan::Free { .. }));
-        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        assert_eq!(source, HealthSource::Probe);
     }
 
     #[test]
@@ -780,7 +898,7 @@ mod tests {
         p.api_base = "https://ollama.com".to_string();
         p.api_key = Some("test-cloud-key".to_string());
         let (plan, source) = build_probe_plan(&p, "/");
-        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        assert_eq!(source, HealthSource::Probe);
         match plan {
             ProbePlan::Free { url, headers } => {
                 assert_eq!(url, "https://ollama.com/v1/models");
@@ -823,7 +941,7 @@ mod tests {
         p.api_base = "https://openrouter.ai/api/v1".to_string();
         p.api_key = Some("test-openrouter-key".to_string());
         let (plan, source) = build_probe_plan(&p, "/");
-        assert_eq!(source, crate::health_events::HealthSource::Probe);
+        assert_eq!(source, HealthSource::Probe);
         match plan {
             ProbePlan::Free { url, headers } => {
                 assert_eq!(url, "https://openrouter.ai/api/v1/models");
@@ -986,5 +1104,261 @@ mod tests {
             }
             _ => panic!("expected a free probe"),
         }
+    }
+
+    /// the llm-call plan of `kind` over `api_base`, with a key and a model
+    fn llm_call_plan(
+        kind: ProviderKind,
+        api_base: &str,
+    ) -> (String, Vec<(String, String)>, String) {
+        let mut p = provider(kind);
+        p.api_base = api_base.to_string();
+        p.also_track_via_llm_call = true;
+        p.llm_probe_model = Some("probe-model".to_string());
+        p.api_key = Some("sk-probe".to_string());
+        match build_probe_plan(&p, "/") {
+            (ProbePlan::LlmCall { url, headers, body }, HealthSource::LlmCall) => {
+                (url, headers, body)
+            }
+            _ => panic!("{kind:?}: expected an llm-call plan"),
+        }
+    }
+
+    fn json_body(body: &str) -> serde_json::Value {
+        serde_json::from_str(body).expect("the llm-call body is json")
+    }
+
+    /// #2818: an openai-shaped kind keeps `/v1` out of its base, so the check
+    /// appends it.
+    #[test]
+    fn llm_call_url_for_an_openai_shaped_kind_appends_v1() {
+        for base in ["https://api.openai.com", "https://api.openai.com/"] {
+            let (url, _, body) = llm_call_plan(ProviderKind::Openai, base);
+            assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+            let body = json_body(&body);
+            assert_eq!(body["model"], "probe-model");
+            assert_eq!(body["max_tokens"], 1);
+            assert_eq!(body["messages"][0]["role"], "user");
+        }
+        let (url, _, _) = llm_call_plan(ProviderKind::OpenaiCompatible, "http://vllm:8000");
+        assert_eq!(url, "http://vllm:8000/v1/chat/completions");
+    }
+
+    /// #2818: mistral's base already carries `/v1`; the check posted to
+    /// `.../v1/v1/chat/completions`, which answers 404 and read as healthy.
+    #[test]
+    fn llm_call_url_for_a_v1_carrying_kind_does_not_double_the_prefix() {
+        let (url, _, _) = llm_call_plan(ProviderKind::Mistral, "https://api.mistral.ai/v1");
+        assert_eq!(url, "https://api.mistral.ai/v1/chat/completions");
+        for (kind, base, expected) in [
+            (
+                ProviderKind::Groq,
+                "https://api.groq.com/openai/v1",
+                "https://api.groq.com/openai/v1/chat/completions",
+            ),
+            (
+                ProviderKind::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            ),
+            (
+                ProviderKind::Deepseek,
+                "https://api.deepseek.com/",
+                "https://api.deepseek.com/chat/completions",
+            ),
+        ] {
+            assert_eq!(llm_call_plan(kind, base).0, expected, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn llm_call_url_for_azure_follows_the_deployment_base() {
+        let (url, headers, _) = llm_call_plan(
+            ProviderKind::AzureOpenai,
+            "https://example.openai.azure.com/openai/v1",
+        );
+        assert_eq!(
+            url,
+            "https://example.openai.azure.com/openai/v1/chat/completions"
+        );
+        assert_eq!(
+            headers,
+            vec![("api-key".to_string(), "sk-probe".to_string())]
+        );
+    }
+
+    #[test]
+    fn llm_call_for_anthropic_sends_a_messages_body() {
+        let (url, headers, body) =
+            llm_call_plan(ProviderKind::Anthropic, "https://api.anthropic.com");
+        assert_eq!(url, "https://api.anthropic.com/v1/messages");
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "x-api-key" && v == "sk-probe"));
+        let body = json_body(&body);
+        assert_eq!(body["model"], "probe-model");
+        assert_eq!(body["max_tokens"], 1);
+        assert_eq!(body["messages"][0]["role"], "user");
+    }
+
+    /// #2818: native gemini serves no chat completions at all: the model is in
+    /// the path, the method is `generateContent` and the body is its own shape.
+    #[test]
+    fn llm_call_for_native_gemini_calls_generate_content() {
+        let (url, headers, body) = llm_call_plan(
+            ProviderKind::GeminiNative,
+            "https://generativelanguage.googleapis.com/v1beta/",
+        );
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/models/probe-model:generateContent"
+        );
+        assert_eq!(
+            headers,
+            vec![("x-goog-api-key".to_string(), "sk-probe".to_string())]
+        );
+        let body = json_body(&body);
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "ping");
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 1);
+        // the model is addressed by the url, never by the body
+        assert!(body.get("model").is_none());
+        assert!(body.get("messages").is_none());
+    }
+
+    #[test]
+    fn llm_call_for_gemini_interactions_creates_an_interaction() {
+        let (url, _, body) = llm_call_plan(
+            ProviderKind::GeminiInteractions,
+            "https://generativelanguage.googleapis.com/v1beta",
+        );
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/interactions"
+        );
+        let body = json_body(&body);
+        assert_eq!(body["model"], "probe-model");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["generation_config"]["max_output_tokens"], 1);
+    }
+
+    /// a text-embeddings server answers no completion, so it is asked for the
+    /// one thing it serves rather than being sent a request it answers 404 to
+    #[test]
+    fn llm_call_for_an_embeddings_server_asks_for_an_embedding() {
+        let (url, _, body) = llm_call_plan(ProviderKind::Tei, "http://tei:80");
+        assert_eq!(url, "http://tei:80/v1/embeddings");
+        let body = json_body(&body);
+        assert_eq!(body["input"], "ping");
+        assert!(body.get("messages").is_none());
+    }
+
+    /// no kind falls back to the free probe for want of a request shape, and
+    /// none is sent to a doubled `/v1`
+    #[test]
+    fn every_kind_gets_an_llm_call_aimed_at_its_primary_endpoint() {
+        for kind in ProviderKind::ALL {
+            let (url, _, body) = llm_call_plan(kind, "https://upstream.example/api");
+            assert_eq!(
+                url,
+                kind.primary_upstream_url("https://upstream.example/api")
+                    .replace("{model}", "probe-model"),
+                "{kind:?}"
+            );
+            assert!(!url.contains("/v1/v1/"), "{kind:?}: {url}");
+            assert!(!url.contains('{'), "{kind:?}: {url}");
+            json_body(&body);
+        }
+    }
+
+    #[test]
+    fn an_llm_call_status_that_says_the_check_is_misaimed_is_a_failure() {
+        for status in [404, 405] {
+            assert_eq!(
+                classify_status(HealthSource::LlmCall, status),
+                ProbeOutcome::Failed,
+                "{status}"
+            );
+            assert_eq!(
+                LlmCallRejection::of(status),
+                Some(LlmCallRejection::WrongEndpoint)
+            );
+        }
+        for status in [401, 403] {
+            assert_eq!(
+                classify_status(HealthSource::LlmCall, status),
+                ProbeOutcome::Failed,
+                "{status}"
+            );
+            assert_eq!(
+                LlmCallRejection::of(status),
+                Some(LlmCallRejection::KeyRefused)
+            );
+        }
+    }
+
+    #[test]
+    fn an_llm_call_still_reads_other_client_errors_as_healthy() {
+        for (status, expected) in [
+            (200, ProbeOutcome::Ok),
+            (400, ProbeOutcome::Ok),
+            (402, ProbeOutcome::Ok),
+            (422, ProbeOutcome::Ok),
+            (429, ProbeOutcome::RateLimited),
+            (500, ProbeOutcome::Failed),
+            (503, ProbeOutcome::Failed),
+        ] {
+            assert_eq!(
+                classify_status(HealthSource::LlmCall, status),
+                expected,
+                "{status}"
+            );
+        }
+    }
+
+    /// the free probe's rule is unchanged: it reads any answer below 500 as
+    /// "the API is up", including the 401 and 404 an unauthenticated model
+    /// list gets
+    #[test]
+    fn the_free_probe_keeps_reading_every_status_below_500_as_reachable() {
+        for status in [200, 401, 403, 404, 405, 422] {
+            assert_eq!(
+                classify_status(HealthSource::Probe, status),
+                ProbeOutcome::Ok,
+                "{status}"
+            );
+        }
+        assert_eq!(
+            classify_status(HealthSource::Probe, 429),
+            ProbeOutcome::RateLimited
+        );
+        assert_eq!(
+            classify_status(HealthSource::Probe, 502),
+            ProbeOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn an_llm_call_rejection_is_recorded_with_its_reason() {
+        let event = |source, status| {
+            probe_health_event(
+                "p",
+                source,
+                classify_status(source, status),
+                Some(status),
+                5,
+                false,
+            )
+        };
+        let wrong = event(HealthSource::LlmCall, 404);
+        assert_eq!(wrong.error_kind.as_deref(), Some("wrong_endpoint"));
+        assert_eq!(wrong.status_code, Some(404));
+        let refused = event(HealthSource::LlmCall, 403);
+        assert_eq!(refused.error_kind.as_deref(), Some("key_refused"));
+        let down = event(HealthSource::LlmCall, 503);
+        assert_eq!(down.error_kind.as_deref(), Some("upstream_error"));
+        // the free probe's 404 is a healthy observation with no error at all
+        let free = event(HealthSource::Probe, 404);
+        assert!(free.error_kind.is_none());
     }
 }
