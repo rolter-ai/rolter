@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { KbdChord } from "@/components/ui/kbd";
 import { Menu } from "@/components/ui/menu";
 import { useModalA11y } from "@/lib/modal-a11y";
+import { revealClippedText } from "@/lib/reveal-clipped-text";
 import { shortcutChord } from "@/lib/shortcuts";
 import { BELOW_LG, BELOW_MD, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -194,8 +195,10 @@ function holds(it: NavItem, key: string | undefined): boolean {
  * draws the full rail and the folded rail's flyout, so the two cannot disagree.
  *
  * An entry with no marker keeps the single truncating line every long name
- * already makes. The marker's word stays inside the button, so the accessible
- * name is still "<label> <experimental>".
+ * already makes, and says itself whole in a `title` once the pointer is over it
+ * and the rail has cut it (`revealClippedText`, on the rail's list and on the
+ * flyout). The marker's word stays inside the button, so the accessible name is
+ * still "<label> <experimental>".
  */
 function NavLabel({ item }: { item: NavItem }) {
   const { t } = useTranslation();
@@ -269,6 +272,7 @@ function GroupFlyout({
       role="group"
       aria-labelledby={headingId}
       onKeyDown={onKeyDown}
+      onPointerOver={revealClippedText}
       className="flex w-max min-w-[11rem] max-w-[min(20rem,calc(100vw-4.5rem))] flex-col gap-0.5 overflow-y-auto p-1"
     >
       <div
@@ -709,7 +713,7 @@ export function NavSidebar({
         </label>
       )}
 
-      <div className="flex flex-1 flex-col gap-4 overflow-y-auto">
+      <div className="flex flex-1 flex-col gap-4 overflow-y-auto" onPointerOver={revealClippedText}>
         {renderedGroups}
         {/* a query that matches nothing used to render an empty rail, which
             reads as "the navigation broke" rather than "try another word" */}

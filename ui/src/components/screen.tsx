@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
+import { revealClippedText } from "@/lib/reveal-clipped-text";
 import { useRefusedClick } from "@/lib/ux-react";
 import { cn } from "@/lib/utils";
 
@@ -99,39 +100,6 @@ export const PRIMARY_COLUMN_FLOOR = "11rem";
 export function primaryColumn(weight: number | `${number}fr`): string {
   const fr = typeof weight === "number" ? `${weight}fr` : weight;
   return `minmax(${PRIMARY_COLUMN_FLOOR}, ${fr})`;
-}
-
-/**
- * Names whatever the pointer is over that the table has clipped.
- *
- * A cell that does not fit ends in an ellipsis, and the rest of the text was
- * nowhere on screen. Every list screen clips (`truncate` on a name, an address,
- * a key prefix), so the table answers once for all of them rather than each
- * screen wiring a `title` onto each cell: on pointer over, the elements from the
- * target up to the table are read, and the first one that is cut short with an
- * ellipsis gets its full text as a `title`, the browser's own tooltip. An
- * element whose `title` its author wrote keeps it, and one that has since been
- * given room, a wider window or a resized rail, loses the title this set. The
- * text is also in the document in full, so a screen reader reads it all.
- */
-const REVEALED = "data-rl-revealed";
-function revealClippedText(e: React.PointerEvent<HTMLElement>) {
-  const table = e.currentTarget;
-  for (let el = e.target as HTMLElement | null; el && el !== table; el = el.parentElement) {
-    const mine = el.hasAttribute(REVEALED);
-    if (el.hasAttribute("title") && !mine) continue;
-    const clipped =
-      el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === "ellipsis";
-    if (clipped && el.textContent) {
-      el.setAttribute("title", el.textContent);
-      el.setAttribute(REVEALED, "");
-      return;
-    }
-    if (mine) {
-      el.removeAttribute("title");
-      el.removeAttribute(REVEALED);
-    }
-  }
 }
 
 // the bordered list-table container: css-grid header row

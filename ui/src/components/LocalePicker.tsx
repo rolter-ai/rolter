@@ -1,7 +1,8 @@
-import { Check, Globe } from "lucide-react";
+import { Globe } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Menu, MenuItemRadio } from "@/components/ui/menu";
 import {
   LOCALES,
   LOCALE_NAMES,
@@ -18,29 +19,18 @@ import { cn } from "@/lib/utils";
 // language switcher pinned to the sidebar footer next to the version, so it is
 // reachable from every screen without opening a menu (#489). switching swaps
 // the catalog in place — react-i18next re-renders the tree, nothing reloads.
+//
+// the list is a `Menu` of `menuitemradio` entries, so its panel, its keyboard
+// and its dismissal are the shared ones: on the folded rail it opens beside the
+// strip like the account menu does, anywhere else above the button
 export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
   // subscribes the component to language changes, so `currentLocale()` below
   // is re-read and the label repaints the moment the catalog swaps
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
-  const ref = React.useRef<HTMLDivElement>(null);
+  const trigger = React.useRef<HTMLButtonElement>(null);
 
   const active = currentLocale();
-
-  // same dismiss contract as the user menu above it: outside click or escape
-  React.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   // a signed-in account keeps its language on the server (#2448), so the pick
   // is saved there too; the page switches at once either way
@@ -49,6 +39,7 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
   const signedIn = !!useOptionalAuth()?.token && !!preferences?.preferences;
   const choose = (locale: Locale) => {
     setOpen(false);
+    trigger.current?.focus();
     if (locale === active) return;
     void setLocale(locale);
     if (!signedIn) return;
@@ -61,36 +52,10 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
     });
   };
 
-  // a menu owes the keyboard arrow navigation and an initial focus; the list
-  // is short enough that Home/End are the two edges of the same loop
-  const menuRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    if (!open) return;
-    const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
-    const current = Array.from(items ?? []).find(
-      (el) => el.getAttribute("aria-checked") === "true",
-    );
-    (current ?? items?.[0])?.focus();
-  }, [open]);
-  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const items = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [],
-    );
-    if (items.length === 0) return;
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    let next: number | null = null;
-    if (e.key === "ArrowDown") next = (at + 1) % items.length;
-    else if (e.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = items.length - 1;
-    if (next === null) return;
-    e.preventDefault();
-    items[next].focus();
-  };
-
   return (
-    <div ref={ref} className="relative">
+    <>
       <button
+        ref={trigger}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={t("locale.change")}
@@ -107,41 +72,29 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
           <span className="font-mono text-[0.6875rem] leading-none">{LOCALE_SHORT[active]}</span>
         )}
       </button>
-      {open && (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label={t("locale.label")}
-          onKeyDown={onMenuKeyDown}
-          className="absolute bottom-[calc(100%+6px)] left-0 z-40 min-w-[150px] rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] py-1 shadow-lg"
+      {open && trigger.current && (
+        <Menu
+          anchor={trigger.current}
+          label={t("locale.label")}
+          side={collapsed ? "right" : "above"}
+          align={collapsed ? "end" : "start"}
+          onClose={(restoreFocus) => {
+            setOpen(false);
+            if (restoreFocus) trigger.current?.focus();
+          }}
         >
-          {LOCALES.map((locale) => {
-            const selected = locale === active;
-            return (
-              <button
-                key={locale}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                lang={locale}
-                onClick={() => choose(locale)}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:bg-[color:var(--surface-hover)]",
-                  selected ? "text-foreground" : "text-[color:var(--text-secondary)]",
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate">{LOCALE_NAMES[locale]}</span>
-                {selected && (
-                  <Check
-                    aria-hidden
-                    className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]"
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+          {LOCALES.map((locale) => (
+            <MenuItemRadio
+              key={locale}
+              lang={locale}
+              checked={locale === active}
+              onSelect={() => choose(locale)}
+            >
+              {LOCALE_NAMES[locale]}
+            </MenuItemRadio>
+          ))}
+        </Menu>
       )}
-    </div>
+    </>
   );
 }

@@ -1076,6 +1076,98 @@ export const KeyNamesKeepTheirColumnAt1024: Story = keysKeepTheirNames("en");
 export const KeyNamesKeepTheirColumnAt1024InRussian: Story = keysKeepTheirNames("ru");
 
 /**
+ * The cache policy of a key is a combobox in the row, and "наследовать" was cut
+ * to "насле…" in it: the table was already at its floor and the column took
+ * what the others left. The control now holds its longest value in full, in
+ * either language, so the word the row means is the word on screen.
+ */
+function keysShowTheirCachePolicy(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <AppShell
+        route="/virtual-keys"
+        fetchStub={shellStub([
+          ["/api/v1/stability", () => []],
+          ["/virtual-keys", () => SPLIT_KEYS],
+        ])}
+      />
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      const canvas = within(canvasElement);
+      const table = await canvas.findByRole("table", { name: cat.screens["virtual-keys"].title });
+      const policy = (name: string) =>
+        within(table).findByRole("combobox", {
+          name: cat.pages.virtualKeys.cacheAria.replace("{{name}}", name),
+        });
+      for (const name of ["Playground", "ci-nightly-regression-runner-eu-west"]) {
+        const cache = await policy(name);
+        const value = cat.pages.virtualKeys.cacheModes.inherit;
+        await expect(cache).toHaveValue(value);
+        // the text is whole inside the field: nothing runs past its padding box
+        await expect(cache.scrollWidth).toBeLessThanOrEqual(cache.clientWidth + 1);
+        // and the control names its value to the pointer as well
+        await expect(cache).toHaveAttribute("title", value);
+      }
+      await expectNoHorizontalOverflow();
+    },
+  };
+}
+
+export const KeyCachePolicyIsReadableAt1024: Story = keysShowTheirCachePolicy("en");
+export const KeyCachePolicyIsReadableAt1024InRussian: Story = keysShowTheirCachePolicy("ru");
+
+/**
+ * A rail entry too long for the rail ends in an ellipsis, and the rest of its
+ * name was nowhere on screen: "Адаптивная маршрут…" at the rail's 232px. The
+ * folded rail names its icons through `title`; the full rail now does the same
+ * for the label it has cut, and only for that one.
+ *
+ * Every group is opened first, so the nested entries are measured too, and the
+ * story insists that something is cut: a catalog reworded to fit would
+ * otherwise leave it asserting nothing.
+ */
+export const RailLabelsNameThemselvesWhenCutInRussian: Story = {
+  ...atSplit,
+  globals: { ...atSplit.globals, locale: "ru" },
+  render: () => <AppShell route="/dashboard" />,
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement, ru.shell.navLabel);
+    await within(rail).findByRole("button", { name: ru.nav.playground });
+    // a group opens in place, so the next closed one is looked up afresh
+    const closedGroup = () => rail.querySelector('button[aria-expanded="false"]');
+    for (let group = closedGroup(), opened = 0; group && opened < 30; opened++) {
+      await userEvent.click(group);
+      group = closedGroup();
+    }
+    const labels = Array.from(rail.querySelectorAll<HTMLElement>("button > span")).filter(
+      (el) => getComputedStyle(el).textOverflow === "ellipsis",
+    );
+    const cut = labels.filter((el) => el.scrollWidth > el.clientWidth + 1);
+    const whole = labels.filter((el) => el.scrollWidth <= el.clientWidth + 1);
+    await expect(cut.length).toBeGreaterThan(0);
+    await expect(whole.length).toBeGreaterThan(0);
+
+    for (const label of cut) {
+      await userEvent.hover(label);
+      await expect(label).toHaveAttribute("title", label.textContent ?? "");
+    }
+    // a label that fits has nothing to add
+    for (const label of whole.slice(0, 3)) {
+      await userEvent.hover(label);
+      await expect(label).not.toHaveAttribute("title");
+    }
+    // the entry the livetest could not read
+    const adaptive = labels.find((el) => el.textContent === ru.nav["adaptive-routing"]);
+    await expect(adaptive).toBeDefined();
+    await expect(adaptive).toHaveAttribute("title", ru.nav["adaptive-routing"]);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+/**
  * ⌘K from anywhere in the shell (#1198): the palette opens with focus already
  * in its field, a screen picked there navigates, and the palette closes behind
  * it. The shortcut is the whole feature — a palette only a mouse can open is

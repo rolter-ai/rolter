@@ -199,7 +199,10 @@ export default function Keys() {
     URL.revokeObjectURL(a.href);
   };
 
-  const GRID = `${primaryColumn(1.2)} 1fr 1.4fr 1.4fr 1.1fr 60px 68px`;
+  // the cache policy is a combobox, and "наследовать" is its longest value: the
+  // column keeps the 9rem that holds it whole beside the control's chevron
+  // (#2830), and `minWidth` below carries what the floor takes from the others
+  const GRID = `${primaryColumn(1.2)} 1fr 1.4fr 1.4fr minmax(9rem, 1.1fr) 60px 68px`;
 
   return (
     <PageBody>
@@ -249,8 +252,9 @@ export default function Keys() {
         </p>
       )}
 
-      {/* as on Providers, the table's floor carries the name column's (#2812) */}
-      <ListTable label={t("screens.virtual-keys.title")} minWidth={840}>
+      {/* as on Providers, the table's floor carries the name column's (#2812)
+          and the cache column's (#2830) */}
+      <ListTable label={t("screens.virtual-keys.title")} minWidth={890}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.virtualKeys.colName")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.virtualKeys.colKey")}</ListHeaderCell>

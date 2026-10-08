@@ -114,13 +114,19 @@ the header and the rows. It tells the header apart by type, which means the
   default 760 is) squeezes them further, and a table scrolls sideways rather
   than squeezing columns past what is readable (#1203). Where the name's share
   at the table's floor is under 11rem, add the difference to `minWidth`:
-  Providers (860), Virtual keys and Provider groups (840) did. A name beside a
-  badge (Virtual keys' Playground tag) wraps the badge under the name rather
-  than shortening it.
+  Providers (860), Virtual keys (890) and Provider groups (840) did. A name
+  beside a badge (Virtual keys' Playground tag) wraps the badge under the name
+  rather than shortening it. A column that holds a control gets a floor of its
+  own for the same reason: Virtual keys' cache policy is a `Combobox`, and its
+  longest value in `ru`, "наследовать", read "насле…" in the 97px the column was
+  left (#2830), so it is `minmax(9rem, 1.1fr)` and the table's floor carries the
+  difference.
 - **A clipped cell says what it holds.** Any cell, or element inside one, that
   ends in an ellipsis (`truncate`) gets its full text as a `title` when the
   pointer is over it: `ListTable` does it once for every screen
-  (`revealClippedText`), so a column is never wired up by hand. Text that fits
+  (`revealClippedText` in `ui/src/lib/reveal-clipped-text.ts`, which the
+  navigation rail uses for its labels too), so a column is never wired up by
+  hand. Text that fits
   gets nothing, a `title` the screen wrote is left alone, and one the table set
   is taken back when the cell has been given room. The text is in the document
   whole either way, so a screen reader reads all of it. A screen that clips with

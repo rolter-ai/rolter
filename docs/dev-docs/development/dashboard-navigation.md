@@ -42,17 +42,39 @@ have written a third and fourth copy. They are one now:
   moving elsewhere, and Escape close it; Escape closes only the panel on top, so
   a menu opened from inside the scope popover does not take the popover with it.
   `openPanelCount()` is what the nav drawer asks before treating Escape as its own.
-- `Menu`, `MenuItem` and `MenuSeparator` (`ui/src/components/ui/menu.tsx`) are the
-  WAI-ARIA menu on top of it: a `role="menu"` of `menuitem`s, focus on the first
-  entry that can be chosen, Up and Down wrapping, Home and End, Tab closing the
+- `Menu`, `MenuItem`, `MenuItemRadio` and `MenuSeparator`
+  (`ui/src/components/ui/menu.tsx`) are the WAI-ARIA menu on top of it: a
+  `role="menu"` of `menuitem`s (or `menuitemradio`s for an exclusive choice, which
+  read `aria-checked` and carry a tick), focus on the checked entry or else the
+  first one that can be chosen, Up and Down wrapping, Home and End, Tab closing the
   menu and carrying on to the control after its anchor, Escape handing focus back.
   `header` renders above the `menu` element rather than inside it, since a menu
   may own entries, groups and separators and an identity block is none of those.
 - `GroupFlyout` stays a disclosure of navigation buttons, not a menu, and keeps
   its own keyboard on top of `AnchoredPanel`'s placement and dismissal.
 
-`LocalePicker` still carries its own copy of the menu keyboard and dismissal; it
-is the one remaining and moves to `Menu` separately.
+### The language picker
+
+`LocalePicker` (`ui/src/components/LocalePicker.tsx`, #2822) is the last of the
+rail's floating lists and stands on the same two pieces as the rest: a `Menu` of
+`MenuItemRadio` entries, one per catalog, each in its own language. It opens
+above its button on the full rail and in the drawer, and beside the strip with
+its bottom edge on the button's once the rail is folded (the account menu's
+placement), so it is `fixed` like every other overlay and no scroll container can
+clip it, and its panel carries the `--shadow-lg` token. Opening puts focus on the
+language in force. Escape closes it with focus back on the button, Tab closes it
+and carries on, a press outside closes it, and inside the drawer the first Escape
+puts the menu away and only the second closes the drawer. Picking a language
+closes the menu and leaves focus on the button, now under its new name. The
+sign-in card renders the same component, where it opens upward from the card's
+last line.
+
+Stories: `MenuIsASharedPanelAboveTheButton`, `MenuFromTheKeyboard`,
+`ChoosingFromTheKeyboard` and `MenuClosesOnAnOutsidePress` in
+`LocalePicker.stories.tsx`; `LocalePickerOpensAboveTheFullRail`,
+`LocalePickerOpensBesideTheFoldedRail` and `LocalePickerInsideTheDrawerOwnsEscape`
+in `nav-sidebar.stories.tsx`; `DocumentTitle` in `App.stories.tsx` for the switch
+itself.
 
 ### The account menu
 
@@ -235,6 +257,29 @@ experimental marker, following the list's scroll), `NavAsViewerFlyout` and
 `NavAsSuperadminFlyout` in `CapabilityGating.stories.tsx`, and
 `FoldedRailOpensAGroup` and `FoldedRailFlyoutLeavesOutRefusedScreens` in
 `App.stories.tsx` for the assembled shell.
+
+## A label the rail cuts
+
+A label wider than the rail ends in an ellipsis. The `ru` catalog runs a third
+longer than `en`, so at the default 232px "Адаптивная маршрутизация" read
+"Адаптивная маршрут…" with the rest of it nowhere on screen (#2830). The folded
+rail already names each icon through `title`; the full rail now does the same for
+the label it has cut, and only for that one:
+
+- The rail's list and the group flyout both hand `revealClippedText`
+  (`ui/src/lib/reveal-clipped-text.ts`, the function `ListTable` uses for its cells)
+  to `onPointerOver`. On pointer over, the label under the pointer gets its full
+  text as a `title` if, and only if, it is cut by an ellipsis; one that fits gets
+  nothing, and a label that has since been given room (a wider rail, a longer
+  window) loses the title it was given. The text is in the document in full either
+  way, so the accessible name never depended on it.
+- An experimental entry does not clip at all: its name wraps beside or above its
+  badge (#2812), so there is nothing to reveal.
+
+Stories: `ClippedRailLabelNamesItself` and `ClippedLabelInAFlyoutNamesItself` in
+`nav-sidebar.stories.tsx`, and `RailLabelsNameThemselvesWhenCutInRussian` in
+`App.stories.tsx`, which opens every group of the real navigation at 1024px in
+`ru` and checks each label that is cut and one that is not.
 
 ## Resize
 
