@@ -3130,10 +3130,22 @@ mod probe_verdict_tests {
             Some("OPENAI_API_KEY"),
         );
         let error = verdict.error.expect("a rejection explains itself");
-        assert!(error.contains("OPENAI_API_KEY"), "{error}");
-        assert!(error.contains("control plane's environment"), "{error}");
-        assert!(error.contains("gateway"), "{error}");
-        assert!(error.contains("resolved from: env (unset)"), "{error}");
+        assert!(
+            error.contains("OPENAI_API_KEY"),
+            "the message names the variable"
+        );
+        assert!(
+            error.contains("control plane's environment"),
+            "the message says the control plane is missing it"
+        );
+        assert!(
+            error.contains("gateway"),
+            "the message says the gateway needs it too"
+        );
+        assert!(
+            error.contains("resolved from: env (unset)"),
+            "the message keeps naming the credential source"
+        );
     }
 
     /// The extra explanation is for the one credential source it is true of.
@@ -3149,8 +3161,14 @@ mod probe_verdict_tests {
                 Some("OPENAI_API_KEY"),
             );
             let error = verdict.error.expect("a rejection explains itself");
-            assert!(error.contains("rejected the credential"), "{error}");
-            assert!(!error.contains("control plane's environment"), "{error}");
+            assert!(
+                error.contains("rejected the credential"),
+                "the plain message is kept for {credential}"
+            );
+            assert!(
+                !error.contains("control plane's environment"),
+                "the process explanation is only for an unset variable"
+            );
         }
     }
 
