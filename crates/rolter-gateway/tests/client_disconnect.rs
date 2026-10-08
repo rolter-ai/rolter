@@ -224,10 +224,23 @@ async fn a_caller_that_leaves_during_a_retry_backoff_is_not_charged_to_the_targe
     .await;
     let rows = Rows::default();
     let clickhouse = rows.serve().await;
-    let gateway = serve(rolter_gateway::build_router_from_config(&config(
-        upstream, clickhouse,
-    )))
-    .await;
+    let mut config = config(upstream, clickhouse);
+    // a sibling to fail over to: the loop only backs off when there is a next
+    // attempt to wait for (#2835), so with one target the 429 would be answered
+    // at once and there would be no backoff for the caller to leave during
+    config.providers.push(ProviderConfig {
+        name: "sibling".into(),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        api_key: Some("test-key".into()),
+        ..Default::default()
+    });
+    config.routes[0].targets.push(Target {
+        provider: "sibling".into(),
+        model: Some("slow-chat".into()),
+        weight: 1,
+    });
+    let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
 
     let hung_up = reqwest::Client::builder()
         .timeout(Duration::from_millis(500))
