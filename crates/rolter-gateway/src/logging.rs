@@ -555,11 +555,14 @@ pub struct Usage {
 ///
 /// Handles both OpenAI (`prompt_tokens`/`completion_tokens`/`total_tokens`) and
 /// Anthropic (`input_tokens`/`output_tokens`, top-level or under `message`) key
-/// styles, for non-streamed JSON and SSE. For SSE every `data:` object is
-/// scanned and the largest values are kept, since streamed usage is cumulative
-/// or reported once at the end (OpenAI final chunk, Anthropic
-/// `message_start`/`message_delta`). `total` falls back to `prompt + completion`
-/// when the upstream does not report it.
+/// styles, for non-streamed JSON and SSE. The Responses API spells the counts
+/// like Anthropic but nests them under `response` on its streamed terminal
+/// events (`response.completed`, `response.incomplete`, `response.failed`).
+/// For SSE every `data:` object is scanned and the largest values are kept,
+/// since streamed usage is cumulative or reported once at the end (OpenAI final
+/// chunk, Anthropic `message_start`/`message_delta`, Responses terminal event).
+/// `total` falls back to `prompt + completion` when the upstream does not
+/// report it.
 pub fn parse_usage(is_sse: bool, buf: &[u8]) -> Usage {
     let mut usage = Usage::default();
     if is_sse {
@@ -606,9 +609,15 @@ fn trim_ascii(mut b: &[u8]) -> &[u8] {
 /// Merge any usage numbers found in `value` into `usage`, keeping the max of
 /// each field (streamed usage is cumulative or final-only).
 fn merge_usage(usage: &mut Usage, value: &Value) {
-    // usage can sit at the top level (openai, anthropic non-stream / message_delta)
-    // or under `message` (anthropic message_start event)
-    for holder in [value.get("usage"), value.pointer("/message/usage")] {
+    // usage can sit at the top level (openai, anthropic non-stream / message_delta,
+    // a buffered responses api body), under `message` (anthropic message_start
+    // event) or under `response` (every streamed responses api event: `created`
+    // and `in_progress` carry `usage: null`, the terminal ones the counts)
+    for holder in [
+        value.get("usage"),
+        value.pointer("/message/usage"),
+        value.pointer("/response/usage"),
+    ] {
         let Some(u) = holder.filter(|u| u.is_object()) else {
             continue;
         };
@@ -1679,6 +1688,113 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n\n";
     #[test]
     fn missing_usage_is_zero() {
         assert_eq!(parse_usage(false, b"{\"id\":\"x\"}"), Usage::default());
+    }
+
+    // ── responses api (#2819) ───────────────────────────────────────────────
+    // a buffered answer carries `usage` at the top level; a streamed one only
+    // on the terminal event, under `response`, so the two shapes are pinned
+    // side by side and must yield the same numbers
+
+    /// The streamed terminal event from the issue, behind the events that
+    /// precede it: `response.created` and `response.in_progress` carry
+    /// `usage: null`, which says nothing and must not be read as a report.
+    #[test]
+    fn parses_responses_api_sse_completed_usage() {
+        let sse = b"event: response.created
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"usage\":null}}\n\n\
+event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n";
+        assert_eq!(
+            parse_usage(true, sse),
+            Usage {
+                prompt: 7,
+                completion: 3,
+                total: 10,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_responses_api_non_stream_usage() {
+        let body = br#"{"id":"resp_1","object":"response","status":"completed",
+            "usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 7,
+                completion: 3,
+                total: 10,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// The same answer, buffered and streamed, is billed the same. The detail
+    /// objects a real upstream adds are present in both.
+    #[test]
+    fn a_responses_api_answer_is_read_alike_buffered_and_streamed() {
+        let usage = r#"{"input_tokens":120,"input_tokens_details":{"cached_tokens":0},"output_tokens":45,"output_tokens_details":{"reasoning_tokens":16},"total_tokens":165}"#;
+        let body = format!(
+            r#"{{"id":"resp_1","object":"response","status":"completed","usage":{usage}}}"#
+        );
+        let sse = format!(
+            "event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{body}}}\n\n"
+        );
+        let buffered = parse_usage(false, body.as_bytes());
+        assert_eq!(buffered, parse_usage(true, sse.as_bytes()));
+        assert_eq!(
+            buffered,
+            Usage {
+                prompt: 120,
+                completion: 45,
+                total: 165,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// An answer cut short by `max_output_tokens` still spent its tokens, and
+    /// the provider reports them on `response.incomplete`.
+    #[test]
+    fn parses_responses_api_sse_incomplete_usage() {
+        let sse = b"event: response.incomplete\n\
+data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":9,\"output_tokens\":16,\"total_tokens\":25}}}\n\n";
+        assert_eq!(
+            parse_usage(true, sse),
+            Usage {
+                prompt: 9,
+                completion: 16,
+                total: 25,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// `response.failed` carries whatever usage the provider settled on. When
+    /// there is none the row says so (`usage_unknown`) instead of claiming a
+    /// known zero, exactly as for any other body without a usage object.
+    #[test]
+    fn a_failed_responses_api_stream_is_reported_only_if_it_carries_usage() {
+        let with_usage = b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":0,\"total_tokens\":4}}}\n\n";
+        assert_eq!(
+            parse_usage(true, with_usage),
+            Usage {
+                prompt: 4,
+                total: 4,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+        let without = b"data: {\"type\":\"response.created\",\"response\":{\"usage\":null}}\n\n\
+data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"usage\":null}}\n\n";
+        assert_eq!(parse_usage(true, without), Usage::default());
     }
 
     #[test]
