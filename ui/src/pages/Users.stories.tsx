@@ -309,7 +309,7 @@ export const ShowsDisplayNamesBesideTheEmail: Story = {
 
 /**
  * The grants are a read of their own, so while it is still coming a row is not
- * a person with "no roles" (#2211).
+ * a person with "no role in this org" (#2211).
  */
 export const RolesStillLoading: Story = {
   render: () => (
@@ -326,7 +326,7 @@ export const RolesStillLoading: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("grace@example.com")).toBeInTheDocument();
-    await expect(canvas.queryByText("no roles")).toBeNull();
+    await expect(canvas.queryByText("no role in this org")).toBeNull();
   },
 };
 
@@ -349,7 +349,7 @@ export const RolesFailedToLoad: Story = {
     const canvas = within(canvasElement);
     await expectLoadError(canvasElement, /store unavailable/);
     await waitFor(() => expect(canvas.getAllByText("roles not loaded")).toHaveLength(3));
-    await expect(canvas.queryByText("no roles")).toBeNull();
+    await expect(canvas.queryByText("no role in this org")).toBeNull();
   },
 };
 
@@ -2947,3 +2947,126 @@ function inviteSubtitleIsWhole(locale: "en" | "ru") {
 
 export const InviteSubtitleIsWholeAt1024: Story = inviteSubtitleIsWhole("en");
 export const InviteSubtitleIsWholeAt1024InRussian: Story = inviteSubtitleIsWhole("ru");
+
+// -------------------------- accounts with no role anywhere (#2804)
+
+/**
+ * The first administrator `rolter-seed --admin-email` creates: a superadmin
+ * who holds no membership, so no org's people list names them.
+ */
+const SEEDED_ADMIN: UserRow = {
+  id: "user-0",
+  email: "root@example.com",
+  is_superadmin: true,
+  deactivated_at: null,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+/**
+ * What `GET /orgs/{org}/users` answers: the org's members, plus the accounts
+ * with no membership anywhere when `include_unassigned=true` is asked for. The
+ * control plane only honours the flag for a superadmin, so a story that signs
+ * in as anyone else sends none.
+ */
+function orgWithUnassigned(): Recorder {
+  return recording(
+    scoped(async (input) => {
+      const url = String(input);
+      if (url.includes("/invitations")) return json([]);
+      if (url.includes("/memberships")) return json(MEMBERSHIPS);
+      if (url.includes("/users")) {
+        return json(url.includes("include_unassigned=true") ? [SEEDED_ADMIN, ...USERS] : USERS);
+      }
+      return json([]);
+    }),
+  );
+}
+
+const unassignedAsSuperadmin = orgWithUnassigned();
+
+/**
+ * A superadmin asks for the accounts that hold no role, so their own row is on
+ * the screen and can be edited. The row says it has no role in this org
+ * instead of looking like a load that failed, and nothing else changes.
+ */
+export const SuperadminSeesAnAccountWithNoRole: Story = {
+  render: () => (
+    <Harness fetchStub={unassignedAsSuperadmin.stub} role="superadmin">
+      <SignedInAs user={SEEDED_ADMIN}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await usersTable(canvasElement);
+    const root = await within(table).findByText("root@example.com");
+    const row = within(root.closest('[role="row"]') as HTMLElement);
+    await expect(row.getByText("Superadmin")).toBeVisible();
+    await waitFor(() => expect(row.getByText("no role in this org")).toBeVisible());
+    // an account that does hold a role keeps showing it
+    await expect(rowOf(table, "grace@example.com").getByText("Member")).toBeVisible();
+    await expect(rowOf(table, "grace@example.com").queryByText("no role in this org")).toBeNull();
+
+    // the flag is in the request, which is how the control plane knows to add them
+    await waitFor(() =>
+      expect(
+        unassignedAsSuperadmin.calls.some(
+          (c) => c.method === "GET" && c.url.endsWith("/orgs/org-1/users?include_unassigned=true"),
+        ),
+      ).toBe(true),
+    );
+
+    // and the caller's own row is theirs to edit
+    await expectAllowed(canvasElement, "Edit root@example.com");
+    await userEvent.click(within(table).getByRole("button", { name: "Edit root@example.com" }));
+    await expect(await dialogNamed("Edit user")).toBeVisible();
+  },
+};
+
+/** The same row in Russian, where the sentence is longer than the English one. */
+export const AccountWithNoRoleInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={orgWithUnassigned().stub} role="superadmin">
+      <SignedInAs user={SEEDED_ADMIN}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await within(canvasElement).findByRole("table", { name: "Пользователи" });
+    const root = await within(table).findByText("root@example.com");
+    const row = within(root.closest('[role="row"]') as HTMLElement);
+    await waitFor(() => expect(row.getByText("нет роли в этой организации")).toBeVisible());
+  },
+};
+
+const unassignedAsAdmin = orgWithUnassigned();
+
+/**
+ * Anyone who is not a superadmin never asks for them: the flag would change
+ * nothing server-side, and a request that does not carry it cannot be mistaken
+ * for one that does.
+ */
+export const OrgAdminDoesNotAskForAccountsWithNoRole: Story = {
+  render: () => (
+    <Harness fetchStub={unassignedAsAdmin.stub} role="admin">
+      <SignedInAs user={{ ...USERS[1], is_superadmin: false }}>
+        <Users />
+      </SignedInAs>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const table = await usersTable(canvasElement);
+    await expect(await within(table).findByText("grace@example.com")).toBeVisible();
+    await expect(within(table).queryByText("root@example.com")).toBeNull();
+    await expect(
+      unassignedAsAdmin.calls.filter((c) => c.url.includes("include_unassigned")),
+    ).toHaveLength(0);
+    await expect(
+      unassignedAsAdmin.calls.some(
+        (c) => c.method === "GET" && c.url.endsWith("/orgs/org-1/users"),
+      ),
+    ).toBe(true);
+  },
+};

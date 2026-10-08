@@ -66,13 +66,26 @@ export class ApiError extends Error {
    * it does not have to make the user poll to find out (#1079).
    */
   readonly retryAfterSeconds?: number;
+  /**
+   * The request field a `400 invalid_field` refusal is about, from the body's
+   * `{"error": {"field": ...}}`. A form pins the message to that input rather
+   * than guessing from the wording (#2804).
+   */
+  readonly field?: string;
 
-  constructor(message: string, status: number, code?: string, retryAfterSeconds?: number) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    retryAfterSeconds?: number,
+    field?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.field = field;
   }
 }
 
@@ -182,10 +195,16 @@ async function apiError(res: Response): Promise<ApiError> {
   const retryAfter = Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
   try {
     const body = (await res.json()) as {
-      error?: { message?: string; code?: string };
+      error?: { message?: string; code?: string; field?: string };
     };
     if (body?.error?.message) {
-      return new ApiError(body.error.message, res.status, body.error.code, retryAfter);
+      return new ApiError(
+        body.error.message,
+        res.status,
+        body.error.code,
+        retryAfter,
+        typeof body.error.field === "string" ? body.error.field : undefined,
+      );
     }
   } catch {
     // not json, fall through
@@ -2336,6 +2355,12 @@ export interface MeResponse {
    * The bio stays editable. Absent from a control plane older than #1823.
    */
   display_name_managed?: boolean;
+  /**
+   * `false` for an account that signs in through single sign-on only: it has no
+   * local password, and changing one answers `409 no_local_password` (#2804).
+   * Absent from a control plane older than that, which reads as `true`.
+   */
+  has_local_password?: boolean;
 }
 
 /** longest display name, in characters (`users_display_name_shape`) */
@@ -2375,6 +2400,30 @@ export function updateMyProfile(body: ProfileUpdate): Promise<ProfileResult> {
  */
 export function fetchMe(): Promise<MeResponse> {
   return getJson<MeResponse>("/api/v1/auth/me");
+}
+
+/** shortest password the control plane accepts, in characters (`hash_password`) */
+export const MIN_PASSWORD_LEN = 8;
+
+/** `POST /auth/password` body: both fields are required and no others are taken */
+export interface ChangePasswordInput {
+  current_password: string;
+  new_password: string;
+}
+
+/**
+ * Change the signed-in account's own password (#2804).
+ *
+ * A wrong `current_password` is a `400 invalid_field` naming that field, never a
+ * `401`: the session is fine, and a 401 would sign the dashboard out. It counts
+ * against the same failed-attempt budget as a sign-in, so a spent one answers
+ * `429 too_many_attempts` with the wait in `Retry-After`. The account's other
+ * sessions end and the answer says how many; this one stays.
+ */
+export function changeMyPassword(
+  input: ChangePasswordInput,
+): Promise<{ sessions_revoked: number }> {
+  return sendJson<{ sessions_revoked: number }>("POST", "/api/v1/auth/password", input);
 }
 
 // --- second factor (crates/rolter-control/src/mfa.rs, #1078) ---
@@ -2619,9 +2668,16 @@ export interface CreateMembershipInput {
   role: string;
 }
 
-// every account with a membership anywhere in the org's tree
-export function fetchUsers(orgId: string): Promise<UserRow[]> {
-  return getJson<UserRow[]>(`/api/v1/orgs/${orgId}/users`);
+// every account with a membership anywhere in the org's tree. a superadmin also
+// asks for the accounts that hold no membership at all, such as the first
+// administrator `rolter-seed --admin-email` creates, so they can find their own
+// row to edit (#2804); the control plane ignores the flag for anyone else
+export function fetchUsers(
+  orgId: string,
+  { includeUnassigned = false }: { includeUnassigned?: boolean } = {},
+): Promise<UserRow[]> {
+  const query = includeUnassigned ? "?include_unassigned=true" : "";
+  return getJson<UserRow[]>(`/api/v1/orgs/${orgId}/users${query}`);
 }
 
 // create/invite an account and grant it a role in the org atomically

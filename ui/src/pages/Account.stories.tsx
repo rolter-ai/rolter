@@ -179,6 +179,8 @@ const account = (
 ): FetchStub =>
   scoped(async (input, init) => {
     const url = String(input);
+    // the password panel changes the account's own password (#2804)
+    if (url.includes("/auth/password")) return json({ sessions_revoked: 2 });
     // the profile card reads and writes the account itself (#2434)
     if (url.includes("/me/profile") || url.includes("/auth/me")) return me(init);
     // the mint sheet's provider picker reads this one, and answering it with
@@ -1349,5 +1351,95 @@ export const ProfileHiddenInOpenMode: Story = {
     await expect(await canvas.findByText(/Self-service keys need a local account/)).toBeVisible();
     await expect(canvas.queryByText("Profile")).toBeNull();
     await expect(canvas.queryByRole("textbox", { name: "Display name" })).toBeNull();
+  },
+};
+
+// -------------------------- the password panel (#2804)
+
+/**
+ * How this account signs in comes right after who it is: the password, then the
+ * second factor that stands behind it, then the keys the session reaches.
+ */
+export const PasswordSitsBetweenTheProfileAndTheSecondFactor: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        canvas
+          .getAllByRole("heading", { level: 2 })
+          .map((heading) => heading.textContent)
+          .slice(0, 3),
+      ).toEqual(["Profile", "Password", "Two-factor authentication"]),
+    );
+  },
+};
+
+/**
+ * Passwords are made when the module loads, so no story carries one as a
+ * literal: a fixture that looks like a credential is what secret scanners flag.
+ */
+const fresh = () => `pw-${crypto.randomUUID()}`;
+const OLD_PASSWORD = fresh();
+const NEW_PASSWORD = fresh();
+
+const passwordChange = recording(account(() => json(KEYS)));
+
+/**
+ * The whole path on the screen: the change is sent, the panel reports the two
+ * other sessions it signed out, and the keys below it are untouched.
+ */
+export const ChangesThePassword: Story = {
+  render: () => (
+    <Harness fetchStub={passwordChange.stub}>
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("Current password"), OLD_PASSWORD);
+    await userEvent.type(canvas.getByLabelText("New password"), NEW_PASSWORD);
+    await userEvent.type(canvas.getByLabelText("Confirm new password"), NEW_PASSWORD);
+    await userEvent.click(canvas.getByRole("button", { name: "Change password" }));
+
+    await expect(await passwordChange.expectSentBody("POST", "/auth/password")).toEqual({
+      current_password: OLD_PASSWORD,
+      new_password: NEW_PASSWORD,
+    });
+    // the key count above is a status region too, so the message is found by
+    // its words and then checked to be one
+    const changed = await canvas.findByText("Password changed. 2 other sessions were signed out.");
+    await expect(changed.closest('[role="status"]')).not.toBeNull();
+    await expect(canvas.getByLabelText("Current password")).toHaveValue("");
+    await expect(await canvas.findByText("my laptop")).toBeVisible();
+  },
+};
+
+/** An account that signs in through single sign-on gets the explanation in the same place. */
+export const PasswordIsExplainedForAnSsoAccount: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ data: USAGE }),
+        () => json({ ...ME, has_local_password: false }),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(/You sign in through single sign-on, so this account has no local/),
+    ).toBeVisible();
+    await expect(canvas.queryByLabelText("Current password")).toBeNull();
+    // the rest of the screen is unaffected
+    await expect(await canvas.findByText("my laptop")).toBeVisible();
   },
 };

@@ -10,6 +10,8 @@ import {
   isOpenModeNoSession,
   login,
   fetchMe,
+  fetchUsers,
+  changeMyPassword,
   setSessionExpiredHandler,
   apiBaseDoublesV1,
   resolveUpstreamUrl,
@@ -169,6 +171,102 @@ describe("api client", () => {
       fetchMock.mockResolvedValueOnce(refusal({}));
       const err = await login("a@b.co", "pw").catch((e) => e);
       expect(err.retryAfterSeconds).toBeUndefined();
+    });
+  });
+
+  // #2804: the control plane names the input a `400 invalid_field` is about,
+  // and a form pins the message there rather than reading the wording
+  describe("change password (#2804)", () => {
+    // made per run: a fixture that looks like a credential is what secret
+    // scanners flag
+    const fresh = () => `pw-${crypto.randomUUID()}`;
+    const [current, next] = [fresh(), fresh()];
+    it("posts both fields and reads how many sessions it ended", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ sessions_revoked: 2 }), { status: 200 }),
+      );
+      const result = await changeMyPassword({
+        current_password: current,
+        new_password: next,
+      });
+      expect(result).toEqual({ sessions_revoked: 2 });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe("/api/v1/auth/password");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body)).toEqual({
+        current_password: current,
+        new_password: next,
+      });
+    });
+
+    it("carries the field a refusal names", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "the current password is not correct",
+              code: "invalid_field",
+              field: "current_password",
+            },
+          }),
+          { status: 400 },
+        ),
+      );
+      const err = await changeMyPassword({ current_password: current, new_password: next }).catch(
+        (e) => e,
+      );
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.status).toBe(400);
+      expect(err.code).toBe("invalid_field");
+      expect(err.field).toBe("current_password");
+    });
+
+    it("has no field when the refusal names none", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: "x", code: "no_local_password" } }), {
+          status: 409,
+        }),
+      );
+      const err = await changeMyPassword({ current_password: current, new_password: next }).catch(
+        (e) => e,
+      );
+      expect(err.field).toBeUndefined();
+      expect(err.code).toBe("no_local_password");
+    });
+
+    it("does not sign the dashboard out for a wrong current password", async () => {
+      // a wrong password is a 400 precisely so it cannot be taken for a dead
+      // session; only a 401 would reach the handler
+      localStorageMock["rolter.session.token"] = "sess-1";
+      let signalled = 0;
+      setSessionExpiredHandler(() => {
+        signalled += 1;
+      });
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: "x", code: "invalid_field", field: "current_password" },
+          }),
+          { status: 400 },
+        ),
+      );
+      await changeMyPassword({ current_password: current, new_password: next }).catch(() => {});
+      expect(signalled).toBe(0);
+      setSessionExpiredHandler(null);
+    });
+  });
+
+  describe("fetchUsers (#2804)", () => {
+    it("asks for the accounts with no role only when told to", async () => {
+      fetchMock.mockImplementation(async () => new Response("[]", { status: 200 }));
+      await fetchUsers("org-1");
+      await fetchUsers("org-1", { includeUnassigned: false });
+      await fetchUsers("org-1", { includeUnassigned: true });
+      expect(fetchMock.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+        "/api/v1/orgs/org-1/users",
+        "/api/v1/orgs/org-1/users",
+        "/api/v1/orgs/org-1/users?include_unassigned=true",
+      ]);
     });
   });
 
