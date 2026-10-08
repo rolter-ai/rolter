@@ -126,12 +126,14 @@ Rolter returns OpenAI-style JSON error bodies on every error path, so existing e
 }
 ```
 
-| Status                    | Meaning                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------- |
-| `401 Unauthorized`        | Missing or invalid virtual key (`type` `authentication_error`, `code` `invalid_api_key`) |
-| `403 Forbidden`           | Key is valid but not permitted to use the requested model                                |
-| `402 Payment Required`    | A spend budget for the key, project, team, or org has been exceeded                      |
-| `429 Too Many Requests`   | A rate limit (RPM or TPM) has been reached; check the `Retry-After` response header      |
-| `404 Not Found`           | No route matches the requested `model` name                                              |
-| `502 Bad Gateway`         | All upstream targets failed or were unreachable after retries                            |
-| `503 Service Unavailable` | Route has no available targets                                                           |
+| Status                    | Meaning                                                                                                                                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `401 Unauthorized`        | Missing or invalid virtual key (`type` `authentication_error`, `code` `invalid_api_key`)                                                                                          |
+| `403 Forbidden`           | Key is valid but not permitted to use the requested model                                                                                                                         |
+| `402 Payment Required`    | A spend budget for the key, project, team, or org has been exceeded                                                                                                               |
+| `429 Too Many Requests`   | A rate limit (RPM or TPM) has been reached, or every upstream target answered `429` (`code` `upstream_rate_limited`); check the `Retry-After` response header                     |
+| `404 Not Found`           | No route matches the requested `model` name                                                                                                                                       |
+| `502 Bad Gateway`         | An upstream target was unreachable on the last attempt (connection refused, reset or timed out)                                                                                   |
+| `503 Service Unavailable` | Route has no targets, or every upstream target failed with a retryable status and none is left to try (`code` `upstream_unavailable`; the message names the last upstream status) |
+
+When your route's retry budget runs out on a retryable upstream status, you get the upstream's own answer, status and body as it sent them. When rolter runs out of targets first, it answers itself: a `429` from the provider stays a `429` (`code` `upstream_rate_limited`, with the provider's `Retry-After` when it sent one), and any other retryable failure is a `503` (`code` `upstream_unavailable`) whose message names the last upstream status. Both are logged with the upstream's own reason; see [What gets logged](/observability/logs-and-cost#failed-and-refused-requests).

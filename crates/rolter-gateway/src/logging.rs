@@ -206,6 +206,19 @@ pub struct RequestLog {
     pub latency_ms: u32,
     pub ttft_ms: u32,
     pub error: String,
+    /// HTTP status of the last upstream attempt that answered, `0` when none
+    /// did: a refusal, a cache hit, a built-in model, or a connection that
+    /// failed before any status line (#2807).
+    ///
+    /// `status` is what the caller received. The two differ exactly when the
+    /// gateway answered with an error of its own after the upstream failed: a
+    /// provider's `429` that ran out of targets is a `429` here and a `429` or
+    /// `503` of the gateway's making in `status`. Without it an operator reads
+    /// a gateway-made `503` and has to guess which upstream status caused it.
+    pub upstream_status: u16,
+    /// How many upstream attempts the request made, the one that answered
+    /// included; `0` when it never reached an upstream. Saturates at 255.
+    pub attempts: u8,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -262,6 +275,8 @@ impl Default for RequestLog {
             latency_ms: 0,
             ttft_ms: 0,
             error: String::new(),
+            upstream_status: 0,
+            attempts: 0,
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -795,6 +810,14 @@ impl UsageLoggingStream {
             .take()
             .unwrap_or_else(|| parse_usage(self.is_sse, &self.buf));
         log.usage_unknown = u8::from(upstream_answered && !usage.reported);
+        // an upstream error the caller received as it was. the status alone says
+        // that it failed, not why; the body already sits in this buffer, so the
+        // row can say what the upstream said at no extra cost (#2807)
+        if self.completed && log.withheld == 0 && log.error.is_empty() && log.upstream_status >= 400
+        {
+            log.error =
+                crate::upstream_failure::upstream_error_text(log.upstream_status, &self.buf);
+        }
         // the conventions want token counts on the inference span, and this is
         // the first moment they are known (#808)
         if let Some(span) = self.genai_span.take() {
@@ -955,7 +978,17 @@ fn classify_health(
 /// attempt before it is funnelled by [`LogSink::record_failed_attempt`].
 fn passive_health_event(record: &RequestLog) -> crate::health_events::HealthEvent {
     use crate::health_events::{HealthEvent, HealthSource};
-    let (outcome, error_kind) = classify_health(record.status, &record.error);
+    // a caller handed the upstream's own status is classified by that status.
+    // the words in `error` are then the upstream's, not ours to read a verdict
+    // from: "timed out" in a 429's message does not make the target a timeout
+    // (#2807). a status the gateway made up, such as the 502 for a body that
+    // could not be read, still takes its verdict from its own error text
+    let error = if record.upstream_status > 0 && record.upstream_status == record.status {
+        ""
+    } else {
+        &record.error
+    };
+    let (outcome, error_kind) = classify_health(record.status, error);
     HealthEvent {
         // the request's own instant, so an uptime rollup and the request row it
         // was derived from agree on when the observation happened
@@ -1167,6 +1200,20 @@ impl LogSink {
     /// health series for a thing that cannot be unhealthy would only be noise.
     pub fn log_builtin(&self, record: RequestLog) {
         self.observe(&record, false);
+        self.enqueue(record);
+    }
+
+    /// Enqueue the row for a request the gateway refused before it chose a
+    /// target: a spent budget, a rate limit, a guardrail, an unknown model
+    /// (#2807).
+    ///
+    /// Only the ClickHouse row is written. The latency histograms are keyed by
+    /// the model the caller named, which on a refusal can be any string an
+    /// authenticated caller cares to send, so observing it would let one key
+    /// mint an unbounded number of metric series. The refusal is already
+    /// counted by its own counter (`budget_blocks_total`,
+    /// `rate_limit_blocks_total`, and so on), and there is no target to blame.
+    pub fn log_refusal(&self, record: RequestLog) {
         self.enqueue(record);
     }
 
@@ -1960,6 +2007,56 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         });
         assert_eq!(ce.outcome, HealthOutcome::Error);
         assert_eq!(ce.error_kind.as_deref(), Some("connect_error"));
+    }
+
+    /// #2807: a caller handed the upstream's own status is judged by it. The
+    /// words in `error` are then the upstream's, and a 429 whose message says
+    /// "timed out" is a rate limit, not a timeout.
+    #[test]
+    fn the_upstreams_own_words_do_not_decide_its_health_verdict() {
+        use crate::health_events::HealthOutcome;
+
+        let upstream_said = RequestLog {
+            status: 429,
+            upstream_status: 429,
+            error: "upstream returned 429: timed out waiting for a slot".to_string(),
+            provider: "p".to_string(),
+            target: "t".to_string(),
+            ..Default::default()
+        };
+        let event = passive_health_event(&upstream_said);
+        assert_eq!(event.outcome, HealthOutcome::Error);
+        assert_eq!(event.error_kind.as_deref(), Some("rate_limited"));
+
+        // a status the gateway made up from an upstream's 200 still reads its
+        // own error text: the body could not be read, and it timed out
+        let gateway_said = RequestLog {
+            status: 502,
+            upstream_status: 200,
+            error: "upstream response body could not be read: operation timed out".to_string(),
+            ..upstream_said
+        };
+        let event = passive_health_event(&gateway_said);
+        assert_eq!(event.outcome, HealthOutcome::Timeout);
+    }
+
+    /// #2807: a refusal is written to ClickHouse and nowhere else. The latency
+    /// histograms are keyed by the model the caller named, and a refusal is
+    /// written before any route vouches for it.
+    #[test]
+    fn a_refusal_row_touches_no_metric_series() {
+        let metrics = Arc::new(Metrics::default());
+        let sink = LogSink::disabled(metrics.clone());
+        sink.log_refusal(RequestLog {
+            model: "a-model-nobody-configured".to_string(),
+            status: 404,
+            ..Default::default()
+        });
+        let rendered = metrics.render();
+        assert!(
+            !rendered.contains("a-model-nobody-configured"),
+            "a refusal minted a series: {rendered}"
+        );
     }
 
     /// #1646: a superseded attempt lands in `provider_health_events` as a
@@ -2808,5 +2905,81 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             .unwrap();
         assert!(req.contains("\"usage_unknown\":1"), "{req}");
         assert!(req.contains("\"total_tokens\":0"), "{req}");
+    }
+
+    /// Drain `body` through the accounting stream for a row that carries
+    /// `upstream_status`, and return the insert ClickHouse received (#2807).
+    async fn insert_for_upstream_answer(
+        id: &str,
+        status: u16,
+        upstream_status: u16,
+        body: &'static [u8],
+    ) -> String {
+        use futures_util::StreamExt;
+        let (addr, server) = capture_one_insert().await;
+        let sink = LogSink::spawn(
+            format!("http://{addr}"),
+            1,
+            Duration::from_millis(20),
+            100,
+            Arc::new(Metrics::default()),
+        );
+        let mut wrapped = UsageLoggingStream::new(
+            Box::pin(futures_util::stream::iter(vec![
+                Ok::<Bytes, reqwest::Error>(Bytes::from_static(body)),
+            ])),
+            false,
+            Instant::now(),
+            sink,
+            None,
+            RequestLog {
+                request_id: id.to_string(),
+                status,
+                upstream_status,
+                attempts: 1,
+                ..Default::default()
+            },
+            None,
+            None,
+            None,
+        );
+        while wrapped.next().await.is_some() {}
+        drop(wrapped);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .unwrap()
+    }
+
+    /// An upstream error the caller received as it was says why in the row, from
+    /// the body the stream already buffered (#2807).
+    #[tokio::test]
+    async fn an_upstream_error_handed_back_as_it_was_records_its_reason() {
+        let req = insert_for_upstream_answer(
+            "req-429",
+            429,
+            429,
+            br#"{"error":{"message":"slow down"}}"#,
+        )
+        .await;
+        assert!(
+            req.contains("\"error\":\"upstream returned 429: slow down\""),
+            "{req}"
+        );
+        assert!(req.contains("\"upstream_status\":429"), "{req}");
+        assert!(req.contains("\"attempts\":1"), "{req}");
+    }
+
+    /// A success has nothing to explain, whatever its body says.
+    #[tokio::test]
+    async fn a_successful_answer_records_no_error() {
+        let req = insert_for_upstream_answer(
+            "req-200",
+            200,
+            200,
+            br#"{"error":{"message":"not an error"}}"#,
+        )
+        .await;
+        assert!(req.contains("\"error\":\"\""), "{req}");
     }
 }

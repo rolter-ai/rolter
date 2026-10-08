@@ -79,9 +79,20 @@ impl ApiError {
     }
 }
 
+/// The message an [`ApiError`] rendered, kept on the response so a path that
+/// refuses a request can write it to the request log without re-parsing the
+/// body it just serialized (#2807).
+///
+/// A response extension is never sent to the client. It costs one `String`
+/// move on an error path that already allocates its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorMessage(pub String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body())).into_response()
+        let mut response = (self.status, Json(self.body())).into_response();
+        response.extensions_mut().insert(ErrorMessage(self.message));
+        response
     }
 }
 
@@ -128,6 +139,15 @@ mod tests {
         assert_eq!(e["code"], "model_not_found");
         assert_eq!(e["param"], "model");
         assert_eq!(e["message"], "no such model");
+    }
+
+    #[test]
+    fn the_message_rides_along_on_the_response_for_the_request_log() {
+        let response = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "slow down").into_response();
+        assert_eq!(
+            response.extensions().get::<ErrorMessage>(),
+            Some(&ErrorMessage("slow down".to_string()))
+        );
     }
 
     #[test]

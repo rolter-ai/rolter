@@ -25,35 +25,49 @@ The dashboard reads the rows back through the control plane, which needs its own
 
 ## What gets logged
 
-Every proxied request writes one row to the `request_logs` table with the following fields. With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, each stamped with a `sample_weight`; a raw `count()` or `sum()` over the table shrinks with the rate, and `sum(sample_weight)` or `sum(cost_usd * sample_weight)` restores it.
+Every request from a caller the gateway has identified writes one row to the `request_logs` table with the following fields, whatever happened to it: a success, a failure after the upstream errored, or a refusal before any upstream was involved (see [Failed and refused requests](#failed-and-refused-requests)). With a [`sample_rate`](/observability/log-settings#sampling) below `1` only the sampled requests do, each stamped with a `sample_weight`; a raw `count()` or `sum()` over the table shrinks with the rate, and `sum(sample_weight)` or `sum(cost_usd * sample_weight)` restores it.
 
-| Field                | Type          | Description                                                                                                                           |
-| -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `ts`                 | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                              |
-| `request_id`         | String        | Unique request identifier, echoed in the `x-request-id` response header                                                               |
-| `log_id`             | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                 |
-| `trace_id`           | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                          |
-| `model`              | String        | The public model name the client requested                                                                                            |
-| `provider`           | String        | The upstream provider that served the request (`builtin` for the built-in `fake-llm` model)                                           |
-| `target`             | String        | The specific upstream target within the provider                                                                                      |
-| `status`             | UInt16        | HTTP status code returned to the client                                                                                               |
-| `prompt_tokens`      | UInt32        | Prompt / input token count reported by the upstream                                                                                   |
-| `completion_tokens`  | UInt32        | Completion / output token count reported by the upstream                                                                              |
-| `cost_usd`           | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                            |
-| `unpriced`           | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))            |
-| `withheld`           | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses)) |
-| `usage_unknown`      | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free              |
-| `latency_ms`         | UInt32        | End-to-end request latency in milliseconds                                                                                            |
-| `ttft_ms`            | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                              |
-| `stream`             | UInt8         | `1` when the response was streamed                                                                                                    |
-| `cache_hit`          | UInt8         | `1` when Rolter answered from its own response cache, so no upstream was called and `provider` and `target` are empty                 |
-| `cache_read_tokens`  | UInt32        | Prompt tokens the upstream reused from its own prompt cache                                                                           |
-| `cache_write_tokens` | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                 |
-| `error`              | String        | Error message if the request failed; empty on success                                                                                 |
-| `variant`            | String        | Name of the A/B variant that served the request (blank when not using variants)                                                       |
-| `sample_weight`      | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column     |
+| Field                | Type          | Description                                                                                                                                     |
+| -------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                 | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                                        |
+| `request_id`         | String        | Unique request identifier, echoed in the `x-request-id` response header                                                                         |
+| `log_id`             | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                           |
+| `trace_id`           | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                                    |
+| `model`              | String        | The public model name the client requested                                                                                                      |
+| `provider`           | String        | The upstream provider that served the request (`builtin` for the built-in `fake-llm` model)                                                     |
+| `target`             | String        | The specific upstream target within the provider                                                                                                |
+| `status`             | UInt16        | HTTP status code returned to the client                                                                                                         |
+| `upstream_status`    | UInt16        | HTTP status of the last upstream attempt that answered, `0` when none did (a refusal, a cache hit, a connection that failed)                    |
+| `attempts`           | UInt8         | Upstream attempts the request made, the one that answered included; `0` when it never reached an upstream                                       |
+| `prompt_tokens`      | UInt32        | Prompt / input token count reported by the upstream                                                                                             |
+| `completion_tokens`  | UInt32        | Completion / output token count reported by the upstream                                                                                        |
+| `cost_usd`           | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                                      |
+| `unpriced`           | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))                      |
+| `withheld`           | UInt8         | `1` when the provider answered and billed, but a guardrail or plugin refused delivery (see [Withheld responses](#withheld-responses))           |
+| `usage_unknown`      | UInt8         | `1` when the upstream answered successfully but reported no token usage, so the zero tokens are unknown rather than free                        |
+| `latency_ms`         | UInt32        | End-to-end request latency in milliseconds                                                                                                      |
+| `ttft_ms`            | UInt32        | Time-to-first-token in milliseconds (streaming requests)                                                                                        |
+| `stream`             | UInt8         | `1` when the response was streamed                                                                                                              |
+| `cache_hit`          | UInt8         | `1` when Rolter answered from its own response cache, so no upstream was called and `provider` and `target` are empty                           |
+| `cache_read_tokens`  | UInt32        | Prompt tokens the upstream reused from its own prompt cache                                                                                     |
+| `cache_write_tokens` | UInt32        | Prompt tokens the upstream wrote to its prompt cache for this request                                                                           |
+| `error`              | String        | Why the request failed, including the upstream's own reason; empty on success (see [Failed and refused requests](#failed-and-refused-requests)) |
+| `variant`            | String        | Name of the A/B variant that served the request (blank when not using variants)                                                                 |
+| `sample_weight`      | Float64       | How many real requests the row stands for: `1 / sample_rate` when it was written, `1` when unsampled or written before the column               |
 
 The built-in `fake-llm` model is logged like any provider. It has no upstream, so its rows carry `provider = builtin` and `target = fake-llm`, and the token counts are the ones the fake response reports (a streamed chat completion included, though its stream carries no usage object). Its `cost_usd` is exactly `0`, and its rows are never marked `unpriced` or `usage_unknown`: a model that costs nothing is not an accounting gap. They show up on **LLM Logs** and in the analytics screens with no special casing, which makes `fake-llm` a quick way to check that logging works end to end. Requests it refuses, for example a `400` for a missing `input`, are logged with that status. Requests to `fake-llm` are not charged against token-per-minute limits or budgets, and its rows carry no captured payload.
+
+### Failed and refused requests
+
+`status` is what the caller was told. When the gateway answers with an error of its own, it does not say which upstream caused it, so two more columns do: `upstream_status` is the HTTP status of the last upstream attempt that answered, and `attempts` is how many upstream attempts the request made. A provider that answers `429` on a route with one target reaches the caller as a `429` with `code` `upstream_rate_limited` and a `Retry-After` when the provider sent one, not as an overload, and its row reads `status = 429`, `upstream_status = 429`, `attempts = 1`. When every target of a route failed with another status, the caller gets a `503` with `code` `upstream_unavailable` that names the last upstream status, and the row carries the same.
+
+`error` keeps the upstream's reason, so **LLM Logs** shows a sentence such as `upstream returned 429 after 1 attempt: Provider returned error: google/gemma-4-31b-it:free is temporarily rate-limited upstream`. It is read from the error body the provider sent, reduced to one line of at most 300 characters, with any URL in it masked, and it is never the raw body. A connection that failed before any status line has `upstream_status = 0` and the transport error in `error`.
+
+A request the gateway refuses before it reaches an upstream is logged too, with an empty `provider` and `target`, `attempts = 0`, and the message the caller received as `error`: an unknown model (`404`), a model or route the key may not use (`403`), a spent budget or an unpriced model the deployment refuses (`402`), a rate limit (`429`), a request a guardrail, plugin or prompt template rejects (`400`), and a route with no targets (`503`). They are written to the log only; they add no latency or error series to `/metrics`, which have their own counters for these refusals.
+
+What is **not** logged is anything that happens before the gateway knows who is asking: a body that is not JSON, a request with no `model`, a missing, unknown or expired key, and a request refused for a missing required header or an oversized body. No tenant owns such a row, and anonymous traffic would otherwise be able to write to your log without limit. `rolter_auth_failures_total` counts the rejected keys. Calls that manage a stored response (`GET`, `DELETE` and `cancel` on `/v1/responses/{id}`) are not logged either, successful or not: they carry no tokens and no cost.
+
+Rows written before `clickhouse/015_upstream_attempts.sql` default both columns to `0`.
 
 A [realtime](/api/realtime) session writes one row per model response rather than one per session: `request_id` is the upgrade request's id with the response's ordinal appended (`<id>:1`, `<id>:2`, ...), all rows of a session share its `trace_id`, and `latency_ms` and `ttft_ms` describe that one response. Rows arrive every `[realtime] usage_flush_secs` while the session is open. A response the session ended before it finished is logged with `usage_unknown = 1`.
 
