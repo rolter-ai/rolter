@@ -2332,7 +2332,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            sleep(Duration::from_millis(delay)).await;
+                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                             continue;
                         }
                     } else if is_retryable_status(status) {
@@ -2367,7 +2367,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            sleep(Duration::from_millis(delay)).await;
+                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                             continue;
                         }
                     } else if state.breaker.on_success(&model, idx) {
@@ -2421,9 +2421,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         });
                         last_attempt_recorded = true;
                         state.metrics.retries_total.fetch_add(1, Relaxed);
-                        sleep(Duration::from_millis(
+                        back_off(
                             retry.backoff_ms(attempt + 1, jitter(started)),
-                        ))
+                            has_untried_target(entry, &tried, vk.as_ref()),
+                        )
                         .await;
                         continue;
                     }
@@ -3040,7 +3041,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3073,7 +3074,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&model, idx) {
@@ -3117,9 +3118,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     });
                     last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(
+                    back_off(
                         retry.backoff_ms(attempt + 1, jitter(started)),
-                    ))
+                        has_untried_target(entry, &tried, vk.as_ref()),
+                    )
                     .await;
                     continue;
                 }
@@ -3542,7 +3544,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3575,7 +3577,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        sleep(Duration::from_millis(delay)).await;
+                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&key, ti) {
@@ -3622,9 +3624,10 @@ async fn forward_variants(
                     });
                     out.last_attempt_recorded = true;
                     state.metrics.retries_total.fetch_add(1, Relaxed);
-                    sleep(Duration::from_millis(
+                    back_off(
                         retry.backoff_ms(attempt + 1, jitter(started)),
-                    ))
+                        has_untried_candidate(candidates.len(), &tried),
+                    )
                     .await;
                     continue;
                 }
@@ -3683,13 +3686,58 @@ pub(crate) fn pick_untried(
     // every remaining sibling is parked or unhealthy
     (0..n)
         .find(|i| !tried.contains(i) && !skip(*i))
-        .or_else(|| {
-            (0..n).find(|i| {
-                !tried.contains(i)
-                    && key_meta
-                        .is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
-            })
-        })
+        .or_else(|| first_untried_allowed(entry, tried, key_meta))
+}
+
+/// The first target this request has not tried that its key may use,
+/// whatever its cooldown, health or breaker says.
+///
+/// This is where [`pick_untried`] ends up when every sibling is skippable, and
+/// the only way it returns `None`, so it answers "is there anything left to
+/// fail over to" without consulting the balancer. Asking the balancer instead
+/// would advance a round-robin cursor for a pick nobody uses.
+fn first_untried_allowed(
+    entry: &crate::state::RouteEntry,
+    tried: &[usize],
+    key_meta: Option<&KeyMeta>,
+) -> Option<usize> {
+    (0..entry.route.targets.len()).find(|i| {
+        !tried.contains(i)
+            && key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[*i].provider))
+    })
+}
+
+/// Whether the next attempt of a forward loop has a target to try.
+///
+/// Read before the loop backs off, so a request is not made to wait for an
+/// attempt that cannot happen (#2835). A multi-key provider that answered `429`
+/// or `401` takes `tried.pop()` first, which makes its own target untried
+/// again, so that path still waits for the key's cooldown.
+pub(crate) fn has_untried_target(
+    entry: &crate::state::RouteEntry,
+    tried: &[usize],
+    key_meta: Option<&KeyMeta>,
+) -> bool {
+    first_untried_allowed(entry, tried, key_meta).is_some()
+}
+
+/// Whether the variant loop has a candidate it has not tried, the variant
+/// counterpart of [`has_untried_target`].
+fn has_untried_candidate(candidates: usize, tried: &[usize]) -> bool {
+    (0..candidates).any(|ci| !tried.contains(&ci))
+}
+
+/// Wait out the backoff before the next attempt, unless there is no next
+/// attempt to wait for.
+///
+/// A single-target route whose upstream answers `429` with `Retry-After: 30`
+/// used to make the caller wait the full 30 s only to be told the same thing:
+/// the loop woke, found nothing left to try and ended the request with that
+/// answer. `can_retry` is whether the loop will find a target when it wakes.
+async fn back_off(delay_ms: u64, can_retry: bool) {
+    if can_retry {
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
 }
 
 /// Whether an upstream HTTP status is worth retrying: request timeout, too many
@@ -5537,6 +5585,123 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn three_target_entry() -> crate::state::RouteEntry {
+        let target = |provider: &str| Target {
+            provider: provider.to_string(),
+            model: None,
+            weight: 1,
+        };
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![target("a"), target("b"), target("c")],
+            tenancy: None,
+        };
+        crate::state::RouteEntry {
+            project_scope: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        }
+    }
+
+    /// #2835: the check the loops make before backing off must agree with the
+    /// pick they make after it, for every set of tried targets, every key
+    /// restriction and with each target parked on a cooldown. If it said "yes"
+    /// where the pick finds nothing the request would wait for nothing, and if
+    /// it said "no" where the pick finds a target the request would skip a wait
+    /// it owes.
+    #[test]
+    fn has_untried_target_agrees_with_pick_untried() {
+        let entry = three_target_entry();
+        let ctx = RouteContext::default();
+        let hh = crate::health::Health::default();
+        let bb = crate::breaker::Breaker::default();
+        let keys = [
+            None,
+            Some(KeyMeta::default()),
+            Some(KeyMeta {
+                providers: vec!["b".to_string()],
+                ..Default::default()
+            }),
+            Some(KeyMeta {
+                providers: vec!["a".to_string(), "c".to_string()],
+                ..Default::default()
+            }),
+            Some(KeyMeta {
+                providers: vec!["missing".to_string()],
+                ..Default::default()
+            }),
+        ];
+        for tried_mask in 0u8..8 {
+            let tried: Vec<usize> = (0..3).filter(|i| tried_mask & (1 << i) != 0).collect();
+            for parked_mask in 0u8..8 {
+                let cd = crate::cooldowns::Cooldowns::default();
+                for i in (0..3).filter(|i| parked_mask & (1 << i) != 0) {
+                    cd.park("m", i, 60);
+                }
+                for key in &keys {
+                    let picked = pick_untried(
+                        &entry,
+                        &ctx,
+                        &tried,
+                        &[],
+                        &cd,
+                        &hh,
+                        &bb,
+                        "m",
+                        true,
+                        key.as_ref(),
+                    );
+                    assert_eq!(
+                        has_untried_target(&entry, &tried, key.as_ref()),
+                        picked.is_some(),
+                        "tried {tried:?}, parked {parked_mask:03b}, key {key:?}, picked {picked:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The multi-key path re-allows its own target with `tried.pop()`, and the
+    /// check has to see that: it is the case the wait is kept for.
+    #[test]
+    fn a_target_popped_from_tried_is_untried_again() {
+        let entry = three_target_entry();
+        let mut tried = vec![0, 1, 2];
+        assert!(!has_untried_target(&entry, &tried, None));
+        tried.pop();
+        assert!(has_untried_target(&entry, &tried, None));
+    }
+
+    #[test]
+    fn has_untried_candidate_counts_the_variant_candidates_left() {
+        assert!(!has_untried_candidate(0, &[]));
+        assert!(has_untried_candidate(2, &[]));
+        assert!(has_untried_candidate(2, &[1]));
+        assert!(!has_untried_candidate(2, &[1, 0]));
+        // a candidate popped for a sibling key is untried again
+        assert!(has_untried_candidate(1, &[]));
+    }
+
+    /// #2835: a retry that cannot happen is not waited for, and one that can
+    /// is waited for in full.
+    #[tokio::test]
+    async fn back_off_waits_only_for_an_attempt_that_can_happen() {
+        let delay = 250;
+        let start = Instant::now();
+        back_off(delay, false).await;
+        assert!(start.elapsed() < Duration::from_millis(delay / 2));
+        back_off(delay, true).await;
+        assert!(start.elapsed() >= Duration::from_millis(delay));
     }
 
     /// #1714: a balancer sized for more targets than the route carries must
