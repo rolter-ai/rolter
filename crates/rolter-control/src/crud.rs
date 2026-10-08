@@ -3182,9 +3182,15 @@ mod probe_verdict_tests {
         assert!(!verdict.reachable, "html answered as a green result");
         assert_eq!(verdict.models_found, None);
         let error = verdict.error.expect("the operator must be told why");
-        assert!(error.contains("not with a model list"), "{error}");
+        assert!(
+            error.contains("not with a model list"),
+            "the failure says the answer was not a model list"
+        );
         // distinct from a flat failure: it must not claim the host refused us
-        assert!(!error.contains("refused the probe"), "{error}");
+        assert!(
+            !error.contains("refused the probe"),
+            "it must not claim the host refused the probe"
+        );
     }
 
     /// Valid JSON that simply is not a catalogue — an auth portal's `{"error":…}`
