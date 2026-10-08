@@ -145,7 +145,7 @@ cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absen
     Add a `[[model_prices]]` block for each model you want to track. You can define prices for managed models (OpenAI, Anthropic) and self-hosted models alike.
   </Step>
   <Step title="Rolter computes cost per request">
-    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`.
+    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. The upstream reports them as `cache_read_input_tokens` (Anthropic Messages), `prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses API); all three are read, on buffered and streamed answers alike.
   </Step>
   <Step title="Query spend in ClickHouse">
     Rows without a matching model price record `cost_usd = 0` **and `unpriced = 1`** — they still appear in logs, they just don't contribute to spend reports until you add a price.

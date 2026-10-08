@@ -634,11 +634,15 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         if let Some(t) = u32_field(u, "total_tokens") {
             usage.total = usage.total.max(t);
         }
-        if let Some(read) = u32_field(u, "cache_read_input_tokens").or_else(|| {
-            u.pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(Value::as_u64)
-                .map(|n| n as u32)
-        }) {
+        // three spellings of the same figure: anthropic's own field, chat
+        // completions' `prompt_tokens_details`, and the responses api's
+        // `input_tokens_details`. the last two count it inside the prompt
+        // total, which is how `ModelPriceConfig::cost` reads it too (#2847)
+        let detail = |pointer: &str| u.pointer(pointer).and_then(Value::as_u64).map(|n| n as u32);
+        if let Some(read) = u32_field(u, "cache_read_input_tokens")
+            .or_else(|| detail("/prompt_tokens_details/cached_tokens"))
+            .or_else(|| detail("/input_tokens_details/cached_tokens"))
+        {
             usage.cache_read = usage.cache_read.max(read);
         }
         if let Some(write) = u32_field(u, "cache_creation_input_tokens") {
@@ -1757,6 +1761,72 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\"
                 ..Usage::default()
             }
         );
+    }
+
+    // ── cached input tokens (#2847) ─────────────────────────────────────────
+    // the responses api reports the prompt-cache hit as
+    // `usage.input_tokens_details.cached_tokens`, inside `input_tokens`, so a
+    // priced model can bill it at `cached_input_per_mtok`
+
+    #[test]
+    fn a_buffered_responses_api_body_reports_its_cached_input() {
+        let body = br#"{"id":"resp_1","object":"response","status":"completed",
+            "usage":{"input_tokens":2006,"input_tokens_details":{"cached_tokens":1920},
+            "output_tokens":45,"output_tokens_details":{"reasoning_tokens":16},
+            "total_tokens":2051}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 2006,
+                completion: 45,
+                total: 2051,
+                cache_read: 1920,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_streamed_responses_api_terminal_event_reports_its_cached_input() {
+        let sse = b"event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":null}}\n\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2006,\"input_tokens_details\":{\"cached_tokens\":1920},\"output_tokens\":45,\"output_tokens_details\":{\"reasoning_tokens\":16},\"total_tokens\":2051}}}\n\n";
+        assert_eq!(
+            parse_usage(true, sse),
+            Usage {
+                prompt: 2006,
+                completion: 45,
+                total: 2051,
+                cache_read: 1920,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// the three spellings of one figure all land in `cache_read`, and a
+    /// reasoning count next to them is never mistaken for it
+    #[test]
+    fn every_dialect_reports_its_cached_input_in_cache_read() {
+        for (name, usage) in [
+            (
+                "anthropic",
+                r#"{"input_tokens":10,"cache_read_input_tokens":80,"output_tokens":5}"#,
+            ),
+            (
+                "chat completions",
+                r#"{"prompt_tokens":90,"prompt_tokens_details":{"cached_tokens":80},"completion_tokens":5}"#,
+            ),
+            (
+                "responses",
+                r#"{"input_tokens":90,"input_tokens_details":{"cached_tokens":80},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3}}"#,
+            ),
+        ] {
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            assert_eq!(parse_usage(false, body.as_bytes()).cache_read, 80, "{name}");
+        }
     }
 
     /// An answer cut short by `max_output_tokens` still spent its tokens, and

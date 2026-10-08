@@ -85,6 +85,49 @@ The kind's display name and one-line description are dashboard copy, not
 served: `providerSheet.kinds.<kind>.name` and `.description` in every catalog.
 A kind the deployment gains shows its id until a release names it.
 
+#### How the llm-call check is aimed and judged
+
+`also_track_via_llm_call` proves inference works, so it has to call the endpoint
+a forwarded request would reach. `build_probe_plan` in
+`crates/rolter-gateway/src/health.rs` therefore takes both the address and the
+body from the proxy's rules instead of writing its own (#2818, which found the
+check posting to `/v1/v1/chat/completions` for every kind whose base carries
+`/v1`, and an OpenAI-shaped body to a native Gemini API that serves no such
+path):
+
+- the address is `ProviderKind::resolve_upstream_url` over the kind's
+  `primary_upstream_path` from the table above, with `{model}` replaced by
+  `llm_probe_model`;
+- the body is a `max_tokens = 1` chat completion put through the same
+  `TranslationPlan` a client request takes, so `anthropic`, `gemini_native` and
+  `gemini_interactions` get their own wire format;
+- a text-embeddings server (`tei`) answers no completion, so it is sent the
+  embedding of one word;
+- the key goes out in the header `ProviderKind::auth_header` names.
+
+If the plan cannot be built the check logs why and falls back to the free probe,
+as it does for a missing `llm_probe_model` or key.
+
+The free probe reads any status below `500` as "the API is up". That stays,
+because an upstream rarely has a health route and a `401` or `404` from its
+model list still proves it answers. The llm-call check is judged by a stricter
+rule, because it is aimed at the one endpoint that must work:
+
+| Status         | Outcome | `error_kind` on the event                      | Meaning                                            |
+| -------------- | ------- | ---------------------------------------------- | -------------------------------------------------- |
+| `404`, `405`   | failure | `wrong_endpoint`                               | the check points at the wrong place or model       |
+| `401`, `403`   | failure | `key_refused`                                  | the configured key cannot call the model           |
+| `429`          | healthy | `rate_limited`                                 | the model answered; the prober backs off           |
+| other `< 500`  | healthy |                                                | the model answered, or declined for its own reason |
+| `>= 500`, none | failure | `upstream_error` / `connect_error` / `timeout` | as for the free probe                              |
+
+A failure of the first two kinds is logged at `warn` with the provider, the
+status and what to check. It counts toward `consecutive_failure_threshold`
+like any other failed probe, so a misaimed check parks the provider instead of
+reporting it healthy. `classify_status` in `health.rs` holds the rule, and
+`crates/rolter-gateway/tests/llm_call_health.rs` runs the sweep against
+stand-in upstreams to prove it end to end.
+
 #### Role-capability profiles
 
 `openai_compatible` describes the HTTP surface only. vLLM, in particular,
@@ -221,7 +264,7 @@ api_key_env = "XAI_API_KEY"
 - `ca_bundles` (string[], optional) — provider-specific replacement for global `[tls].ca_bundles`; `[]` explicitly selects public roots only
 - `[providers.kv_events]` (optional) — vLLM V1 ZMQ KV-event source for `precise_cache_aware`: `endpoint` (`tcp://…`), `topic` (default `kv-events`), `max_blocks` (default 1,000,000), and `stale_secs` (default 30)
 - `[providers.lmcache]` (optional) — LMCache controller signal for `lmcache_aware`: `endpoint` (HTTP JSON occupancy signal), `refresh_secs` (default 2), and `stale_secs` (default 10)
-- `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
+- `also_track_via_llm_call` (bool, default `false`) — when set, active health checks send a real `max_tokens = 1` completion to this provider instead of the free `/v1/models` liveness probe, so a healthy result proves end-to-end inference. The request goes where the proxy would send it, and a `404`/`405` or `401`/`403` answer is a failure, not a healthy reading ([how the check is aimed and judged](#how-the-llm-call-check-is-aimed-and-judged)). **This burns a few tokens on every sweep** (`interval_secs`); leave it off unless you need inference-level health. Recorded as `source = llm_call` in `provider_health_events`.
 - `llm_probe_model` (string, optional) — the upstream model id the `also_track_via_llm_call` completion targets (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or an api key) the checker logs a warning and falls back to the free probe.
 - `status_page_url` (string, optional) — statuspage.io-style `status.json` URL (e.g. `https://status.anthropic.com/api/v2/status.json`). When set, a slow background poll records the provider's public status as a **secondary** `status_page` health signal — it surfaces in `provider_health_events`, the dashboard and `rolter_status_page_degraded_total`, but never marks the provider unhealthy or affects routing on its own. Parse/transport failures are logged and skipped.
 
